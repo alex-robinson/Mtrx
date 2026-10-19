@@ -9,20 +9,12 @@ use directories::ProjectDirs;
 use matrix_sdk::authentication::{matrix::MatrixSession, oauth::UserSession};
 use serde::{Deserialize, Serialize};
 
-use crate::{Error, Result};
+use crate::{
+    Error, Result,
+    secrets::{Secret, SecretStore},
+};
 
-const KEYRING_SERVICE: &str = "mtrx";
 const SECRETS_FILE: &str = "secrets.json";
-
-/// Where a profile's secrets (access token, store passphrase) are kept.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SecretStore {
-    /// OS credential store: macOS Keychain, Windows Credential Manager, or
-    /// Secret Service on Linux.
-    Keyring,
-    /// Plain-text file in the profile directory. For tests and development only.
-    File,
-}
 
 /// A named account slot. Each profile has its own directory and secrets, so
 /// several accounts can be logged in side by side.
@@ -30,7 +22,7 @@ pub enum SecretStore {
 pub struct Profile {
     name: String,
     dir: PathBuf,
-    secrets: SecretStore,
+    secret: Secret,
 }
 
 /// Everything needed to restore a session, stored as one secret.
@@ -66,10 +58,18 @@ impl Profile {
             Some(root) => root.to_owned(),
             None => Self::default_data_root()?,
         };
+        let dir = root.join("profiles").join(name);
+        // Keyed by the profile directory, so profiles under different data
+        // roots never share a secret.
+        let secret = Secret::new(
+            secrets,
+            dir.to_string_lossy().into_owned(),
+            dir.join(SECRETS_FILE),
+        );
         Ok(Self {
             name: name.to_owned(),
-            dir: root.join("profiles").join(name),
-            secrets,
+            dir,
+            secret,
         })
     }
 
@@ -93,64 +93,23 @@ impl Profile {
     }
 
     pub(crate) fn load_session(&self) -> Result<Option<StoredSession>> {
-        let json = match self.secrets {
-            SecretStore::Keyring => match self.keyring_entry()?.get_password() {
-                Ok(json) => json,
-                Err(keyring::Error::NoEntry) => return Ok(None),
-                Err(e) => return Err(e.into()),
-            },
-            SecretStore::File => match fs::read_to_string(self.dir.join(SECRETS_FILE)) {
-                Ok(json) => json,
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-                Err(e) => return Err(e.into()),
-            },
-        };
-        Ok(Some(serde_json::from_str(&json)?))
+        match self.secret.load()? {
+            Some(json) => Ok(Some(serde_json::from_str(&json)?)),
+            None => Ok(None),
+        }
     }
 
     pub(crate) fn save_session(&self, stored: &StoredSession) -> Result<()> {
-        let json = serde_json::to_string(stored)?;
-        match self.secrets {
-            SecretStore::Keyring => self.keyring_entry()?.set_password(&json)?,
-            SecretStore::File => write_private(&self.dir.join(SECRETS_FILE), &json)?,
-        }
-        Ok(())
+        self.secret.save(&serde_json::to_string(stored)?)
     }
 
     /// Delete the profile's secrets and all local data.
     pub(crate) fn wipe(&self) -> Result<()> {
-        if self.secrets == SecretStore::Keyring {
-            match self.keyring_entry()?.delete_credential() {
-                Ok(()) | Err(keyring::Error::NoEntry) => {}
-                Err(e) => return Err(e.into()),
-            }
-        }
+        self.secret.delete()?;
         match fs::remove_dir_all(&self.dir) {
             Ok(()) => Ok(()),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
             Err(e) => Err(e.into()),
         }
     }
-
-    /// Keyed by the profile directory, so profiles under different data roots
-    /// never share a secret.
-    fn keyring_entry(&self) -> Result<keyring::Entry> {
-        Ok(keyring::Entry::new(
-            KEYRING_SERVICE,
-            &self.dir.to_string_lossy(),
-        )?)
-    }
-}
-
-fn write_private(path: &Path, contents: &str) -> std::io::Result<()> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    fs::write(path, contents)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
-    }
-    Ok(())
 }
