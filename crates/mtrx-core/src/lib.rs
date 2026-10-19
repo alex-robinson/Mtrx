@@ -3,6 +3,7 @@
 //! Frontends (the `mtrx` CLI, the GUI) are built on this crate. It never
 //! prints or draws: it exposes plain data types and live update streams.
 
+mod calls;
 mod encryption;
 mod error;
 mod media;
@@ -16,6 +17,7 @@ mod timeline;
 #[cfg(feature = "test-support")]
 pub mod test_support;
 
+pub use calls::{CallService, ServiceKind, recognize_call_link};
 pub use encryption::{
     DeviceInfo, RecoveryStatus, RecoveryStep, Verification, VerificationEmoji, VerificationState,
 };

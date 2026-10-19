@@ -230,6 +230,30 @@ pub fn dialog(theme: &Theme) -> container::Style {
     }
 }
 
+/// A call card in the timeline.
+pub fn card(theme: &Theme) -> container::Style {
+    let palette = theme.extended_palette();
+    container::Style {
+        background: Some(Background::Color(palette.background.weak.color)),
+        border: Border::default()
+            .rounded(8)
+            .width(1)
+            .color(palette.background.strong.color),
+        ..Default::default()
+    }
+}
+
+/// The round icon of a call card.
+pub fn call_icon(theme: &Theme) -> container::Style {
+    container::Style {
+        background: Some(Background::Color(
+            theme.extended_palette().primary.base.color,
+        )),
+        border: Border::default().rounded(16),
+        ..Default::default()
+    }
+}
+
 /// Dims the window behind a dialog.
 pub fn backdrop(_theme: &Theme) -> container::Style {
     container::Style {

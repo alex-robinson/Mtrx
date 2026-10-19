@@ -19,17 +19,18 @@ use iced::{
     window,
 };
 use mtrx_core::{
-    OwnedMxcUri, OwnedRoomId, Profile, RecoveryStep, RoomList, RoomListState, RoomTimeline,
-    ScheduledMessage, SecretStore, Session, TimelineEntry,
+    CallService, OwnedMxcUri, OwnedRoomId, Profile, RecoveryStep, RoomList, RoomListState,
+    RoomTimeline, ScheduledMessage, SecretStore, Session, TimelineEntry, Url,
 };
 
 use crate::{
     avatar::{self, Avatars},
+    calls,
     login::{self, Login},
     math::{self, Math, Rendered},
     room::{Look, Older, Room},
     send_later,
-    settings::Settings,
+    settings::{self, Settings},
     sidebar,
     style::{self, MESSAGE_INSET, ROOM_LIST_WIDTH, SPACE_BAR_WIDTH},
 };
@@ -80,7 +81,8 @@ pub enum Message {
     /// Refreshes times shown relative to now.
     Tick,
     ShowSettings(bool),
-    ColoredNames(bool),
+    Settings(settings::Message),
+    Calls(OwnedRoomId, calls::Message),
     RecoveryKey(String),
     Recover,
     RecoveryProgress(RecoveryStep),
@@ -100,8 +102,8 @@ pub struct App {
     settings: Settings,
     /// Where settings are saved; `None` keeps them in memory (tests).
     settings_file: Option<PathBuf>,
-    settings_open: bool,
-    settings_error: Option<String>,
+    /// The settings panel, while open.
+    settings_panel: Option<settings::Panel>,
     screen: Screen,
     mode: Mode,
     window_width: f32,
@@ -195,8 +197,7 @@ impl App {
             profile: profile.clone(),
             settings: Settings::load(&settings_file),
             settings_file: Some(settings_file),
-            settings_open: false,
-            settings_error: None,
+            settings_panel: None,
             screen: Screen::Starting,
             mode: Mode::Light,
             window_width: 1200.0,
@@ -332,11 +333,17 @@ impl App {
                 };
                 match result {
                     Ok(Shared(timeline)) => {
-                        let mut room = Room::new(id, timeline);
+                        let mut room = Room::new(id.clone(), timeline);
                         let paginate = paginate(&mut room);
                         let read = mark_read(&room);
                         main.room = Some(room);
-                        Task::batch([paginate, read, self.render_math(), self.load_avatars()])
+                        Task::batch([
+                            paginate,
+                            read,
+                            self.render_math(),
+                            self.load_avatars(),
+                            self.load_room_calls(&id),
+                        ])
                     }
                     Err(e) => {
                         main.error = Some(e);
@@ -437,15 +444,13 @@ impl App {
                 Task::none()
             }
             Message::Later(message) => self.later(message),
-            Message::ShowSettings(open) => {
-                self.settings_open = open;
+            Message::ShowSettings(false) => {
+                self.settings_panel = None;
                 Task::none()
             }
-            Message::ColoredNames(colored) => {
-                self.settings.colored_names = colored;
-                self.save_settings();
-                Task::none()
-            }
+            Message::ShowSettings(true) => self.open_settings(),
+            Message::Settings(message) => self.settings_update(message),
+            Message::Calls(room, message) => self.calls(room, message),
             Message::Scheduled(scheduled) => {
                 if let Screen::Main(main) = &mut self.screen {
                     if let Some(room) = main.room.as_mut()
@@ -561,12 +566,180 @@ impl App {
         }
     }
 
-    fn save_settings(&mut self) {
-        self.settings_error = self
-            .settings_file
-            .as_ref()
-            .and_then(|file| self.settings.save(file).err())
-            .map(|e| e.to_string());
+    fn open_settings(&mut self) -> Task<Message> {
+        let mut panel = settings::Panel::default();
+        let mut task = Task::none();
+        if let Screen::Main(main) = &self.screen
+            && let Some(space) = &main.space
+        {
+            let name = main
+                .rooms
+                .rooms
+                .iter()
+                .find(|r| &r.id == space)
+                .map_or_else(|| space.to_string(), |r| r.name.clone());
+            panel.space = Some(settings::SpaceCalls::new(space.clone(), name));
+            let (session, space) = (main.session.clone(), space.clone());
+            task = Task::perform(
+                async move {
+                    let service = session.space_call_service(&space).await.ok().flatten();
+                    let can_set = session.can_set_space_call_service(&space).await.ok();
+                    settings::Message::SpaceLoaded(space, service, can_set)
+                },
+                Message::Settings,
+            );
+        }
+        self.settings_panel = Some(panel);
+        task
+    }
+
+    fn settings_update(&mut self, message: settings::Message) -> Task<Message> {
+        let Some(panel) = &mut self.settings_panel else {
+            return Task::none();
+        };
+        match panel.update(&mut self.settings, message) {
+            settings::Action::None => Task::none(),
+            settings::Action::Save => {
+                panel.error = self
+                    .settings_file
+                    .as_ref()
+                    .and_then(|file| self.settings.save(file).err())
+                    .map(|e| e.to_string());
+                Task::none()
+            }
+            settings::Action::SetSpaceService(space, service) => {
+                let Screen::Main(main) = &self.screen else {
+                    return Task::none();
+                };
+                let session = main.session.clone();
+                Task::perform(
+                    async move { session.set_space_call_service(&space, service).await },
+                    |result| {
+                        Message::Settings(settings::Message::SpaceSaved(
+                            result.map_err(|e| e.to_string()),
+                        ))
+                    },
+                )
+            }
+        }
+    }
+
+    fn calls(&mut self, room_id: OwnedRoomId, message: calls::Message) -> Task<Message> {
+        use calls::Message as Calls;
+        let Screen::Main(main) = &mut self.screen else {
+            return Task::none();
+        };
+        let Some(room) = main.room.as_mut().filter(|r| r.id == room_id) else {
+            return Task::none();
+        };
+        let session = main.session.clone();
+        let state = &mut room.calls;
+        let reply = move |message| Message::Calls(room_id.clone(), message);
+        match message {
+            Calls::Link(link) => state.link = link,
+            Calls::CanSetLink(can_set) => state.can_set_link = can_set,
+            Calls::SpaceService(service) => state.space_service = service,
+            Calls::ToggleMenu => {
+                state.menu = !state.menu;
+                state.editor = None;
+                state.error = None;
+            }
+            Calls::Start(service) => {
+                state.busy = true;
+                state.menu = false;
+                state.error = None;
+                let room = room.id.clone();
+                return Task::perform(
+                    async move {
+                        let link = new_call_link(&service).await?;
+                        session
+                            .post_call(&room, &service.name, &link)
+                            .await
+                            .map_err(|e| e.to_string())
+                    },
+                    move |result| reply(Calls::Started(result)),
+                );
+            }
+            Calls::Started(result) | Calls::LinkSaved(result) => {
+                state.busy = false;
+                match result {
+                    Ok(()) => state.editor = None,
+                    Err(e) => state.error = Some(e),
+                }
+            }
+            Calls::EditLink => {
+                state.menu = false;
+                state.error = None;
+                state.editor = Some(state.link.as_ref().map(Url::to_string).unwrap_or_default());
+            }
+            Calls::LinkInput(input) => state.editor = Some(input),
+            Calls::NewLink(service) => {
+                state.editor = service.new_link().map(|link| link.to_string());
+            }
+            Calls::SaveLink | Calls::RemoveLink => {
+                let link = match message {
+                    Calls::SaveLink => match state.editor.as_deref().map(str::trim).map(Url::parse)
+                    {
+                        Some(Ok(link)) => Some(link),
+                        _ => return Task::none(),
+                    },
+                    _ => None,
+                };
+                state.busy = true;
+                state.error = None;
+                let room = room.id.clone();
+                return Task::perform(
+                    async move {
+                        session
+                            .set_call_link(&room, link.as_ref())
+                            .await
+                            .map_err(|e| e.to_string())
+                    },
+                    move |result| reply(Calls::LinkSaved(result)),
+                );
+            }
+            Calls::CancelEdit => {
+                state.editor = None;
+                state.error = None;
+            }
+        }
+        Task::none()
+    }
+
+    /// Permission and space call service of a newly opened room.
+    fn load_room_calls(&self, room_id: &OwnedRoomId) -> Task<Message> {
+        let Screen::Main(main) = &self.screen else {
+            return Task::none();
+        };
+        let session = main.session.clone();
+        let spaces = sidebar::ancestors(&main.rooms.rooms, room_id);
+        let room = room_id.clone();
+        let reply = {
+            let room = room.clone();
+            move |message| Message::Calls(room.clone(), message)
+        };
+        let can_set = {
+            let (session, room) = (session.clone(), room.clone());
+            Task::perform(
+                async move { session.can_set_call_link(&room).await.ok() },
+                {
+                    let reply = reply.clone();
+                    move |can_set| reply(calls::Message::CanSetLink(can_set))
+                },
+            )
+        };
+        let space_service = Task::perform(
+            async move {
+                for space in spaces {
+                    if let Ok(Some(service)) = session.space_call_service(&space).await {
+                        return Some(service);
+                    }
+                }
+                None
+            },
+            move |service| reply(calls::Message::SpaceService(service)),
+        );
+        Task::batch([can_set, space_service])
     }
 
     fn later(&mut self, message: send_later::Message) -> Task<Message> {
@@ -717,6 +890,25 @@ impl App {
                 );
             }
             if let Some(room) = &main.room {
+                subscriptions.push(Subscription::run_with(
+                    (Shared(main.session.clone()), room.id.clone()),
+                    |(session, room)| {
+                        let (session, room) = (session.0.clone(), room.clone());
+                        iced::stream::channel(4, async move |mut tx| {
+                            let Ok(links) = session.call_link_updates(&room).await else {
+                                return;
+                            };
+                            let mut links = std::pin::pin!(links);
+                            while let Some(link) = links.next().await {
+                                let message =
+                                    Message::Calls(room.clone(), calls::Message::Link(link));
+                                if tx.send(message).await.is_err() {
+                                    return;
+                                }
+                            }
+                        })
+                    },
+                ));
                 subscriptions.push(Subscription::run_with(Shared(room.timeline.clone()), |t| {
                     let id = t.0.room_id().clone();
                     t.0.updates()
@@ -731,8 +923,8 @@ impl App {
         match &self.screen {
             Screen::Starting => container(text("Starting…")).center(Length::Fill).into(),
             Screen::Login(login) => login.view().map(Message::Login),
-            Screen::Main(main) if self.settings_open => {
-                let panel = self.settings.view(self.settings_error.as_deref());
+            Screen::Main(main) if let Some(panel) = &self.settings_panel => {
+                let panel = panel.view(&self.settings);
                 let backdrop = mouse_area(
                     container(opaque(panel))
                         .center(Length::Fill)
@@ -785,6 +977,7 @@ impl App {
                     params: self.math_params(),
                     avatars: &main.avatars,
                     colored_names: self.settings.colored_names,
+                    call_services: &self.settings.call_services,
                 };
                 room.view(summary, &look, &scheduled)
             }
@@ -892,6 +1085,17 @@ fn overdue_banner(main: &Main) -> Option<Element<'_, Message>> {
         .padding([8, 24])
         .into(),
     )
+}
+
+/// A link for a new call with `service`.
+async fn new_call_link(service: &CallService) -> Result<Url, String> {
+    match service.new_link() {
+        Some(link) => Ok(link),
+        None => Err(format!(
+            "{} needs the Google connection, which is not set up yet.",
+            service.name
+        )),
+    }
 }
 
 fn paginate(room: &mut Room) -> Task<Message> {

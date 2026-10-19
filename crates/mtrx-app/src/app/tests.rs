@@ -63,8 +63,7 @@ fn app(screen: Screen, mode: Mode) -> App {
         profile: Profile::new("ui", None, SecretStore::File).unwrap(),
         settings: Settings::default(),
         settings_file: None,
-        settings_open: false,
-        settings_error: None,
+        settings_panel: None,
         screen,
         mode,
         window_width: 1200.0,
@@ -210,7 +209,11 @@ async fn main_screen_with_math() {
     .await;
     send(&bob_timeline, "Which geothermal flux dataset is it?").await;
     let carol_timeline = carol.timeline(&room).await.unwrap();
-    send(&carol_timeline, "I can run the sensitivity tests tonight.").await;
+    send(
+        &carol_timeline,
+        "I can run the sensitivity tests tonight. Quick call first? https://meet.google.com/abc-defg-hij",
+    )
+    .await;
     send(
         &carol.timeline(&dm).await.unwrap(),
         "Coffee before the meeting?",
@@ -275,6 +278,11 @@ async fn main_screen_with_math() {
         open.entries = entries.clone();
         open.at_start = true;
         open.hover(hovered.clone(), true);
+        open.calls.link = Some(Url::parse("https://meet.jit.si/ice-sheets-weekly").unwrap());
+        open.calls.space_service =
+            Some(CallService::jitsi("Lab Jitsi", "https://video.lab.example").unwrap());
+        // The start menu open in one of the two shots.
+        open.calls.menu = mode == Mode::Dark;
         main.room = Some(open);
         for (mxc, size) in main.avatars_on_screen() {
             main.avatars.load_now(&alice, &mxc, size).await;
@@ -391,7 +399,7 @@ async fn send_later_bar() {
     main.room = Some(open);
     let mut app = app(Screen::Main(Box::new(main)), Mode::Light);
     snapshot(&app, "send-later");
-    app.settings_open = true;
+    app.settings_panel = Some(settings::Panel::default());
     snapshot(&app, "settings");
 }
 

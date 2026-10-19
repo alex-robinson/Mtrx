@@ -3,6 +3,7 @@
 //! Frontends render this model; math keeps its LaTeX source so it can be
 //! copied back out.
 
+use linkify::{LinkFinder, LinkKind};
 use ruma_html::{
     Html, NodeData, NodeRef,
     matrix::{AnchorUri, MatrixElement},
@@ -75,6 +76,7 @@ impl Document {
         Self {
             blocks: builder.finish(),
         }
+        .linkified()
     }
 
     /// A plain-text body: one paragraph per line block, line breaks kept.
@@ -93,7 +95,46 @@ impl Document {
                 Block::Paragraph(inlines)
             })
             .collect();
-        Self { blocks }
+        Self { blocks }.linkified()
+    }
+
+    /// Bare URLs in text become links, as most clients show them.
+    fn linkified(mut self) -> Self {
+        let finder = {
+            let mut finder = LinkFinder::new();
+            finder.kinds(&[LinkKind::Url]);
+            finder
+        };
+        for_each_inlines(&mut self.blocks, &mut |inlines| linkify(inlines, &finder));
+        self
+    }
+
+    /// Link targets, in order of appearance.
+    pub fn links(&self) -> Vec<&str> {
+        fn inlines<'a>(list: &'a [Inline], out: &mut Vec<&'a str>) {
+            for inline in list {
+                match inline {
+                    Inline::Link { url, .. } => out.push(url),
+                    Inline::Styled { content, .. } => inlines(content, out),
+                    _ => {}
+                }
+            }
+        }
+        fn blocks<'a>(list: &'a [Block], out: &mut Vec<&'a str>) {
+            for block in list {
+                match block {
+                    Block::Paragraph(content) | Block::Heading { content, .. } => {
+                        inlines(content, out)
+                    }
+                    Block::Quote(inner) => blocks(inner, out),
+                    Block::List { items, .. } => items.iter().for_each(|item| blocks(item, out)),
+                    Block::CodeBlock { .. } | Block::Math(_) | Block::Rule => {}
+                }
+            }
+        }
+        let mut out = Vec::new();
+        blocks(&self.blocks, &mut out);
+        out
     }
 
     pub fn has_math(&self) -> bool {
@@ -223,6 +264,49 @@ fn inlines_text(inlines: &[Inline], out: &mut String, prefix: &str) {
             }
         }
     }
+}
+
+/// Calls `f` on every inline sequence of `blocks`.
+fn for_each_inlines(blocks: &mut [Block], f: &mut impl FnMut(&mut Vec<Inline>)) {
+    for block in blocks {
+        match block {
+            Block::Paragraph(content) | Block::Heading { content, .. } => f(content),
+            Block::Quote(inner) => for_each_inlines(inner, f),
+            Block::List { items, .. } => {
+                for item in items {
+                    for_each_inlines(item, f);
+                }
+            }
+            Block::CodeBlock { .. } | Block::Math(_) | Block::Rule => {}
+        }
+    }
+}
+
+/// Split text inlines at URLs found by `finder`; text inside links stays as is.
+fn linkify(inlines: &mut Vec<Inline>, finder: &LinkFinder) {
+    let mut out = Vec::with_capacity(inlines.len());
+    for inline in inlines.drain(..) {
+        match inline {
+            Inline::Text(text) => {
+                for span in finder.spans(&text) {
+                    let piece = span.as_str().to_owned();
+                    out.push(match span.kind() {
+                        Some(LinkKind::Url) => Inline::Link {
+                            url: piece.clone(),
+                            content: vec![Inline::Text(piece)],
+                        },
+                        _ => Inline::Text(piece),
+                    });
+                }
+            }
+            Inline::Styled { style, mut content } => {
+                linkify(&mut content, finder);
+                out.push(Inline::Styled { style, content });
+            }
+            other => out.push(other),
+        }
+    }
+    *inlines = out;
 }
 
 /// Turns the HTML tree into blocks. Inline content outside any block element

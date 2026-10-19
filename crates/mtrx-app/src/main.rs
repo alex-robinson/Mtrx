@@ -5,6 +5,7 @@
 
 mod app;
 mod avatar;
+mod calls;
 mod ellipsis;
 mod fonts;
 mod icons;

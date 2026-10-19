@@ -112,3 +112,46 @@ impl<M> canvas::Program<M> for Gear {
         vec![frame.into_geometry()]
     }
 }
+
+/// A video camera: a rounded body with a lens triangle on the right.
+pub fn camera<'a, M: 'a>(size: f32, color: fn(&Theme) -> Color) -> Element<'a, M> {
+    canvas::Canvas::new(Camera { color })
+        .width(size)
+        .height(size)
+        .into()
+}
+
+struct Camera {
+    color: fn(&Theme) -> Color,
+}
+
+impl<M> canvas::Program<M> for Camera {
+    type State = ();
+
+    fn draw(
+        &self,
+        _state: &(),
+        renderer: &Renderer,
+        theme: &Theme,
+        bounds: Rectangle,
+        _cursor: mouse::Cursor,
+    ) -> Vec<Geometry> {
+        let mut frame = Frame::new(renderer, bounds.size());
+        let (w, h) = (bounds.width, bounds.height);
+        let color = (self.color)(theme);
+        let body = Path::rounded_rectangle(
+            iced::Point::new(0.0, h * 0.25),
+            iced::Size::new(w * 0.68, h * 0.5),
+            (h * 0.1).into(),
+        );
+        frame.fill(&body, color);
+        let lens = Path::new(|path| {
+            path.move_to(iced::Point::new(w * 0.72, h * 0.5));
+            path.line_to(iced::Point::new(w, h * 0.28));
+            path.line_to(iced::Point::new(w, h * 0.72));
+            path.close();
+        });
+        frame.fill(&lens, color);
+        vec![frame.into_geometry()]
+    }
+}

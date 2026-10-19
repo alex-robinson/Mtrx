@@ -18,8 +18,8 @@ use std::{
 use anyhow::{Context, Result, bail};
 use futures_util::{Stream, StreamExt};
 use mtrx_core::{
-    EventContent, MembershipChange, NewRoom, Profile, RecoveryStatus, RoomKind, SecretStore,
-    Session, TimelineEntry, VerificationState,
+    CallService, EventContent, MembershipChange, NewRoom, Profile, RecoveryStatus, RoomKind,
+    SecretStore, Session, TimelineEntry, VerificationState,
     test_support::{self, PASSWORD, homeserver, unique_name},
 };
 use mtrx_format::{Block, Inline, Style};
@@ -456,5 +456,85 @@ async fn scheduled_messages() -> Result<()> {
     let pending = session.send_scheduled_now(&late.id).await?;
     timeout("overdue one sent", pending.sent()).await??;
     assert!(session.scheduled().is_empty());
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs local Synapse (testserver/run.sh)"]
+async fn call_links_and_space_services() -> Result<()> {
+    let (_, alice) = new_user("calls").await?;
+    let (_, bob) = new_user("calls").await?;
+    let s = &alice.session;
+    let space = s
+        .create_room(NewRoom {
+            name: Some("Lab".into()),
+            space: true,
+            ..Default::default()
+        })
+        .await?;
+    let room = s
+        .create_room(NewRoom {
+            name: Some("meetings".into()),
+            invite: vec![bob.session.user_id()],
+            ..Default::default()
+        })
+        .await?;
+    // Names come with the rooms' state, which includes the power levels.
+    wait_for("rooms synced", s.room_list().await?.updates(), |state| {
+        [(&space, "Lab"), (&room, "meetings")]
+            .iter()
+            .all(|(id, name)| state.rooms.iter().any(|r| &r.id == *id && r.name == *name))
+    })
+    .await?;
+
+    let mut links = std::pin::pin!(s.call_link_updates(&room).await?);
+    assert_eq!(timeout("initial", links.next()).await?, Some(None));
+    let url = mtrx_core::Url::parse("https://meet.jit.si/mtrx-test")?;
+    assert!(s.can_set_call_link(&room).await?);
+    s.set_call_link(&room, Some(&url)).await?;
+    assert_eq!(
+        timeout("update", links.next()).await?,
+        Some(Some(url.clone()))
+    );
+    assert_eq!(s.call_link(&room).await?, Some(url.clone()));
+    let timeline = s.timeline(&room).await?;
+    wait_for("link posted", timeline.updates(), |e| {
+        has_message(e, &format!("Call link for this room: {url}"))
+    })
+    .await?;
+    s.set_call_link(&room, None).await?;
+    assert_eq!(timeout("removed", links.next()).await?, Some(None));
+
+    let service = CallService::jitsi("Lab Jitsi", "https://video.lab.example")?;
+    s.set_space_call_service(&space, Some(service.clone()))
+        .await?;
+    assert_eq!(s.space_call_service(&space).await?, Some(service));
+
+    // Invited members are normal users: by default they cannot change room state.
+    let bob_list = bob.session.room_list().await?;
+    wait_for("bob invited", bob_list.updates(), |s| {
+        s.rooms.iter().any(|r| r.id == room)
+    })
+    .await?;
+    bob.session
+        .join(<&mtrx_core::RoomOrAliasId>::from(&*room))
+        .await?;
+    wait_for("bob joined", bob_list.updates(), |s| {
+        s.rooms
+            .iter()
+            .any(|r| r.id == room && !r.invited && r.name == "meetings")
+    })
+    .await?;
+    // Power levels arrive with the joined room's state, after the join.
+    let can_set = timeout("power levels synced", async {
+        loop {
+            match bob.session.can_set_call_link(&room).await {
+                Ok(can_set) => return can_set,
+                Err(_) => tokio::time::sleep(Duration::from_millis(100)).await,
+            }
+        }
+    })
+    .await?;
+    assert!(!can_set);
     Ok(())
 }

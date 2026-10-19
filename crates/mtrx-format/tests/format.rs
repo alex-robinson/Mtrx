@@ -215,3 +215,27 @@ mod render {
         assert!(image.is_ok(), "{image:?}");
     }
 }
+
+#[test]
+fn bare_urls_become_links() {
+    let link = |url: &str| Inline::Link {
+        url: url.into(),
+        content: vec![Inline::Text(url.into())],
+    };
+    let doc = Document::from_plain("Join https://meet.google.com/abc-defg-hij now");
+    assert_eq!(
+        doc.blocks,
+        vec![Block::Paragraph(vec![
+            Inline::Text("Join ".into()),
+            link("https://meet.google.com/abc-defg-hij"),
+            Inline::Text(" now".into()),
+        ])]
+    );
+
+    // Existing links, code and link text stay as they are.
+    let doc = Document::from_html(
+        "<b>see https://a.example/x</b> <a href=\"https://b.example\">https://c.example</a> \
+         <code>https://d.example</code>",
+    );
+    assert_eq!(doc.links(), ["https://a.example/x", "https://b.example"]);
+}

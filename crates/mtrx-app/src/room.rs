@@ -15,13 +15,14 @@ use iced::{
     },
 };
 use mtrx_core::{
-    Event, EventContent, MembershipChange, MessageKind, MxcUri, OwnedRoomId, RoomSummary,
-    RoomTimeline, SendState, TimelineEntry,
+    CallService, Event, EventContent, MembershipChange, MessageKind, MxcUri, OwnedRoomId,
+    RoomSummary, RoomTimeline, SendState, TimelineEntry,
 };
 
 use crate::{
     app::Message,
     avatar::{self, Avatars, Shape},
+    calls::{self, RoomCalls},
     ellipsis::ellipsis,
     fonts,
     math::{self, Math, Rendered},
@@ -50,6 +51,7 @@ pub struct Room {
     pub entries: Vec<TimelineEntry>,
     pub composer: text_editor::Content,
     pub later: SendLater,
+    pub calls: RoomCalls,
     /// How many of the newest entries are rendered.
     shown: usize,
     pub paginating: bool,
@@ -71,6 +73,7 @@ pub enum Older {
 impl Room {
     pub fn new(id: OwnedRoomId, timeline: Arc<RoomTimeline>) -> Self {
         Self {
+            calls: RoomCalls::new(id.clone()),
             id,
             entries: timeline.current(),
             timeline,
@@ -146,13 +149,14 @@ impl Room {
         look: &Look<'a>,
         scheduled: &send_later::Pending<'a>,
     ) -> Element<'a, Message> {
-        let header = self.header(summary, look.avatars);
+        let header = self.header(summary, look);
         let context = Context {
             theme: &look.theme,
             math: look.math,
             params: &look.params,
             avatars: look.avatars,
             colored_names: look.colored_names,
+            call_services: look.call_services,
             hovered: self.hovered.as_deref(),
         };
 
@@ -268,11 +272,13 @@ impl Room {
     }
 
     /// Room picture, name and topic, above a separator.
+    /// Picture, name and topic, the call controls, and their panel when open.
     fn header<'a>(
-        &self,
+        &'a self,
         summary: Option<&'a RoomSummary>,
-        avatars: &Avatars,
+        look: &Look<'a>,
     ) -> Element<'a, Message> {
+        let avatars = look.avatars;
         let name = summary.map_or("", |s| s.name.as_str());
         let mut title = column![ellipsis(name).size(16).font(fonts::SEMIBOLD)];
         if let Some(topic) = summary
@@ -288,14 +294,25 @@ impl Room {
             HEADER_AVATAR,
             Shape::Circle,
         );
-        column![
-            row![avatar, title.width(Length::Fill)]
-                .spacing(10)
-                .align_y(Alignment::Center)
-                .padding([8.0, TIMELINE_PADDING + MESSAGE_PADDING]),
-            rule::horizontal(1).style(style::separator),
-        ]
-        .into()
+        let mut header = column![
+            row![
+                avatar,
+                title.width(Length::Fill),
+                self.calls.header_controls(look.call_services)
+            ]
+            .spacing(10)
+            .align_y(Alignment::Center)
+            .padding([8.0, TIMELINE_PADDING + MESSAGE_PADDING]),
+        ];
+        if let Some(panel) = self.calls.panel(look.call_services) {
+            header = header.push(
+                container(panel)
+                    .padding(Padding::from([0.0, TIMELINE_PADDING + MESSAGE_PADDING]).bottom(8.0)),
+            );
+        }
+        header
+            .push(rule::horizontal(1).style(style::separator))
+            .into()
     }
 }
 
@@ -307,6 +324,8 @@ pub struct Look<'a> {
     pub avatars: &'a Avatars,
     /// Senders' names in their colour instead of the text colour.
     pub colored_names: bool,
+    /// Our call services, to recognise and start calls.
+    pub call_services: &'a [CallService],
 }
 
 /// What rendering an event needs besides the event.
@@ -316,6 +335,7 @@ struct Context<'a, 'b> {
     params: &'b math::Params,
     avatars: &'b Avatars,
     colored_names: bool,
+    call_services: &'b [CallService],
     hovered: Option<&'b str>,
 }
 
@@ -349,6 +369,10 @@ fn event_view<'a>(
                 (kind, _) => text(format!("[{kind:?}] {}", m.body))
                     .style(text::secondary)
                     .into(),
+            };
+            let content = match calls::cards(&m.document.links(), context.call_services) {
+                Some(cards) => column![content, cards].spacing(6).into(),
+                None => content,
             };
             if !m.edited && m.reactions.is_empty() {
                 content

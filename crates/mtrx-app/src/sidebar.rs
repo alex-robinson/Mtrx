@@ -46,6 +46,30 @@ fn descendants(rooms: &[RoomSummary], space: &OwnedRoomId) -> HashSet<OwnedRoomI
     found
 }
 
+/// Spaces containing `room`, nearest first (through nested spaces too).
+pub fn ancestors(rooms: &[RoomSummary], room: &OwnedRoomId) -> Vec<OwnedRoomId> {
+    let parents = |id: &OwnedRoomId| {
+        rooms
+            .iter()
+            .find(|r| &r.id == id)
+            .map(|r| r.parents.clone())
+            .unwrap_or_default()
+    };
+    let mut found: Vec<OwnedRoomId> = Vec::new();
+    let mut next = parents(room);
+    while !next.is_empty() {
+        let mut further = Vec::new();
+        for space in next {
+            if !found.contains(&space) {
+                further.extend(parents(&space));
+                found.push(space);
+            }
+        }
+        next = further;
+    }
+    found
+}
+
 /// The room list's sections and their rooms, in display order. Sections may
 /// be empty.
 fn sections<'a>(
