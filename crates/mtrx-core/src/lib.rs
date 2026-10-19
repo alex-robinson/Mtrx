@@ -5,6 +5,7 @@
 
 mod encryption;
 mod error;
+mod media;
 mod profile;
 mod rooms;
 mod session;
@@ -29,7 +30,8 @@ pub use url::Url;
 
 /// Matrix identifier types used in this crate's API.
 pub use matrix_sdk::ruma::{
-    OwnedDeviceId, OwnedEventId, OwnedRoomId, OwnedRoomOrAliasId, OwnedUserId, RoomOrAliasId,
+    MxcUri, OwnedDeviceId, OwnedEventId, OwnedMxcUri, OwnedRoomId, OwnedRoomOrAliasId, OwnedUserId,
+    RoomOrAliasId,
 };
 
 pub(crate) fn system_time(

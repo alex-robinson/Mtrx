@@ -5,7 +5,7 @@ use std::{sync::Arc, time::SystemTime};
 use eyeball_im::Vector;
 use futures_util::{Stream, StreamExt, pin_mut};
 use matrix_sdk::ruma::{
-    OwnedEventId, OwnedRoomId, OwnedTransactionId, OwnedUserId,
+    OwnedEventId, OwnedMxcUri, OwnedRoomId, OwnedTransactionId, OwnedUserId,
     api::client::receipt::create_receipt::v3::ReceiptType,
     events::room::message::{MessageType, RoomMessageEventContent},
 };
@@ -42,6 +42,7 @@ pub struct Event {
     pub event_id: Option<OwnedEventId>,
     pub sender: OwnedUserId,
     pub sender_name: Option<String>,
+    pub sender_avatar: Option<OwnedMxcUri>,
     pub timestamp: SystemTime,
     pub own: bool,
     pub content: EventContent,
@@ -359,9 +360,11 @@ fn convert_event(event: &EventTimelineItem, id: &str) -> Option<Event> {
         Some(EventSendState::NotSentYet { .. }) => SendState::Sending,
         Some(EventSendState::SendingFailed { error, .. }) => SendState::Failed(error.to_string()),
     };
-    let sender_name = match event.sender_profile() {
-        TimelineDetails::Ready(profile) => profile.display_name.clone(),
-        _ => None,
+    let (sender_name, sender_avatar) = match event.sender_profile() {
+        TimelineDetails::Ready(profile) => {
+            (profile.display_name.clone(), profile.avatar_url.clone())
+        }
+        _ => (None, None),
     };
 
     Some(Event {
@@ -369,6 +372,7 @@ fn convert_event(event: &EventTimelineItem, id: &str) -> Option<Event> {
         event_id: event.event_id().map(ToOwned::to_owned),
         sender: event.sender().to_owned(),
         sender_name,
+        sender_avatar,
         timestamp: system_time(event.timestamp()),
         own: event.is_own(),
         content,

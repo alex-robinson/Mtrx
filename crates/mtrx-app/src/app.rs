@@ -11,20 +11,23 @@ use futures_util::{SinkExt, StreamExt};
 use iced::{
     Element, Length, Size, Subscription, Task, Theme,
     theme::Mode,
-    widget::{button, column, container, row, scrollable::Viewport, text, text_editor, text_input},
+    widget::{
+        button, column, container, image, row, scrollable::Viewport, text, text_editor, text_input,
+    },
     window,
 };
 use mtrx_core::{
-    OwnedRoomId, Profile, RecoveryStep, RoomList, RoomListState, RoomTimeline, SecretStore,
-    Session, TimelineEntry,
+    OwnedMxcUri, OwnedRoomId, Profile, RecoveryStep, RoomList, RoomListState, RoomTimeline,
+    SecretStore, Session, TimelineEntry,
 };
 
 use crate::{
+    avatar::{self, Avatars},
     login::{self, Login},
     math::{self, Math, Rendered},
     room::{Older, Room},
     sidebar,
-    style::{self, ROOM_LIST_WIDTH, SPACE_BAR_WIDTH, TIMELINE_PADDING},
+    style::{self, MESSAGE_INSET, ROOM_LIST_WIDTH, SPACE_BAR_WIDTH},
 };
 
 /// An `Arc` that identifies by pointer: lets live core handles be used as
@@ -74,6 +77,9 @@ pub enum Message {
     WindowResized(Size),
     ScaleFactor(f32),
     ThemeMode(Mode),
+    AvatarLoaded(avatar::Key, Option<image::Handle>),
+    /// The cursor entered (`true`) or left a timeline event.
+    Hover(String, bool),
 }
 
 pub struct App {
@@ -104,6 +110,7 @@ struct Main {
     recovery_step: Option<RecoveryStep>,
     recovery_error: Option<String>,
     error: Option<String>,
+    avatars: Avatars,
 }
 
 impl Main {
@@ -119,7 +126,24 @@ impl Main {
             recovery_step: None,
             recovery_error: None,
             error: None,
+            avatars: Avatars::new(),
         }
+    }
+}
+
+impl Main {
+    /// Pictures of the spaces, listed rooms, and the open room's header and
+    /// timeline senders, with their sizes.
+    fn avatars_on_screen(&self) -> Vec<(OwnedMxcUri, f32)> {
+        let rooms = &self.rooms.rooms;
+        let mut wanted = sidebar::avatars(rooms, self.space.as_ref());
+        if let Some(room) = &self.room {
+            wanted.extend(room.avatars(rooms.iter().find(|r| r.id == room.id)));
+        }
+        wanted
+            .into_iter()
+            .map(|(mxc, size)| (mxc.to_owned(), size))
+            .collect()
     }
 }
 
@@ -237,19 +261,19 @@ impl App {
                     }
                     Err(e) => main.error = Some(e),
                 }
-                Task::none()
+                self.load_avatars()
             }
             Message::Rooms(state) => {
                 if let Screen::Main(main) = &mut self.screen {
                     main.rooms = state;
                 }
-                Task::none()
+                self.load_avatars()
             }
             Message::SelectSpace(space) => {
                 if let Screen::Main(main) = &mut self.screen {
                     main.space = space;
                 }
-                Task::none()
+                self.load_avatars()
             }
             Message::OpenRoom(id) => {
                 let Screen::Main(main) = &mut self.screen else {
@@ -277,7 +301,7 @@ impl App {
                         let paginate = paginate(&mut room);
                         let read = mark_read(&room);
                         main.room = Some(room);
-                        Task::batch([paginate, read, self.render_math()])
+                        Task::batch([paginate, read, self.render_math(), self.load_avatars()])
                     }
                     Err(e) => {
                         main.error = Some(e);
@@ -295,7 +319,7 @@ impl App {
                 let grew = entries.len() != room.entries.len();
                 room.entries = entries;
                 let read = if grew { mark_read(room) } else { Task::none() };
-                Task::batch([read, self.render_math()])
+                Task::batch([read, self.render_math(), self.load_avatars()])
             }
             Message::Scrolled(viewport) => {
                 let Screen::Main(main) = &mut self.screen else {
@@ -308,7 +332,7 @@ impl App {
                     Older::None => Task::none(),
                     Older::ShowMore => {
                         room.show_more();
-                        self.render_math()
+                        Task::batch([self.render_math(), self.load_avatars()])
                     }
                     Older::Paginate => paginate(room),
                 }
@@ -327,7 +351,7 @@ impl App {
                         Err(e) => room.error = Some(e),
                     }
                 }
-                self.render_math()
+                Task::batch([self.render_math(), self.load_avatars()])
             }
             Message::Composer(action) => {
                 if let Screen::Main(main) = &mut self.screen
@@ -440,13 +464,27 @@ impl App {
                 self.mode = mode;
                 self.render_math()
             }
+            Message::AvatarLoaded(key, handle) => {
+                if let Screen::Main(main) = &mut self.screen {
+                    main.avatars.insert(key, handle);
+                }
+                Task::none()
+            }
+            Message::Hover(id, entered) => {
+                if let Screen::Main(main) = &mut self.screen
+                    && let Some(room) = main.room.as_mut()
+                {
+                    room.hover(id, entered);
+                }
+                Task::none()
+            }
         }
     }
 
     fn math_params(&self) -> math::Params {
         let theme = self.theme();
         let palette = theme.extended_palette();
-        let max_width = self.window_width - SPACE_BAR_WIDTH - ROOM_LIST_WIDTH - TIMELINE_PADDING;
+        let max_width = self.window_width - SPACE_BAR_WIDTH - ROOM_LIST_WIDTH - MESSAGE_INSET;
         math::Params {
             max_width: max_width.max(200.0),
             scale: self.scale,
@@ -468,6 +506,22 @@ impl App {
         let tasks: Vec<_> = room
             .math_documents()
             .map(|doc| self.math.request(doc, &params, Message::MathRendered))
+            .collect();
+        Task::batch(tasks)
+    }
+
+    /// Request the pictures on screen.
+    fn load_avatars(&mut self) -> Task<Message> {
+        let Screen::Main(main) = &mut self.screen else {
+            return Task::none();
+        };
+        let tasks: Vec<_> = main
+            .avatars_on_screen()
+            .into_iter()
+            .map(|(mxc, size)| {
+                main.avatars
+                    .request(&main.session, &mxc, size, Message::AvatarLoaded)
+            })
             .collect();
         Task::batch(tasks)
     }
@@ -506,12 +560,13 @@ impl App {
     fn main_view<'a>(&'a self, main: &'a Main) -> Element<'a, Message> {
         let theme = self.theme();
         let rooms = &main.rooms.rooms;
-        let space_bar = sidebar::space_bar(rooms, main.space.as_ref());
+        let space_bar = sidebar::space_bar(rooms, main.space.as_ref(), &main.avatars);
         let room_list = sidebar::room_list(
             rooms,
             main.space.as_ref(),
             main.room.as_ref().map(|r| &r.id),
             main.rooms.loaded,
+            &main.avatars,
         );
 
         let mut content = column![];
@@ -523,12 +578,14 @@ impl App {
         }
         let room_view: Element<'a, Message> = match &main.room {
             Some(room) => {
-                let name = rooms
-                    .iter()
-                    .find(|r| r.id == room.id)
-                    .map(|r| r.name.as_str())
-                    .unwrap_or("");
-                room.view(name, &theme, &self.math, &self.math_params())
+                let summary = rooms.iter().find(|r| r.id == room.id);
+                room.view(
+                    summary,
+                    &theme,
+                    &self.math,
+                    &self.math_params(),
+                    &main.avatars,
+                )
             }
             None => container(text("Select a room").style(text::secondary))
                 .center(Length::Fill)

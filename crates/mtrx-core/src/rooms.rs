@@ -8,7 +8,7 @@ use matrix_sdk::{
     Client, Room, RoomState,
     deserialized_responses::SyncOrStrippedState,
     ruma::{
-        OwnedRoomId, OwnedUserId, RoomOrAliasId,
+        OwnedMxcUri, OwnedRoomId, OwnedUserId, RoomOrAliasId,
         api::client::room::create_room::v3::{
             CreationContent, Request as CreateRoomRequest, RoomPreset,
         },
@@ -42,6 +42,9 @@ pub enum RoomKind {
 pub struct RoomSummary {
     pub id: OwnedRoomId,
     pub name: String,
+    /// The room's picture; for a DM without one, the other user's.
+    pub avatar: Option<OwnedMxcUri>,
+    pub topic: Option<String>,
     pub kind: RoomKind,
     /// We are invited but have not joined yet.
     pub invited: bool,
@@ -181,12 +184,18 @@ async fn summarize(items: &Vector<RoomListItem>) -> Vec<RoomSummary> {
         } else {
             RoomKind::Room
         };
+        let avatar = match (room.avatar_url(), kind) {
+            (None, RoomKind::Direct) => direct_avatar(room).await,
+            (avatar, _) => avatar,
+        };
         rooms.push(RoomSummary {
             id: room.room_id().to_owned(),
             name: room
                 .cached_display_name()
                 .map(|n| n.to_string())
                 .unwrap_or_else(|| room.room_id().to_string()),
+            avatar,
+            topic: room.topic().filter(|t| !t.trim().is_empty()),
             kind,
             invited: room.state() == RoomState::Invited,
             encrypted: room.encryption_state().is_encrypted(),
@@ -198,6 +207,30 @@ async fn summarize(items: &Vector<RoomListItem>) -> Vec<RoomSummary> {
         });
     }
     rooms
+}
+
+/// The other user's avatar in a DM: from the sync's room heroes, else from
+/// their member event in the store.
+async fn direct_avatar(room: &Room) -> Option<OwnedMxcUri> {
+    let target = room
+        .direct_targets()
+        .into_iter()
+        .find_map(|t| t.into_user_id())?;
+    if let Some(hero) = room
+        .heroes()
+        .await
+        .into_iter()
+        .find(|h| h.user_id == target)
+    {
+        return hero.avatar_url;
+    }
+    match room.get_member_no_sync(&target).await {
+        Ok(member) => member?.avatar_url().map(ToOwned::to_owned),
+        Err(e) => {
+            warn!(room = %room.room_id(), "could not read DM member: {e}");
+            None
+        }
+    }
 }
 
 /// Children listed by `m.space.child` events. Events without `via` mean the
@@ -235,6 +268,7 @@ async fn space_children(space: &Room) -> Vec<OwnedRoomId> {
 #[derive(Clone, Debug, Default)]
 pub struct NewRoom {
     pub name: Option<String>,
+    pub topic: Option<String>,
     pub space: bool,
     pub encrypted: bool,
     pub invite: Vec<OwnedUserId>,
@@ -250,6 +284,7 @@ impl Session {
     pub async fn create_room(&self, new: NewRoom) -> Result<OwnedRoomId> {
         let mut request = CreateRoomRequest::new();
         request.name = new.name;
+        request.topic = new.topic;
         request.invite = new.invite;
         request.is_direct = new.direct;
         request.preset = Some(if new.direct {

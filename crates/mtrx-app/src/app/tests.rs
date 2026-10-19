@@ -70,12 +70,63 @@ fn login_screen() {
     snapshot(&app(Screen::Login(Login::default()), Mode::Light), "login");
 }
 
+/// A diagonal gradient as PNG, for avatars.
+fn picture(from: [u8; 3], to: [u8; 3]) -> Vec<u8> {
+    const SIZE: u32 = 96;
+    let img = ::image::RgbImage::from_fn(SIZE, SIZE, |x, y| {
+        let t = (x + y) as f32 / (2 * SIZE) as f32;
+        ::image::Rgb(std::array::from_fn(|i| {
+            (from[i] as f32 * (1.0 - t) + to[i] as f32 * t) as u8
+        }))
+    });
+    let mut png = Vec::new();
+    img.write_to(
+        &mut std::io::Cursor::new(&mut png),
+        ::image::ImageFormat::Png,
+    )
+    .unwrap();
+    png
+}
+
+/// Wait for the invite to `room`, then join.
+async fn accept_invite(session: &Session, room: &OwnedRoomId) {
+    let list = session.room_list().await.unwrap();
+    let mut updates = std::pin::pin!(list.updates());
+    tokio::time::timeout(TIMEOUT, async {
+        while let Some(state) = updates.next().await {
+            if state.rooms.iter().any(|r| &r.id == room) {
+                break;
+            }
+        }
+    })
+    .await
+    .unwrap();
+    session.join(<&RoomOrAliasId>::from(&**room)).await.unwrap();
+}
+
+/// Send and wait until the server has it.
+async fn send(timeline: &RoomTimeline, text: &str) {
+    tokio::time::timeout(TIMEOUT, timeline.send_markdown(text).await.unwrap().sent())
+        .await
+        .unwrap()
+        .unwrap();
+}
+
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "needs local Synapse (testserver/run.sh)"]
 async fn main_screen_with_math() {
     let dir = TempDir::new().unwrap();
     let (_, alice) = user("alice", &dir).await;
     let (_, bob) = user("bob", &dir).await;
+    let (_, carol) = user("carol", &dir).await;
+    // Alice and the rooms keep the initial-letter fallback.
+    bob.set_avatar("image/png", picture([40, 90, 200], [120, 220, 255]))
+        .await
+        .unwrap();
+    carol
+        .set_avatar("image/png", picture([230, 120, 40], [250, 210, 90]))
+        .await
+        .unwrap();
 
     let space = alice
         .create_room(NewRoom {
@@ -88,8 +139,9 @@ async fn main_screen_with_math() {
     let room = alice
         .create_room(NewRoom {
             name: Some("ice-sheets".into()),
+            topic: Some("Basal melt and ice flux: drafts, figures and model runs".into()),
             encrypted: true,
-            invite: vec![bob.user_id()],
+            invite: vec![bob.user_id(), carol.user_id()],
             ..Default::default()
         })
         .await
@@ -102,32 +154,33 @@ async fn main_screen_with_math() {
         })
         .await
         .unwrap();
+    let dm = alice
+        .create_room(NewRoom {
+            invite: vec![carol.user_id()],
+            direct: true,
+            encrypted: true,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
     alice.add_to_space(&space, &room).await.unwrap();
     alice.add_to_space(&space, &general).await.unwrap();
 
-    bob.room_list().await.unwrap().wait_loaded().await;
-    let bob_list = bob.room_list().await.unwrap();
-    let mut updates = std::pin::pin!(bob_list.updates());
-    tokio::time::timeout(TIMEOUT, async {
-        while let Some(state) = updates.next().await {
-            if state.rooms.iter().any(|r| r.id == room) {
-                break;
-            }
-        }
-    })
-    .await
-    .unwrap();
-    bob.join(<&RoomOrAliasId>::from(&*room)).await.unwrap();
+    accept_invite(&bob, &room).await;
+    accept_invite(&carol, &room).await;
+    accept_invite(&carol, &dm).await;
 
     let alice_timeline = alice.timeline(&room).await.unwrap();
-    // Wait for bob's join so he receives the room keys.
+    // Wait for the joins so bob and carol receive the room keys.
     let mut entries = std::pin::pin!(alice_timeline.updates());
     tokio::time::timeout(TIMEOUT, async {
         while let Some(entries) = entries.next().await {
-            if entries
-                .iter()
-                .any(|e| matches!(e, TimelineEntry::Event(ev) if ev.sender == bob.user_id()))
-            {
+            let joined = |user: &Session| {
+                entries
+                    .iter()
+                    .any(|e| matches!(e, TimelineEntry::Event(ev) if ev.sender == user.user_id()))
+            };
+            if joined(&bob) && joined(&carol) {
                 break;
             }
         }
@@ -139,38 +192,34 @@ async fn main_screen_with_math() {
         r"The basal melt rate follows $\dot m = \frac{G + \tau_b u_b}{\rho_i L}$ where $G$ is the geothermal flux.",
         "Steady state requires\n$$\\frac{\\partial H}{\\partial t} = -\\nabla \\cdot (H \\bar{\\mathbf{u}}) + \\dot a - \\dot m = 0$$",
     ] {
-        tokio::time::timeout(
-            TIMEOUT,
-            alice_timeline.send_markdown(text).await.unwrap().sent(),
-        )
-        .await
-        .unwrap()
-        .unwrap();
+        send(&alice_timeline, text).await;
     }
     let bob_timeline = bob.timeline(&room).await.unwrap();
-    tokio::time::timeout(
-        TIMEOUT,
-        bob_timeline
-            .send_markdown("Looks good, but check the sign of $\\dot m$ in eq. 2 🙂")
-            .await
-            .unwrap()
-            .sent(),
+    send(
+        &bob_timeline,
+        "Looks good, but check the sign of $\\dot m$ in eq. 2 🙂",
     )
-    .await
-    .unwrap()
-    .unwrap();
+    .await;
+    send(&bob_timeline, "Which geothermal flux dataset is it?").await;
+    let carol_timeline = carol.timeline(&room).await.unwrap();
+    send(&carol_timeline, "I can run the sensitivity tests tonight.").await;
+    send(
+        &carol.timeline(&dm).await.unwrap(),
+        "Coffee before the meeting?",
+    )
+    .await;
 
-    // Alice's view of the room once bob's message arrived.
+    // Alice's view once the room list knows the space and the DM's picture.
     let list = Arc::new(alice.room_list().await.unwrap());
     let rooms = tokio::time::timeout(TIMEOUT, async {
         let mut updates = std::pin::pin!(list.updates());
         while let Some(state) = updates.next().await {
-            if state.loaded
-                && state
-                    .rooms
-                    .iter()
-                    .any(|r| r.id == room && r.parents.contains(&space))
-            {
+            let in_space = state
+                .rooms
+                .iter()
+                .any(|r| r.id == room && r.parents.contains(&space));
+            let dm_avatar = state.rooms.iter().any(|r| r.id == dm && r.avatar.is_some());
+            if state.loaded && in_space && dm_avatar {
                 return state;
             }
         }
@@ -183,11 +232,11 @@ async fn main_screen_with_math() {
     let entries = tokio::time::timeout(TIMEOUT, async {
         let mut updates = std::pin::pin!(timeline.updates());
         while let Some(entries) = updates.next().await {
-            let from_bob = entries.iter().any(|e| {
+            let from_carol = entries.iter().any(|e| {
                 matches!(e, TimelineEntry::Event(ev)
-                    if ev.sender == bob.user_id() && matches!(ev.content, EventContent::Message(_)))
+                    if ev.sender == carol.user_id() && matches!(ev.content, EventContent::Message(_)))
             });
-            if from_bob {
+            if from_carol {
                 return entries;
             }
         }
@@ -195,17 +244,33 @@ async fn main_screen_with_math() {
     })
     .await
     .unwrap();
+    // Shown hovered, with its time in the gutter.
+    let hovered = entries
+        .iter()
+        .find_map(|e| match e {
+            TimelineEntry::Event(ev) => match &ev.content {
+                EventContent::Message(m) if m.body.starts_with("The basal melt") => {
+                    Some(ev.id.clone())
+                }
+                _ => None,
+            },
+            _ => None,
+        })
+        .unwrap();
 
     for mode in [Mode::Light, Mode::Dark] {
         let session = Arc::new(Session::restore(alice.profile().clone()).await.unwrap());
         let mut main = Main::new(session);
         main.rooms = rooms.clone();
-        main.space = Some(space.clone());
         main.verified = Some(true);
         let mut open = Room::new(room.clone(), timeline.clone());
         open.entries = entries.clone();
         open.at_start = true;
+        open.hover(hovered.clone(), true);
         main.room = Some(open);
+        for (mxc, size) in main.avatars_on_screen() {
+            main.avatars.load_now(&alice, &mxc, size).await;
+        }
 
         let mut app = app(Screen::Main(Box::new(main)), mode);
         let params = app.math_params();

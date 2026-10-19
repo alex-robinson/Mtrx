@@ -229,6 +229,71 @@ async fn encrypted_messages_between_users() -> Result<()> {
     Ok(())
 }
 
+/// A `size`×`size` PNG with a colour gradient.
+fn test_png(size: u32) -> Vec<u8> {
+    let img = image::RgbImage::from_fn(size, size, |x, y| {
+        image::Rgb([(x * 255 / size) as u8, (y * 255 / size) as u8, 160])
+    });
+    let mut png = Vec::new();
+    img.write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+        .unwrap();
+    png
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs local Synapse (testserver/run.sh)"]
+async fn avatars_in_room_list_and_timeline() -> Result<()> {
+    let (_, alice) = new_user("alice").await?;
+    let (_, bob) = new_user("bob").await?;
+    let avatar = bob.session.set_avatar("image/png", test_png(128)).await?;
+
+    let room = alice
+        .session
+        .create_room(NewRoom {
+            invite: vec![bob.session.user_id()],
+            direct: true,
+            ..Default::default()
+        })
+        .await?;
+    let bob_list = bob.session.room_list().await?;
+    wait_for("bob invited", bob_list.updates(), |s| {
+        s.rooms.iter().any(|r| r.id == room && r.invited)
+    })
+    .await?;
+    bob.session
+        .join(<&mtrx_core::RoomOrAliasId>::from(&*room))
+        .await?;
+    let bob_timeline = bob.session.timeline(&room).await?;
+    timeout("send", bob_timeline.send_markdown("hi").await?.sent()).await??;
+
+    // A DM without a room picture shows the other user's.
+    let list = alice.session.room_list().await?;
+    wait_for("DM with bob's avatar", list.updates(), |s| {
+        s.rooms.iter().any(|r| {
+            r.id == room && r.kind == RoomKind::Direct && r.avatar.as_ref() == Some(&avatar)
+        })
+    })
+    .await?;
+    let timeline = alice.session.timeline(&room).await?;
+    wait_for(
+        "message with sender avatar",
+        timeline.updates(),
+        |entries| {
+            entries.iter().any(|e| {
+                matches!(e, TimelineEntry::Event(ev)
+                if ev.sender == bob.session.user_id() && ev.sender_avatar.as_ref() == Some(&avatar))
+            })
+        },
+    )
+    .await?;
+
+    let thumbnail = alice.session.thumbnail(&avatar, 32).await?;
+    let thumbnail = image::load_from_memory(&thumbnail)?;
+    assert!(thumbnail.width() >= 32 && thumbnail.width() <= 128);
+    assert_eq!(thumbnail.width(), thumbnail.height());
+    Ok(())
+}
+
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "needs local Synapse (testserver/run.sh)"]
 async fn recovery_decrypts_history_on_new_device() -> Result<()> {

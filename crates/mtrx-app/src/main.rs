@@ -4,6 +4,7 @@
 #![recursion_limit = "256"]
 
 mod app;
+mod avatar;
 mod fonts;
 mod login;
 mod math;

@@ -28,6 +28,8 @@ pub enum Error {
     Timeline(String),
     #[error("verification: {0}")]
     Verification(String),
+    #[error("invalid media type `{0}`")]
+    InvalidMediaType(String),
 
     #[error(transparent)]
     Matrix(#[from] matrix_sdk::Error),
