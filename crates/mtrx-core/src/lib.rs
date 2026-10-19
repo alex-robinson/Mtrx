@@ -25,6 +25,8 @@ pub use timeline::{
     SendState, TimelineEntry,
 };
 
+pub use url::Url;
+
 /// Matrix identifier types used in this crate's API.
 pub use matrix_sdk::ruma::{
     OwnedDeviceId, OwnedEventId, OwnedRoomId, OwnedRoomOrAliasId, OwnedUserId, RoomOrAliasId,

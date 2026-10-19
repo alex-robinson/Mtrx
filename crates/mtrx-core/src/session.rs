@@ -3,18 +3,37 @@
 use std::sync::Arc;
 
 use matrix_sdk::{
-    Client,
+    Client, SessionChange,
+    authentication::oauth::{
+        ClientId, OAuthSession,
+        registration::{ApplicationType, ClientMetadata, Localized, OAuthGrantType},
+    },
     encryption::{BackupDownloadStrategy, EncryptionSettings, verification::VerificationRequest},
-    ruma::{OwnedDeviceId, OwnedUserId},
+    ruma::{OwnedDeviceId, OwnedUserId, serde::Raw},
     store::RoomLoadSettings,
+    utils::{
+        UrlOrQuery,
+        local_server::{LocalServerBuilder, LocalServerResponse},
+    },
 };
 use matrix_sdk_ui::sync_service::SyncService;
-use tokio::sync::{Mutex, broadcast};
+use tokio::{
+    sync::{Mutex, broadcast},
+    task::JoinHandle,
+};
 use tracing::warn;
+use url::Url;
 
-use crate::{Error, Profile, Result, profile::StoredSession};
+use crate::{
+    Error, Profile, Result,
+    profile::{StoredAuth, StoredSession},
+};
 
 const DEVICE_DISPLAY_NAME: &str = "Mtrx";
+/// Shown by the server's login page as the app's home page.
+const CLIENT_URI: &str = "https://alex-robinson.github.io/";
+const BROWSER_DONE_PAGE: &str = "<!doctype html><title>Mtrx</title>\
+    <p style=\"font-family: sans-serif\">Signed in. You can close this tab and return to Mtrx.</p>";
 
 /// A logged-in Matrix account bound to a [`Profile`].
 pub struct Session {
@@ -24,6 +43,15 @@ pub struct Session {
     pub(crate) send_lock: Arc<Mutex<()>>,
     pub(crate) verification_tx: broadcast::Sender<VerificationRequest>,
     profile: Profile,
+    _save_tokens: AbortOnDrop,
+}
+
+struct AbortOnDrop(JoinHandle<()>);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
 }
 
 impl Session {
@@ -36,6 +64,61 @@ impl Session {
         user: &str,
         password: &str,
     ) -> Result<Self> {
+        Self::login_with(profile, homeserver, async |client| {
+            client
+                .matrix_auth()
+                .login_username(user, password)
+                .initial_device_display_name(DEVICE_DISPLAY_NAME)
+                .await?;
+            Ok(())
+        })
+        .await
+    }
+
+    /// Log in through the server's web page (OAuth 2.0, e.g. matrix.org).
+    /// `open_url` must show the given URL to the user, normally in their
+    /// browser; the login completes when the browser is redirected back to a
+    /// temporary local web server. Dropping the future cancels the login.
+    pub async fn login_oauth(
+        profile: Profile,
+        homeserver: &str,
+        open_url: impl FnOnce(Url),
+    ) -> Result<Self> {
+        Self::login_with(profile, homeserver, async |client| {
+            let (redirect_uri, redirect) = LocalServerBuilder::new()
+                .response(LocalServerResponse::Html(BROWSER_DONE_PAGE.into()))
+                .spawn()
+                .await?;
+            let oauth = client.oauth();
+            let authorization = oauth
+                .login(
+                    redirect_uri.clone(),
+                    None,
+                    Some(client_metadata(redirect_uri)?.into()),
+                    None,
+                )
+                .build()
+                .await?;
+            open_url(authorization.url);
+            let query = redirect.await.ok_or(Error::LoginCancelled)?;
+            oauth.finish_login(UrlOrQuery::Query(query.0)).await?;
+            Ok(())
+        })
+        .await
+    }
+
+    /// Whether the server offers [`Session::login_oauth`].
+    pub async fn supports_oauth(homeserver: &str) -> Result<bool> {
+        let client = client_builder(homeserver).build().await?;
+        Ok(client.oauth().server_metadata().await.is_ok())
+    }
+
+    /// Shared part of the logins: fresh store, `authenticate`, persist.
+    async fn login_with(
+        profile: Profile,
+        homeserver: &str,
+        authenticate: impl AsyncFnOnce(&Client) -> Result<()>,
+    ) -> Result<Self> {
         if profile.load_session()?.is_some() {
             return Err(Error::AlreadyLoggedIn(profile.name().to_owned()));
         }
@@ -45,24 +128,16 @@ impl Session {
         let store_passphrase = random_passphrase();
         let result = async {
             let client = build_client(&profile, homeserver, &store_passphrase).await?;
-            client
-                .matrix_auth()
-                .login_username(user, password)
-                .initial_device_display_name(DEVICE_DISPLAY_NAME)
-                .await?;
+            authenticate(&client).await?;
             // Cross-signing and backup setup run in the background; finish them
             // before the caller can exit or start syncing.
             client
                 .encryption()
                 .wait_for_e2ee_initialization_tasks()
                 .await;
-            let session = client
-                .matrix_auth()
-                .session()
-                .expect("session exists after login");
             profile.save_session(&StoredSession {
                 homeserver: client.homeserver().to_string(),
-                session,
+                auth: stored_auth(&client),
                 store_passphrase,
             })?;
             Ok(client)
@@ -84,10 +159,24 @@ impl Session {
             .load_session()?
             .ok_or_else(|| Error::NotLoggedIn(profile.name().to_owned()))?;
         let client = build_client(&profile, &stored.homeserver, &stored.store_passphrase).await?;
-        client
-            .matrix_auth()
-            .restore_session(stored.session, RoomLoadSettings::default())
-            .await?;
+        match stored.auth {
+            StoredAuth::Password(session) => {
+                client
+                    .matrix_auth()
+                    .restore_session(session, RoomLoadSettings::default())
+                    .await?
+            }
+            StoredAuth::OAuth { client_id, session } => {
+                let session = OAuthSession {
+                    client_id: ClientId::new(client_id),
+                    user: session,
+                };
+                client
+                    .oauth()
+                    .restore_session(session, RoomLoadSettings::default())
+                    .await?
+            }
+        }
         client
             .encryption()
             .wait_for_e2ee_initialization_tasks()
@@ -101,12 +190,17 @@ impl Session {
             .await
             .map_err(|e| Error::Sync(e.to_string()))?;
         let verification_tx = crate::encryption::register_handlers(&client);
+        let save_tokens = AbortOnDrop(tokio::spawn(save_refreshed_tokens(
+            client.clone(),
+            profile.clone(),
+        )));
         Ok(Self {
             client,
             sync: Arc::new(sync),
             send_lock: Default::default(),
             verification_tx,
             profile,
+            _save_tokens: save_tokens,
         })
     }
 
@@ -126,7 +220,7 @@ impl Session {
     /// Local data is deleted even if the server is unreachable or the token
     /// was already revoked.
     pub async fn logout(self) -> Result<()> {
-        if let Err(e) = self.client.matrix_auth().logout().await {
+        if let Err(e) = self.client.logout().await {
             warn!("server-side logout failed, removing local data anyway: {e}");
         }
         self.sync.stop().await;
@@ -164,16 +258,20 @@ impl Session {
     }
 }
 
-async fn build_client(profile: &Profile, homeserver: &str, passphrase: &str) -> Result<Client> {
+fn client_builder(homeserver: &str) -> matrix_sdk::ClientBuilder {
     let builder = Client::builder();
     // A full URL is used as-is; a bare server name goes through .well-known discovery.
-    let builder = if homeserver.contains("://") {
+    if homeserver.contains("://") {
         builder.homeserver_url(homeserver)
     } else {
         builder.server_name_or_homeserver_url(homeserver)
-    };
-    Ok(builder
+    }
+}
+
+async fn build_client(profile: &Profile, homeserver: &str, passphrase: &str) -> Result<Client> {
+    Ok(client_builder(homeserver)
         .sqlite_store(profile.store_dir(), Some(passphrase))
+        .handle_refresh_tokens()
         .with_encryption_settings(EncryptionSettings {
             auto_enable_cross_signing: true,
             backup_download_strategy: BackupDownloadStrategy::AfterDecryptionFailure,
@@ -181,6 +279,56 @@ async fn build_client(profile: &Profile, homeserver: &str, passphrase: &str) -> 
         })
         .build()
         .await?)
+}
+
+fn stored_auth(client: &Client) -> StoredAuth {
+    match client.oauth().full_session() {
+        Some(session) => StoredAuth::OAuth {
+            client_id: session.client_id.as_str().to_owned(),
+            session: session.user,
+        },
+        None => StoredAuth::Password(client.matrix_auth().session().expect("logged in")),
+    }
+}
+
+/// Access tokens expire and get refreshed by the SDK; keep the stored copy current.
+async fn save_refreshed_tokens(client: Client, profile: Profile) {
+    let mut changes = client.subscribe_to_session_changes();
+    loop {
+        match changes.recv().await {
+            Ok(SessionChange::TokensRefreshed) => {
+                let saved = profile.load_session().and_then(|stored| match stored {
+                    Some(mut stored) => {
+                        stored.auth = stored_auth(&client);
+                        profile.save_session(&stored)
+                    }
+                    None => Ok(()),
+                });
+                if let Err(e) = saved {
+                    warn!("could not save refreshed tokens: {e}");
+                }
+            }
+            Ok(SessionChange::UnknownToken(_)) => {
+                warn!("the server no longer accepts this session")
+            }
+            Err(broadcast::error::RecvError::Lagged(_)) => {}
+            Err(broadcast::error::RecvError::Closed) => return,
+        }
+    }
+}
+
+/// How we present ourselves to the server's login page.
+fn client_metadata(redirect_uri: Url) -> Result<Raw<ClientMetadata>> {
+    let client_uri = Url::parse(CLIENT_URI).expect("valid URL");
+    let mut metadata = ClientMetadata::new(
+        ApplicationType::Native,
+        vec![OAuthGrantType::AuthorizationCode {
+            redirect_uris: vec![redirect_uri],
+        }],
+        Localized::new(client_uri, None),
+    );
+    metadata.client_name = Some(Localized::new(DEVICE_DISPLAY_NAME.to_owned(), None));
+    Ok(Raw::new(&metadata)?)
 }
 
 fn random_passphrase() -> String {

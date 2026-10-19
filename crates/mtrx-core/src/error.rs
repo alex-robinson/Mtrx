@@ -12,6 +12,10 @@ pub enum Error {
     NotLoggedIn(String),
     #[error("profile `{0}` is already logged in; log out first")]
     AlreadyLoggedIn(String),
+    #[error("login was cancelled")]
+    LoginCancelled,
+    #[error(transparent)]
+    OAuth(#[from] matrix_sdk::authentication::oauth::OAuthError),
     #[error("no room matches `{0}`")]
     RoomNotFound(String),
     #[error("`{0}` matches several rooms: {1:?}")]

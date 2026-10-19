@@ -62,12 +62,15 @@ enum Command {
         /// Server name (matrix.org) or URL (http://localhost:8008).
         #[arg(long)]
         homeserver: String,
-        /// User name or full user ID.
-        #[arg(long)]
-        user: String,
+        /// User name or full user ID (password login).
+        #[arg(long, required_unless_present = "browser")]
+        user: Option<String>,
         /// Read the password from the first line of stdin instead of prompting.
         #[arg(long)]
         password_stdin: bool,
+        /// Sign in through the server's web page instead (e.g. matrix.org).
+        #[arg(long, conflicts_with_all = ["user", "password_stdin"])]
+        browser: bool,
     },
     /// Log out and delete local data for the profile.
     Logout,
@@ -164,11 +167,20 @@ async fn main() -> Result<()> {
             homeserver,
             user,
             password_stdin,
+            browser,
         } => {
-            let password = read_secret(password_stdin, "Password: ")?;
-            let session = Session::login(profile, &homeserver, &user, &password)
+            let session = if browser {
+                Session::login_oauth(profile, &homeserver, |url| {
+                    println!("Opening the sign-in page in your browser:\n{url}");
+                    let _ = open::that_detached(url.as_str());
+                })
                 .await
-                .context("login failed")?;
+            } else {
+                let user = user.expect("clap requires --user without --browser");
+                let password = read_secret(password_stdin, "Password: ")?;
+                Session::login(profile, &homeserver, &user, &password).await
+            }
+            .context("login failed")?;
             println!(
                 "Logged in as {} (device {})",
                 session.user_id(),

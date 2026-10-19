@@ -16,5 +16,6 @@ futures-util.workspace = true
 anyhow.workspace = true
 clap.workspace = true
 rpassword.workspace = true
+open = "5.4.4"
 chrono.workspace = true
 tracing-subscriber.workspace = true

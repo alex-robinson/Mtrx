@@ -304,3 +304,29 @@ async fn emoji_self_verification() -> Result<()> {
     assert!(new.session.is_device_verified().await?);
     Ok(())
 }
+
+/// Talks to matrix.org: registers the client with its OAuth provider and
+/// checks we get a sign-in page URL, then cancels.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs network access to matrix.org"]
+async fn matrix_org_offers_browser_login() -> Result<()> {
+    assert!(Session::supports_oauth("matrix.org").await?);
+    let dir = TempDir::new()?;
+    let profile = Profile::new("oauth", Some(dir.path()), SecretStore::File)?;
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let login = Session::login_oauth(profile, "matrix.org", move |url| {
+        let _ = tx.send(url);
+    });
+    // The login waits for the browser forever; stop once the URL is known.
+    let url = tokio::select! {
+        url = rx => url?,
+        result = login => bail!("login ended early: {:?}", result.err()),
+    };
+    println!("{url}");
+    assert_eq!(url.scheme(), "https");
+    assert!(
+        url.query_pairs()
+            .any(|(k, v)| k == "redirect_uri" && v.starts_with("http://127.0.0.1:"))
+    );
+    Ok(())
+}

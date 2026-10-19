@@ -10,7 +10,7 @@ license = "MIT"
 [workspace.dependencies]
 mtrx-core = { path = "crates/mtrx-core" }
 mtrx-format = { path = "crates/mtrx-format" }
-matrix-sdk = { version = "0.19.1", features = ["bundled-sqlite"] }
+matrix-sdk = { version = "0.19.1", features = ["bundled-sqlite", "local-server"] }
 matrix-sdk-ui = "0.19.1"
 eyeball-im = "0.9.1"
 imbl = "7.0.2"
@@ -26,6 +26,7 @@ tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 keyring = "4.2.0"
 directories = "6.0.0"
 rand = "0.10.3"
+url = "2"
 clap = { version = "4.6.7", features = ["derive", "env"] }
 rpassword = "7.5.4"
 chrono = "0.4.45"

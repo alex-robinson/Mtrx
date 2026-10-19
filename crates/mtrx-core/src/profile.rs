@@ -6,7 +6,7 @@ use std::{
 };
 
 use directories::ProjectDirs;
-use matrix_sdk::authentication::matrix::MatrixSession;
+use matrix_sdk::authentication::{matrix::MatrixSession, oauth::UserSession};
 use serde::{Deserialize, Serialize};
 
 use crate::{Error, Result};
@@ -37,8 +37,19 @@ pub struct Profile {
 #[derive(Serialize, Deserialize)]
 pub(crate) struct StoredSession {
     pub homeserver: String,
-    pub session: MatrixSession,
+    pub auth: StoredAuth,
     pub store_passphrase: String,
+}
+
+/// Tokens of the login method that was used.
+#[derive(Serialize, Deserialize)]
+pub(crate) enum StoredAuth {
+    Password(MatrixSession),
+    /// Browser login via the server's OAuth 2.0 provider.
+    OAuth {
+        client_id: String,
+        session: UserSession,
+    },
 }
 
 impl Profile {

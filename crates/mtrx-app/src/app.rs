@@ -186,30 +186,40 @@ impl App {
                 let Screen::Login(login) = &mut self.screen else {
                     return Task::none();
                 };
-                if !login.update(message) {
-                    return Task::none();
+                let (profile, homeserver) = (self.profile.clone(), login.homeserver.clone());
+                match login.update(message) {
+                    login::Action::None => Task::none(),
+                    login::Action::Password => {
+                        let (user, password) = (login.user.clone(), login.password.clone());
+                        Task::perform(
+                            async move {
+                                Session::login(profile, &homeserver, &user, &password)
+                                    .await
+                                    .map(|s| Shared(Arc::new(s)))
+                            },
+                            |result| Message::LoggedIn(result.map_err(|e| e.to_string())),
+                        )
+                    }
+                    login::Action::Browser => {
+                        let (task, handle) = Task::perform(
+                            async move {
+                                Session::login_oauth(profile, &homeserver, |url| {
+                                    let _ = open::that_detached(url.as_str());
+                                })
+                                .await
+                                .map(|s| Shared(Arc::new(s)))
+                            },
+                            |result| Message::LoggedIn(result.map_err(|e| e.to_string())),
+                        )
+                        .abortable();
+                        login.browser_started(handle);
+                        task
+                    }
                 }
-                login.busy = true;
-                login.error = None;
-                let (profile, homeserver, user, password) = (
-                    self.profile.clone(),
-                    login.homeserver.clone(),
-                    login.user.clone(),
-                    login.password.clone(),
-                );
-                Task::perform(
-                    async move {
-                        Session::login(profile, &homeserver, &user, &password)
-                            .await
-                            .map(|s| Shared(Arc::new(s)))
-                    },
-                    |result| Message::LoggedIn(result.map_err(|e| e.to_string())),
-                )
             }
             Message::LoggedIn(Err(error)) => {
                 if let Screen::Login(login) = &mut self.screen {
-                    login.busy = false;
-                    login.error = Some(error);
+                    login.failed(error);
                 }
                 Task::none()
             }
