@@ -353,3 +353,30 @@ pub fn to_rgba8(color: Color) -> [u8; 4] {
     let [r, g, b, a] = color.into_rgba8();
     [r, g, b, a]
 }
+
+/// Corner radius of images in messages.
+pub const MEDIA_RADIUS: f32 = 8.0;
+
+/// Where an image shows once loaded.
+pub fn media_placeholder(theme: &Theme) -> container::Style {
+    container::Style {
+        background: Some(Background::Color(
+            theme
+                .extended_palette()
+                .background
+                .strong
+                .color
+                .scale_alpha(0.4),
+        )),
+        border: Border::default().rounded(MEDIA_RADIUS),
+        ..Default::default()
+    }
+}
+
+/// Darkens the window behind the image viewer.
+pub fn viewer_backdrop(_theme: &Theme) -> container::Style {
+    container::Style {
+        background: Some(Background::Color(Color::BLACK.scale_alpha(0.8))),
+        ..Default::default()
+    }
+}

@@ -19,9 +19,9 @@ use iced::{
     window,
 };
 use mtrx_core::{
-    CallService, Google, OwnedMxcUri, OwnedRoomId, Profile, RecoveryStep, RoomList, RoomListState,
-    RoomOrAliasId, RoomTimeline, ScheduledMessage, SecretStore, ServiceKind, Session,
-    TimelineEntry, Url,
+    CallService, Google, Media, MediaRef, OwnedMxcUri, OwnedRoomId, Profile, RecoveryStep,
+    RoomList, RoomListState, RoomOrAliasId, RoomTimeline, ScheduledMessage, SecretStore,
+    ServiceKind, Session, TimelineEntry, Url,
 };
 
 use crate::{
@@ -31,6 +31,7 @@ use crate::{
     dialog::{self, Dialog},
     login::{self, Login},
     math::{self, Math, Rendered},
+    media::{self, Previews, Viewer},
     room::{Look, Older, Room},
     send_later,
     settings::{self, Settings},
@@ -113,6 +114,19 @@ pub enum Message {
     AvatarLoaded(avatar::Key, Option<image::Handle>),
     /// The cursor entered (`true`) or left a timeline event.
     Hover(String, bool),
+    PreviewLoaded(MediaRef, Option<media::Picture>),
+    /// Show an image large.
+    OpenImage(Media),
+    CloseImage,
+    /// The whole image for the viewer.
+    ImageLoaded(MediaRef, Result<media::Picture, String>),
+    /// Ask where to save a message's file, then save it.
+    SaveMedia(Media),
+    MediaSaved(Result<(), String>),
+    /// Ask for files to send to the open room.
+    Attach,
+    /// A file was dropped onto the window: send it to the open room.
+    FileDropped(PathBuf),
 }
 
 pub struct App {
@@ -166,6 +180,9 @@ struct Main {
     opening: Option<OwnedRoomId>,
     /// Something finished in the background, or failed.
     notice: Option<Notice>,
+    previews: Previews,
+    /// An image shown large.
+    viewer: Option<Viewer>,
 }
 
 struct Notice {
@@ -196,6 +213,8 @@ impl Main {
             invite: None,
             opening: None,
             notice: None,
+            previews: Previews::new(),
+            viewer: None,
         }
     }
 }
@@ -401,6 +420,7 @@ impl App {
                             read,
                             self.render_math(),
                             self.load_avatars(),
+                            self.load_previews(),
                             self.load_room_calls(&id),
                         ])
                     }
@@ -420,7 +440,12 @@ impl App {
                 let grew = entries.len() != room.entries.len();
                 room.entries = entries;
                 let read = if grew { mark_read(room) } else { Task::none() };
-                Task::batch([read, self.render_math(), self.load_avatars()])
+                Task::batch([
+                    read,
+                    self.render_math(),
+                    self.load_avatars(),
+                    self.load_previews(),
+                ])
             }
             Message::Scrolled(viewport) => {
                 let Screen::Main(main) = &mut self.screen else {
@@ -433,7 +458,11 @@ impl App {
                     Older::None => Task::none(),
                     Older::ShowMore => {
                         room.show_more();
-                        Task::batch([self.render_math(), self.load_avatars()])
+                        Task::batch([
+                            self.render_math(),
+                            self.load_avatars(),
+                            self.load_previews(),
+                        ])
                     }
                     Older::Paginate => paginate(room),
                 }
@@ -452,7 +481,11 @@ impl App {
                         Err(e) => room.error = Some(e),
                     }
                 }
-                Task::batch([self.render_math(), self.load_avatars()])
+                Task::batch([
+                    self.render_math(),
+                    self.load_avatars(),
+                    self.load_previews(),
+                ])
             }
             Message::Composer(action) => {
                 if let Screen::Main(main) = &mut self.screen
@@ -741,6 +774,79 @@ impl App {
                     room.hover(id, entered);
                 }
                 Task::none()
+            }
+            Message::PreviewLoaded(media, picture) => {
+                if let Screen::Main(main) = &mut self.screen {
+                    main.previews.insert(media, picture);
+                }
+                Task::none()
+            }
+            Message::OpenImage(media) => {
+                let Screen::Main(main) = &mut self.screen else {
+                    return Task::none();
+                };
+                let viewer = Viewer::new(media);
+                let load = viewer.load(main.session.clone());
+                main.viewer = Some(viewer);
+                load
+            }
+            Message::CloseImage => {
+                if let Screen::Main(main) = &mut self.screen {
+                    main.viewer = None;
+                }
+                Task::none()
+            }
+            Message::ImageLoaded(media, result) => {
+                if let Screen::Main(main) = &mut self.screen
+                    && let Some(viewer) = &mut main.viewer
+                {
+                    viewer.loaded(&media, result);
+                }
+                Task::none()
+            }
+            Message::SaveMedia(file) => {
+                let Screen::Main(main) = &self.screen else {
+                    return Task::none();
+                };
+                Task::perform(media::save(main.session.clone(), file), Message::MediaSaved)
+            }
+            Message::MediaSaved(result) => {
+                if let Screen::Main(main) = &mut self.screen
+                    && let Err(e) = result
+                {
+                    // Shown where it was saved from.
+                    match (&mut main.viewer, &mut main.room) {
+                        (Some(viewer), _) => viewer.error = Some(e),
+                        (None, Some(room)) => room.error = Some(e),
+                        (None, None) => {}
+                    }
+                }
+                Task::none()
+            }
+            Message::Attach => {
+                let Screen::Main(main) = &self.screen else {
+                    return Task::none();
+                };
+                let Some(room) = &main.room else {
+                    return Task::none();
+                };
+                let id = room.id.clone();
+                Task::perform(media::attach(room.timeline.clone()), move |result| {
+                    Message::Sent(id.clone(), result)
+                })
+            }
+            Message::FileDropped(path) => {
+                let Screen::Main(main) = &self.screen else {
+                    return Task::none();
+                };
+                let Some(room) = &main.room else {
+                    return Task::none();
+                };
+                let (id, timeline) = (room.id.clone(), room.timeline.clone());
+                Task::perform(
+                    async move { media::send(&timeline, &path).await },
+                    move |result| Message::Sent(id.clone(), result),
+                )
             }
         }
     }
@@ -1274,6 +1380,24 @@ impl App {
         Task::batch(tasks)
     }
 
+    /// Request the previews of the open room's rendered images.
+    fn load_previews(&mut self) -> Task<Message> {
+        let Screen::Main(main) = &mut self.screen else {
+            return Task::none();
+        };
+        let Some(room) = &main.room else {
+            return Task::none();
+        };
+        let tasks: Vec<_> = room
+            .images()
+            .map(|media| {
+                main.previews
+                    .request(&main.session, media, Message::PreviewLoaded)
+            })
+            .collect();
+        Task::batch(tasks)
+    }
+
     pub fn subscription(&self) -> Subscription<Message> {
         let mut subscriptions = vec![
             window::resize_events().map(|(_, size)| Message::WindowResized(size)),
@@ -1329,6 +1453,10 @@ impl App {
                     t.0.updates()
                         .map(move |entries| Message::Timeline(id.clone(), entries))
                 }));
+                subscriptions.push(media::dropped_files());
+            }
+            if main.viewer.is_some() {
+                subscriptions.push(media::escape());
             }
         }
         Subscription::batch(subscriptions)
@@ -1346,6 +1474,10 @@ impl App {
                         dialog.view(&main.rooms.rooms),
                         Message::Dialog(dialog::Message::Cancel),
                     )
+                } else if let Some(viewer) = &main.viewer {
+                    // Fills the window, with its own backdrop.
+                    return stack![self.main_view(main), opaque(viewer.view(&main.previews))]
+                        .into();
                 } else {
                     return self.main_view(main);
                 };
@@ -1414,6 +1546,7 @@ impl App {
                     avatars: &main.avatars,
                     colored_names: self.settings.colored_names,
                     call_services: &self.settings.call_services,
+                    previews: &main.previews,
                 };
                 room.view(summary, &look, &scheduled)
             }

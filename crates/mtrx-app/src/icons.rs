@@ -155,3 +155,56 @@ impl<M> canvas::Program<M> for Camera {
         vec![frame.into_geometry()]
     }
 }
+
+/// A page with its top right corner folded.
+pub fn file<'a, M: 'a>(size: f32, color: fn(&Theme) -> Color) -> Element<'a, M> {
+    canvas::Canvas::new(File { color })
+        .width(size)
+        .height(size)
+        .into()
+}
+
+struct File {
+    color: fn(&Theme) -> Color,
+}
+
+impl<M> canvas::Program<M> for File {
+    type State = ();
+
+    fn draw(
+        &self,
+        _state: &(),
+        renderer: &Renderer,
+        theme: &Theme,
+        bounds: Rectangle,
+        _cursor: mouse::Cursor,
+    ) -> Vec<Geometry> {
+        let mut frame = Frame::new(renderer, bounds.size());
+        let (w, h) = (bounds.width, bounds.height);
+        let width = (w / 10.0).max(1.0);
+        let (left, right) = (w * 0.18 + width / 2.0, w * 0.82 - width / 2.0);
+        let (top, bottom) = (width / 2.0, h - width / 2.0);
+        let fold = (right - left) * 0.4;
+        let point = iced::Point::new;
+        let page = Path::new(|path| {
+            path.move_to(point(left, top));
+            path.line_to(point(right - fold, top));
+            path.line_to(point(right, top + fold));
+            path.line_to(point(right, bottom));
+            path.line_to(point(left, bottom));
+            path.close();
+        });
+        let corner = Path::new(|path| {
+            path.move_to(point(right - fold, top));
+            path.line_to(point(right - fold, top + fold));
+            path.line_to(point(right, top + fold));
+        });
+        let stroke = Stroke::default()
+            .with_color((self.color)(theme))
+            .with_width(width)
+            .with_line_join(canvas::LineJoin::Round);
+        frame.stroke(&page, stroke);
+        frame.stroke(&corner, stroke);
+        vec![frame.into_geometry()]
+    }
+}

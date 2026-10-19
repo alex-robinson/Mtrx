@@ -13,6 +13,7 @@ mod fonts;
 mod icons;
 mod login;
 mod math;
+mod media;
 mod message;
 mod room;
 mod send_later;

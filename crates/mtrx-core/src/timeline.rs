@@ -1,15 +1,18 @@
 //! Live room timeline: messages, state changes, sending.
 
-use std::{collections::HashSet, sync::Arc, time::SystemTime};
+use std::{collections::HashSet, path::Path, sync::Arc, time::SystemTime};
 
 use eyeball_im::Vector;
 use futures_util::{Stream, StreamExt, stream};
 use matrix_sdk::ruma::{
-    EventId, OwnedEventId, OwnedMxcUri, OwnedRoomId, OwnedTransactionId, OwnedUserId,
+    EventId, OwnedEventId, OwnedMxcUri, OwnedRoomId, OwnedTransactionId, OwnedUserId, UInt,
     api::client::receipt::create_receipt::v3::ReceiptType,
     events::{
         relation::Reply as ReplyRelation,
-        room::message::{MessageType, Relation, RoomMessageEventContent},
+        room::{
+            MediaSource,
+            message::{MessageType, Relation, RoomMessageEventContent},
+        },
     },
 };
 use matrix_sdk::{Room, room::edit::EditedContent, send_queue::RoomSendQueueUpdate};
@@ -25,7 +28,11 @@ use tokio::{
 use tokio_stream::wrappers::{BroadcastStream, WatchStream};
 use tracing::warn;
 
-use crate::{Error, Result, Session, system_time};
+use crate::{
+    Error, Result, Session,
+    media::{self, MediaRef},
+    system_time,
+};
 use mtrx_format::{Document, markdown_to_matrix};
 
 /// One row of a timeline.
@@ -70,6 +77,8 @@ pub enum SendState {
     Failed(String),
 }
 
+// Most events are messages, so boxing would only add indirection.
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug, PartialEq)]
 pub enum EventContent {
     Message(Message),
@@ -106,6 +115,31 @@ pub struct Message {
     pub edited: bool,
     pub in_reply_to: Option<Reply>,
     pub reactions: Vec<Reaction>,
+    /// The file of an image, video, audio or file message.
+    pub media: Option<Media>,
+}
+
+/// A file sent in a message.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Media {
+    pub kind: MediaKind,
+    pub filename: String,
+    /// In bytes.
+    pub size: Option<u64>,
+    pub mimetype: Option<String>,
+    /// In pixels, for images and videos.
+    pub width: Option<u32>,
+    pub height: Option<u32>,
+    /// For downloading it, see [`Session::media_content`].
+    pub source: MediaRef,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MediaKind {
+    Image,
+    Video,
+    Audio,
+    File,
 }
 
 /// The message a reply answers.
@@ -204,6 +238,47 @@ impl RoomTimeline {
         reply_to: Option<&EventId>,
     ) -> Result<PendingSend> {
         send_markdown(self.timeline.room(), &self.send_lock, text, reply_to).await
+    }
+
+    /// Queue the file at `path`, e.g. an image, to be uploaded and sent. Its
+    /// local echo shows as [`SendState::Sending`] until the server confirms.
+    /// The MIME type is guessed from the file name.
+    pub async fn send_file(&self, path: &Path) -> Result<()> {
+        let filename = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| Error::Timeline(format!("not a file: {}", path.display())))?;
+        let bytes = tokio::fs::read(path).await?;
+        let mimetype = media::guess_mimetype(filename);
+        self.send_file_bytes(filename, mimetype.as_ref(), bytes)
+            .await
+    }
+
+    /// Queue `bytes` to be sent as a file named `filename` of MIME type
+    /// `mimetype`, like [`RoomTimeline::send_file`].
+    pub async fn send_file_bytes(
+        &self,
+        filename: &str,
+        mimetype: &str,
+        bytes: Vec<u8>,
+    ) -> Result<()> {
+        let mimetype: mime_guess::Mime = mimetype
+            .parse()
+            .map_err(|_| Error::InvalidMediaType(mimetype.to_owned()))?;
+        // Images are decoded for their size and thumbnail.
+        let (bytes, config, mimetype) = tokio::task::spawn_blocking(move || {
+            let config = media::attachment_config(&mimetype, &bytes);
+            (bytes, config, mimetype)
+        })
+        .await
+        .map_err(timeline_error)?;
+        self.timeline
+            .room()
+            .send_queue()
+            .send_attachment(filename, mimetype, bytes, config)
+            .await
+            .map_err(timeline_error)?;
+        Ok(())
     }
 
     /// Replace the text of one of our messages.
@@ -472,6 +547,7 @@ impl Converter {
                             own: senders.contains_key(&self.own),
                         })
                         .collect(),
+                    media: media(message.msgtype()),
                 }),
                 MsgLikeKind::Redacted => EventContent::Redacted,
                 MsgLikeKind::UnableToDecrypt(_) => EventContent::UnableToDecrypt,
@@ -599,6 +675,73 @@ fn message_kind(msgtype: &MessageType) -> MessageKind {
         MessageType::Location(_) => MessageKind::Location,
         _ => MessageKind::Other,
     }
+}
+
+fn media(msgtype: &MessageType) -> Option<Media> {
+    let media = |kind, filename: &str, source: &MediaSource, thumbnail| Media {
+        kind,
+        filename: filename.to_owned(),
+        size: None,
+        mimetype: None,
+        width: None,
+        height: None,
+        source: MediaRef::new(source, thumbnail),
+    };
+    let pixels = |n: Option<UInt>| n.and_then(|n| u32::try_from(n).ok());
+    Some(match msgtype {
+        MessageType::Image(c) => {
+            let info = c.info.as_deref();
+            Media {
+                size: info.and_then(|i| i.size).map(u64::from),
+                mimetype: info.and_then(|i| i.mimetype.clone()),
+                width: pixels(info.and_then(|i| i.width)),
+                height: pixels(info.and_then(|i| i.height)),
+                ..media(
+                    MediaKind::Image,
+                    c.filename(),
+                    &c.source,
+                    info.and_then(|i| i.thumbnail_source.as_ref()),
+                )
+            }
+        }
+        MessageType::Video(c) => {
+            let info = c.info.as_deref();
+            Media {
+                size: info.and_then(|i| i.size).map(u64::from),
+                mimetype: info.and_then(|i| i.mimetype.clone()),
+                width: pixels(info.and_then(|i| i.width)),
+                height: pixels(info.and_then(|i| i.height)),
+                ..media(
+                    MediaKind::Video,
+                    c.filename(),
+                    &c.source,
+                    info.and_then(|i| i.thumbnail_source.as_ref()),
+                )
+            }
+        }
+        MessageType::Audio(c) => {
+            let info = c.info.as_deref();
+            Media {
+                size: info.and_then(|i| i.size).map(u64::from),
+                mimetype: info.and_then(|i| i.mimetype.clone()),
+                ..media(MediaKind::Audio, c.filename(), &c.source, None)
+            }
+        }
+        MessageType::File(c) => {
+            let info = c.info.as_deref();
+            Media {
+                size: info.and_then(|i| i.size).map(u64::from),
+                mimetype: info.and_then(|i| i.mimetype.clone()),
+                ..media(
+                    MediaKind::File,
+                    c.filename(),
+                    &c.source,
+                    info.and_then(|i| i.thumbnail_source.as_ref()),
+                )
+            }
+        }
+        _ => return None,
+    })
 }
 
 fn html_body(msgtype: &MessageType) -> Option<&str> {

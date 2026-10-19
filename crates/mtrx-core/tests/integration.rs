@@ -853,3 +853,80 @@ async fn replies_reactions_edits_typing_receipts() -> Result<()> {
     .await?;
     Ok(())
 }
+
+/// The file of the message of `entries` named `filename`.
+fn find_media<'a>(entries: &'a [TimelineEntry], filename: &str) -> Option<&'a mtrx_core::Media> {
+    entries.iter().find_map(|e| match e {
+        TimelineEntry::Event(ev) => match &ev.content {
+            EventContent::Message(m) => m.media.as_ref().filter(|m| m.filename == filename),
+            _ => None,
+        },
+        _ => None,
+    })
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs local Synapse (testserver/run.sh)"]
+async fn images_and_files() -> Result<()> {
+    let (_, alice) = new_user("media").await?;
+    let (_, bob) = new_user("media").await?;
+    let room = alice
+        .session
+        .create_room(NewRoom {
+            name: Some("media".into()),
+            encrypted: true,
+            invite: vec![bob.session.user_id()],
+            ..Default::default()
+        })
+        .await?;
+    join_synced(&bob, &room, "media").await?;
+    let alice_timeline = alice.session.timeline(&room).await?;
+    wait_for("bob joined", alice_timeline.updates(), |entries| {
+        entries
+            .iter()
+            .any(|e| matches!(e, TimelineEntry::Event(ev) if ev.sender == bob.session.user_id()))
+    })
+    .await?;
+
+    let small = test_png(48);
+    let big = test_png(1200);
+    let notes = b"basal melt: 0.1 m/yr\n".to_vec();
+    let dir = TempDir::new()?;
+    let notes_path = dir.path().join("notes.txt");
+    std::fs::write(&notes_path, &notes)?;
+    alice_timeline
+        .send_file_bytes("small.png", "image/png", small.clone())
+        .await?;
+    alice_timeline
+        .send_file_bytes("big.png", "image/png", big.clone())
+        .await?;
+    alice_timeline.send_file(&notes_path).await?;
+
+    let bob_timeline = bob.session.timeline(&room).await?;
+    let entries = wait_for("bob sees the files", bob_timeline.updates(), |e| {
+        ["small.png", "big.png", "notes.txt"]
+            .iter()
+            .all(|name| find_media(e, name).is_some())
+    })
+    .await?;
+    let image = find_media(&entries, "small.png").unwrap();
+    assert_eq!(image.kind, mtrx_core::MediaKind::Image);
+    assert_eq!((image.width, image.height), (Some(48), Some(48)));
+    assert_eq!(image.size, Some(small.len() as u64));
+    assert_eq!(image.mimetype.as_deref(), Some("image/png"));
+    let file = find_media(&entries, "notes.txt").unwrap();
+    assert_eq!(file.kind, mtrx_core::MediaKind::File);
+    assert_eq!(file.mimetype.as_deref(), Some("text/plain"));
+    assert_eq!((file.width, file.height), (None, None));
+
+    let s = &bob.session;
+    assert_eq!(s.media_content(&image.source).await?, small);
+    assert_eq!(s.media_preview(&image.source).await?, small);
+    assert_eq!(s.media_content(&file.source).await?, notes);
+    // The big image comes with a thumbnail.
+    let big_media = find_media(&entries, "big.png").unwrap();
+    assert_eq!(s.media_content(&big_media.source).await?, big);
+    let preview = image::load_from_memory(&s.media_preview(&big_media.source).await?)?;
+    assert_eq!((preview.width(), preview.height()), (600, 600));
+    Ok(())
+}
