@@ -4827,6 +4827,7 @@ name = "mtrx-core"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "chrono",
  "directories",
  "eyeball-im",
  "futures-util",

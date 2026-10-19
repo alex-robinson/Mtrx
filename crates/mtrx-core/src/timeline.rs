@@ -9,7 +9,7 @@ use matrix_sdk::ruma::{
     api::client::receipt::create_receipt::v3::ReceiptType,
     events::room::message::{MessageType, RoomMessageEventContent},
 };
-use matrix_sdk::send_queue::RoomSendQueueUpdate;
+use matrix_sdk::{Room, send_queue::RoomSendQueueUpdate};
 use matrix_sdk_ui::timeline::{
     EventSendState, EventTimelineItem, MembershipChange as SdkMembershipChange, MsgLikeKind,
     RoomExt, Timeline, TimelineDetails, TimelineItem, TimelineItemContent, TimelineItemKind,
@@ -165,44 +165,47 @@ impl RoomTimeline {
     /// [`SendState::Sending`] until the server confirms; await
     /// [`PendingSend::sent`] to wait for that.
     pub async fn send_markdown(&self, text: &str) -> Result<PendingSend> {
-        let formatted = markdown_to_matrix(text);
-        let content = match formatted.html {
-            Some(html) => RoomMessageEventContent::text_html(formatted.body, html),
-            None => RoomMessageEventContent::text_plain(formatted.body),
-        };
-        // The SDK's send handle does not expose the transaction ID, so we take
-        // it from the first new local echo after subscribing. The lock makes
-        // sure no other send of this session enqueues in between.
-        let _guard = self.send_lock.lock().await;
-        let (_, mut updates) = self
-            .timeline
-            .room()
-            .send_queue()
-            .subscribe()
-            .await
-            .map_err(timeline_error)?;
-        self.timeline
-            .send(content.into())
-            .await
-            .map_err(timeline_error)?;
-        loop {
-            match updates.try_recv() {
-                Ok(RoomSendQueueUpdate::NewLocalEvent(echo)) => {
-                    return Ok(PendingSend {
-                        transaction_id: echo.transaction_id,
-                        updates,
-                    });
-                }
-                Ok(_) => {}
-                Err(e) => return Err(Error::Timeline(format!("no local echo after send: {e}"))),
-            }
-        }
+        send_markdown(self.timeline.room(), &self.send_lock, text).await
     }
 
     /// Mark everything up to the latest event as read.
     pub async fn mark_read(&self) -> Result<()> {
         self.timeline.mark_as_read(ReceiptType::Read).await?;
         Ok(())
+    }
+}
+
+/// Queue a Markdown message in `room`'s send queue, which persists it and
+/// sends it in the background; timelines show it as a local echo.
+///
+/// The SDK's send handle does not expose the transaction ID, so we take it
+/// from the first new local echo after subscribing. `send_lock`, shared by
+/// all sends of a session, makes sure no other send enqueues in between.
+pub(crate) async fn send_markdown(
+    room: &Room,
+    send_lock: &Mutex<()>,
+    text: &str,
+) -> Result<PendingSend> {
+    let formatted = markdown_to_matrix(text);
+    let content = match formatted.html {
+        Some(html) => RoomMessageEventContent::text_html(formatted.body, html),
+        None => RoomMessageEventContent::text_plain(formatted.body),
+    };
+    let _guard = send_lock.lock().await;
+    let queue = room.send_queue();
+    let (_, mut updates) = queue.subscribe().await.map_err(timeline_error)?;
+    queue.send(content.into()).await.map_err(timeline_error)?;
+    loop {
+        match updates.try_recv() {
+            Ok(RoomSendQueueUpdate::NewLocalEvent(echo)) => {
+                return Ok(PendingSend {
+                    transaction_id: echo.transaction_id,
+                    updates,
+                });
+            }
+            Ok(_) => {}
+            Err(e) => return Err(Error::Timeline(format!("no local echo after send: {e}"))),
+        }
     }
 }
 

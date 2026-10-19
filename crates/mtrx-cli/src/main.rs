@@ -10,7 +10,7 @@ use std::{
     collections::HashMap,
     io::{BufRead, Read},
     path::PathBuf,
-    time::Duration,
+    time::{Duration, SystemTime},
 };
 
 use anyhow::{Context, Result};
@@ -18,7 +18,8 @@ use clap::{Parser, Subcommand, ValueEnum};
 use futures_util::StreamExt;
 use mtrx_core::{
     EventContent, NewRoom, OwnedRoomId, OwnedUserId, Profile, RecoveryStep, RoomList, RoomTimeline,
-    SecretStore, Session, TimelineEntry, Verification, VerificationState,
+    SecretStore, Session, TimelineEntry, Verification, VerificationState, describe_send_time,
+    parse_send_time,
 };
 
 /// How long one-shot commands wait for the first sync.
@@ -111,7 +112,22 @@ enum Command {
     },
     /// Send a Markdown message (from the argument, or stdin if omitted).
     Send { room: String, text: Option<String> },
+    /// Schedule a Markdown message (from the argument, or stdin if omitted).
+    /// Scheduled messages are sent while the app or `mtrx watch` runs.
+    Schedule {
+        room: String,
+        /// E.g. "in 30m", "17:30", "tomorrow 9:00", "fri", "2026-11-02 10:00".
+        when: String,
+        text: Option<String>,
+    },
+    /// List scheduled messages.
+    Scheduled,
+    /// Cancel a scheduled message.
+    Unschedule { id: String },
+    /// Send a scheduled message now, e.g. an overdue one.
+    SendNow { id: String },
     /// Follow a room's messages, or unread counts of all rooms, until Ctrl-C.
+    /// Sends scheduled messages when due.
     Watch { room: Option<String> },
     /// Show our devices, verification and recovery status.
     Devices,
@@ -267,14 +283,7 @@ async fn main() -> Result<()> {
             session.stop_sync().await;
         }
         Command::Send { room, text } => {
-            let text = match text {
-                Some(text) => text,
-                None => {
-                    let mut text = String::new();
-                    std::io::stdin().read_to_string(&mut text)?;
-                    text
-                }
-            };
+            let text = read_text(text)?;
             let (session, _list) = synced(profile).await?;
             let timeline = session.timeline(&session.find_room(&room).await?).await?;
             let pending = timeline.send_markdown(&text).await?;
@@ -282,8 +291,55 @@ async fn main() -> Result<()> {
             session.stop_sync().await;
             sent.context("timed out sending")??;
         }
+        Command::Schedule { room, when, text } => {
+            let now = SystemTime::now();
+            let send_at = parse_send_time(&when, now)
+                .with_context(|| format!("cannot read the time `{when}`"))?;
+            let text = read_text(text)?;
+            let (session, _list) = synced(profile).await?;
+            let room = session.find_room(&room).await?;
+            let message = session.schedule(&room, text.trim_end(), send_at).await?;
+            session.stop_sync().await;
+            println!(
+                "Scheduled for {} (id {}). It is sent while Mtrx or `mtrx watch` runs.",
+                describe_send_time(send_at, now),
+                message.id
+            );
+        }
+        Command::Scheduled => {
+            let (session, list) = synced(profile).await?;
+            let rooms = list.current().rooms;
+            let now = SystemTime::now();
+            for message in session.scheduled() {
+                let room = rooms
+                    .iter()
+                    .find(|r| r.id == message.room_id)
+                    .map_or(message.room_id.as_str(), |r| r.name.as_str());
+                println!(
+                    "{}  {:<20} {}{}: {}",
+                    message.id,
+                    describe_send_time(message.send_at, now),
+                    room,
+                    if message.overdue { " [overdue]" } else { "" },
+                    message.text.lines().next().unwrap_or_default(),
+                );
+            }
+            session.stop_sync().await;
+        }
+        Command::Unschedule { id } => {
+            let session = Session::restore(profile).await?;
+            session.unschedule(&id).await?;
+        }
+        Command::SendNow { id } => {
+            let (session, _list) = synced(profile).await?;
+            let pending = session.send_scheduled_now(&id).await?;
+            let sent = tokio::time::timeout(SYNC_TIMEOUT, pending.sent()).await;
+            session.stop_sync().await;
+            sent.context("timed out sending")??;
+        }
         Command::Watch { room: Some(room) } => {
             let (session, _list) = synced(profile).await?;
+            start_scheduler(&session);
             let timeline = session.timeline(&session.find_room(&room).await?).await?;
             load_events(&timeline, 10).await?;
             watch_timeline(&timeline).await;
@@ -291,6 +347,7 @@ async fn main() -> Result<()> {
         }
         Command::Watch { room: None } => {
             let (session, list) = synced(profile).await?;
+            start_scheduler(&session);
             watch_rooms(&list).await;
             session.stop_sync().await;
         }
@@ -476,6 +533,30 @@ async fn watch_timeline(timeline: &RoomTimeline) {
                     }
                 }
             }
+        }
+    }
+}
+
+/// Send scheduled messages while watching; overdue ones only get a notice.
+fn start_scheduler(session: &Session) {
+    session.start_scheduler();
+    let overdue = session.scheduled().iter().filter(|m| m.overdue).count();
+    if overdue > 0 {
+        eprintln!(
+            "{overdue} scheduled message(s) are overdue and held; see `mtrx scheduled`, \
+             then `mtrx send-now ID` or `mtrx unschedule ID`."
+        );
+    }
+}
+
+/// The message text from the argument, or stdin if omitted.
+fn read_text(text: Option<String>) -> Result<String> {
+    match text {
+        Some(text) => Ok(text),
+        None => {
+            let mut text = String::new();
+            std::io::stdin().read_to_string(&mut text)?;
+            Ok(text)
         }
     }
 }

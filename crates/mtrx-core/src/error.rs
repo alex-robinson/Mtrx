@@ -28,6 +28,10 @@ pub enum Error {
     Timeline(String),
     #[error("verification: {0}")]
     Verification(String),
+    #[error("no scheduled message `{0}`")]
+    ScheduledNotFound(String),
+    #[error("the send time is in the past")]
+    SendTimeInPast,
 
     #[error(transparent)]
     Matrix(#[from] matrix_sdk::Error),
@@ -35,6 +39,8 @@ pub enum Error {
     Http(#[from] matrix_sdk::HttpError),
     #[error(transparent)]
     Recovery(#[from] matrix_sdk::encryption::recovery::RecoveryError),
+    #[error(transparent)]
+    Store(#[from] matrix_sdk::StoreError),
     #[error(transparent)]
     Crypto(#[from] matrix_sdk::encryption::CryptoStoreError),
     #[error(transparent)]

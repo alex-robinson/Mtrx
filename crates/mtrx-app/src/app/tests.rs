@@ -1,7 +1,11 @@
 //! UI snapshots against the local Synapse (`testserver/run.sh`):
 //! `cargo test -p mtrx-app -- --ignored`, images land in `target/ui-snapshots/`.
 
-use std::{path::PathBuf, sync::Arc, time::Duration};
+use std::{
+    path::PathBuf,
+    sync::Arc,
+    time::{Duration, SystemTime},
+};
 
 use futures_util::StreamExt;
 use iced::Size;
@@ -221,6 +225,88 @@ async fn main_screen_with_math() {
         };
         snapshot(&app, name);
     }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs local Synapse (testserver/run.sh)"]
+async fn send_later_bar() {
+    let dir = TempDir::new().unwrap();
+    let (_, alice) = user("later", &dir).await;
+    let room = alice
+        .create_room(NewRoom {
+            name: Some("ice-sheets".into()),
+            encrypted: true,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let list = alice.room_list().await.unwrap();
+    let rooms = tokio::time::timeout(TIMEOUT, async {
+        let mut updates = std::pin::pin!(list.updates());
+        while let Some(state) = updates.next().await {
+            if state.loaded
+                && state
+                    .rooms
+                    .iter()
+                    .any(|r| r.id == room && r.name == "ice-sheets")
+            {
+                return state;
+            }
+        }
+        unreachable!()
+    })
+    .await
+    .unwrap();
+    let timeline = Arc::new(alice.timeline(&room).await.unwrap());
+    tokio::time::timeout(
+        TIMEOUT,
+        timeline
+            .send_markdown("Reviews are due **Friday**.")
+            .await
+            .unwrap()
+            .sent(),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    while !timeline.paginate_back(50).await.unwrap() {}
+
+    let now = SystemTime::now();
+    let scheduled = |id: &str, text: &str, send_at, overdue| ScheduledMessage {
+        id: id.into(),
+        room_id: room.clone(),
+        text: text.into(),
+        send_at,
+        overdue,
+    };
+    let mut main = Main::new(Arc::new(alice));
+    main.rooms = rooms;
+    main.verified = Some(true);
+    main.now = now;
+    main.scheduled = vec![
+        scheduled(
+            "a",
+            "Reminder: send me your figures before the meeting.",
+            now - Duration::from_secs(3 * 3600),
+            true,
+        ),
+        scheduled(
+            "b",
+            "Good morning! The draft is ready for review: $\\dot m$ is fixed.",
+            now + Duration::from_secs(2 * 3600 + 600),
+            false,
+        ),
+    ];
+    let mut open = Room::new(room.clone(), timeline.clone());
+    open.entries = timeline.current();
+    open.at_start = true;
+    open.composer = text_editor::Content::with_text("Who can take the Monday slot?");
+    open.later.picker = Some("tomorrow 8:00".into());
+    main.room = Some(open);
+    snapshot(
+        &app(Screen::Main(Box::new(main)), Mode::Light),
+        "send-later",
+    );
 }
 
 /// Timings for a big encrypted room opened on a new, recovered device:

@@ -7,6 +7,8 @@ mod encryption;
 mod error;
 mod profile;
 mod rooms;
+mod scheduled;
+mod send_time;
 mod session;
 mod timeline;
 
@@ -19,6 +21,8 @@ pub use encryption::{
 pub use error::{Error, Result};
 pub use profile::{Profile, SecretStore};
 pub use rooms::{NewRoom, RoomKind, RoomList, RoomListState, RoomSummary};
+pub use scheduled::ScheduledMessage;
+pub use send_time::{describe_send_time, parse_send_time};
 pub use session::Session;
 pub use timeline::{
     Event, EventContent, MembershipChange, Message, MessageKind, PendingSend, RoomTimeline,

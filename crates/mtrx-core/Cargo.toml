@@ -25,6 +25,7 @@ tracing.workspace = true
 keyring.workspace = true
 directories.workspace = true
 rand.workspace = true
+chrono.workspace = true
 url.workspace = true
 hmac = { workspace = true, optional = true }
 sha1 = { workspace = true, optional = true }

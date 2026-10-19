@@ -29,9 +29,15 @@ cargo run -p mtrx-cli -- rooms
 cargo run -p mtrx-cli -- read "Room name" -n 20
 cargo run -p mtrx-cli -- send "Room name" "Hello **world**"
 cargo run -p mtrx-cli -- watch "Room name"
+cargo run -p mtrx-cli -- schedule "Room name" "tomorrow 9:00" "Good morning"
+cargo run -p mtrx-cli -- scheduled       # list; then unschedule ID / send-now ID
 cargo run -p mtrx-cli -- verify          # emoji verification with another device
 cargo run -p mtrx-cli -- recovery recover
 ```
+
+Scheduled messages are kept (encrypted) on this device and sent while the app
+or `mtrx watch` runs. One whose time passed while neither ran is held as
+overdue until you send or cancel it.
 
 `--profile NAME` selects an account. Secrets go to the OS keychain;
 `--secret-store file` keeps them in a plain file instead (development only).

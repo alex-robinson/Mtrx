@@ -8,7 +8,7 @@ use matrix_sdk::{
     Client, Room, RoomState,
     deserialized_responses::SyncOrStrippedState,
     ruma::{
-        OwnedRoomId, OwnedUserId, RoomOrAliasId,
+        OwnedRoomId, OwnedUserId, RoomId, RoomOrAliasId,
         api::client::room::create_room::v3::{
             CreationContent, Request as CreateRoomRequest, RoomPreset,
         },
@@ -333,7 +333,7 @@ impl Session {
         }
     }
 
-    pub(crate) fn room(&self, id: &OwnedRoomId) -> Result<Room> {
+    pub(crate) fn room(&self, id: &RoomId) -> Result<Room> {
         self.client
             .get_room(id)
             .ok_or_else(|| Error::RoomNotFound(id.to_string()))

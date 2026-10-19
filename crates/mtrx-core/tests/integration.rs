@@ -10,7 +10,10 @@
 
 #![recursion_limit = "256"]
 
-use std::{future::Future, time::Duration};
+use std::{
+    future::Future,
+    time::{Duration, SystemTime},
+};
 
 use anyhow::{Context, Result, bail};
 use futures_util::{Stream, StreamExt};
@@ -328,5 +331,65 @@ async fn matrix_org_offers_browser_login() -> Result<()> {
         url.query_pairs()
             .any(|(k, v)| k == "redirect_uri" && v.starts_with("http://127.0.0.1:"))
     );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs local Synapse (testserver/run.sh)"]
+async fn scheduled_messages() -> Result<()> {
+    let name = unique_name("later");
+    register(&name).await?;
+    let dir = TempDir::new()?;
+    let profile = || Profile::new("p", Some(dir.path()), SecretStore::File);
+    let session = Session::login(profile()?, &homeserver(), &name, PASSWORD).await?;
+    session.start_sync().await;
+    let room = session
+        .create_room(NewRoom {
+            name: Some("later".into()),
+            encrypted: true,
+            ..Default::default()
+        })
+        .await?;
+    wait_for("room synced", session.room_list().await?.updates(), |s| {
+        s.rooms.iter().any(|r| r.id == room)
+    })
+    .await?;
+    let in_secs = |s| SystemTime::now() + Duration::from_secs(s);
+
+    assert!(matches!(
+        session.schedule(&room, "past", SystemTime::now()).await,
+        Err(mtrx_core::Error::SendTimeInPast)
+    ));
+    let late = session.schedule(&room, "late", in_secs(1)).await?;
+    let cancelled = session.schedule(&room, "cancelled", in_secs(3600)).await?;
+    session.unschedule(&cancelled.id).await?;
+    session.stop_sync().await;
+    drop(session);
+
+    // "late" passes its time while no scheduler runs.
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    let session = Session::restore(profile()?).await?;
+    assert_eq!(session.scheduled(), vec![late.clone()], "persisted");
+    session.start_sync().await;
+    let on_time = session.schedule(&room, "on **time**", in_secs(2)).await?;
+    session.start_scheduler_for_test(Duration::from_secs(1));
+
+    let timeline = session.timeline(&room).await?;
+    wait_for("sent when due", timeline.updates(), |e| {
+        has_message(e, "on **time**")
+    })
+    .await?;
+    assert!(SystemTime::now() >= on_time.send_at);
+    let held = wait_for("late one held", session.scheduled_updates(), |s| {
+        s.iter().all(|m| m.overdue)
+    })
+    .await?;
+    assert_eq!(held.len(), 1);
+    assert_eq!(held[0].id, late.id);
+    assert!(!has_message(&timeline.current(), "late"));
+
+    let pending = session.send_scheduled_now(&late.id).await?;
+    timeout("overdue one sent", pending.sent()).await??;
+    assert!(session.scheduled().is_empty());
     Ok(())
 }

@@ -5,6 +5,7 @@ use std::{
     hash::{Hash, Hasher},
     path::PathBuf,
     sync::Arc,
+    time::{Duration, SystemTime},
 };
 
 use futures_util::{SinkExt, StreamExt};
@@ -15,17 +16,20 @@ use iced::{
     window,
 };
 use mtrx_core::{
-    OwnedRoomId, Profile, RecoveryStep, RoomList, RoomListState, RoomTimeline, SecretStore,
-    Session, TimelineEntry,
+    OwnedRoomId, Profile, RecoveryStep, RoomList, RoomListState, RoomTimeline, ScheduledMessage,
+    SecretStore, Session, TimelineEntry,
 };
 
 use crate::{
     login::{self, Login},
     math::{self, Math, Rendered},
     room::{Older, Room},
-    sidebar,
+    send_later, sidebar,
     style::{self, ROOM_LIST_WIDTH, SPACE_BAR_WIDTH, TIMELINE_PADDING},
 };
+
+/// How often times shown relative to now are refreshed.
+const TICK: Duration = Duration::from_secs(20);
 
 /// An `Arc` that identifies by pointer: lets live core handles be used as
 /// subscription keys and carried in messages.
@@ -65,6 +69,10 @@ pub enum Message {
     Composer(text_editor::Action),
     Send,
     Sent(OwnedRoomId, Result<(), String>),
+    Later(send_later::Message),
+    Scheduled(Vec<ScheduledMessage>),
+    /// Refreshes times shown relative to now.
+    Tick,
     RecoveryKey(String),
     Recover,
     RecoveryProgress(RecoveryStep),
@@ -103,13 +111,16 @@ struct Main {
     /// Set while recovery runs.
     recovery_step: Option<RecoveryStep>,
     recovery_error: Option<String>,
+    /// Scheduled messages of all rooms, earliest first.
+    scheduled: Vec<ScheduledMessage>,
+    /// When scheduled times were last compared to the clock.
+    now: SystemTime,
     error: Option<String>,
 }
 
 impl Main {
     fn new(session: Arc<Session>) -> Self {
         Self {
-            session,
             room_list: None,
             rooms: RoomListState::default(),
             space: None,
@@ -118,6 +129,9 @@ impl Main {
             recovery_key: String::new(),
             recovery_step: None,
             recovery_error: None,
+            scheduled: session.scheduled(),
+            now: SystemTime::now(),
+            session,
             error: None,
         }
     }
@@ -171,6 +185,7 @@ impl App {
                 Task::perform(
                     async move {
                         session.start_sync().await;
+                        session.start_scheduler();
                         let list = session.room_list().await?;
                         let verified = session.is_device_verified().await?;
                         Ok((Shared(Arc::new(list)), verified))
@@ -348,6 +363,17 @@ impl App {
                 if text.trim().is_empty() {
                     return Task::none();
                 }
+                if let Some(editing) = &room.later.editing {
+                    // Saving keeps the time unless it has passed.
+                    return if editing.send_at > SystemTime::now() {
+                        let send_at = editing.send_at;
+                        self.later(send_later::Message::At(send_at))
+                    } else {
+                        room.later.picker.get_or_insert_default();
+                        room.error = Some("Its time has passed: pick a new one.".into());
+                        Task::none()
+                    };
+                }
                 room.composer = text_editor::Content::new();
                 room.error = None;
                 let (id, timeline) = (room.id.clone(), room.timeline.clone());
@@ -363,6 +389,31 @@ impl App {
                     && let Err(e) = result
                 {
                     room.error = Some(e);
+                }
+                Task::none()
+            }
+            Message::Later(message) => self.later(message),
+            Message::Scheduled(scheduled) => {
+                if let Screen::Main(main) = &mut self.screen {
+                    if let Some(room) = main.room.as_mut()
+                        && let Some(editing) = &room.later.editing
+                        && !scheduled.iter().any(|m| m.id == editing.id)
+                    {
+                        // Sent (it became due) or cancelled elsewhere; the
+                        // edits stay in the composer and can be sent anew.
+                        room.later.editing = None;
+                        room.error = Some(
+                            "The scheduled message was sent before your changes were saved.".into(),
+                        );
+                    }
+                    main.scheduled = scheduled;
+                    main.now = SystemTime::now();
+                }
+                Task::none()
+            }
+            Message::Tick => {
+                if let Screen::Main(main) = &mut self.screen {
+                    main.now = SystemTime::now();
                 }
                 Task::none()
             }
@@ -443,6 +494,89 @@ impl App {
         }
     }
 
+    fn later(&mut self, message: send_later::Message) -> Task<Message> {
+        use send_later::Message as Later;
+        let Screen::Main(main) = &mut self.screen else {
+            return Task::none();
+        };
+        let Some(room) = main.room.as_mut() else {
+            return Task::none();
+        };
+        let session = main.session.clone();
+        let done = |result: mtrx_core::Result<()>| {
+            Message::Later(Later::Done(result.map_err(|e| e.to_string())))
+        };
+        match message {
+            Later::TogglePicker => {
+                room.later.picker = match room.later.picker {
+                    Some(_) => None,
+                    None => Some(String::new()),
+                };
+                Task::none()
+            }
+            Later::Custom(custom) => {
+                room.later.picker = Some(custom);
+                Task::none()
+            }
+            Later::SubmitCustom => match room.later.custom_time(SystemTime::now()) {
+                Some(at) => self.later(Later::At(at)),
+                None => Task::none(),
+            },
+            Later::At(send_at) => {
+                let text = room.composer.text().trim_end().to_owned();
+                if text.trim().is_empty() {
+                    return Task::none();
+                }
+                room.error = None;
+                let room_id = room.id.clone();
+                let editing = room.later.editing.as_ref().map(|m| m.id.clone());
+                // The composer is cleared once saved, so nothing is lost on errors.
+                Task::perform(
+                    async move {
+                        match editing {
+                            Some(id) => session.reschedule(&id, &text, send_at).await,
+                            None => session.schedule(&room_id, &text, send_at).await.map(|_| ()),
+                        }
+                    },
+                    |result| Message::Later(Later::Saved(result.map_err(|e| e.to_string()))),
+                )
+            }
+            Later::Edit(message) => {
+                room.composer = text_editor::Content::with_text(&message.text);
+                room.composer
+                    .perform(text_editor::Action::Move(text_editor::Motion::DocumentEnd));
+                // An overdue message needs a new time before it can be saved.
+                room.later.picker = message.overdue.then(String::new);
+                room.later.editing = Some(message);
+                Task::none()
+            }
+            Later::CancelEdit => {
+                room.later = Default::default();
+                room.composer = text_editor::Content::new();
+                room.error = None;
+                Task::none()
+            }
+            Later::SendNow(id) => Task::perform(
+                async move { session.send_scheduled_now(&id).await.map(|_| ()) },
+                done,
+            ),
+            Later::Cancel(id) => Task::perform(
+                async move { session.unschedule(&id).await.map(|_| ()) },
+                done,
+            ),
+            Later::Saved(Ok(())) => {
+                room.later = Default::default();
+                room.composer = text_editor::Content::new();
+                Task::none()
+            }
+            Later::Saved(Err(e)) | Later::Done(Err(e)) => {
+                room.error = Some(e);
+                Task::none()
+            }
+            Later::Done(Ok(())) => Task::none(),
+        }
+    }
+
     fn math_params(&self) -> math::Params {
         let theme = self.theme();
         let palette = theme.extended_palette();
@@ -478,6 +612,13 @@ impl App {
             iced::system::theme_changes().map(Message::ThemeMode),
         ];
         if let Screen::Main(main) = &self.screen {
+            subscriptions.push(
+                Subscription::run_with(Shared(main.session.clone()), |s| s.0.scheduled_updates())
+                    .map(Message::Scheduled),
+            );
+            if !main.scheduled.is_empty() {
+                subscriptions.push(iced::time::every(TICK).map(|_| Message::Tick));
+            }
             if let Some(list) = &main.room_list {
                 subscriptions.push(
                     Subscription::run_with(Shared(list.clone()), |list| list.0.updates())
@@ -518,6 +659,9 @@ impl App {
         if main.verified == Some(false) {
             content = content.push(recovery_banner(main));
         }
+        if let Some(banner) = overdue_banner(main) {
+            content = content.push(banner);
+        }
         if let Some(error) = &main.error {
             content = content.push(container(text(error).style(text::danger)).padding(12));
         }
@@ -528,7 +672,19 @@ impl App {
                     .find(|r| r.id == room.id)
                     .map(|r| r.name.as_str())
                     .unwrap_or("");
-                room.view(name, &theme, &self.math, &self.math_params())
+                let scheduled: Vec<_> = main
+                    .scheduled
+                    .iter()
+                    .filter(|m| m.room_id == room.id)
+                    .collect();
+                room.view(
+                    name,
+                    &theme,
+                    &self.math,
+                    &self.math_params(),
+                    &scheduled,
+                    main.now,
+                )
             }
             None => container(text("Select a room").style(text::secondary))
                 .center(Length::Fill)
@@ -581,6 +737,57 @@ fn recovery_banner(main: &Main) -> Element<'_, Message> {
     )
     .padding([8, 24])
     .into()
+}
+
+/// Points to rooms (other than the open one) with overdue scheduled
+/// messages; their composer bar offers sending or cancelling them.
+fn overdue_banner(main: &Main) -> Option<Element<'_, Message>> {
+    let open = main.room.as_ref().map(|r| &r.id);
+    let mut rooms: Vec<(&OwnedRoomId, usize)> = Vec::new();
+    for message in main.scheduled.iter().filter(|m| m.overdue) {
+        if Some(&message.room_id) == open {
+            continue;
+        }
+        match rooms.iter_mut().find(|(id, _)| *id == &message.room_id) {
+            Some((_, count)) => *count += 1,
+            None => rooms.push((&message.room_id, 1)),
+        }
+    }
+    if rooms.is_empty() {
+        return None;
+    }
+    let mut banner = row![text("Scheduled messages were not sent on time:")]
+        .spacing(8)
+        .align_y(iced::Alignment::Center);
+    for (id, count) in rooms {
+        let name = main
+            .rooms
+            .rooms
+            .iter()
+            .find(|r| &r.id == id)
+            .map_or(id.as_str(), |r| r.name.as_str());
+        let label = if count > 1 {
+            format!("{name} ({count})")
+        } else {
+            name.to_owned()
+        };
+        banner = banner.push(
+            button(text(label).size(13))
+                .padding([2, 8])
+                .style(button::secondary)
+                .on_press(Message::OpenRoom(id.clone())),
+        );
+    }
+    Some(
+        container(
+            container(banner)
+                .padding([8, 12])
+                .width(Length::Fill)
+                .style(style::banner),
+        )
+        .padding([8, 24])
+        .into(),
+    )
 }
 
 fn paginate(room: &mut Room) -> Task<Message> {

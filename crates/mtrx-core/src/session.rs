@@ -27,6 +27,7 @@ use url::Url;
 use crate::{
     Error, Profile, Result,
     profile::{StoredAuth, StoredSession},
+    scheduled::Schedule,
 };
 
 const DEVICE_DISPLAY_NAME: &str = "Mtrx";
@@ -39,15 +40,18 @@ const BROWSER_DONE_PAGE: &str = "<!doctype html><title>Mtrx</title>\
 pub struct Session {
     pub(crate) client: Client,
     pub(crate) sync: Arc<SyncService>,
-    /// Serializes enqueueing messages, see [`crate::RoomTimeline::send_markdown`].
-    pub(crate) send_lock: Arc<Mutex<()>>,
     pub(crate) verification_tx: broadcast::Sender<VerificationRequest>,
     pub(crate) room_keys: Arc<crate::encryption::RoomKeys>,
+    /// Serializes enqueueing messages, see [`crate::timeline::send_markdown`].
+    pub(crate) send_lock: Arc<Mutex<()>>,
+    pub(crate) schedule: Arc<Schedule>,
+    /// Set once [`Session::start_scheduler`] ran.
+    pub(crate) scheduler: std::sync::Mutex<Option<AbortOnDrop>>,
     profile: Profile,
     _save_tokens: AbortOnDrop,
 }
 
-struct AbortOnDrop(JoinHandle<()>);
+pub(crate) struct AbortOnDrop(pub(crate) JoinHandle<()>);
 
 impl Drop for AbortOnDrop {
     fn drop(&mut self) {
@@ -195,12 +199,16 @@ impl Session {
             client.clone(),
             profile.clone(),
         )));
+        let send_lock = Arc::new(Mutex::new(()));
+        let schedule = Arc::new(Schedule::load(client.clone(), send_lock.clone()).await?);
         Ok(Self {
             client,
             sync: Arc::new(sync),
-            send_lock: Default::default(),
             verification_tx,
             room_keys: Default::default(),
+            send_lock,
+            schedule,
+            scheduler: Default::default(),
             profile,
             _save_tokens: save_tokens,
         })

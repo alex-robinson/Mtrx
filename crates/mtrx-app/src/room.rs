@@ -1,18 +1,22 @@
 //! An open room: timeline and composer.
 
-use std::{sync::Arc, time::Duration};
+use std::{
+    sync::Arc,
+    time::{Duration, SystemTime},
+};
 
 use chrono::{DateTime, Local};
 use iced::{
     Alignment, Element, Length, Theme,
     keyboard::{Key, key::Named},
     widget::{
-        column, container, image, row, scrollable, scrollable::Viewport, space, text, text_editor,
+        button, column, container, image, row, scrollable, scrollable::Viewport, space, text,
+        text_editor,
     },
 };
 use mtrx_core::{
-    Event, EventContent, MembershipChange, MessageKind, OwnedRoomId, RoomTimeline, SendState,
-    TimelineEntry,
+    Event, EventContent, MembershipChange, MessageKind, OwnedRoomId, RoomTimeline,
+    ScheduledMessage, SendState, TimelineEntry,
 };
 
 use crate::{
@@ -20,6 +24,7 @@ use crate::{
     fonts,
     math::{self, Math, Rendered},
     message,
+    send_later::{self, SendLater},
 };
 
 /// Entries rendered when a room opens; laying out every loaded entry gets
@@ -36,6 +41,7 @@ pub struct Room {
     pub timeline: Arc<RoomTimeline>,
     pub entries: Vec<TimelineEntry>,
     pub composer: text_editor::Content,
+    pub later: SendLater,
     /// How many of the newest entries are rendered.
     shown: usize,
     pub paginating: bool,
@@ -59,6 +65,7 @@ impl Room {
             entries: timeline.current(),
             timeline,
             composer: text_editor::Content::new(),
+            later: SendLater::default(),
             shown: WINDOW,
             paginating: false,
             at_start: false,
@@ -105,6 +112,8 @@ impl Room {
         theme: &Theme,
         math: &'a Math,
         params: &math::Params,
+        scheduled: &[&'a ScheduledMessage],
+        now: SystemTime,
     ) -> Element<'a, Message> {
         let header = container(text(name).size(18).font(fonts::SEMIBOLD)).padding([12, 24]);
 
@@ -171,20 +180,62 @@ impl Room {
             .height(Length::Fill)
             .width(Length::Fill);
 
+        let editing = self.later.editing.is_some();
         let composer = text_editor(&self.composer)
             .placeholder("Message…  (Markdown, $…$ for math; Shift+Enter for a new line)")
             .on_action(Message::Composer)
-            .key_binding(|press| {
-                let enter = matches!(press.key, Key::Named(Named::Enter));
-                if enter && !press.modifiers.shift() {
+            .key_binding(move |press| match press.key {
+                Key::Named(Named::Enter) if !press.modifiers.shift() => {
                     Some(text_editor::Binding::Custom(Message::Send))
-                } else {
-                    text_editor::Binding::from_key_press(press)
                 }
+                Key::Named(Named::Escape) if editing => Some(text_editor::Binding::Custom(
+                    Message::Later(send_later::Message::CancelEdit),
+                )),
+                _ => text_editor::Binding::from_key_press(press),
             })
             .padding(10)
             .max_height(200);
-        let mut bottom = column![composer].spacing(4).padding([8, 24]);
+        let later = button(
+            text(if editing {
+                "Change time…"
+            } else {
+                "Send later…"
+            })
+            .size(13),
+        )
+        .padding([10, 12])
+        .style(button::secondary)
+        .on_press(Message::Later(send_later::Message::TogglePicker));
+
+        let composer_empty = self.composer.text().trim().is_empty();
+        let mut bottom = column![].spacing(6).padding([8, 24]);
+        if !scheduled.is_empty() {
+            bottom = bottom.push(send_later::queue(
+                scheduled,
+                &self.later,
+                composer_empty,
+                now,
+            ));
+        }
+        if let Some(picker) = send_later::picker(&self.later, !composer_empty, now) {
+            bottom = bottom.push(picker);
+        }
+        if editing {
+            bottom = bottom.push(
+                row![
+                    text("Editing a scheduled message: Enter saves, Esc cancels.")
+                        .size(12)
+                        .style(text::secondary),
+                    button(text("Cancel editing").size(12))
+                        .padding([2, 8])
+                        .style(button::text)
+                        .on_press(Message::Later(send_later::Message::CancelEdit)),
+                ]
+                .spacing(8)
+                .align_y(Alignment::Center),
+            );
+        }
+        bottom = bottom.push(row![composer, later].spacing(8).align_y(Alignment::End));
         if let Some(error) = &self.error {
             bottom = bottom.push(text(error).size(12).style(text::danger));
         }
