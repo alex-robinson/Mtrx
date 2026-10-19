@@ -11,7 +11,7 @@ use futures_util::StreamExt;
 use iced::Size;
 use iced_test::simulator::Simulator;
 use mtrx_core::{
-    EventContent, NewRoom, Permissions, Profile, RoomOrAliasId, SecretStore, Session,
+    EventContent, NewRoom, OwnedEventId, Permissions, Profile, RoomOrAliasId, SecretStore, Session,
     TimelineEntry,
     test_support::{PASSWORD, homeserver, register, unique_name},
 };
@@ -114,11 +114,49 @@ async fn accept_invite(session: &Session, room: &OwnedRoomId) {
 }
 
 /// Send and wait until the server has it.
-async fn send(timeline: &RoomTimeline, text: &str) {
-    tokio::time::timeout(TIMEOUT, timeline.send_markdown(text).await.unwrap().sent())
-        .await
-        .unwrap()
-        .unwrap();
+async fn send(timeline: &RoomTimeline, text: &str) -> OwnedEventId {
+    send_reply(timeline, text, None).await
+}
+
+async fn send_reply(
+    timeline: &RoomTimeline,
+    text: &str,
+    to: Option<&OwnedEventId>,
+) -> OwnedEventId {
+    tokio::time::timeout(
+        TIMEOUT,
+        timeline
+            .send_markdown(text, to.map(|id| &**id))
+            .await
+            .unwrap()
+            .sent(),
+    )
+    .await
+    .unwrap()
+    .unwrap()
+}
+
+/// The key of the message with `body`, once the timeline has it.
+async fn key_of(timeline: &RoomTimeline, body: &str) -> mtrx_core::EventKey {
+    tokio::time::timeout(TIMEOUT, async {
+        let mut updates = std::pin::pin!(timeline.updates());
+        while let Some(entries) = updates.next().await {
+            let found = entries.iter().find_map(|e| match e {
+                TimelineEntry::Event(ev)
+                    if matches!(&ev.content, EventContent::Message(m) if m.body == body) =>
+                {
+                    Some(ev.key.clone())
+                }
+                _ => None,
+            });
+            if let Some(key) = found {
+                return key;
+            }
+        }
+        unreachable!()
+    })
+    .await
+    .unwrap()
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -196,12 +234,13 @@ async fn main_screen_with_math() {
     })
     .await
     .unwrap();
+    let mut sent = Vec::new();
     for text in [
         "Morning! Draft of the **ice flux** section is up.",
         r"The basal melt rate follows $\dot m = \frac{G + \tau_b u_b}{\rho_i L}$ where $G$ is the geothermal flux.",
         "Steady state requires\n$$\\frac{\\partial H}{\\partial t} = -\\nabla \\cdot (H \\bar{\\mathbf{u}}) + \\dot a - \\dot m = 0$$",
     ] {
-        send(&alice_timeline, text).await;
+        sent.push(send(&alice_timeline, text).await);
     }
     let bob_timeline = bob.timeline(&room).await.unwrap();
     send(
@@ -209,7 +248,12 @@ async fn main_screen_with_math() {
         "Looks good, but check the sign of $\\dot m$ in eq. 2 🙂",
     )
     .await;
-    send(&bob_timeline, "Which geothermal flux dataset is it?").await;
+    send_reply(
+        &bob_timeline,
+        "Which geothermal flux dataset is it?",
+        Some(&sent[0]),
+    )
+    .await;
     let carol_timeline = carol.timeline(&room).await.unwrap();
     send(
         &carol_timeline,
@@ -221,6 +265,23 @@ async fn main_screen_with_math() {
         "Coffee before the meeting?",
     )
     .await;
+    let draft = "Morning! Draft of the **ice flux** section is up.";
+    carol_timeline
+        .toggle_reaction(&key_of(&carol_timeline, draft).await, "🎉")
+        .await
+        .unwrap();
+    bob_timeline
+        .toggle_reaction(&key_of(&bob_timeline, draft).await, "🎉")
+        .await
+        .unwrap();
+    alice_timeline
+        .toggle_reaction(
+            &key_of(&alice_timeline, "Which geothermal flux dataset is it?").await,
+            "👍",
+        )
+        .await
+        .unwrap();
+    bob_timeline.mark_read().await.unwrap();
 
     // Alice's view once the room list knows the space and the DM's picture.
     let list = Arc::new(alice.room_list().await.unwrap());
@@ -245,11 +306,27 @@ async fn main_screen_with_math() {
     let entries = tokio::time::timeout(TIMEOUT, async {
         let mut updates = std::pin::pin!(timeline.updates());
         while let Some(entries) = updates.next().await {
-            let from_carol = entries.iter().any(|e| {
-                matches!(e, TimelineEntry::Event(ev)
-                    if ev.sender == carol.user_id() && matches!(ev.content, EventContent::Message(_)))
+            let events = || {
+                entries.iter().filter_map(|e| match e {
+                    TimelineEntry::Event(ev) => Some(ev),
+                    _ => None,
+                })
+            };
+            let messages = || {
+                events().filter_map(|ev| match &ev.content {
+                    EventContent::Message(m) => Some(m),
+                    _ => None,
+                })
+            };
+            let from_carol = events().any(|ev| {
+                ev.sender == carol.user_id() && matches!(ev.content, EventContent::Message(_))
             });
-            if from_carol {
+            let reply_loaded =
+                messages().any(|m| m.in_reply_to.as_ref().is_some_and(|r| r.preview.is_some()));
+            let reactions = messages().filter(|m| !m.reactions.is_empty()).count() == 2
+                && messages().any(|m| m.reactions.iter().any(|r| r.count == 2));
+            let read = events().any(|ev| ev.read_by.contains(&bob.user_id()));
+            if from_carol && reply_loaded && reactions && read {
                 return entries;
             }
         }
@@ -283,8 +360,25 @@ async fn main_screen_with_math() {
         open.calls.link = Some(Url::parse("https://meet.jit.si/ice-sheets-weekly").unwrap());
         open.calls.space_service =
             Some(CallService::jitsi("Lab Jitsi", "https://video.lab.example").unwrap());
-        // The start menu open in one of the two shots.
+        // The start menu and reaction picker in one shot, a reply in the other.
         open.calls.menu = mode == Mode::Dark;
+        open.typing = vec!["bob".into()];
+        if mode == Mode::Dark {
+            open.picker = Some(hovered.clone());
+        } else {
+            let carol_message = entries.iter().rev().find_map(|e| match e {
+                TimelineEntry::Event(ev) if ev.sender == carol.user_id() => Some(ev),
+                _ => None,
+            });
+            open.compose = Compose::Reply(
+                actions::Target::of(
+                    carol_message.unwrap(),
+                    "carol".into(),
+                    "I can run the sensitivity tests tonight.".into(),
+                )
+                .unwrap(),
+            );
+        }
         main.room = Some(open);
         for (mxc, size) in main.avatars_on_screen() {
             main.avatars.load_now(&alice, &mxc, size).await;
@@ -348,7 +442,7 @@ async fn send_later_bar() {
     tokio::time::timeout(
         TIMEOUT,
         timeline
-            .send_markdown("Reviews are due **Friday**.")
+            .send_markdown("Reviews are due **Friday**.", None)
             .await
             .unwrap()
             .sent(),
@@ -364,6 +458,7 @@ async fn send_later_bar() {
         room_id: room.clone(),
         text: text.into(),
         send_at,
+        in_reply_to: None,
         overdue,
     };
     let mut main = Main::new(Arc::new(alice));
@@ -440,7 +535,7 @@ async fn big_room_benchmark() {
         } else {
             format!("message {i}: some **text** to read")
         };
-        last = Some(timeline.send_markdown(&text).await.unwrap());
+        last = Some(timeline.send_markdown(&text, None).await.unwrap());
     }
     tokio::time::timeout(Duration::from_secs(300), last.unwrap().sent())
         .await

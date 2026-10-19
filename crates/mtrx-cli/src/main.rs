@@ -325,7 +325,7 @@ async fn main() -> Result<()> {
             let text = read_text(text)?;
             let (session, _list) = synced(profile).await?;
             let timeline = session.timeline(&session.find_room(&room).await?).await?;
-            let pending = timeline.send_markdown(&text).await?;
+            let pending = timeline.send_markdown(&text, None).await?;
             let sent = tokio::time::timeout(SYNC_TIMEOUT, pending.sent()).await;
             session.stop_sync().await;
             sent.context("timed out sending")??;
@@ -337,7 +337,9 @@ async fn main() -> Result<()> {
             let text = read_text(text)?;
             let (session, _list) = synced(profile).await?;
             let room = session.find_room(&room).await?;
-            let message = session.schedule(&room, text.trim_end(), send_at).await?;
+            let message = session
+                .schedule(&room, text.trim_end(), send_at, None)
+                .await?;
             session.stop_sync().await;
             println!(
                 "Scheduled for {} (id {}). It is sent while Mtrx or `mtrx watch` runs.",

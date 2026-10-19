@@ -23,14 +23,21 @@ pub fn event_line(event: &Event) -> String {
         EventContent::Message(m) => {
             let mut text = match m.kind {
                 MessageKind::Emote => format!("* {who} {}", m.body),
-                MessageKind::Text | MessageKind::Notice => format!("{who}: {}", m.body),
+                MessageKind::Text | MessageKind::Notice => match &m.in_reply_to {
+                    Some(reply) => format!(
+                        "{who} (replying to {}): {}",
+                        reply.sender_name.as_deref().unwrap_or("a message"),
+                        m.body
+                    ),
+                    None => format!("{who}: {}", m.body),
+                },
                 kind => format!("{who}: [{kind:?}] {}", m.body),
             };
             if m.edited {
                 text += " (edited)";
             }
-            for (key, count) in &m.reactions {
-                let _ = write!(text, " [{key} {count}]");
+            for reaction in &m.reactions {
+                let _ = write!(text, " [{} {}]", reaction.key, reaction.count);
             }
             text
         }

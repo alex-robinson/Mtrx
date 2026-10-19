@@ -199,7 +199,10 @@ async fn encrypted_messages_between_users() -> Result<()> {
 
     let event_id = timeout(
         "send",
-        alice_timeline.send_markdown("hello **bob**").await?.sent(),
+        alice_timeline
+            .send_markdown("hello **bob**", None)
+            .await?
+            .sent(),
     )
     .await??;
 
@@ -267,7 +270,7 @@ async fn avatars_in_room_list_and_timeline() -> Result<()> {
         .join(<&mtrx_core::RoomOrAliasId>::from(&*room))
         .await?;
     let bob_timeline = bob.session.timeline(&room).await?;
-    timeout("send", bob_timeline.send_markdown("hi").await?.sent()).await??;
+    timeout("send", bob_timeline.send_markdown("hi", None).await?.sent()).await??;
 
     // A DM without a room picture shows the other user's.
     let list = alice.session.room_list().await?;
@@ -313,7 +316,7 @@ async fn recovery_decrypts_history_on_new_device() -> Result<()> {
     timeout(
         "send",
         timeline
-            .send_markdown("written before recovery")
+            .send_markdown("written before recovery", None)
             .await?
             .sent(),
     )
@@ -422,11 +425,15 @@ async fn scheduled_messages() -> Result<()> {
     let in_secs = |s| SystemTime::now() + Duration::from_secs(s);
 
     assert!(matches!(
-        session.schedule(&room, "past", SystemTime::now()).await,
+        session
+            .schedule(&room, "past", SystemTime::now(), None)
+            .await,
         Err(mtrx_core::Error::SendTimeInPast)
     ));
-    let late = session.schedule(&room, "late", in_secs(1)).await?;
-    let cancelled = session.schedule(&room, "cancelled", in_secs(3600)).await?;
+    let late = session.schedule(&room, "late", in_secs(1), None).await?;
+    let cancelled = session
+        .schedule(&room, "cancelled", in_secs(3600), None)
+        .await?;
     session.unschedule(&cancelled.id).await?;
     session.stop_sync().await;
     drop(session);
@@ -436,7 +443,9 @@ async fn scheduled_messages() -> Result<()> {
     let session = Session::restore(profile()?).await?;
     assert_eq!(session.scheduled(), vec![late.clone()], "persisted");
     session.start_sync().await;
-    let on_time = session.schedule(&room, "on **time**", in_secs(2)).await?;
+    let on_time = session
+        .schedule(&room, "on **time**", in_secs(2), None)
+        .await?;
     session.start_scheduler_for_test(Duration::from_secs(1));
 
     let timeline = session.timeline(&room).await?;
@@ -697,6 +706,149 @@ async fn room_management() -> Result<()> {
     s.leave(&room).await?;
     wait_for("left", list.updates(), |state| {
         !state.rooms.iter().any(|r| r.id == room)
+    })
+    .await?;
+    Ok(())
+}
+
+/// The message of `entries` whose body is `body`.
+fn find_message<'a>(entries: &'a [TimelineEntry], body: &str) -> Option<&'a mtrx_core::Event> {
+    entries.iter().find_map(|e| match e {
+        TimelineEntry::Event(ev) if matches!(&ev.content, EventContent::Message(m) if m.body == body) => {
+            Some(ev)
+        }
+        _ => None,
+    })
+}
+
+fn message(event: &mtrx_core::Event) -> &mtrx_core::Message {
+    match &event.content {
+        EventContent::Message(m) => m,
+        _ => panic!("not a message"),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs local Synapse (testserver/run.sh)"]
+async fn replies_reactions_edits_typing_receipts() -> Result<()> {
+    let (_, alice) = new_user("talk").await?;
+    let (_, bob) = new_user("talk").await?;
+    let room = alice
+        .session
+        .create_room(NewRoom {
+            name: Some("talk".into()),
+            encrypted: true,
+            invite: vec![bob.session.user_id()],
+            ..Default::default()
+        })
+        .await?;
+    join_synced(&bob, &room, "talk").await?;
+    let alice_timeline = alice.session.timeline(&room).await?;
+    wait_for("bob joined", alice_timeline.updates(), |entries| {
+        entries
+            .iter()
+            .any(|e| matches!(e, TimelineEntry::Event(ev) if ev.sender == bob.session.user_id()))
+    })
+    .await?;
+    let bob_timeline = bob.session.timeline(&room).await?;
+
+    let question = timeout(
+        "send",
+        bob_timeline
+            .send_markdown("Which dataset?", None)
+            .await?
+            .sent(),
+    )
+    .await??;
+    wait_for("question arrives", alice_timeline.updates(), |e| {
+        has_message(e, "Which dataset?")
+    })
+    .await?;
+
+    // Reply.
+    timeout(
+        "reply",
+        alice_timeline
+            .send_markdown("The **new** one", Some(&question))
+            .await?
+            .sent(),
+    )
+    .await??;
+    let entries = wait_for("bob sees the reply", bob_timeline.updates(), |e| {
+        find_message(e, "The **new** one").is_some_and(|ev| {
+            message(ev)
+                .in_reply_to
+                .as_ref()
+                .is_some_and(|r| r.preview.is_some())
+        })
+    })
+    .await?;
+    let reply = message(find_message(&entries, "The **new** one").unwrap())
+        .in_reply_to
+        .clone()
+        .unwrap();
+    assert_eq!(reply.event_id, question);
+    assert_eq!(reply.preview.as_deref(), Some("Which dataset?"));
+    assert_eq!(reply.sender, Some(bob.session.user_id()));
+
+    // Reaction, seen as ours by alice and as someone else's by bob.
+    let entries = alice_timeline.current();
+    let question_key = find_message(&entries, "Which dataset?")
+        .unwrap()
+        .key
+        .clone();
+    alice_timeline.toggle_reaction(&question_key, "👍").await?;
+    wait_for("bob sees the reaction", bob_timeline.updates(), |e| {
+        find_message(e, "Which dataset?").is_some_and(|ev| {
+            message(ev).reactions
+                == [mtrx_core::Reaction {
+                    key: "👍".into(),
+                    count: 1,
+                    own: false,
+                }]
+        })
+    })
+    .await?;
+    alice_timeline.toggle_reaction(&question_key, "👍").await?;
+    wait_for("reaction removed", bob_timeline.updates(), |e| {
+        find_message(e, "Which dataset?").is_some_and(|ev| message(ev).reactions.is_empty())
+    })
+    .await?;
+
+    // Edit and delete our own message.
+    let entries = alice_timeline.current();
+    let own = find_message(&entries, "The **new** one").unwrap();
+    assert!(own.editable);
+    assert!(!find_message(&entries, "Which dataset?").unwrap().editable);
+    let own_key = own.key.clone();
+    alice_timeline
+        .edit_markdown(&own_key, "The *newest* one")
+        .await?;
+    wait_for("bob sees the edit", bob_timeline.updates(), |e| {
+        find_message(e, "The *newest* one").is_some_and(|ev| message(ev).edited)
+    })
+    .await?;
+    let entries = alice_timeline.current();
+    let own_key = find_message(&entries, "The *newest* one")
+        .unwrap()
+        .key
+        .clone();
+    alice_timeline.redact(&own_key).await?;
+    wait_for("bob sees it deleted", bob_timeline.updates(), |e| {
+        !has_message(e, "The *newest* one")
+            && e.iter().any(|x| matches!(x, TimelineEntry::Event(ev) if matches!(ev.content, EventContent::Redacted)))
+    })
+    .await?;
+
+    // Typing.
+    let typing = bob_timeline.typing_updates();
+    alice_timeline.typing(true).await?;
+    wait_for("bob sees alice typing", typing, |names| names.len() == 1).await?;
+
+    // Read receipts: bob read up to the latest event.
+    bob_timeline.mark_read().await?;
+    wait_for("alice sees bob's receipt", alice_timeline.updates(), |e| {
+        e.iter().any(|x| matches!(x, TimelineEntry::Event(ev) if ev.read_by.contains(&bob.session.user_id())))
     })
     .await?;
     Ok(())

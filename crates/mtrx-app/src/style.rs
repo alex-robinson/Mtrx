@@ -247,6 +247,76 @@ pub fn danger_button(theme: &Theme, status: button::Status) -> button::Style {
     rounded_button(button::danger)(theme, status)
 }
 
+/// The quoted start of a replied-to message, and the composer's reply bar.
+pub fn reply_quote(theme: &Theme) -> container::Style {
+    let palette = theme.extended_palette();
+    container::Style {
+        background: Some(Background::Color(palette.background.weak.color)),
+        border: Border::default()
+            .rounded(4)
+            .width(0)
+            .color(palette.primary.base.color),
+        ..Default::default()
+    }
+}
+
+/// The bar left of a reply quote.
+pub fn quote_accent(theme: &Theme) -> container::Style {
+    container::Style {
+        background: Some(Background::Color(
+            theme.extended_palette().primary.base.color,
+        )),
+        border: Border::default().rounded(2),
+        ..Default::default()
+    }
+}
+
+/// Buttons floating over a hovered message.
+pub fn toolbar(theme: &Theme) -> container::Style {
+    let palette = theme.extended_palette();
+    container::Style {
+        background: Some(Background::Color(palette.background.base.color)),
+        border: Border::default()
+            .rounded(6)
+            .width(1)
+            .color(palette.background.strong.color),
+        shadow: iced::Shadow {
+            color: Color::BLACK.scale_alpha(0.12),
+            offset: iced::Vector::new(0.0, 1.0),
+            blur_radius: 4.0,
+        },
+        ..Default::default()
+    }
+}
+
+/// A reaction pill; highlighted if it includes ours.
+pub fn reaction(own: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
+    move |theme, status| {
+        let palette = theme.extended_palette();
+        let (background, border) = if own {
+            (
+                palette.primary.weak.color.scale_alpha(0.4),
+                palette.primary.base.color,
+            )
+        } else {
+            (
+                palette.background.weak.color,
+                palette.background.strong.color,
+            )
+        };
+        let background = match status {
+            button::Status::Hovered => palette.background.strong.color,
+            _ => background,
+        };
+        button::Style {
+            background: Some(Background::Color(background)),
+            text_color: palette.background.base.text,
+            border: Border::default().rounded(10).width(1).color(border),
+            ..Default::default()
+        }
+    }
+}
+
 /// A call card in the timeline.
 pub fn card(theme: &Theme) -> container::Style {
     let palette = theme.extended_palette();

@@ -11,7 +11,7 @@ use iced::{
     keyboard::{Key, key::Named},
     widget::{
         button, column, container, image, mouse_area, row, rule, scrollable, scrollable::Viewport,
-        space, text, text_editor,
+        space, stack, text, text_editor,
     },
 };
 use mtrx_core::{
@@ -20,6 +20,7 @@ use mtrx_core::{
 };
 
 use crate::{
+    actions::{self, Compose, Target},
     app::Message,
     avatar::{self, Avatars, Shape},
     calls::{self, RoomCalls},
@@ -55,6 +56,13 @@ pub struct Room {
     pub calls: RoomCalls,
     /// The room menu (invite, edit, leave) is open.
     pub menu: bool,
+    pub compose: Compose,
+    /// The timeline row whose reaction picker is open.
+    pub picker: Option<String>,
+    /// The timeline row whose deletion awaits confirmation.
+    pub confirm_delete: Option<String>,
+    /// Names of others typing.
+    pub typing: Vec<String>,
     /// How many of the newest entries are rendered.
     shown: usize,
     pub paginating: bool,
@@ -78,6 +86,10 @@ impl Room {
         Self {
             calls: RoomCalls::new(id.clone()),
             menu: false,
+            compose: Compose::New,
+            picker: None,
+            confirm_delete: None,
+            typing: Vec::new(),
             id,
             entries: timeline.current(),
             timeline,
@@ -162,6 +174,9 @@ impl Room {
             colored_names: look.colored_names,
             call_services: look.call_services,
             hovered: self.hovered.as_deref(),
+            picker: self.picker.as_deref(),
+            confirm_delete: self.confirm_delete.as_deref(),
+            composer_empty: self.composer.text().trim().is_empty(),
         };
 
         let mut timeline = column![].padding([8.0, TIMELINE_PADDING]);
@@ -214,7 +229,7 @@ impl Room {
             .height(Length::Fill)
             .width(Length::Fill);
 
-        let editing = self.later.editing.is_some();
+        let cancellable = self.compose.cancellable();
         let composer = text_editor(&self.composer)
             .style(style::editor)
             .placeholder("Message…  (Markdown, $…$ for math; Shift+Enter for a new line)")
@@ -223,51 +238,52 @@ impl Room {
                 Key::Named(Named::Enter) if !press.modifiers.shift() => {
                     Some(text_editor::Binding::Custom(Message::Send))
                 }
-                Key::Named(Named::Escape) if editing => Some(text_editor::Binding::Custom(
-                    Message::Later(send_later::Message::CancelEdit),
+                Key::Named(Named::Escape) if cancellable => Some(text_editor::Binding::Custom(
+                    Message::Act(actions::Message::CancelCompose),
                 )),
                 _ => text_editor::Binding::from_key_press(press),
             })
             .padding(10)
             .max_height(200);
-        let later = button(
-            text(if editing {
-                "Change time…"
-            } else {
-                "Send later…"
-            })
-            .size(13),
-        )
-        .padding([10, 12])
-        .style(style::secondary_button)
-        .on_press(Message::Later(send_later::Message::TogglePicker));
+        // An edit of a sent message cannot be scheduled.
+        let later = (!matches!(self.compose, Compose::Edit(_))).then(|| {
+            button(
+                text(if self.compose.scheduled().is_some() {
+                    "Change time…"
+                } else {
+                    "Send later…"
+                })
+                .size(13),
+            )
+            .padding([10, 12])
+            .style(style::secondary_button)
+            .on_press(Message::Later(send_later::Message::TogglePicker))
+        });
 
         let composer_empty = self.composer.text().trim().is_empty();
         let mut bottom = column![]
             .spacing(6)
             .padding([8.0, TIMELINE_PADDING + MESSAGE_PADDING]);
         if !scheduled.messages.is_empty() {
-            bottom = bottom.push(send_later::queue(scheduled, &self.later, composer_empty));
+            let editing = self.compose.scheduled().map(|m| m.id.as_str());
+            bottom = bottom.push(send_later::queue(scheduled, editing, composer_empty));
         }
-        if let Some(picker) = send_later::picker(&self.later, !composer_empty, scheduled.now) {
+        if later.is_some()
+            && let Some(picker) = send_later::picker(&self.later, !composer_empty, scheduled.now)
+        {
             bottom = bottom.push(picker);
         }
-        if editing {
-            bottom = bottom.push(
-                row![
-                    text("Editing a scheduled message: Enter saves, Esc cancels.")
-                        .size(12)
-                        .style(text::secondary),
-                    button(text("Cancel editing").size(12))
-                        .padding([2, 8])
-                        .style(style::text_button)
-                        .on_press(Message::Later(send_later::Message::CancelEdit)),
-                ]
-                .spacing(8)
-                .align_y(Alignment::Center),
-            );
+        if let Some(typing) = actions::typing(&self.typing) {
+            bottom = bottom.push(typing);
         }
-        bottom = bottom.push(row![composer, later].spacing(8).align_y(Alignment::End));
+        if let Some(bar) = self.compose.bar() {
+            bottom = bottom.push(bar);
+        }
+        let mut input = row![composer].spacing(8).align_y(Alignment::End);
+        if let Some(later) = later {
+            input = input.push(later);
+        }
+        bottom = bottom.push(input);
         if let Some(error) = &self.error {
             bottom = bottom.push(text(error).size(12).style(text::danger));
         }
@@ -275,7 +291,6 @@ impl Room {
         column![header, timeline, bottom].into()
     }
 
-    /// Room picture, name and topic, above a separator.
     /// Invite, edit name and topic, leave.
     fn menu_view<'a>(&self, summary: Option<&'a RoomSummary>) -> Element<'a, Message> {
         let name = summary.map_or_else(String::new, |s| s.name.clone());
@@ -402,6 +417,9 @@ struct Context<'a, 'b> {
     colored_names: bool,
     call_services: &'b [CallService],
     hovered: Option<&'b str>,
+    picker: Option<&'b str>,
+    confirm_delete: Option<&'b str>,
+    composer_empty: bool,
 }
 
 fn event_view<'a>(
@@ -435,26 +453,21 @@ fn event_view<'a>(
                     .style(text::secondary)
                     .into(),
             };
-            let content = match calls::cards(&m.document.links(), context.call_services) {
-                Some(cards) => column![content, cards].spacing(6).into(),
-                None => content,
-            };
-            if !m.edited && m.reactions.is_empty() {
-                content
-            } else {
-                let mut extras = row![].spacing(6);
-                if m.edited {
-                    extras = extras.push(text("(edited)").size(11).style(text::secondary));
-                }
-                for (key, count) in &m.reactions {
-                    extras = extras.push(
-                        container(text(format!("{key} {count}")).size(12))
-                            .padding([1, 6])
-                            .style(container::rounded_box),
-                    );
-                }
-                column![content, extras].spacing(2).into()
+            let mut parts = column![].spacing(4);
+            if let Some(reply) = &m.in_reply_to {
+                parts = parts.push(actions::quote(reply));
             }
+            parts = parts.push(content);
+            if let Some(cards) = calls::cards(&m.document.links(), context.call_services) {
+                parts = parts.push(cards);
+            }
+            if m.edited {
+                parts = parts.push(text("(edited)").size(11).style(text::secondary));
+            }
+            if !m.reactions.is_empty() {
+                parts = parts.push(actions::reactions(event, &m.reactions));
+            }
+            parts.into()
         }
         EventContent::UnableToDecrypt => text("Unable to decrypt this message (waiting for keys)")
             .size(13)
@@ -479,6 +492,21 @@ fn event_view<'a>(
         item = item.push(sender_line(event, context.colored_names));
     }
     item = item.push(body);
+    let message = match &event.content {
+        EventContent::Message(m) => Some(m),
+        _ => None,
+    };
+    if let Some(m) = message
+        && context.picker == Some(event.id.as_str())
+    {
+        item = item.push(actions::picker(event, &m.reactions));
+    }
+    if context.confirm_delete == Some(event.id.as_str()) {
+        item = item.push(actions::confirm_delete(event));
+    }
+    if let Some(markers) = actions::read_markers(event, context.avatars) {
+        item = item.push(markers);
+    }
     match &event.send_state {
         SendState::Sent => {}
         SendState::Sending => item = item.push(text("sending…").size(11).style(text::secondary)),
@@ -510,6 +538,23 @@ fn event_view<'a>(
         .padding(Padding::new(MESSAGE_PADDING).top(top).bottom(1))
         .width(Length::Fill)
         .style(style::message_row(hovered));
+    // Actions float over the top right of a hovered message.
+    let row: Element<'a, Message> = match message {
+        Some(m) if hovered && event.event_id.is_some() => {
+            let preview = first_line(&m.document.to_plain_text());
+            let target = Target::of(event, display_name(event), preview);
+            // Editing replaces the composer's text, so only from an empty one.
+            let edit_text = context.composer_empty.then(|| m.body.clone());
+            stack![
+                row,
+                container(actions::toolbar(event, target, edit_text))
+                    .align_right(Length::Fill)
+                    .padding(Padding::ZERO.top(2.0).right(8.0)),
+            ]
+            .into()
+        }
+        _ => row.into(),
+    };
     let row = mouse_area(row)
         .on_enter(Message::Hover(event.id.clone(), true))
         .on_exit(Message::Hover(event.id.clone(), false));
@@ -564,6 +609,14 @@ fn day_divider<'a>(day: SystemTime) -> Element<'a, Message> {
     .align_y(Alignment::Center)
     .padding([10.0, MESSAGE_PADDING])
     .into()
+}
+
+/// The first non-empty line of a message, for previews.
+fn first_line(body: &str) -> String {
+    body.lines()
+        .find(|l| !l.trim().is_empty())
+        .unwrap_or_default()
+        .to_owned()
 }
 
 fn display_name(event: &Event) -> String {

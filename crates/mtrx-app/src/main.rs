@@ -3,6 +3,7 @@
 // matrix-sdk futures are deeply nested.
 #![recursion_limit = "256"]
 
+mod actions;
 mod app;
 mod avatar;
 mod calls;

@@ -14,7 +14,7 @@ use std::{
 use futures_util::Stream;
 use matrix_sdk::{
     Client,
-    ruma::{OwnedRoomId, RoomId},
+    ruma::{EventId, OwnedEventId, OwnedRoomId, RoomId},
 };
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, watch};
@@ -40,6 +40,9 @@ pub struct ScheduledMessage {
     pub text: String,
     #[serde(with = "millis")]
     pub send_at: SystemTime,
+    /// The message this answers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub in_reply_to: Option<OwnedEventId>,
     /// Its time passed while no scheduler ran; it waits for the user to
     /// send, reschedule or cancel it.
     pub overdue: bool,
@@ -121,7 +124,13 @@ impl Schedule {
             .client
             .get_room(&message.room_id)
             .ok_or_else(|| Error::RoomNotFound(message.room_id.to_string()))?;
-        send_markdown(&room, &self.send_lock, &message.text).await
+        send_markdown(
+            &room,
+            &self.send_lock,
+            &message.text,
+            message.in_reply_to.as_deref(),
+        )
+        .await
     }
 }
 
@@ -149,6 +158,7 @@ impl Session {
         room_id: &RoomId,
         text: &str,
         send_at: SystemTime,
+        in_reply_to: Option<&EventId>,
     ) -> Result<ScheduledMessage> {
         self.room(room_id)?;
         let send_at = future_time(send_at)?;
@@ -157,6 +167,7 @@ impl Session {
             room_id: room_id.to_owned(),
             text: text.to_owned(),
             send_at,
+            in_reply_to: in_reply_to.map(ToOwned::to_owned),
             overdue: false,
         };
         self.schedule

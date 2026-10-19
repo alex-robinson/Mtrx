@@ -229,6 +229,7 @@ impl Session {
                 &room,
                 &self.send_lock,
                 &format!("Call link for this room: {url}"),
+                None,
             )
             .await?;
         }
@@ -268,7 +269,13 @@ impl Session {
     /// Post a call link as a message.
     pub async fn post_call(&self, room_id: &RoomId, service: &str, url: &Url) -> Result<()> {
         let room = self.room(room_id)?;
-        send_markdown(&room, &self.send_lock, &format!("{service} call: {url}")).await?;
+        send_markdown(
+            &room,
+            &self.send_lock,
+            &format!("{service} call: {url}"),
+            None,
+        )
+        .await?;
         Ok(())
     }
 

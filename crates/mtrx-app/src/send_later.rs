@@ -20,7 +20,6 @@ pub enum Message {
     /// Schedule the composer's text (or save the edited message) for this time.
     At(SystemTime),
     Edit(ScheduledMessage),
-    CancelEdit,
     SendNow(String),
     Cancel(String),
     /// The composer's text was scheduled or the edit saved.
@@ -34,8 +33,6 @@ pub enum Message {
 pub struct SendLater {
     /// The time picker is open, with this custom time typed.
     pub picker: Option<String>,
-    /// The scheduled message loaded into the composer for editing.
-    pub editing: Option<ScheduledMessage>,
 }
 
 impl SendLater {
@@ -57,11 +54,10 @@ pub struct Pending<'a> {
 /// The bar of a room's scheduled messages.
 pub fn queue<'a>(
     pending: &Pending<'a>,
-    state: &SendLater,
+    editing: Option<&str>,
     composer_empty: bool,
 ) -> Element<'a, app::Message> {
     let (messages, now) = (&pending.messages, pending.now);
-    let editing = state.editing.as_ref().map(|m| m.id.as_str());
     column(messages.iter().map(|message| {
         // Editing replaces the composer's text, so only from an empty composer.
         let can_edit = editing.is_none() && composer_empty;

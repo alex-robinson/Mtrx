@@ -3,6 +3,9 @@
 //! Frontends (the `mtrx` CLI, the GUI) are built on this crate. It never
 //! prints or draws: it exposes plain data types and live update streams.
 
+// matrix-sdk futures are deeply nested.
+#![recursion_limit = "256"]
+
 mod calls;
 mod encryption;
 mod error;
@@ -34,8 +37,8 @@ pub use secrets::SecretStore;
 pub use send_time::{describe_send_time, parse_send_time};
 pub use session::Session;
 pub use timeline::{
-    Event, EventContent, MembershipChange, Message, MessageKind, PendingSend, RoomTimeline,
-    SendState, TimelineEntry,
+    Event, EventContent, EventKey, MembershipChange, Message, MessageKind, PendingSend, Reaction,
+    Reply, RoomTimeline, SendState, TimelineEntry,
 };
 
 pub use url::Url;
