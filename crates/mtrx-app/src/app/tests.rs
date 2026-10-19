@@ -2,6 +2,7 @@
 //! `cargo test -p mtrx-app -- --ignored`, images land in `target/ui-snapshots/`.
 
 use std::{
+    collections::HashMap,
     path::PathBuf,
     sync::Arc,
     time::{Duration, SystemTime},
@@ -11,8 +12,8 @@ use futures_util::StreamExt;
 use iced::Size;
 use iced_test::simulator::Simulator;
 use mtrx_core::{
-    EventContent, NewRoom, OwnedEventId, Permissions, Profile, RoomOrAliasId, SecretStore,
-    SendState, Session, TimelineEntry,
+    EventContent, NewRoom, OwnedEventId, Permissions, Profile, RoomKind, RoomOrAliasId, RoomTag,
+    SecretStore, Section, SendState, Session, TimelineEntry,
     test_support::{PASSWORD, homeserver, register, unique_name},
 };
 use tempfile::TempDir;
@@ -385,7 +386,7 @@ async fn main_screen_with_math() {
             );
         }
         main.room = Some(open);
-        for (mxc, size) in main.avatars_on_screen() {
+        for (mxc, size) in main.avatars_on_screen(Default::default()) {
             main.avatars.load_now(&alice, &mxc, size).await;
         }
 
@@ -830,4 +831,139 @@ async fn media_messages() {
         &app(Screen::Main(main_with(Some(viewer)).await), Mode::Light),
         "image-viewer",
     );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs local Synapse (testserver/run.sh)"]
+async fn room_categories() {
+    let dir = TempDir::new().unwrap();
+    let (_, alice) = user("arrange", &dir).await;
+    let (_, bob) = user("colleague", &dir).await;
+    let mut ids = HashMap::new();
+    for name in ["ice-sheets", "ocean", "admin", "archive", "seminar"] {
+        let id = alice
+            .create_room(NewRoom {
+                name: Some(name.into()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        ids.insert(name, id);
+    }
+    alice.direct_chat(&bob.user_id()).await.unwrap();
+    alice
+        .set_room_tag(&ids["ocean"], RoomTag::Favourite)
+        .await
+        .unwrap();
+    alice
+        .set_room_tag(&ids["archive"], RoomTag::LowPriority)
+        .await
+        .unwrap();
+    let mut projects = String::new();
+    alice
+        .change_room_categories(|c| {
+            let home = c.layout_mut(None);
+            projects = home.add_category("Projects");
+            home.place(&ids["ice-sheets"], Some(&projects));
+            home.place(&ids["seminar"], Some(&projects));
+            home.add_category("Teaching");
+        })
+        .await
+        .unwrap();
+    let list = alice.room_list().await.unwrap();
+    let rooms = tokio::time::timeout(TIMEOUT, async {
+        let mut updates = std::pin::pin!(list.updates());
+        while let Some(state) = updates.next().await {
+            let tag = |name| {
+                state
+                    .rooms
+                    .iter()
+                    .find(|r| r.id == ids[name])
+                    .map(|r| r.tag)
+            };
+            if state.loaded
+                && state.rooms.len() == 6
+                && state.rooms.iter().any(|r| r.kind == RoomKind::Direct)
+                && tag("ocean") == Some(RoomTag::Favourite)
+                && tag("archive") == Some(RoomTag::LowPriority)
+            {
+                return state;
+            }
+        }
+        unreachable!()
+    })
+    .await
+    .unwrap();
+    let session = Arc::new(alice);
+
+    let main_with = |configure: &dyn Fn(&mut Main)| {
+        let mut main = Main::new(session.clone());
+        main.rooms = rooms.clone();
+        main.verified = Some(true);
+        configure(&mut main);
+        app(Screen::Main(Box::new(main)), Mode::Light)
+    };
+    let send = |main: &mut Main, message| {
+        let _ = main.arrange.update(
+            message,
+            arrange::Context {
+                session: &session,
+                space: None,
+                rooms: &mut main.rooms.rooms,
+                grouping: Grouping::default(),
+            },
+        );
+    };
+
+    snapshot(
+        &main_with(&|main| {
+            send(main, arrange::Message::Row(ids["ice-sheets"].clone(), true));
+            send(
+                main,
+                arrange::Message::RoomMenu(Some(ids["ice-sheets"].clone())),
+            );
+        }),
+        "categories",
+    );
+    snapshot(
+        &main_with(&|main| {
+            send(main, arrange::Message::Row(ids["admin"].clone(), true));
+            send(main, arrange::Message::Pressed);
+            send(
+                main,
+                arrange::Message::Moved(iced::Point::new(120.0, 330.0)),
+            );
+            send(
+                main,
+                arrange::Message::Moved(iced::Point::new(130.0, 250.0)),
+            );
+            send(
+                main,
+                arrange::Message::Target(Section::Category(projects.clone()), true),
+            );
+        }),
+        "categories-drag",
+    );
+
+    // Dropping moves the room into the category; the menu favourites one.
+    let mut main = Main::new(session.clone());
+    main.rooms = rooms.clone();
+    for message in [
+        arrange::Message::Row(ids["admin"].clone(), true),
+        arrange::Message::Pressed,
+        arrange::Message::Moved(iced::Point::new(120.0, 330.0)),
+        arrange::Message::Moved(iced::Point::new(130.0, 250.0)),
+        arrange::Message::Target(Section::Category(projects.clone()), true),
+        arrange::Message::Released,
+        arrange::Message::MoveTo(ids["seminar"].clone(), Section::Favourites),
+    ] {
+        send(&mut main, message);
+    }
+    let home = main.arrange.categories.layout(None);
+    let in_projects = |name| home.category_of(&ids[name]).map(|c| c.id.clone());
+    assert_eq!(in_projects("admin"), Some(projects.clone()));
+    assert_eq!(in_projects("seminar"), None);
+    let seminar = main.rooms.rooms.iter().find(|r| r.id == ids["seminar"]);
+    assert_eq!(seminar.map(|r| r.tag), Some(RoomTag::Favourite));
+    assert!(main.arrange.drag.is_none());
 }

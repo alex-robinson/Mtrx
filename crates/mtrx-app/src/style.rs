@@ -380,3 +380,21 @@ pub fn viewer_backdrop(_theme: &Theme) -> container::Style {
         ..Default::default()
     }
 }
+
+/// A room list section while a room is dragged; highlighted under the cursor.
+pub fn drop_target(theme: &Theme, active: bool) -> container::Style {
+    let palette = theme.extended_palette();
+    if !active {
+        return container::Style::default();
+    }
+    container::Style {
+        background: Some(Background::Color(
+            palette.primary.weak.color.scale_alpha(0.2),
+        )),
+        border: Border::default()
+            .rounded(8)
+            .width(1)
+            .color(palette.primary.base.color.scale_alpha(0.6)),
+        ..Default::default()
+    }
+}

@@ -7,6 +7,7 @@
 #![recursion_limit = "256"]
 
 mod calls;
+mod categories;
 mod encryption;
 mod error;
 mod google;
@@ -26,6 +27,7 @@ mod timeline;
 pub mod test_support;
 
 pub use calls::{CallService, ServiceKind, recognize_call_link};
+pub use categories::{Category, Grouping, Layout, RoomCategories, RoomTag, Section, Sort};
 pub use encryption::{
     DeviceInfo, RecoveryStatus, RecoveryStep, Verification, VerificationEmoji, VerificationState,
 };

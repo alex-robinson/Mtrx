@@ -13,7 +13,7 @@ use iced::{
         button, column, container, pick_list, row, scrollable, space, text, text_input, toggler,
     },
 };
-use mtrx_core::{CallService, GoogleClient, OwnedRoomId, Permissions, ServiceKind};
+use mtrx_core::{CallService, GoogleClient, Grouping, OwnedRoomId, Permissions, ServiceKind};
 use serde::{Deserialize, Serialize};
 
 use crate::{app, dialog::Kind, fonts, style};
@@ -29,6 +29,8 @@ pub struct Settings {
     pub desktop_notifications: bool,
     /// Services for starting calls; the first is the default.
     pub call_services: Vec<CallService>,
+    /// The room list's built-in sections.
+    pub room_list: Grouping,
 }
 
 impl Default for Settings {
@@ -39,6 +41,7 @@ impl Default for Settings {
             call_services: vec![
                 CallService::jitsi("Jitsi Meet", "https://meet.jit.si").expect("valid"),
             ],
+            room_list: Grouping::default(),
         }
     }
 }
@@ -68,6 +71,7 @@ impl Settings {
 pub enum Message {
     ColoredNames(bool),
     DesktopNotifications(bool),
+    RoomList(Grouping),
     FormKind(FormKind),
     FormName(String),
     FormUrl(String),
@@ -304,6 +308,10 @@ impl Panel {
                 settings.desktop_notifications = on;
                 return Action::Save;
             }
+            Message::RoomList(grouping) => {
+                settings.room_list = grouping;
+                return Action::Save;
+            }
             Message::FormKind(kind) => self.form.kind = kind,
             Message::FormName(name) => self.form.name = name,
             Message::FormUrl(url) => self.form.url = url,
@@ -440,6 +448,8 @@ impl Panel {
                     .on_toggle(|on| message(Message::DesktopNotifications(on)))
                     .into(),
             ),
+            heading("Room list"),
+            room_list_options(settings.room_list),
             heading("Calls"),
             text(
                 "Start call uses the space's call service if it has one, \
@@ -730,6 +740,43 @@ fn heading<'a>(label: &str) -> Element<'a, app::Message> {
         .into()
 }
 
+/// Which built-in sections the room list has.
+fn room_list_options<'a>(grouping: Grouping) -> Element<'a, app::Message> {
+    let toggle = |on: bool, set: fn(&mut Grouping, bool)| {
+        toggler(on)
+            .on_toggle(move |on| {
+                let mut grouping = grouping;
+                set(&mut grouping, on);
+                message(Message::RoomList(grouping))
+            })
+            .into()
+    };
+    column![
+        option(
+            "Favourites",
+            "Rooms marked as favourite on top. Element shows the same favourites.",
+            toggle(grouping.favourites, |g, on| g.favourites = on),
+        ),
+        option(
+            "Direct messages",
+            "Direct chats in their own section; in a space, those with its members.",
+            toggle(grouping.people, |g, on| g.people = on),
+        ),
+        option(
+            "Low priority",
+            "Rooms marked as low priority at the bottom.",
+            toggle(grouping.low_priority, |g, on| g.low_priority = on),
+        ),
+        option(
+            "Unread first",
+            "Rooms with unread messages at the top of each section.",
+            toggle(grouping.unread_first, |g, on| g.unread_first = on),
+        ),
+    ]
+    .spacing(14)
+    .into()
+}
+
 fn option<'a>(
     label: &'a str,
     description: &'a str,
@@ -774,6 +821,10 @@ mod tests {
             colored_names: true,
             desktop_notifications: false,
             call_services: vec![CallService::fixed("Zoom", "https://zoom.us/j/1").unwrap()],
+            room_list: Grouping {
+                unread_first: true,
+                ..Grouping::default()
+            },
         };
         settings.save(&path).unwrap();
         assert_eq!(Settings::load(&path), settings);

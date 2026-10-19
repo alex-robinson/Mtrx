@@ -273,7 +273,7 @@ fn future_time(send_at: SystemTime) -> Result<SystemTime> {
     Ok(UNIX_EPOCH + Duration::from_millis(millis as u64))
 }
 
-fn random_id() -> String {
+pub(crate) fn random_id() -> String {
     let bytes: [u8; 4] = rand::random();
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }

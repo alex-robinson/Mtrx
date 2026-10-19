@@ -5,6 +5,7 @@
 
 mod actions;
 mod app;
+mod arrange;
 mod avatar;
 mod calls;
 mod dialog;

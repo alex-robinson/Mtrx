@@ -990,3 +990,66 @@ async fn images_and_files() -> Result<()> {
     assert_eq!((preview.width(), preview.height()), (600, 600));
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs local Synapse (testserver/run.sh)"]
+async fn room_categories_and_tags() -> Result<()> {
+    let (name, first) = new_user("categories").await?;
+    let s = &first.session;
+    let room = s
+        .create_room(NewRoom {
+            name: Some("ice".into()),
+            ..Default::default()
+        })
+        .await?;
+    let second = login(&name).await?;
+
+    // A change shows at once, and reaches the other device.
+    let mut id = String::new();
+    s.change_room_categories(|c| {
+        let layout = c.layout_mut(None);
+        id = layout.add_category("Projects");
+        layout.place(&room, Some(&id));
+    })
+    .await?;
+    assert_eq!(
+        s.room_categories()
+            .home
+            .category_of(&room)
+            .map(|c| c.name.clone()),
+        Some("Projects".into())
+    );
+    wait_for(
+        "the other device sees the category",
+        second.session.room_categories_updates(),
+        |c| {
+            c.home
+                .category(&id)
+                .is_some_and(|c| c.rooms == [room.clone()])
+        },
+    )
+    .await?;
+
+    // Tags show in the room list.
+    let list = s.room_list().await?;
+    list.wait_loaded().await;
+    s.set_room_tag(&room, mtrx_core::RoomTag::Favourite).await?;
+    let tag =
+        |state: &mtrx_core::RoomListState| state.rooms.iter().find(|r| r.id == room).map(|r| r.tag);
+    wait_for("favourite", list.updates(), |state| {
+        tag(state) == Some(mtrx_core::RoomTag::Favourite)
+    })
+    .await?;
+    s.set_room_tag(&room, mtrx_core::RoomTag::LowPriority)
+        .await?;
+    wait_for("low priority", list.updates(), |state| {
+        tag(state) == Some(mtrx_core::RoomTag::LowPriority)
+    })
+    .await?;
+    s.set_room_tag(&room, mtrx_core::RoomTag::None).await?;
+    wait_for("untagged", list.updates(), |state| {
+        tag(state) == Some(mtrx_core::RoomTag::None)
+    })
+    .await?;
+    Ok(())
+}

@@ -4,12 +4,19 @@ use std::collections::{HashMap, HashSet};
 
 use iced::{
     Alignment, Color, Element, Length, Padding, Theme,
-    widget::{button, column, container, row, scrollable, space, stack, text, text_input, tooltip},
+    widget::{
+        button, column, container, mouse_area, row, scrollable, space, stack, text, text_input,
+        tooltip,
+    },
 };
-use mtrx_core::{MxcUri, OwnedRoomId, RoomKind, RoomSummary, ScheduledMessage};
+use mtrx_core::{
+    Grouping, Layout, MxcUri, OwnedRoomId, RoomKind, RoomSummary, RoomTag, ScheduledMessage,
+    Section, Sort,
+};
 
 use crate::{
     app::Message,
+    arrange::{self, Arrange, NAME_INPUT},
     avatar::{Avatars, Shape},
     dialog::Kind,
     ellipsis::ellipsis,
@@ -74,46 +81,46 @@ pub fn ancestors(rooms: &[RoomSummary], room: &OwnedRoomId) -> Vec<OwnedRoomId> 
     found
 }
 
-/// The room list's sections and their rooms, in display order. Sections may
-/// be empty. A search `filter` lists matching rooms of all spaces instead.
+/// Rooms listed for a space: everything below it, direct chats with its
+/// members, and rooms put into its categories. Home lists all of them.
+/// Invites to spaces are listed too, to be answered.
+fn scope<'a>(
+    rooms: &'a [RoomSummary],
+    space: Option<&OwnedRoomId>,
+    arrange: &Arrange,
+) -> Vec<&'a RoomSummary> {
+    let listable = rooms
+        .iter()
+        .filter(|r| r.kind != RoomKind::Space || r.invited);
+    let Some(space) = space else {
+        return listable.collect();
+    };
+    let inside = descendants(rooms, space);
+    let members = arrange.members(space);
+    let layout = arrange.categories.layout(Some(space));
+    listable
+        .filter(|r| {
+            inside.contains(&r.id)
+                || r.direct_user
+                    .as_ref()
+                    .is_some_and(|u| members.is_some_and(|m| m.contains(u)))
+                || layout.category_of(&r.id).is_some()
+        })
+        .collect()
+}
+
+/// The room list's sections and their rooms, in display order; sections
+/// may be empty.
 fn sections<'a>(
     rooms: &'a [RoomSummary],
-    selected_space: Option<&OwnedRoomId>,
-    filter: &str,
-) -> Vec<(&'static str, Vec<&'a RoomSummary>)> {
-    let filter = filter.trim().to_lowercase();
-    if !filter.is_empty() {
-        return vec![("Results", search(rooms, &filter))];
-    }
-    let in_space = selected_space.map(|s| descendants(rooms, s));
-    let listed = |r: &&RoomSummary| match &in_space {
-        Some(ids) => ids.contains(&r.id),
-        None => true,
-    };
-    let joined = |kind| move |r: &&RoomSummary| !r.invited && r.kind == kind;
-    vec![
-        (
-            "Invites",
-            rooms.iter().filter(|r| r.invited).filter(listed).collect(),
-        ),
-        (
-            "Rooms",
-            rooms
-                .iter()
-                .filter(joined(RoomKind::Room))
-                .filter(listed)
-                .collect(),
-        ),
-        // People get grouped per space later; for now DMs only show at Home.
-        (
-            "People",
-            rooms
-                .iter()
-                .filter(joined(RoomKind::Direct))
-                .filter(|_| selected_space.is_none())
-                .collect(),
-        ),
-    ]
+    space: Option<&OwnedRoomId>,
+    arrange: &Arrange,
+    grouping: &Grouping,
+) -> Vec<(Section, Vec<&'a RoomSummary>)> {
+    arrange
+        .categories
+        .layout(space.map(|s| s.as_ref()))
+        .group(scope(rooms, space, arrange), grouping)
 }
 
 /// Rooms and chats whose name contains `filter` (lower case), names starting
@@ -139,17 +146,22 @@ pub fn first_match<'a>(rooms: &'a [RoomSummary], filter: &str) -> Option<&'a Roo
 }
 
 /// Pictures in the space bar and room list, with their sizes.
-pub fn avatars<'a>(
-    rooms: &'a [RoomSummary],
-    selected_space: Option<&OwnedRoomId>,
-    filter: &str,
-) -> Vec<(&'a MxcUri, f32)> {
+pub fn avatars<'a>(view: &RoomListView<'a>) -> Vec<(&'a MxcUri, f32)> {
+    let rooms = view.rooms;
     let spaces = top_level_spaces(rooms)
         .into_iter()
         .filter_map(|s| Some((s.avatar.as_deref()?, SPACE_AVATAR)));
-    let listed = sections(rooms, selected_space, filter)
+    let filter = view.filter.trim().to_lowercase();
+    let listed = if filter.is_empty() {
+        sections(rooms, view.selected_space, view.arrange, &view.grouping)
+            .into_iter()
+            .flat_map(|(_, entries)| entries)
+            .collect()
+    } else {
+        search(rooms, &filter)
+    };
+    let listed = listed
         .into_iter()
-        .flat_map(|(_, entries)| entries)
         .filter_map(|r| Some((r.avatar.as_deref()?, ROOM_AVATAR)));
     spaces.chain(listed).collect()
 }
@@ -258,18 +270,17 @@ pub struct RoomListView<'a> {
     pub add_menu: bool,
     /// The search text.
     pub filter: &'a str,
+    pub arrange: &'a Arrange,
+    pub grouping: Grouping,
 }
 
 pub fn room_list<'a>(view: RoomListView<'a>) -> Element<'a, Message> {
     let RoomListView {
         rooms,
         selected_space,
-        open,
-        loaded,
-        avatars,
-        scheduled,
         add_menu,
         filter,
+        ..
     } = view;
     let title = match selected_space {
         Some(id) => rooms
@@ -310,24 +321,25 @@ pub fn room_list<'a>(view: RoomListView<'a>) -> Element<'a, Message> {
         )
         .padding([4, 0]),
     );
-    let searching = !filter.trim().is_empty();
-    for (heading, entries) in sections(rooms, selected_space, filter) {
-        if entries.is_empty() {
-            if searching {
-                list = list.push(
-                    container(text("No rooms match.").size(12).style(text::secondary))
-                        .padding([8, 8]),
-                );
-            }
-            continue;
+    let filter = filter.trim().to_lowercase();
+    if filter.is_empty() {
+        list = list.extend(arranged(&view));
+    } else {
+        let found = search(rooms, &filter);
+        if found.is_empty() {
+            list = list.push(
+                container(text("No rooms match.").size(12).style(text::secondary)).padding([8, 8]),
+            );
+        } else {
+            list = list.push(
+                container(section_title("Results")).padding(Padding::new(8.0).top(14).bottom(4)),
+            );
         }
-        list = list.push(section_heading(heading));
-        for room in entries {
-            let later = Later::of(scheduled, &room.id);
-            list = list.push(room_entry(room, open == Some(&room.id), later, avatars));
+        for room in found {
+            list = list.push(view.room_entry(room));
         }
     }
-    if !loaded {
+    if !view.loaded {
         list =
             list.push(container(text("Syncing…").size(12).style(text::secondary)).padding([8, 8]));
     }
@@ -338,17 +350,288 @@ pub fn room_list<'a>(view: RoomListView<'a>) -> Element<'a, Message> {
         .into()
 }
 
+/// The sections of the room list, with menus, the category being named,
+/// and drop targets while dragging.
+fn arranged<'a>(view: &RoomListView<'a>) -> Vec<Element<'a, Message>> {
+    let arrange = view.arrange;
+    let layout = arrange
+        .categories
+        .layout(view.selected_space.map(|s| s.as_ref()));
+    let dragging = arrange.dragging().is_some();
+    let mut elements = Vec::new();
+    for (section, entries) in sections(view.rooms, view.selected_space, arrange, &view.grouping) {
+        // A new category appears after the others.
+        if section == Section::Rooms
+            && let Some(naming) = arrange.naming.as_ref().filter(|n| n.category.is_none())
+        {
+            elements.push(name_input(&naming.name, "New category"));
+        }
+        let shown = match section {
+            Section::Invites => !entries.is_empty(),
+            Section::Category(_) => true,
+            _ => dragging || !entries.is_empty(),
+        };
+        if !shown {
+            continue;
+        }
+        let collapsed = layout.is_collapsed(&section);
+        let renaming = arrange.naming.as_ref().filter(
+            |n| matches!(&section, Section::Category(id) if n.category.as_ref() == Some(id)),
+        );
+        let mut block = column![match renaming {
+            Some(naming) => name_input(&naming.name, "Category name"),
+            None => section_header(layout, &section, collapsed, arrange),
+        }];
+        if let Section::Category(id) = &section
+            && arrange.category_menu.as_ref() == Some(id)
+        {
+            block = block.push(category_menu(layout, id));
+        }
+        let empty = entries.is_empty();
+        for room in entries {
+            // Collapsed sections still show the open room and unread ones.
+            if collapsed && view.open != Some(&room.id) && room.unread_messages == 0 {
+                continue;
+            }
+            block = block.push(view.room_entry(room));
+            if arrange.room_menu.as_ref() == Some(&room.id) {
+                block = block.push(room_menu(room, layout, &view.grouping));
+            }
+        }
+        if empty && !collapsed && matches!(section, Section::Category(_)) {
+            block = block.push(
+                container(text("Drag rooms here").size(12).style(text::secondary)).padding([4, 8]),
+            );
+        }
+        elements.push(if dragging && section != Section::Invites {
+            let target = arrange.target.as_ref() == Some(&section);
+            mouse_area(
+                container(block)
+                    .width(Length::Fill)
+                    .style(move |theme| style::drop_target(theme, target)),
+            )
+            .on_enter(arrange_message(arrange::Message::Target(
+                section.clone(),
+                true,
+            )))
+            .on_exit(arrange_message(arrange::Message::Target(section, false)))
+            .into()
+        } else {
+            block.into()
+        });
+    }
+    elements
+}
+
+fn arrange_message(message: arrange::Message) -> Message {
+    Message::Arrange(message)
+}
+
+fn section_name<'a>(layout: &'a Layout, section: &Section) -> &'a str {
+    match section {
+        Section::Invites => "Invites",
+        Section::Favourites => "Favourites",
+        Section::Category(id) => layout.category(id).map_or("", |c| c.name.as_str()),
+        Section::Rooms => "Rooms",
+        Section::People => "Direct messages",
+        Section::LowPriority => "Low priority",
+    }
+}
+
+/// A section's name, which collapses and expands it; a category's also
+/// has its menu.
+fn section_header<'a>(
+    layout: &Layout,
+    section: &Section,
+    collapsed: bool,
+    arrange: &Arrange,
+) -> Element<'a, Message> {
+    let chevron = if collapsed { "▸" } else { "▾" };
+    let title = button(
+        row![
+            text(chevron).size(10).style(text::secondary),
+            section_title(section_name(layout, section)),
+        ]
+        .spacing(6)
+        .align_y(Alignment::Center),
+    )
+    .padding(0)
+    .width(Length::Fill)
+    .style(style::text_button)
+    .on_press(arrange_message(arrange::Message::ToggleCollapsed(
+        section.clone(),
+    )));
+    let mut header = row![title].align_y(Alignment::Center);
+    if let Section::Category(id) = section {
+        let open = arrange.category_menu.as_ref() == Some(id);
+        header = header.push(
+            button(text("⋯").size(13).style(text::secondary))
+                .padding([0, 6])
+                .style(style::list_item(open))
+                .on_press(arrange_message(arrange::Message::CategoryMenu(
+                    (!open).then(|| id.clone()),
+                ))),
+        );
+    }
+    container(header)
+        .padding(Padding::new(8.0).top(14).bottom(4))
+        .into()
+}
+
+/// Small upper-case label above a group of rooms.
+fn section_title<'a>(title: &str) -> Element<'a, Message> {
+    text(title.to_uppercase())
+        .size(11)
+        .font(fonts::SEMIBOLD)
+        .style(text::secondary)
+        .into()
+}
+
+/// The field naming a new or renamed category: Enter saves, Esc cancels.
+fn name_input<'a>(name: &str, placeholder: &str) -> Element<'a, Message> {
+    container(
+        text_input(placeholder, name)
+            .id(NAME_INPUT)
+            .on_input(|name| arrange_message(arrange::Message::Name(name)))
+            .on_submit(arrange_message(arrange::Message::SaveName))
+            .style(style::input)
+            .padding([4, 8])
+            .size(13),
+    )
+    .padding(Padding::new(0.0).top(10).bottom(4))
+    .into()
+}
+
+fn menu<'a>(items: Vec<(String, Message)>) -> Element<'a, Message> {
+    let items = items.into_iter().map(|(label, message)| {
+        button(text(label).size(13))
+            .width(Length::Fill)
+            .padding([4, 10])
+            .style(style::list_item(false))
+            .on_press(message)
+            .into()
+    });
+    container(column(items).spacing(1))
+        .padding(4)
+        .width(Length::Fill)
+        .style(style::code_block)
+        .into()
+}
+
+/// Favourite, low priority and categories for a room.
+fn room_menu<'a>(room: &RoomSummary, layout: &Layout, grouping: &Grouping) -> Element<'a, Message> {
+    let move_to = |section| arrange_message(arrange::Message::MoveTo(room.id.clone(), section));
+    let mut items = Vec::new();
+    if grouping.favourites {
+        items.push(match room.tag {
+            RoomTag::Favourite => ("Remove from favourites".into(), move_to(Section::Rooms)),
+            _ => ("Favourite".into(), move_to(Section::Favourites)),
+        });
+    }
+    if grouping.low_priority {
+        items.push(match room.tag {
+            RoomTag::LowPriority => ("Remove from low priority".into(), move_to(Section::Rooms)),
+            _ => ("Low priority".into(), move_to(Section::LowPriority)),
+        });
+    }
+    let current = layout.category_of(&room.id).map(|c| c.id.as_str());
+    for category in &layout.categories {
+        items.push(if Some(category.id.as_str()) == current {
+            (
+                format!("Remove from {}", category.name),
+                move_to(Section::Rooms),
+            )
+        } else {
+            (
+                format!("Move to {}", category.name),
+                move_to(Section::Category(category.id.clone())),
+            )
+        });
+    }
+    items.push((
+        "New category…".into(),
+        arrange_message(arrange::Message::NewCategory(Some(room.id.clone()))),
+    ));
+    menu(items)
+}
+
+/// Rename, sort, reorder and delete a category.
+fn category_menu<'a>(layout: &Layout, id: &str) -> Element<'a, Message> {
+    let Some(at) = layout.categories.iter().position(|c| c.id == id) else {
+        return space().into();
+    };
+    let id = id.to_owned();
+    let item = |label: &str, message| (label.to_owned(), arrange_message(message));
+    let mut items = vec![item("Rename…", arrange::Message::Rename(id.clone()))];
+    items.push(match layout.categories[at].sort {
+        Sort::Activity => item("Sort A–Z", arrange::Message::Sort(id.clone(), Sort::Name)),
+        Sort::Name => item(
+            "Sort by recent activity",
+            arrange::Message::Sort(id.clone(), Sort::Activity),
+        ),
+    });
+    if at > 0 {
+        items.push(item(
+            "Move up",
+            arrange::Message::MoveCategory(id.clone(), -1),
+        ));
+    }
+    if at + 1 < layout.categories.len() {
+        items.push(item(
+            "Move down",
+            arrange::Message::MoveCategory(id.clone(), 1),
+        ));
+    }
+    items.push(item("Delete category", arrange::Message::Delete(id)));
+    menu(items)
+}
+
+/// The room being dragged, following the cursor.
+pub fn drag_preview<'a>(
+    rooms: &'a [RoomSummary],
+    arrange: &Arrange,
+    avatars: &Avatars,
+) -> Option<Element<'a, Message>> {
+    let drag = arrange.dragging()?;
+    let at = drag.at?;
+    let room = rooms.iter().find(|r| r.id == drag.room)?;
+    let chip = container(
+        row![
+            avatars.view(
+                room.id.as_str(),
+                &room.name,
+                room.avatar.as_deref(),
+                ROOM_AVATAR,
+                Shape::Circle,
+            ),
+            text(&room.name).size(14),
+        ]
+        .spacing(8)
+        .align_y(Alignment::Center),
+    )
+    .padding([4, 10])
+    .style(style::toolbar);
+    Some(
+        container(chip)
+            .padding(Padding::ZERO.left(at.x + 12.0).top(at.y + 6.0))
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .into(),
+    )
+}
+
 /// What the room list's "+" offers; more inside a space.
 fn add_menu_view<'a>(space: Option<(OwnedRoomId, String)>) -> Element<'a, Message> {
-    let item = |label: String, kind: Kind| {
+    let item = |label: String, message: Message| {
         button(text(label).size(14))
             .width(Length::Fill)
             .padding([5, 10])
             .style(style::list_item(false))
-            .on_press(Message::OpenDialog(kind))
+            .on_press(message)
     };
+    let dialog = |label: String, kind: Kind| item(label, Message::OpenDialog(kind));
     let mut menu = column![].spacing(1);
-    menu = menu.push(item(
+    menu = menu.push(dialog(
         match &space {
             Some((_, name)) => format!("New room in {name}"),
             None => "New room".into(),
@@ -358,25 +641,29 @@ fn add_menu_view<'a>(space: Option<(OwnedRoomId, String)>) -> Element<'a, Messag
         },
     ));
     menu = menu
-        .push(item("New direct chat".into(), Kind::DirectChat))
-        .push(item("Join a room…".into(), Kind::Join));
+        .push(dialog("New direct chat".into(), Kind::DirectChat))
+        .push(item(
+            "New category".into(),
+            arrange_message(arrange::Message::NewCategory(None)),
+        ))
+        .push(dialog("Join a room…".into(), Kind::Join));
     if let Some((id, name)) = space {
         menu = menu
-            .push(item(
+            .push(dialog(
                 "Add existing rooms…".into(),
                 Kind::AddExisting {
                     space: id.clone(),
                     name: name.clone(),
                 },
             ))
-            .push(item(
+            .push(dialog(
                 "Invite people to the space…".into(),
                 Kind::Invite {
                     room: id.clone(),
                     name: name.clone(),
                 },
             ))
-            .push(item(
+            .push(dialog(
                 "Leave the space…".into(),
                 Kind::Leave { room: id, name },
             ));
@@ -386,18 +673,6 @@ fn add_menu_view<'a>(space: Option<(OwnedRoomId, String)>) -> Element<'a, Messag
         .width(Length::Fill)
         .style(style::code_block)
         .into()
-}
-
-/// Small upper-case label above a group of rooms.
-fn section_heading<'a>(heading: &str) -> Element<'a, Message> {
-    container(
-        text(heading.to_uppercase())
-            .size(11)
-            .font(fonts::SEMIBOLD)
-            .style(text::secondary),
-    )
-    .padding(Padding::new(8.0).top(14).bottom(4))
-    .into()
 }
 
 /// A room's scheduled messages, as shown in the room list.
@@ -443,49 +718,68 @@ impl Later {
     }
 }
 
-fn room_entry<'a>(
-    room: &'a RoomSummary,
-    selected: bool,
-    later: Option<Later>,
-    avatars: &Avatars,
-) -> Element<'a, Message> {
-    let font = if room.unread_messages > 0 {
-        fonts::SEMIBOLD
-    } else {
-        fonts::INTER
-    };
-    let avatar = avatars.view(
-        room.id.as_str(),
-        &room.name,
-        room.avatar.as_deref(),
-        ROOM_AVATAR,
-        Shape::Circle,
-    );
-    let name = ellipsis(&room.name).size(14).font(font).width(Length::Fill);
-    let mut line = row![avatar, name].spacing(8).align_y(Alignment::Center);
-    if let Some(later) = later {
-        line = line.push(later.view());
-    }
-    if room.unread_mentions > 0 || room.unread_messages > 0 {
-        let highlight = room.unread_mentions > 0;
-        let count = if highlight {
-            room.unread_mentions
+impl<'a> RoomListView<'a> {
+    /// A room's row: opens the room on click, can be dragged to another
+    /// section, and has a menu on right click or its "⋯".
+    fn room_entry(&self, room: &'a RoomSummary) -> Element<'a, Message> {
+        let selected = self.open == Some(&room.id);
+        let menu_open = self.arrange.room_menu.as_ref() == Some(&room.id);
+        let hovered = self.arrange.hovered.as_ref() == Some(&room.id);
+        let font = if room.unread_messages > 0 {
+            fonts::SEMIBOLD
         } else {
-            room.unread_messages
+            fonts::INTER
         };
-        line = line.push(
-            container(text(count.to_string()).size(11).font(fonts::SEMIBOLD))
-                .padding([1, 6])
-                .style(move |t| style::badge(t, highlight)),
+        let avatar = self.avatars.view(
+            room.id.as_str(),
+            &room.name,
+            room.avatar.as_deref(),
+            ROOM_AVATAR,
+            Shape::Circle,
         );
+        let name = ellipsis(&room.name).size(14).font(font).width(Length::Fill);
+        let mut line = row![avatar, name].spacing(8).align_y(Alignment::Center);
+        if let Some(later) = Later::of(self.scheduled, &room.id) {
+            line = line.push(later.view());
+        }
+        if room.unread_mentions > 0 || room.unread_messages > 0 {
+            let highlight = room.unread_mentions > 0;
+            let count = if highlight {
+                room.unread_mentions
+            } else {
+                room.unread_messages
+            };
+            line = line.push(
+                container(text(count.to_string()).size(11).font(fonts::SEMIBOLD))
+                    .padding([1, 6])
+                    .style(move |t| style::badge(t, highlight)),
+            );
+        }
+        let menu = arrange_message(arrange::Message::RoomMenu(
+            (!menu_open).then(|| room.id.clone()),
+        ));
+        let dragging = self.arrange.dragging().is_some();
+        if (hovered || menu_open) && !room.invited && !dragging {
+            line = line.push(
+                button(text("⋯").size(13))
+                    .padding([0, 4])
+                    .style(style::list_item(menu_open))
+                    .on_press(menu.clone()),
+            );
+        }
+        let entry = button(container(line).center_y(Length::Fill))
+            .width(Length::Fill)
+            .height(ROOM_ROW)
+            .padding([0, 8])
+            .style(style::list_item(selected))
+            .on_press(Message::OpenRoom(room.id.clone()));
+        let row = |enter| arrange_message(arrange::Message::Row(room.id.clone(), enter));
+        let mut area = mouse_area(entry).on_enter(row(true)).on_exit(row(false));
+        if !room.invited {
+            area = area.on_right_press(menu);
+        }
+        area.into()
     }
-    button(container(line).center_y(Length::Fill))
-        .width(Length::Fill)
-        .height(ROOM_ROW)
-        .padding([0, 8])
-        .style(style::list_item(selected))
-        .on_press(Message::OpenRoom(room.id.clone()))
-        .into()
 }
 
 fn with_tooltip<'a>(content: impl Into<Element<'a, Message>>, tip: String) -> Element<'a, Message> {

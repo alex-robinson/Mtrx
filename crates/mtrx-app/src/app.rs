@@ -10,7 +10,7 @@ use std::{
 
 use futures_util::{SinkExt, StreamExt};
 use iced::{
-    Element, Length, Size, Subscription, Task, Theme,
+    Element, Length, Size, Subscription, Task, Theme, mouse,
     theme::Mode,
     widget::{
         button, column, container, image, mouse_area, opaque, row, scrollable::Viewport, stack,
@@ -19,13 +19,14 @@ use iced::{
     window,
 };
 use mtrx_core::{
-    CallService, Google, Media, MediaRef, Member, Notification, OwnedMxcUri, OwnedRoomId,
+    CallService, Google, Grouping, Media, MediaRef, Member, Notification, OwnedMxcUri, OwnedRoomId,
     OwnedUserId, Profile, RecoveryStep, RoomList, RoomListState, RoomOrAliasId, RoomTimeline,
     ScheduledMessage, SecretStore, ServiceKind, Session, TimelineEntry, Url,
 };
 
 use crate::{
     actions::{self, Compose},
+    arrange::{self, Arrange},
     avatar::{self, Avatars},
     calls,
     dialog::{self, Dialog},
@@ -141,6 +142,8 @@ pub enum Message {
     Attach,
     /// A file was dropped onto the window: send it to the open room.
     FileDropped(PathBuf),
+    Arrange(arrange::Message),
+    ArrangeFailed(String),
 }
 
 pub struct App {
@@ -203,6 +206,8 @@ struct Main {
     previews: Previews,
     /// An image shown large.
     viewer: Option<Viewer>,
+    /// Categories, tags and dragging in the room list.
+    arrange: Arrange,
 }
 
 struct Notice {
@@ -224,6 +229,7 @@ impl Main {
             recovery_error: None,
             scheduled: session.scheduled(),
             own_user: session.user_id(),
+            arrange: Arrange::new(&session),
             now: SystemTime::now(),
             session,
             error: None,
@@ -244,9 +250,9 @@ impl Main {
 impl Main {
     /// Pictures of the spaces, listed rooms, and the open room's header and
     /// timeline senders, with their sizes.
-    fn avatars_on_screen(&self) -> Vec<(OwnedMxcUri, f32)> {
+    fn avatars_on_screen(&self, grouping: Grouping) -> Vec<(OwnedMxcUri, f32)> {
         let rooms = &self.rooms.rooms;
-        let mut wanted = sidebar::avatars(rooms, self.space.as_ref(), &self.filter);
+        let mut wanted = sidebar::avatars(&self.room_list_view(grouping));
         if let Some(room) = &self.room {
             wanted.extend(room.avatars(rooms.iter().find(|r| r.id == room.id)));
         }
@@ -255,9 +261,27 @@ impl Main {
             .map(|(mxc, size)| (mxc.to_owned(), size))
             .collect()
     }
+
+    fn room_list_view(&self, grouping: Grouping) -> sidebar::RoomListView<'_> {
+        sidebar::RoomListView {
+            rooms: &self.rooms.rooms,
+            selected_space: self.space.as_ref(),
+            open: self
+                .opening
+                .as_ref()
+                .or(self.invite.as_ref().map(|(id, _)| id))
+                .or(self.room.as_ref().map(|r| &r.id)),
+            loaded: self.rooms.loaded,
+            avatars: &self.avatars,
+            scheduled: &self.scheduled,
+            add_menu: self.add_menu,
+            filter: &self.filter,
+            arrange: &self.arrange,
+            grouping,
+        }
+    }
 }
 
-/// Profile from the same environment variables the CLI reads.
 /// Profile and data directory from the same environment variables the CLI reads.
 fn environment() -> Result<(Profile, PathBuf, SecretStore), String> {
     let name = std::env::var("MTRX_PROFILE").unwrap_or_else(|_| "default".into());
@@ -379,6 +403,7 @@ impl App {
                 match result {
                     Ok((Shared(list), verified)) => {
                         main.rooms = list.current();
+                        main.arrange.rooms_updated(&mut main.rooms.rooms);
                         main.room_list = Some(list);
                         main.verified = Some(verified);
                     }
@@ -389,14 +414,47 @@ impl App {
             Message::Rooms(state) => {
                 if let Screen::Main(main) = &mut self.screen {
                     main.rooms = state;
+                    main.arrange.rooms_updated(&mut main.rooms.rooms);
                 }
                 self.load_avatars()
             }
             Message::SelectSpace(space) => {
-                if let Screen::Main(main) = &mut self.screen {
-                    main.space = space;
+                let Screen::Main(main) = &mut self.screen else {
+                    return Task::none();
+                };
+                main.space = space.clone();
+                main.arrange.escape();
+                let members = match space {
+                    Some(space) => main.arrange.space_selected(&main.session, space),
+                    None => Task::none(),
+                };
+                Task::batch([members, self.load_avatars()])
+            }
+            Message::Arrange(message) => {
+                let Screen::Main(main) = &mut self.screen else {
+                    return Task::none();
+                };
+                if matches!(message, arrange::Message::NewCategory(_)) {
+                    main.add_menu = false;
                 }
-                self.load_avatars()
+                let context = arrange::Context {
+                    session: &main.session,
+                    space: main.space.as_ref(),
+                    rooms: &mut main.rooms.rooms,
+                    grouping: self.settings.room_list,
+                };
+                let task = main.arrange.update(message, context);
+                Task::batch([task, self.load_avatars()])
+            }
+            Message::ArrangeFailed(e) => {
+                if let Screen::Main(main) = &mut self.screen {
+                    main.notice = Some(Notice {
+                        text: format!("Could not rearrange the room list: {e}"),
+                        room: None,
+                        error: true,
+                    });
+                }
+                Task::none()
             }
             Message::OpenRoom(id) => {
                 let Screen::Main(main) = &mut self.screen else {
@@ -692,12 +750,13 @@ impl App {
                 }
             }
             Message::FocusSearch => iced::widget::operation::focus(sidebar::SEARCH),
-            // Closes the topmost thing: the image viewer, else the search.
+            // Closes the topmost thing: the image viewer, a drag, menu or
+            // category name, else the search.
             Message::Escape => {
                 if let Screen::Main(main) = &mut self.screen {
                     if main.viewer.is_some() {
                         main.viewer = None;
-                    } else {
+                    } else if !main.arrange.escape() {
                         main.filter.clear();
                     }
                 }
@@ -1491,7 +1550,7 @@ impl App {
             return Task::none();
         };
         let tasks: Vec<_> = main
-            .avatars_on_screen()
+            .avatars_on_screen(self.settings.room_list)
             .into_iter()
             .map(|(mxc, size)| {
                 main.avatars
@@ -1537,6 +1596,13 @@ impl App {
                 .map(Message::Notified),
             );
             subscriptions.push(iced::event::listen_with(shortcuts));
+            subscriptions.push(
+                Subscription::run_with(Shared(main.session.clone()), |s| {
+                    s.0.room_categories_updates()
+                })
+                .map(|c| Message::Arrange(arrange::Message::Categories(c))),
+            );
+            subscriptions.extend(main.arrange.subscription());
             if !main.scheduled.is_empty() {
                 subscriptions.push(iced::time::every(TICK).map(|_| Message::Tick));
             }
@@ -1622,20 +1688,7 @@ impl App {
         let theme = self.theme();
         let rooms = &main.rooms.rooms;
         let space_bar = sidebar::space_bar(rooms, main.space.as_ref(), &main.avatars);
-        let room_list = sidebar::room_list(sidebar::RoomListView {
-            rooms,
-            selected_space: main.space.as_ref(),
-            open: main
-                .opening
-                .as_ref()
-                .or(main.invite.as_ref().map(|(id, _)| id))
-                .or(main.room.as_ref().map(|r| &r.id)),
-            loaded: main.rooms.loaded,
-            avatars: &main.avatars,
-            scheduled: &main.scheduled,
-            add_menu: main.add_menu,
-            filter: &main.filter,
-        });
+        let room_list = sidebar::room_list(main.room_list_view(self.settings.room_list));
 
         let mut content = column![];
         if main.verified == Some(false) {
@@ -1685,7 +1738,11 @@ impl App {
         };
         content = content.push(room_view);
 
-        row![space_bar, room_list, content.width(Length::Fill)].into()
+        let main_row = row![space_bar, room_list, content.width(Length::Fill)];
+        match sidebar::drag_preview(rooms, &main.arrange, &main.avatars) {
+            Some(preview) => stack![main_row, preview].into(),
+            None => main_row.into(),
+        }
     }
 }
 
@@ -1919,6 +1976,12 @@ fn shortcuts(
             Key::Named(Named::Escape) => Some(Message::Escape),
             _ => None,
         },
+        iced::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
+            Some(Message::Arrange(arrange::Message::Pressed))
+        }
+        iced::Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
+            Some(Message::Arrange(arrange::Message::Released))
+        }
         iced::Event::Window(window::Event::Focused) => Some(Message::WindowFocused(true)),
         iced::Event::Window(window::Event::Unfocused) => Some(Message::WindowFocused(false)),
         _ => None,

@@ -30,7 +30,7 @@ use tokio_stream::wrappers::WatchStream;
 use tracing::warn;
 
 use crate::{
-    Error, Result, Session,
+    Error, Result, RoomTag, Session,
     permissions::{Permissions, open_power_levels_raw},
     system_time,
 };
@@ -60,6 +60,9 @@ pub struct RoomSummary {
     pub last_activity: Option<SystemTime>,
     /// Joined spaces that list this room as a child.
     pub parents: Vec<OwnedRoomId>,
+    pub tag: RoomTag,
+    /// For a direct chat, the other user.
+    pub direct_user: Option<OwnedUserId>,
 }
 
 /// Snapshot published by [`RoomList`].
@@ -189,6 +192,20 @@ async fn summarize(items: &Vector<RoomListItem>) -> Vec<RoomSummary> {
         } else {
             RoomKind::Room
         };
+        let tag = if room.is_favourite() {
+            RoomTag::Favourite
+        } else if room.is_low_priority() {
+            RoomTag::LowPriority
+        } else {
+            RoomTag::None
+        };
+        let direct_user = match kind {
+            RoomKind::Direct => room
+                .direct_targets()
+                .into_iter()
+                .find_map(|t| t.into_user_id()),
+            _ => None,
+        };
         let avatar = match (room.avatar_url(), kind) {
             (None, RoomKind::Direct) => direct_avatar(room).await,
             (avatar, _) => avatar,
@@ -209,6 +226,8 @@ async fn summarize(items: &Vector<RoomListItem>) -> Vec<RoomSummary> {
             unread_notifications: room.num_unread_notifications(),
             last_activity: room.latest_event_timestamp().map(system_time),
             parents: parents.remove(room.room_id()).unwrap_or_default(),
+            tag,
+            direct_user,
         });
     }
     rooms

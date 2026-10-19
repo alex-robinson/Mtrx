@@ -48,6 +48,7 @@ pub struct Session {
     /// Set once [`Session::start_scheduler`] ran.
     pub(crate) scheduler: std::sync::Mutex<Option<AbortOnDrop>>,
     pub(crate) notifications: broadcast::Sender<crate::Notification>,
+    pub(crate) categories: crate::categories::Categories,
     profile: Profile,
     _save_tokens: AbortOnDrop,
 }
@@ -203,6 +204,7 @@ impl Session {
         )));
         let send_lock = Arc::new(Mutex::new(()));
         let schedule = Arc::new(Schedule::load(client.clone(), send_lock.clone()).await?);
+        let categories = crate::categories::Categories::load(client.clone()).await;
         Ok(Self {
             client,
             sync: Arc::new(sync),
@@ -212,6 +214,7 @@ impl Session {
             schedule,
             scheduler: Default::default(),
             notifications,
+            categories,
             profile,
             _save_tokens: save_tokens,
         })
