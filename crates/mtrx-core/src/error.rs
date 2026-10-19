@@ -32,6 +32,8 @@ pub enum Error {
     ScheduledNotFound(String),
     #[error("the send time is in the past")]
     SendTimeInPast,
+    #[error("invalid media type `{0}`")]
+    InvalidMediaType(String),
 
     #[error(transparent)]
     Matrix(#[from] matrix_sdk::Error),

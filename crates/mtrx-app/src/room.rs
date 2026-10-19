@@ -7,24 +7,28 @@ use std::{
 
 use chrono::{DateTime, Local};
 use iced::{
-    Alignment, Element, Length, Theme,
+    Alignment, Element, Length, Padding, Theme,
     keyboard::{Key, key::Named},
     widget::{
-        button, column, container, image, row, scrollable, scrollable::Viewport, space, text,
-        text_editor,
+        button, column, container, image, mouse_area, row, rule, scrollable, scrollable::Viewport,
+        space, text, text_editor,
     },
 };
 use mtrx_core::{
-    Event, EventContent, MembershipChange, MessageKind, OwnedRoomId, RoomTimeline,
-    ScheduledMessage, SendState, TimelineEntry,
+    Event, EventContent, MembershipChange, MessageKind, MxcUri, OwnedRoomId, RoomSummary,
+    RoomTimeline, SendState, TimelineEntry,
 };
 
 use crate::{
     app::Message,
+    avatar::{self, Avatars, Shape},
     fonts,
     math::{self, Math, Rendered},
     message,
     send_later::{self, SendLater},
+    style::{
+        self, GUTTER_SPACING, HEADER_AVATAR, MESSAGE_PADDING, SENDER_AVATAR, TIMELINE_PADDING,
+    },
 };
 
 /// Entries rendered when a room opens; laying out every loaded entry gets
@@ -35,6 +39,9 @@ const WINDOW_STEP: usize = 50;
 
 /// Consecutive messages of one sender within this gap share a header.
 const GROUP_GAP: Duration = Duration::from_secs(5 * 60);
+
+/// Left edge of message text within the timeline column.
+const TEXT_INDENT: f32 = MESSAGE_PADDING + SENDER_AVATAR + GUTTER_SPACING;
 
 pub struct Room {
     pub id: OwnedRoomId,
@@ -47,6 +54,8 @@ pub struct Room {
     pub paginating: bool,
     pub at_start: bool,
     pub error: Option<String>,
+    /// [`Event::id`] of the message under the cursor.
+    hovered: Option<String>,
 }
 
 /// What scrolling to the top should do.
@@ -70,6 +79,17 @@ impl Room {
             paginating: false,
             at_start: false,
             error: None,
+            hovered: None,
+        }
+    }
+
+    /// The cursor entered or left the message with [`Event::id`] `id`.
+    pub fn hover(&mut self, id: String, entered: bool) {
+        if entered {
+            self.hovered = Some(id);
+        } else if self.hovered.as_ref() == Some(&id) {
+            // Entering the next message may have been reported first.
+            self.hovered = None;
         }
     }
 
@@ -106,27 +126,43 @@ impl Room {
         })
     }
 
+    /// Pictures of the header and the rendered senders, with their sizes.
+    pub fn avatars<'a>(
+        &'a self,
+        summary: Option<&'a RoomSummary>,
+    ) -> impl Iterator<Item = (&'a MxcUri, f32)> {
+        let room = summary.and_then(|s| Some((s.avatar.as_deref()?, HEADER_AVATAR)));
+        let senders = self.visible().iter().filter_map(|e| match e {
+            TimelineEntry::Event(event) => Some((event.sender_avatar.as_deref()?, SENDER_AVATAR)),
+            _ => None,
+        });
+        room.into_iter().chain(senders)
+    }
+
     pub fn view<'a>(
         &'a self,
-        name: &'a str,
+        summary: Option<&'a RoomSummary>,
         theme: &Theme,
         math: &'a Math,
         params: &math::Params,
-        scheduled: &[&'a ScheduledMessage],
-        now: SystemTime,
+        avatars: &Avatars,
+        scheduled: &send_later::Pending<'a>,
     ) -> Element<'a, Message> {
-        let header = container(text(name).size(18).font(fonts::SEMIBOLD)).padding([12, 24]);
+        let header = self.header(summary, avatars);
+        let context = Context {
+            theme,
+            math,
+            params,
+            avatars,
+            hovered: self.hovered.as_deref(),
+        };
 
-        let mut timeline = column![].spacing(2).padding([12, 24]);
+        let mut timeline = column![].padding([8.0, TIMELINE_PADDING]);
         let all_shown = self.shown >= self.entries.len();
         if self.at_start && all_shown {
-            timeline = timeline.push(
-                text("This is the start of the room.")
-                    .size(12)
-                    .style(text::secondary),
-            );
+            timeline = timeline.push(notice("This is the start of the room."));
         } else if self.paginating || !all_shown {
-            timeline = timeline.push(text("Loading…").size(12).style(text::secondary));
+            timeline = timeline.push(notice("Loading…"));
         }
         let mut previous: Option<&Event> = None;
         // Consecutive state events (joins, settings) collapse into one line.
@@ -152,20 +188,11 @@ impl Room {
                                 .unwrap_or_default()
                                 < GROUP_GAP
                     });
-                    timeline = timeline.push(event_view(event, !grouped, theme, math, params));
+                    timeline = timeline.push(event_view(event, !grouped, &context));
                     previous = matches!(event.content, EventContent::Message(_)).then_some(event);
                 }
                 TimelineEntry::DayDivider(day) => {
-                    let day: DateTime<Local> = (*day).into();
-                    timeline = timeline.push(
-                        container(
-                            text(day.format("%A, %e %B %Y").to_string())
-                                .size(12)
-                                .style(text::secondary),
-                        )
-                        .center_x(Length::Fill)
-                        .padding([10, 0]),
-                    );
+                    timeline = timeline.push(day_divider(*day));
                     previous = None;
                 }
                 TimelineEntry::ReadMarker => {}
@@ -208,16 +235,13 @@ impl Room {
         .on_press(Message::Later(send_later::Message::TogglePicker));
 
         let composer_empty = self.composer.text().trim().is_empty();
-        let mut bottom = column![].spacing(6).padding([8, 24]);
-        if !scheduled.is_empty() {
-            bottom = bottom.push(send_later::queue(
-                scheduled,
-                &self.later,
-                composer_empty,
-                now,
-            ));
+        let mut bottom = column![]
+            .spacing(6)
+            .padding([8.0, TIMELINE_PADDING + MESSAGE_PADDING]);
+        if !scheduled.messages.is_empty() {
+            bottom = bottom.push(send_later::queue(scheduled, &self.later, composer_empty));
         }
-        if let Some(picker) = send_later::picker(&self.later, !composer_empty, now) {
+        if let Some(picker) = send_later::picker(&self.later, !composer_empty, scheduled.now) {
             bottom = bottom.push(picker);
         }
         if editing {
@@ -242,20 +266,63 @@ impl Room {
 
         column![header, timeline, bottom].into()
     }
+
+    /// Room picture, name and topic, above a separator.
+    fn header<'a>(
+        &self,
+        summary: Option<&'a RoomSummary>,
+        avatars: &Avatars,
+    ) -> Element<'a, Message> {
+        let name = summary.map_or("", |s| s.name.as_str());
+        let mut title = column![style::single_line(
+            text(name).size(16).font(fonts::SEMIBOLD)
+        )];
+        if let Some(topic) = summary
+            .and_then(|s| s.topic.as_deref())
+            .and_then(|t| t.lines().next())
+        {
+            title = title.push(style::single_line(
+                text(topic).size(12).style(text::secondary),
+            ));
+        }
+        let avatar = avatars.view(
+            self.id.as_str(),
+            name,
+            summary.and_then(|s| s.avatar.as_deref()),
+            HEADER_AVATAR,
+            Shape::Circle,
+        );
+        column![
+            row![avatar, title.width(Length::Fill)]
+                .spacing(10)
+                .align_y(Alignment::Center)
+                .padding([8.0, TIMELINE_PADDING + MESSAGE_PADDING]),
+            rule::horizontal(1).style(style::separator),
+        ]
+        .into()
+    }
+}
+
+/// What rendering an event needs besides the event.
+struct Context<'a, 'b> {
+    theme: &'b Theme,
+    math: &'a Math,
+    params: &'b math::Params,
+    avatars: &'b Avatars,
+    hovered: Option<&'b str>,
 }
 
 fn event_view<'a>(
     event: &'a Event,
     with_header: bool,
-    theme: &Theme,
-    math: &'a Math,
-    params: &math::Params,
+    context: &Context<'a, '_>,
 ) -> Element<'a, Message> {
-    let time = DateTime::<Local>::from(event.timestamp)
-        .format("%H:%M")
-        .to_string();
-    let name = display_name(event);
-
+    let Context {
+        theme,
+        math,
+        params,
+        ..
+    } = *context;
     let body: Element<'a, Message> = match &event.content {
         EventContent::Message(m) => {
             let content: Element<'a, Message> = match (m.kind, m.document.has_math()) {
@@ -276,18 +343,22 @@ fn event_view<'a>(
                     .style(text::secondary)
                     .into(),
             };
-            let mut extras = row![].spacing(6);
-            if m.edited {
-                extras = extras.push(text("(edited)").size(11).style(text::secondary));
+            if !m.edited && m.reactions.is_empty() {
+                content
+            } else {
+                let mut extras = row![].spacing(6);
+                if m.edited {
+                    extras = extras.push(text("(edited)").size(11).style(text::secondary));
+                }
+                for (key, count) in &m.reactions {
+                    extras = extras.push(
+                        container(text(format!("{key} {count}")).size(12))
+                            .padding([1, 6])
+                            .style(container::rounded_box),
+                    );
+                }
+                column![content, extras].spacing(2).into()
             }
-            for (key, count) in &m.reactions {
-                extras = extras.push(
-                    container(text(format!("{key} {count}")).size(12))
-                        .padding([1, 6])
-                        .style(container::rounded_box),
-                );
-            }
-            column![content, extras].spacing(2).into()
         }
         EventContent::UnableToDecrypt => text("Unable to decrypt this message (waiting for keys)")
             .size(13)
@@ -307,31 +378,93 @@ fn event_view<'a>(
         | EventContent::OtherState { .. } => return space().into(),
     };
 
-    let state: Element<'a, Message> = match &event.send_state {
-        SendState::Sent => space().into(),
-        SendState::Sending => text("sending…").size(11).style(text::secondary).into(),
-        SendState::Failed(e) => text(format!("not sent: {e}"))
-            .size(11)
-            .style(text::danger)
-            .into(),
-    };
-
-    let mut item = column![].spacing(2);
+    let mut item = column![].spacing(2).width(Length::Fill);
     if with_header {
-        item = item.push(
-            row![
-                text(name).font(fonts::SEMIBOLD),
-                text(time).size(11).style(text::secondary)
-            ]
-            .spacing(8)
-            .align_y(Alignment::End),
-        );
+        item = item.push(sender_line(event));
     }
-    item = item.push(body).push(state);
-    container(item)
-        .padding(if with_header { [8, 0] } else { [1, 0] })
+    item = item.push(body);
+    match &event.send_state {
+        SendState::Sent => {}
+        SendState::Sending => item = item.push(text("sending…").size(11).style(text::secondary)),
+        SendState::Failed(e) => {
+            item = item.push(text(format!("not sent: {e}")).size(11).style(text::danger))
+        }
+    }
+
+    // The avatar starts a group; follow-ups show their time there on hover.
+    let hovered = context.hovered == Some(event.id.as_str());
+    let gutter: Element<'a, Message> = if with_header {
+        context.avatars.view(
+            event.sender.as_str(),
+            &display_name(event),
+            event.sender_avatar.as_deref(),
+            SENDER_AVATAR,
+            Shape::Circle,
+        )
+    } else if hovered {
+        container(text(time(event)).size(10).style(text::secondary))
+            .center_x(SENDER_AVATAR)
+            .padding(Padding::ZERO.top(5))
+            .into()
+    } else {
+        space().width(SENDER_AVATAR).into()
+    };
+    let top = if with_header { 4.0 } else { 1.0 };
+    let row = container(row![gutter, item].spacing(GUTTER_SPACING))
+        .padding(Padding::new(MESSAGE_PADDING).top(top).bottom(1))
         .width(Length::Fill)
+        .style(style::message_row(hovered));
+    let row = mouse_area(row)
+        .on_enter(Message::Hover(event.id.clone(), true))
+        .on_exit(Message::Hover(event.id.clone(), false));
+    if with_header {
+        // Space between groups, outside the hover background.
+        column![space().height(6), row].into()
+    } else {
+        row.into()
+    }
+}
+
+/// Coloured sender name and time, above the first message of a group.
+fn sender_line<'a>(event: &Event) -> Element<'a, Message> {
+    row![
+        text(display_name(event))
+            .font(fonts::SEMIBOLD)
+            .color(avatar::color(event.sender.as_str())),
+        text(time(event)).size(11).style(text::secondary)
+    ]
+    .spacing(8)
+    .align_y(Alignment::End)
+    .into()
+}
+
+fn time(event: &Event) -> String {
+    DateTime::<Local>::from(event.timestamp)
+        .format("%H:%M")
+        .to_string()
+}
+
+/// A muted line in the text column, e.g. "Loading…".
+fn notice<'a>(content: impl text::IntoFragment<'a>) -> Element<'a, Message> {
+    container(text(content).size(12).style(text::secondary))
+        .padding(Padding::new(4.0).left(TEXT_INDENT))
         .into()
+}
+
+/// The date between two days' messages, centred on a line.
+fn day_divider<'a>(day: SystemTime) -> Element<'a, Message> {
+    let day: DateTime<Local> = day.into();
+    row![
+        rule::horizontal(1).style(style::separator),
+        text(day.format("%A, %e %B %Y").to_string())
+            .size(12)
+            .style(text::secondary),
+        rule::horizontal(1).style(style::separator),
+    ]
+    .spacing(12)
+    .align_y(Alignment::Center)
+    .padding([10.0, MESSAGE_PADDING])
+    .into()
 }
 
 fn display_name(event: &Event) -> String {
@@ -351,9 +484,7 @@ fn is_state(event: &Event) -> bool {
 }
 
 fn state_line<'a>(events: &[&Event]) -> Element<'a, Message> {
-    container(text(state_summary(events)).size(12).style(text::secondary))
-        .padding([4, 0])
-        .into()
+    notice(state_summary(events))
 }
 
 /// One line for a run of state events, e.g. "alice created and configured

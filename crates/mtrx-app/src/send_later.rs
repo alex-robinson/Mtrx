@@ -48,13 +48,19 @@ impl SendLater {
     }
 }
 
-/// The scheduled messages of the open room, earliest first.
+/// A room's scheduled messages, earliest first, as of `now`.
+pub struct Pending<'a> {
+    pub messages: Vec<&'a ScheduledMessage>,
+    pub now: SystemTime,
+}
+
+/// The bar of a room's scheduled messages.
 pub fn queue<'a>(
-    messages: &[&'a ScheduledMessage],
+    pending: &Pending<'a>,
     state: &SendLater,
     composer_empty: bool,
-    now: SystemTime,
 ) -> Element<'a, app::Message> {
+    let (messages, now) = (&pending.messages, pending.now);
     let editing = state.editing.as_ref().map(|m| m.id.as_str());
     column(messages.iter().map(|message| {
         // Editing replaces the composer's text, so only from an empty composer.
