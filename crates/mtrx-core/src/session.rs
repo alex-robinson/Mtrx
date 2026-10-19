@@ -47,6 +47,7 @@ pub struct Session {
     pub(crate) schedule: Arc<Schedule>,
     /// Set once [`Session::start_scheduler`] ran.
     pub(crate) scheduler: std::sync::Mutex<Option<AbortOnDrop>>,
+    pub(crate) notifications: broadcast::Sender<crate::Notification>,
     profile: Profile,
     _save_tokens: AbortOnDrop,
 }
@@ -195,6 +196,7 @@ impl Session {
             .await
             .map_err(|e| Error::Sync(e.to_string()))?;
         let verification_tx = crate::encryption::register_handlers(&client);
+        let notifications = crate::notifications::register(&client).await;
         let save_tokens = AbortOnDrop(tokio::spawn(save_refreshed_tokens(
             client.clone(),
             profile.clone(),
@@ -209,6 +211,7 @@ impl Session {
             send_lock,
             schedule,
             scheduler: Default::default(),
+            notifications,
             profile,
             _save_tokens: save_tokens,
         })

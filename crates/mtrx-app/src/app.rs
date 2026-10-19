@@ -19,9 +19,9 @@ use iced::{
     window,
 };
 use mtrx_core::{
-    CallService, Google, OwnedMxcUri, OwnedRoomId, Profile, RecoveryStep, RoomList, RoomListState,
-    RoomOrAliasId, RoomTimeline, ScheduledMessage, SecretStore, ServiceKind, Session,
-    TimelineEntry, Url,
+    CallService, Google, Member, Notification, OwnedMxcUri, OwnedRoomId, OwnedUserId, Profile,
+    RecoveryStep, RoomList, RoomListState, RoomOrAliasId, RoomTimeline, ScheduledMessage,
+    SecretStore, ServiceKind, Session, TimelineEntry, Url,
 };
 
 use crate::{
@@ -31,6 +31,7 @@ use crate::{
     dialog::{self, Dialog},
     login::{self, Login},
     math::{self, Math, Rendered},
+    members::Members,
     room::{Look, Older, Room},
     send_later,
     settings::{self, Settings},
@@ -100,6 +101,17 @@ pub enum Message {
     CloseNotice,
     /// Fast ticks while something is in progress.
     Progress,
+    RoomFilter(String),
+    /// Open the first room matching the search.
+    OpenFirstMatch,
+    FocusSearch,
+    Escape,
+    ToggleMembers,
+    MembersLoaded(OwnedRoomId, Result<Vec<Member>, String>),
+    /// Start or open a direct chat with a member.
+    ChatWith(OwnedUserId),
+    Notified(Notification),
+    WindowFocused(bool),
     Calls(OwnedRoomId, calls::Message),
     RecoveryKey(String),
     Recover,
@@ -117,6 +129,9 @@ pub enum Message {
 
 pub struct App {
     profile: Profile,
+    /// The window has the keyboard focus (notifications only when not
+    /// looking at the room).
+    focused: bool,
     /// Connection for creating Google Meet links, shared by all accounts.
     google: Arc<Google>,
     settings: Settings,
@@ -166,6 +181,9 @@ struct Main {
     opening: Option<OwnedRoomId>,
     /// Something finished in the background, or failed.
     notice: Option<Notice>,
+    /// The room search text.
+    filter: String,
+    own_user: OwnedUserId,
 }
 
 struct Notice {
@@ -186,6 +204,7 @@ impl Main {
             recovery_step: None,
             recovery_error: None,
             scheduled: session.scheduled(),
+            own_user: session.user_id(),
             now: SystemTime::now(),
             session,
             error: None,
@@ -196,6 +215,7 @@ impl Main {
             invite: None,
             opening: None,
             notice: None,
+            filter: String::new(),
         }
     }
 }
@@ -205,7 +225,7 @@ impl Main {
     /// timeline senders, with their sizes.
     fn avatars_on_screen(&self) -> Vec<(OwnedMxcUri, f32)> {
         let rooms = &self.rooms.rooms;
-        let mut wanted = sidebar::avatars(rooms, self.space.as_ref());
+        let mut wanted = sidebar::avatars(rooms, self.space.as_ref(), &self.filter);
         if let Some(room) = &self.room {
             wanted.extend(room.avatars(rooms.iter().find(|r| r.id == room.id)));
         }
@@ -239,6 +259,7 @@ impl App {
         let settings_file = Settings::path(&data_root);
         let app = Self {
             profile: profile.clone(),
+            focused: true,
             google: Arc::new(Google::new(&data_root, secrets)),
             settings: Settings::load(&settings_file),
             settings_file: Some(settings_file),
@@ -615,6 +636,87 @@ impl App {
                         Task::none()
                     }
                 }
+            }
+            Message::RoomFilter(filter) => {
+                if let Screen::Main(main) = &mut self.screen {
+                    main.filter = filter;
+                }
+                self.load_avatars()
+            }
+            Message::OpenFirstMatch => {
+                let Screen::Main(main) = &mut self.screen else {
+                    return Task::none();
+                };
+                match sidebar::first_match(&main.rooms.rooms, &main.filter) {
+                    Some(room) => {
+                        let id = room.id.clone();
+                        main.filter.clear();
+                        self.update(Message::OpenRoom(id))
+                    }
+                    None => Task::none(),
+                }
+            }
+            Message::FocusSearch => iced::widget::operation::focus(sidebar::SEARCH),
+            Message::Escape => {
+                if let Screen::Main(main) = &mut self.screen
+                    && !main.filter.is_empty()
+                {
+                    main.filter.clear();
+                }
+                Task::none()
+            }
+            Message::ToggleMembers => {
+                let Screen::Main(main) = &mut self.screen else {
+                    return Task::none();
+                };
+                let Some(room) = main.room.as_mut() else {
+                    return Task::none();
+                };
+                if room.members.take().is_some() {
+                    return Task::none();
+                }
+                room.members = Some(Members::default());
+                load_members(main.session.clone(), room.id.clone())
+            }
+            Message::MembersLoaded(id, result) => {
+                if let Screen::Main(main) = &mut self.screen
+                    && let Some(room) = main.room.as_mut().filter(|r| r.id == id)
+                    && let Some(members) = &mut room.members
+                {
+                    members.list = Some(result);
+                }
+                self.load_avatars()
+            }
+            Message::ChatWith(user) => {
+                let Screen::Main(main) = &self.screen else {
+                    return Task::none();
+                };
+                let session = main.session.clone();
+                Task::perform(
+                    async move { session.direct_chat(&user).await.map_err(|e| e.to_string()) },
+                    |result| match result {
+                        Ok(room) => Message::OpenRoom(room),
+                        Err(e) => Message::Dialog(dialog::Message::Done(Err(e))),
+                    },
+                )
+            }
+            Message::Notified(notification) => {
+                let Screen::Main(main) = &self.screen else {
+                    return Task::none();
+                };
+                let looking = self.focused
+                    && main
+                        .room
+                        .as_ref()
+                        .is_some_and(|r| r.id == notification.room_id);
+                if !self.settings.desktop_notifications || looking {
+                    return Task::none();
+                }
+                Task::future(notify(notification)).discard()
+            }
+            Message::WindowFocused(focused) => {
+                self.focused = focused;
+                Task::none()
             }
             Message::CloseNotice => {
                 if let Screen::Main(main) = &mut self.screen {
@@ -1284,6 +1386,14 @@ impl App {
                 Subscription::run_with(Shared(main.session.clone()), |s| s.0.scheduled_updates())
                     .map(Message::Scheduled),
             );
+            subscriptions.push(
+                Subscription::run_with(
+                    (Shared(main.session.clone()), "notifications"),
+                    |(s, _)| s.0.notifications(),
+                )
+                .map(Message::Notified),
+            );
+            subscriptions.push(iced::event::listen_with(shortcuts));
             if !main.scheduled.is_empty() {
                 subscriptions.push(iced::time::every(TICK).map(|_| Message::Tick));
             }
@@ -1364,18 +1474,20 @@ impl App {
         let theme = self.theme();
         let rooms = &main.rooms.rooms;
         let space_bar = sidebar::space_bar(rooms, main.space.as_ref(), &main.avatars);
-        let room_list = sidebar::room_list(
+        let room_list = sidebar::room_list(sidebar::RoomListView {
             rooms,
-            main.space.as_ref(),
-            main.opening
+            selected_space: main.space.as_ref(),
+            open: main
+                .opening
                 .as_ref()
                 .or(main.invite.as_ref().map(|(id, _)| id))
                 .or(main.room.as_ref().map(|r| &r.id)),
-            main.rooms.loaded,
-            &main.avatars,
-            &main.scheduled,
-            main.add_menu,
-        );
+            loaded: main.rooms.loaded,
+            avatars: &main.avatars,
+            scheduled: &main.scheduled,
+            add_menu: main.add_menu,
+            filter: &main.filter,
+        });
 
         let mut content = column![];
         if main.verified == Some(false) {
@@ -1408,6 +1520,7 @@ impl App {
                     now: main.now,
                 };
                 let look = Look {
+                    own_user: &main.own_user,
                     theme: theme.clone(),
                     math: &self.math,
                     params: self.math_params(),
@@ -1641,6 +1754,59 @@ async fn run_request(
     }
     .await;
     result.map_err(|e: mtrx_core::Error| e.to_string())
+}
+
+/// ⌘K / Ctrl+K focuses the room search, Esc clears it; window focus.
+fn shortcuts(
+    event: iced::Event,
+    _status: iced::event::Status,
+    _window: window::Id,
+) -> Option<Message> {
+    use iced::keyboard::{self, Key, key::Named};
+    match event {
+        iced::Event::Keyboard(keyboard::Event::KeyPressed { key, modifiers, .. }) => match key {
+            Key::Character(c) if c == "k" && modifiers.command() => Some(Message::FocusSearch),
+            Key::Named(Named::Escape) => Some(Message::Escape),
+            _ => None,
+        },
+        iced::Event::Window(window::Event::Focused) => Some(Message::WindowFocused(true)),
+        iced::Event::Window(window::Event::Unfocused) => Some(Message::WindowFocused(false)),
+        _ => None,
+    }
+}
+
+fn load_members(session: Arc<Session>, room: OwnedRoomId) -> Task<Message> {
+    Task::perform(
+        {
+            let room = room.clone();
+            async move { session.members(&room).await.map_err(|e| e.to_string()) }
+        },
+        move |result| Message::MembersLoaded(room.clone(), result),
+    )
+}
+
+/// Show a system notification. The call blocks on some systems, so it runs
+/// off the UI thread.
+async fn notify(notification: Notification) {
+    const MAX_BODY: usize = 200;
+    let title = if notification.direct {
+        notification.sender_name.clone()
+    } else {
+        format!("{} in {}", notification.sender_name, notification.room_name)
+    };
+    let body: String = notification.body.chars().take(MAX_BODY).collect();
+    let shown = tokio::task::spawn_blocking(move || {
+        notify_rust::Notification::new()
+            .appname("Mtrx")
+            .summary(&title)
+            .body(&body)
+            .show()
+            .map(|_| ())
+    })
+    .await;
+    if let Ok(Err(e)) = shown {
+        tracing::warn!("could not show a notification: {e}");
+    }
 }
 
 /// Who may edit `room`, and whether we may change that, for the settings panel.

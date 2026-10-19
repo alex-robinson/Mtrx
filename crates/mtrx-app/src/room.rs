@@ -16,7 +16,7 @@ use iced::{
 };
 use mtrx_core::{
     CallService, Event, EventContent, MembershipChange, MessageKind, MxcUri, OwnedRoomId,
-    RoomSummary, RoomTimeline, SendState, TimelineEntry,
+    OwnedUserId, RoomSummary, RoomTimeline, SendState, TimelineEntry,
 };
 
 use crate::{
@@ -28,6 +28,7 @@ use crate::{
     ellipsis::ellipsis,
     fonts,
     math::{self, Math, Rendered},
+    members::Members,
     message,
     send_later::{self, SendLater},
     style::{
@@ -63,6 +64,8 @@ pub struct Room {
     pub confirm_delete: Option<String>,
     /// Names of others typing.
     pub typing: Vec<String>,
+    /// The member list, while shown.
+    pub members: Option<Members>,
     /// How many of the newest entries are rendered.
     shown: usize,
     pub paginating: bool,
@@ -90,6 +93,7 @@ impl Room {
             picker: None,
             confirm_delete: None,
             typing: Vec::new(),
+            members: None,
             id,
             entries: timeline.current(),
             timeline,
@@ -156,7 +160,8 @@ impl Room {
             TimelineEntry::Event(event) => Some((event.sender_avatar.as_deref()?, SENDER_AVATAR)),
             _ => None,
         });
-        room.into_iter().chain(senders)
+        let members = self.members.iter().flat_map(crate::members::avatars);
+        room.into_iter().chain(senders).chain(members)
     }
 
     pub fn view<'a>(
@@ -288,7 +293,19 @@ impl Room {
             bottom = bottom.push(text(error).size(12).style(text::danger));
         }
 
-        column![header, timeline, bottom].into()
+        let main = column![timeline, bottom].width(Length::Fill);
+        let body: Element<'a, Message> = match &self.members {
+            Some(members) => {
+                let name = summary.map_or("", |s| s.name.as_str());
+                row![
+                    main,
+                    members.view(&self.id, name, look.own_user, look.avatars)
+                ]
+                .into()
+            }
+            None => main.into(),
+        };
+        column![header, body].into()
     }
 
     /// Invite, edit name and topic, leave.
@@ -369,6 +386,10 @@ impl Room {
                 avatar,
                 title.width(Length::Fill),
                 self.calls.header_controls(look.call_services),
+                button(text("Members").size(13))
+                    .padding([5, 10])
+                    .style(style::list_item(self.members.is_some()))
+                    .on_press(Message::ToggleMembers),
                 button(text("⋯").size(16))
                     .padding([2, 10])
                     .style(style::list_item(self.menu))
@@ -406,6 +427,7 @@ pub struct Look<'a> {
     pub colored_names: bool,
     /// Our call services, to recognise and start calls.
     pub call_services: &'a [CallService],
+    pub own_user: &'a OwnedUserId,
 }
 
 /// What rendering an event needs besides the event.

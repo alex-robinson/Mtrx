@@ -25,6 +25,8 @@ const FILE: &str = "settings.json";
 pub struct Settings {
     /// Senders' names in their colour (as in Element) instead of the text colour.
     pub colored_names: bool,
+    /// Show new messages as system notifications.
+    pub desktop_notifications: bool,
     /// Services for starting calls; the first is the default.
     pub call_services: Vec<CallService>,
 }
@@ -33,6 +35,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             colored_names: false,
+            desktop_notifications: true,
             call_services: vec![
                 CallService::jitsi("Jitsi Meet", "https://meet.jit.si").expect("valid"),
             ],
@@ -64,6 +67,7 @@ impl Settings {
 #[derive(Debug, Clone)]
 pub enum Message {
     ColoredNames(bool),
+    DesktopNotifications(bool),
     FormKind(FormKind),
     FormName(String),
     FormUrl(String),
@@ -296,6 +300,10 @@ impl Panel {
                 settings.colored_names = colored;
                 return Action::Save;
             }
+            Message::DesktopNotifications(on) => {
+                settings.desktop_notifications = on;
+                return Action::Save;
+            }
             Message::FormKind(kind) => self.form.kind = kind,
             Message::FormName(name) => self.form.name = name,
             Message::FormUrl(url) => self.form.url = url,
@@ -422,6 +430,14 @@ impl Panel {
                 "Show people's names in their own colour, as Element does.",
                 toggler(settings.colored_names)
                     .on_toggle(|on| message(Message::ColoredNames(on)))
+                    .into(),
+            ),
+            option(
+                "Desktop notifications",
+                "New messages that notify by your Matrix notification settings, \
+                 unless you are looking at the room.",
+                toggler(settings.desktop_notifications)
+                    .on_toggle(|on| message(Message::DesktopNotifications(on)))
                     .into(),
             ),
             heading("Calls"),
@@ -756,6 +772,7 @@ mod tests {
         assert_eq!(Settings::load(&path), Settings::default(), "missing file");
         let settings = Settings {
             colored_names: true,
+            desktop_notifications: false,
             call_services: vec![CallService::fixed("Zoom", "https://zoom.us/j/1").unwrap()],
         };
         settings.save(&path).unwrap();

@@ -853,3 +853,59 @@ async fn replies_reactions_edits_typing_receipts() -> Result<()> {
     .await?;
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs local Synapse (testserver/run.sh)"]
+async fn members_and_notifications() -> Result<()> {
+    let (_, alice) = new_user("notify").await?;
+    let (_, bob) = new_user("notify").await?;
+    let (_, carol) = new_user("notify").await?;
+    let room = alice
+        .session
+        .create_room(NewRoom {
+            name: Some("lab".into()),
+            encrypted: true,
+            invite: vec![bob.session.user_id(), carol.session.user_id()],
+            ..Default::default()
+        })
+        .await?;
+    join_synced(&bob, &room, "lab").await?;
+
+    let members = alice.session.members(&room).await?;
+    let role = |user: &Device| {
+        members
+            .iter()
+            .find(|m| m.id == user.session.user_id())
+            .map(|m| (m.role, m.invited))
+    };
+    assert_eq!(role(&alice), Some((mtrx_core::Role::Admin, false)));
+    assert_eq!(role(&bob), Some((mtrx_core::Role::Member, false)));
+    assert_eq!(role(&carol), Some((mtrx_core::Role::Member, true)));
+    assert_eq!(
+        members.last().map(|m| m.id.clone()),
+        Some(carol.session.user_id())
+    );
+
+    // Bob's message notifies alice (decrypted), not bob himself.
+    let alice_timeline = alice.session.timeline(&room).await?;
+    wait_for("bob joined", alice_timeline.updates(), |entries| {
+        entries
+            .iter()
+            .any(|e| matches!(e, TimelineEntry::Event(ev) if ev.sender == bob.session.user_id()))
+    })
+    .await?;
+    let notifications = alice.session.notifications();
+    let bob_timeline = bob.session.timeline(&room).await?;
+    timeout(
+        "send",
+        bob_timeline
+            .send_markdown("Results are in", None)
+            .await?
+            .sent(),
+    )
+    .await??;
+    let notification = wait_for("notified", notifications, |n| n.room_id == room).await?;
+    assert_eq!(notification.body, "Results are in");
+    assert_eq!(notification.room_name, "lab");
+    Ok(())
+}

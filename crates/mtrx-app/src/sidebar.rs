@@ -4,7 +4,7 @@ use std::collections::{HashMap, HashSet};
 
 use iced::{
     Alignment, Color, Element, Length, Padding, Theme,
-    widget::{button, column, container, row, scrollable, space, stack, text, tooltip},
+    widget::{button, column, container, row, scrollable, space, stack, text, text_input, tooltip},
 };
 use mtrx_core::{MxcUri, OwnedRoomId, RoomKind, RoomSummary, ScheduledMessage};
 
@@ -16,6 +16,9 @@ use crate::{
     fonts, icons,
     style::{self, ROOM_AVATAR, ROOM_LIST_WIDTH, ROOM_ROW, SPACE_AVATAR, SPACE_BAR_WIDTH},
 };
+
+/// The room search field, focused by ⌘K / Ctrl+K.
+pub const SEARCH: &str = "room-search";
 
 /// Joined spaces without a joined parent space.
 pub fn top_level_spaces(rooms: &[RoomSummary]) -> Vec<&RoomSummary> {
@@ -72,18 +75,23 @@ pub fn ancestors(rooms: &[RoomSummary], room: &OwnedRoomId) -> Vec<OwnedRoomId> 
 }
 
 /// The room list's sections and their rooms, in display order. Sections may
-/// be empty.
+/// be empty. A search `filter` lists matching rooms of all spaces instead.
 fn sections<'a>(
     rooms: &'a [RoomSummary],
     selected_space: Option<&OwnedRoomId>,
-) -> [(&'static str, Vec<&'a RoomSummary>); 3] {
+    filter: &str,
+) -> Vec<(&'static str, Vec<&'a RoomSummary>)> {
+    let filter = filter.trim().to_lowercase();
+    if !filter.is_empty() {
+        return vec![("Results", search(rooms, &filter))];
+    }
     let in_space = selected_space.map(|s| descendants(rooms, s));
     let listed = |r: &&RoomSummary| match &in_space {
         Some(ids) => ids.contains(&r.id),
         None => true,
     };
     let joined = |kind| move |r: &&RoomSummary| !r.invited && r.kind == kind;
-    [
+    vec![
         (
             "Invites",
             rooms.iter().filter(|r| r.invited).filter(listed).collect(),
@@ -108,15 +116,38 @@ fn sections<'a>(
     ]
 }
 
+/// Rooms and chats whose name contains `filter` (lower case), names starting
+/// with it first.
+fn search<'a>(rooms: &'a [RoomSummary], filter: &str) -> Vec<&'a RoomSummary> {
+    let mut found: Vec<_> = rooms
+        .iter()
+        .filter(|r| r.kind != RoomKind::Space)
+        .filter_map(|r| {
+            let name = r.name.to_lowercase();
+            name.find(filter).map(|at| (at > 0, r))
+        })
+        .collect();
+    found.sort_by_key(|(later, r)| (*later, r.name.to_lowercase()));
+    found.into_iter().map(|(_, r)| r).collect()
+}
+
+/// The room the search field's Enter opens.
+pub fn first_match<'a>(rooms: &'a [RoomSummary], filter: &str) -> Option<&'a RoomSummary> {
+    search(rooms, &filter.trim().to_lowercase())
+        .into_iter()
+        .next()
+}
+
 /// Pictures in the space bar and room list, with their sizes.
 pub fn avatars<'a>(
     rooms: &'a [RoomSummary],
     selected_space: Option<&OwnedRoomId>,
+    filter: &str,
 ) -> Vec<(&'a MxcUri, f32)> {
     let spaces = top_level_spaces(rooms)
         .into_iter()
         .filter_map(|s| Some((s.avatar.as_deref()?, SPACE_AVATAR)));
-    let listed = sections(rooms, selected_space)
+    let listed = sections(rooms, selected_space, filter)
         .into_iter()
         .flat_map(|(_, entries)| entries)
         .filter_map(|r| Some((r.avatar.as_deref()?, ROOM_AVATAR)));
@@ -213,15 +244,33 @@ fn home_icon<'a>() -> Element<'a, Message> {
         .into()
 }
 
-pub fn room_list<'a>(
-    rooms: &'a [RoomSummary],
-    selected_space: Option<&OwnedRoomId>,
-    open: Option<&OwnedRoomId>,
-    loaded: bool,
-    avatars: &Avatars,
-    scheduled: &[ScheduledMessage],
-    add_menu: bool,
-) -> Element<'a, Message> {
+/// What the room list shows.
+pub struct RoomListView<'a> {
+    pub rooms: &'a [RoomSummary],
+    pub selected_space: Option<&'a OwnedRoomId>,
+    /// The room shown on the right.
+    pub open: Option<&'a OwnedRoomId>,
+    /// The first sync finished.
+    pub loaded: bool,
+    pub avatars: &'a Avatars,
+    pub scheduled: &'a [ScheduledMessage],
+    /// The "+" menu is open.
+    pub add_menu: bool,
+    /// The search text.
+    pub filter: &'a str,
+}
+
+pub fn room_list<'a>(view: RoomListView<'a>) -> Element<'a, Message> {
+    let RoomListView {
+        rooms,
+        selected_space,
+        open,
+        loaded,
+        avatars,
+        scheduled,
+        add_menu,
+        filter,
+    } = view;
     let title = match selected_space {
         Some(id) => rooms
             .iter()
@@ -249,8 +298,27 @@ pub fn room_list<'a>(
         let space = selected_space.map(|id| (id.clone(), title.to_owned()));
         list = list.push(add_menu_view(space));
     }
-    for (heading, entries) in sections(rooms, selected_space) {
+    list = list.push(
+        container(
+            text_input("Search rooms  (⌘K)", filter)
+                .id(SEARCH)
+                .on_input(Message::RoomFilter)
+                .on_submit(Message::OpenFirstMatch)
+                .style(style::input)
+                .padding([5, 8])
+                .size(13),
+        )
+        .padding([4, 0]),
+    );
+    let searching = !filter.trim().is_empty();
+    for (heading, entries) in sections(rooms, selected_space, filter) {
         if entries.is_empty() {
+            if searching {
+                list = list.push(
+                    container(text("No rooms match.").size(12).style(text::secondary))
+                        .padding([8, 8]),
+                );
+            }
             continue;
         }
         list = list.push(section_heading(heading));

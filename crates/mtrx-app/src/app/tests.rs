@@ -62,6 +62,7 @@ fn snapshot(app: &App, name: &str) {
 fn app(screen: Screen, mode: Mode) -> App {
     App {
         profile: Profile::new("ui", None, SecretStore::File).unwrap(),
+        focused: true,
         google: Arc::new(Google::new(&snapshot_dir(), SecretStore::File)),
         settings: Settings::default(),
         settings_file: None,
@@ -626,6 +627,7 @@ async fn big_room_benchmark() {
 async fn room_management_screens() {
     let dir = TempDir::new().unwrap();
     let (_, alice) = user("manage", &dir).await;
+    let (_, bob) = user("member", &dir).await;
     let space = alice
         .create_room(NewRoom {
             name: Some("Climate".into()),
@@ -638,6 +640,7 @@ async fn room_management_screens() {
         .create_room(NewRoom {
             name: Some("ice-sheets".into()),
             parent: Some(space.clone()),
+            invite: vec![bob.user_id()],
             ..Default::default()
         })
         .await
@@ -660,6 +663,7 @@ async fn room_management_screens() {
     .await
     .unwrap();
     let timeline = Arc::new(alice.timeline(&room).await.unwrap());
+    let members = alice.members(&room).await.unwrap();
     let session = Arc::new(alice);
 
     let main_with = |configure: &dyn Fn(&mut Main)| {
@@ -705,5 +709,14 @@ async fn room_management_screens() {
             });
         }),
         "invite",
+    );
+    snapshot(
+        &main_with(&|main| {
+            main.filter = "ice".into();
+            main.room.as_mut().unwrap().members = Some(Members {
+                list: Some(Ok(members.clone())),
+            });
+        }),
+        "members-search",
     );
 }

@@ -11,6 +11,8 @@ mod encryption;
 mod error;
 mod google;
 mod media;
+mod members;
+mod notifications;
 mod permissions;
 mod profile;
 mod rooms;
@@ -29,6 +31,8 @@ pub use encryption::{
 };
 pub use error::{Error, Result};
 pub use google::{Google, GoogleClient};
+pub use members::{Member, Role};
+pub use notifications::Notification;
 pub use permissions::{Permissions, SpaceUpdate};
 pub use profile::Profile;
 pub use rooms::{NewRoom, RoomKind, RoomList, RoomListState, RoomSummary, UserSummary};
