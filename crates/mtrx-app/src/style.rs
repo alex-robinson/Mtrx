@@ -2,7 +2,7 @@
 
 use iced::{
     Background, Border, Color, Theme,
-    widget::{Container, Text, button, container, rule, text},
+    widget::{button, container, rule},
 };
 
 pub const SPACE_BAR_WIDTH: f32 = 56.0;
@@ -165,11 +165,6 @@ pub fn list_item(selected: bool) -> impl Fn(&Theme, button::Status) -> button::S
             ..Default::default()
         }
     }
-}
-
-/// Text on one line, cut off at the container's edge.
-pub fn single_line<'a, M>(content: Text<'a>) -> Container<'a, M> {
-    container(content.wrapping(text::Wrapping::None)).clip(true)
 }
 
 pub fn to_rgba8(color: Color) -> [u8; 4] {

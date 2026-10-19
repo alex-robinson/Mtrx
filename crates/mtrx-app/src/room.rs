@@ -22,6 +22,7 @@ use mtrx_core::{
 use crate::{
     app::Message,
     avatar::{self, Avatars, Shape},
+    ellipsis::ellipsis,
     fonts,
     math::{self, Math, Rendered},
     message,
@@ -274,16 +275,12 @@ impl Room {
         avatars: &Avatars,
     ) -> Element<'a, Message> {
         let name = summary.map_or("", |s| s.name.as_str());
-        let mut title = column![style::single_line(
-            text(name).size(16).font(fonts::SEMIBOLD)
-        )];
+        let mut title = column![ellipsis(name).size(16).font(fonts::SEMIBOLD)];
         if let Some(topic) = summary
             .and_then(|s| s.topic.as_deref())
             .and_then(|t| t.lines().next())
         {
-            title = title.push(style::single_line(
-                text(topic).size(12).style(text::secondary),
-            ));
+            title = title.push(ellipsis(topic).size(12).style(text::secondary));
         }
         let avatar = avatars.view(
             self.id.as_str(),
@@ -428,9 +425,12 @@ fn event_view<'a>(
 /// Coloured sender name and time, above the first message of a group.
 fn sender_line<'a>(event: &Event) -> Element<'a, Message> {
     row![
-        text(display_name(event))
-            .font(fonts::SEMIBOLD)
-            .color(avatar::color(event.sender.as_str())),
+        text(display_name(event)).font(fonts::SEMIBOLD).style({
+            let sender = event.sender.clone();
+            move |theme| text::Style {
+                color: Some(avatar::name_color(sender.as_str(), theme)),
+            }
+        }),
         text(time(event)).size(11).style(text::secondary)
     ]
     .spacing(8)

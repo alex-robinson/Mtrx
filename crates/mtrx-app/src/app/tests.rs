@@ -305,16 +305,22 @@ async fn send_later_bar() {
         })
         .await
         .unwrap();
+    let long_name = "Working group on ice-sheet model intercomparison and data";
+    let other = alice
+        .create_room(NewRoom {
+            name: Some(long_name.into()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
     let list = alice.room_list().await.unwrap();
     let rooms = tokio::time::timeout(TIMEOUT, async {
         let mut updates = std::pin::pin!(list.updates());
         while let Some(state) = updates.next().await {
-            if state.loaded
-                && state
-                    .rooms
-                    .iter()
-                    .any(|r| r.id == room && r.name == "ice-sheets")
-            {
+            let named = |id: &OwnedRoomId, name: &str| {
+                state.rooms.iter().any(|r| &r.id == id && r.name == name)
+            };
+            if state.loaded && named(&room, "ice-sheets") && named(&other, long_name) {
                 return state;
             }
         }
@@ -361,6 +367,15 @@ async fn send_later_bar() {
             now + Duration::from_secs(2 * 3600 + 600),
             false,
         ),
+        ScheduledMessage {
+            room_id: other.clone(),
+            ..scheduled(
+                "c",
+                "Agenda for Thursday",
+                now + Duration::from_secs(86400),
+                false,
+            )
+        },
     ];
     let mut open = Room::new(room.clone(), timeline.clone());
     open.entries = timeline.current();

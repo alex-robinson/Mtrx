@@ -12,12 +12,13 @@ path = "src/main.rs"
 [dependencies]
 mtrx-core.workspace = true
 mtrx-format = { workspace = true, features = ["render"] }
-iced = { version = "0.14.0", features = ["tokio", "image"] }
+iced = { version = "0.14.0", features = ["tokio", "image", "canvas", "advanced"] }
 tokio.workspace = true
 futures-util.workspace = true
 chrono.workspace = true
 tracing-subscriber.workspace = true
 open = "5.4.4"
+unicode-segmentation = "1.13.3"
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
 
 [dev-dependencies]

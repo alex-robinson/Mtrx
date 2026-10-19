@@ -708,6 +708,7 @@ impl App {
             main.room.as_ref().map(|r| &r.id),
             main.rooms.loaded,
             &main.avatars,
+            &main.scheduled,
         );
 
         let mut content = column![];

@@ -9,11 +9,12 @@ use std::{
 };
 
 use iced::{
-    Background, Border, Color, Element, Task,
+    Background, Border, Color, Element, Task, Theme,
     widget::{container, image, text},
 };
 use mtrx_core::{MxcUri, OwnedMxcUri, Session};
 use tokio::sync::Semaphore;
+use unicode_segmentation::UnicodeSegmentation;
 
 use crate::fonts;
 
@@ -200,6 +201,52 @@ pub fn color(id: &str) -> Color {
     PALETTE[(element_hash(id) % PALETTE.len() as u32) as usize]
 }
 
+/// Text contrast names need against the background (WCAG AA).
+const MIN_CONTRAST: f32 = 4.5;
+
+/// Colour of a user's name: their [`color`], darkened on light backgrounds
+/// until it reads well. Some of Element's colours (lime, cyan) are too light
+/// on white.
+pub fn name_color(id: &str, theme: &Theme) -> Color {
+    let palette = theme.extended_palette();
+    let color = color(id);
+    if palette.is_dark {
+        color
+    } else {
+        darken_to_contrast(color, palette.background.base.color)
+    }
+}
+
+fn darken_to_contrast(mut color: Color, background: Color) -> Color {
+    while contrast(color, background) < MIN_CONTRAST && luminance(color) > 0.0 {
+        color = Color {
+            r: color.r * 0.95,
+            g: color.g * 0.95,
+            b: color.b * 0.95,
+            ..color
+        };
+    }
+    color
+}
+
+/// WCAG contrast ratio, from 1 (none) to 21.
+fn contrast(a: Color, b: Color) -> f32 {
+    let (a, b) = (luminance(a), luminance(b));
+    (a.max(b) + 0.05) / (a.min(b) + 0.05)
+}
+
+/// WCAG relative luminance of an sRGB colour.
+fn luminance(color: Color) -> f32 {
+    let linear = |v: f32| {
+        if v <= 0.04045 {
+            v / 12.92
+        } else {
+            ((v + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    0.2126 * linear(color.r) + 0.7152 * linear(color.g) + 0.0722 * linear(color.b)
+}
+
 /// Element's string hash (Java's `hashCode` over UTF-16 code units, made
 /// positive).
 fn element_hash(s: &str) -> u32 {
@@ -212,15 +259,16 @@ fn element_hash(s: &str) -> u32 {
         .unsigned_abs()
 }
 
-/// First letter of a name, without the sigil of an ID (`@alice:…`, `#room:…`).
+/// First character of a name as the user sees it (a whole grapheme, so
+/// emoji stay intact), without the sigil of an ID (`@alice:…`, `#room:…`).
 fn initial(name: &str) -> String {
     let name = name
         .strip_prefix(['@', '#', '!', '+'])
         .filter(|rest| !rest.is_empty())
         .unwrap_or(name);
-    name.chars()
+    name.graphemes(true)
         .next()
-        .map(|c| c.to_uppercase().collect())
+        .map(|g| g.to_uppercase())
         .unwrap_or_default()
 }
 
@@ -242,5 +290,20 @@ mod tests {
         assert_eq!(initial("#"), "#");
         assert_eq!(initial("élan"), "É");
         assert_eq!(initial(""), "");
+        assert_eq!(initial("👩‍🔬 lab"), "👩‍🔬");
+        assert_eq!(initial("🇩🇪 team"), "🇩🇪");
+    }
+
+    #[test]
+    fn light_theme_names_are_readable() {
+        let white = Color::WHITE;
+        for color in PALETTE {
+            let darkened = darken_to_contrast(color, white);
+            assert!(contrast(darkened, white) >= MIN_CONTRAST);
+            // Already readable colours stay as they are.
+            if contrast(color, white) >= MIN_CONTRAST {
+                assert_eq!(darkened, color);
+            }
+        }
     }
 }

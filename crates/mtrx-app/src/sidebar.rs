@@ -3,15 +3,16 @@
 use std::collections::{HashMap, HashSet};
 
 use iced::{
-    Alignment, Element, Length, Padding,
+    Alignment, Color, Element, Length, Padding, Theme,
     widget::{button, column, container, row, scrollable, space, stack, text, tooltip},
 };
-use mtrx_core::{MxcUri, OwnedRoomId, RoomKind, RoomSummary};
+use mtrx_core::{MxcUri, OwnedRoomId, RoomKind, RoomSummary, ScheduledMessage};
 
 use crate::{
     app::Message,
     avatar::{Avatars, Shape},
-    fonts,
+    ellipsis::ellipsis,
+    fonts, icons,
     style::{self, ROOM_AVATAR, ROOM_LIST_WIDTH, ROOM_ROW, SPACE_AVATAR, SPACE_BAR_WIDTH},
 };
 
@@ -170,6 +171,7 @@ pub fn room_list<'a>(
     open: Option<&OwnedRoomId>,
     loaded: bool,
     avatars: &Avatars,
+    scheduled: &[ScheduledMessage],
 ) -> Element<'a, Message> {
     let title = match selected_space {
         Some(id) => rooms
@@ -181,7 +183,7 @@ pub fn room_list<'a>(
     };
 
     let mut list =
-        column![style::single_line(text(title).size(16).font(fonts::SEMIBOLD)).padding([4, 8])]
+        column![container(ellipsis(title).size(16).font(fonts::SEMIBOLD)).padding([4, 8])]
             .padding(8);
     for (heading, entries) in sections(rooms, selected_space) {
         if entries.is_empty() {
@@ -189,7 +191,8 @@ pub fn room_list<'a>(
         }
         list = list.push(section_heading(heading));
         for room in entries {
-            list = list.push(room_entry(room, open == Some(&room.id), avatars));
+            let later = Later::of(scheduled, &room.id);
+            list = list.push(room_entry(room, open == Some(&room.id), later, avatars));
         }
     }
     if !loaded {
@@ -215,9 +218,53 @@ fn section_heading<'a>(heading: &str) -> Element<'a, Message> {
     .into()
 }
 
+/// A room's scheduled messages, as shown in the room list.
+struct Later {
+    count: usize,
+    overdue: usize,
+}
+
+impl Later {
+    fn of(scheduled: &[ScheduledMessage], room: &OwnedRoomId) -> Option<Self> {
+        let mut later = Self {
+            count: 0,
+            overdue: 0,
+        };
+        for message in scheduled.iter().filter(|m| &m.room_id == room) {
+            later.count += 1;
+            later.overdue += usize::from(message.overdue);
+        }
+        (later.count > 0).then_some(later)
+    }
+
+    /// A clock; warning-coloured if any message is overdue.
+    fn view<'a>(&self) -> Element<'a, Message> {
+        let (color, tip): (fn(&Theme) -> Color, _) = if self.overdue > 0 {
+            (
+                |theme| theme.extended_palette().warning.strong.color,
+                format!("{} overdue scheduled message(s)", self.overdue),
+            )
+        } else {
+            (
+                |theme| {
+                    theme
+                        .extended_palette()
+                        .background
+                        .strong
+                        .text
+                        .scale_alpha(0.6)
+                },
+                format!("{} scheduled message(s)", self.count),
+            )
+        };
+        with_tooltip(icons::clock(14.0, color), tip)
+    }
+}
+
 fn room_entry<'a>(
     room: &'a RoomSummary,
     selected: bool,
+    later: Option<Later>,
     avatars: &Avatars,
 ) -> Element<'a, Message> {
     let font = if room.unread_messages > 0 {
@@ -232,8 +279,11 @@ fn room_entry<'a>(
         ROOM_AVATAR,
         Shape::Circle,
     );
-    let name = style::single_line(text(&room.name).size(14).font(font)).width(Length::Fill);
+    let name = ellipsis(&room.name).size(14).font(font).width(Length::Fill);
     let mut line = row![avatar, name].spacing(8).align_y(Alignment::Center);
+    if let Some(later) = later {
+        line = line.push(later.view());
+    }
     if room.unread_mentions > 0 || room.unread_messages > 0 {
         let highlight = room.unread_mentions > 0;
         let count = if highlight {
