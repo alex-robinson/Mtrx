@@ -7,7 +7,7 @@ use std::{
     sync::Arc,
 };
 
-use futures_util::StreamExt;
+use futures_util::{SinkExt, StreamExt};
 use iced::{
     Element, Length, Size, Subscription, Task, Theme,
     theme::Mode,
@@ -15,14 +15,14 @@ use iced::{
     window,
 };
 use mtrx_core::{
-    OwnedRoomId, Profile, RoomList, RoomListState, RoomTimeline, SecretStore, Session,
-    TimelineEntry,
+    OwnedRoomId, Profile, RecoveryStep, RoomList, RoomListState, RoomTimeline, SecretStore,
+    Session, TimelineEntry,
 };
 
 use crate::{
     login::{self, Login},
     math::{self, Math, Rendered},
-    room::Room,
+    room::{Older, Room},
     sidebar,
     style::{self, ROOM_LIST_WIDTH, SPACE_BAR_WIDTH, TIMELINE_PADDING},
 };
@@ -67,6 +67,7 @@ pub enum Message {
     Sent(OwnedRoomId, Result<(), String>),
     RecoveryKey(String),
     Recover,
+    RecoveryProgress(RecoveryStep),
     Recovered(Result<bool, String>),
     MathRendered(math::Key, Rendered),
     LinkClicked(String),
@@ -99,7 +100,8 @@ struct Main {
     /// `None` until known.
     verified: Option<bool>,
     recovery_key: String,
-    recovery_busy: bool,
+    /// Set while recovery runs.
+    recovery_step: Option<RecoveryStep>,
     recovery_error: Option<String>,
     error: Option<String>,
 }
@@ -114,7 +116,7 @@ impl Main {
             room: None,
             verified: None,
             recovery_key: String::new(),
-            recovery_busy: false,
+            recovery_step: None,
             recovery_error: None,
             error: None,
         }
@@ -299,9 +301,16 @@ impl App {
                 let Screen::Main(main) = &mut self.screen else {
                     return Task::none();
                 };
-                match main.room.as_mut() {
-                    Some(room) if room.wants_more(&viewport) => paginate(room),
-                    _ => Task::none(),
+                let Some(room) = main.room.as_mut() else {
+                    return Task::none();
+                };
+                match room.older(&viewport) {
+                    Older::None => Task::none(),
+                    Older::ShowMore => {
+                        room.show_more();
+                        self.render_math()
+                    }
+                    Older::Paginate => paginate(room),
                 }
             }
             Message::Paginated(id, result) => {
@@ -311,11 +320,14 @@ impl App {
                 if let Some(room) = main.room.as_mut().filter(|r| r.id == id) {
                     room.paginating = false;
                     match result {
-                        Ok(at_start) => room.at_start = at_start,
+                        Ok(at_start) => {
+                            room.at_start = at_start;
+                            room.show_more();
+                        }
                         Err(e) => room.error = Some(e),
                     }
                 }
-                Task::none()
+                self.render_math()
             }
             Message::Composer(action) => {
                 if let Screen::Main(main) = &mut self.screen
@@ -364,23 +376,40 @@ impl App {
                 let Screen::Main(main) = &mut self.screen else {
                     return Task::none();
                 };
-                if main.recovery_busy || main.recovery_key.trim().is_empty() {
+                if main.recovery_step.is_some() || main.recovery_key.trim().is_empty() {
                     return Task::none();
                 }
-                main.recovery_busy = true;
+                main.recovery_step = Some(RecoveryStep::CheckingKey);
                 main.recovery_error = None;
                 let (session, key) = (main.session.clone(), main.recovery_key.trim().to_owned());
-                Task::perform(
-                    async move {
-                        session.recover(&key).await?;
-                        session.is_device_verified().await
-                    },
-                    |result| Message::Recovered(result.map_err(|e| e.to_string())),
+                Task::run(
+                    iced::stream::channel(16, async move |mut tx| {
+                        let progress = |step| {
+                            let _ = tx.clone().try_send(Message::RecoveryProgress(step));
+                        };
+                        let result = async {
+                            session.recover(&key, progress).await?;
+                            session.is_device_verified().await
+                        }
+                        .await;
+                        let _ = tx
+                            .send(Message::Recovered(result.map_err(|e| e.to_string())))
+                            .await;
+                    }),
+                    |message| message,
                 )
+            }
+            Message::RecoveryProgress(step) => {
+                if let Screen::Main(main) = &mut self.screen
+                    && main.recovery_step.is_some()
+                {
+                    main.recovery_step = Some(step);
+                }
+                Task::none()
             }
             Message::Recovered(result) => {
                 if let Screen::Main(main) = &mut self.screen {
-                    main.recovery_busy = false;
+                    main.recovery_step = None;
                     match result {
                         Ok(verified) => {
                             main.verified = Some(verified);
@@ -512,26 +541,35 @@ impl App {
 }
 
 fn recovery_banner(main: &Main) -> Element<'_, Message> {
+    let busy = main.recovery_step.is_some();
     let mut input = text_input("Recovery key", &main.recovery_key)
         .secure(true)
         .padding(8)
         .width(320);
-    if !main.recovery_busy {
+    if !busy {
         input = input
             .on_input(Message::RecoveryKey)
             .on_submit(Message::Recover);
     }
-    let unlock = button(text(if main.recovery_busy {
-        "Unlocking…"
-    } else {
-        "Unlock"
-    }))
-    .on_press_maybe((!main.recovery_busy).then_some(Message::Recover));
+    let unlock = button(text(if busy { "Unlocking…" } else { "Unlock" }))
+        .on_press_maybe((!busy).then_some(Message::Recover));
     let mut banner = column![
         text("This device is not verified, so older encrypted messages cannot be read."),
         row![input, unlock].spacing(8),
     ]
     .spacing(8);
+    if let Some(step) = main.recovery_step {
+        let status = match step {
+            RecoveryStep::CheckingKey => "Checking the recovery key…".to_owned(),
+            RecoveryStep::ImportingIdentity => {
+                "Verifying this device and connecting to the key backup…".to_owned()
+            }
+            RecoveryStep::DownloadingKeys { done, total } => {
+                format!("Downloading message keys for recent rooms: {done} of {total}…")
+            }
+        };
+        banner = banner.push(text(status).size(13));
+    }
     if let Some(error) = &main.recovery_error {
         banner = banner.push(text(error).style(text::danger));
     }

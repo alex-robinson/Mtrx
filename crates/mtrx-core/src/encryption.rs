@@ -1,14 +1,14 @@
 //! End-to-end encryption: recovery (key backup + secret storage) and
 //! interactive emoji verification between our own devices.
 
-use std::sync::Arc;
+use std::{collections::HashSet, sync::Arc};
 
 use futures_util::{Stream, StreamExt};
 use matrix_sdk::{
     Client,
     encryption::{
         CrossSigningResetAuthType,
-        recovery::RecoveryState,
+        recovery::{RecoveryError, RecoveryState},
         verification::{
             SasState, SasVerification, Verification as SdkVerification, VerificationRequest,
             VerificationRequestState,
@@ -26,7 +26,7 @@ use tokio::{
 use tokio_stream::wrappers::{BroadcastStream, WatchStream};
 use tracing::warn;
 
-use crate::{Error, OwnedDeviceId, OwnedUserId, Result, Session};
+use crate::{Error, OwnedDeviceId, OwnedRoomId, OwnedUserId, Result, Session};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RecoveryStatus {
@@ -355,14 +355,45 @@ impl Session {
     }
 
     /// Unlock recovery on this device: imports the cross-signing keys (this
-    /// device becomes verified) and the key backup (old messages decrypt).
-    pub async fn recover(&self, recovery_key: &str) -> Result<()> {
-        Ok(self
+    /// device becomes verified) and the key backup (old messages decrypt),
+    /// then fetches message keys of the most recently active encrypted rooms.
+    /// `progress` is called at each step.
+    pub async fn recover(&self, recovery_key: &str, progress: impl Fn(RecoveryStep)) -> Result<()> {
+        let encryption = self.client.encryption();
+        progress(RecoveryStep::CheckingKey);
+        // Fails fast on a wrong key; `recover` below opens the store again.
+        encryption
+            .secret_storage()
+            .open_secret_store(recovery_key)
+            .await
+            .map_err(RecoveryError::from)?;
+        progress(RecoveryStep::ImportingIdentity);
+        encryption.recovery().recover(recovery_key).await?;
+
+        let rooms = self.recent_encrypted_rooms(PREFETCH_ROOMS);
+        for (done, room) in rooms.iter().enumerate() {
+            progress(RecoveryStep::DownloadingKeys {
+                done,
+                total: rooms.len(),
+            });
+            self.room_keys.download(&self.client, room).await;
+        }
+        Ok(())
+    }
+
+    fn recent_encrypted_rooms(&self, limit: usize) -> Vec<OwnedRoomId> {
+        let mut rooms: Vec<_> = self
             .client
-            .encryption()
-            .recovery()
-            .recover(recovery_key)
-            .await?)
+            .joined_rooms()
+            .into_iter()
+            .filter(|r| r.encryption_state().is_encrypted())
+            .collect();
+        rooms.sort_by_key(|r| std::cmp::Reverse(r.latest_event_timestamp()));
+        rooms
+            .into_iter()
+            .take(limit)
+            .map(|r| r.room_id().to_owned())
+            .collect()
     }
 
     /// Whether this device is verified (signed by our cross-signing identity).
@@ -415,6 +446,50 @@ impl Session {
                 current: d.device_id() == self.device_id(),
             })
             .collect())
+    }
+}
+
+/// Encrypted rooms whose message keys [`Session::recover`] fetches right away.
+const PREFETCH_ROOMS: usize = 20;
+
+/// Progress of [`Session::recover`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RecoveryStep {
+    CheckingKey,
+    /// Importing the cross-signing identity (verifies this device) and
+    /// enabling the key backup.
+    ImportingIdentity,
+    /// Fetching message keys from the backup, room by room.
+    DownloadingKeys {
+        done: usize,
+        total: usize,
+    },
+}
+
+/// Fetches a room's message keys from the key backup in one request, once per
+/// session. Without this the SDK fetches keys one by one as decryption fails,
+/// which is slow for rooms with long encrypted history.
+#[derive(Default)]
+pub(crate) struct RoomKeys {
+    done: std::sync::Mutex<HashSet<OwnedRoomId>>,
+}
+
+impl RoomKeys {
+    pub(crate) async fn download(&self, client: &Client, room: &OwnedRoomId) {
+        if self.done.lock().unwrap().contains(room) {
+            return;
+        }
+        match client
+            .encryption()
+            .backups()
+            .download_room_keys_for_room(room)
+            .await
+        {
+            Ok(()) => {
+                self.done.lock().unwrap().insert(room.clone());
+            }
+            Err(e) => warn!(%room, "downloading room keys from backup failed: {e}"),
+        }
     }
 }
 

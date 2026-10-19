@@ -256,7 +256,7 @@ async fn recovery_decrypts_history_on_new_device() -> Result<()> {
     let second = login(&name).await?;
     assert!(!second.session.is_device_verified().await?);
     second.session.room_list().await?.wait_loaded().await;
-    second.session.recover(&key).await?;
+    second.session.recover(&key, |_| {}).await?;
     assert!(second.session.is_device_verified().await?);
 
     let timeline = second.session.timeline(&room).await?;

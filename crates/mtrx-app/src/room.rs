@@ -22,6 +22,12 @@ use crate::{
     message,
 };
 
+/// Entries rendered when a room opens; laying out every loaded entry gets
+/// slow in big rooms, so only a window at the bottom is drawn.
+const WINDOW: usize = 80;
+/// Entries added to the window when scrolling up.
+const WINDOW_STEP: usize = 50;
+
 /// Consecutive messages of one sender within this gap share a header.
 const GROUP_GAP: Duration = Duration::from_secs(5 * 60);
 
@@ -30,9 +36,20 @@ pub struct Room {
     pub timeline: Arc<RoomTimeline>,
     pub entries: Vec<TimelineEntry>,
     pub composer: text_editor::Content,
+    /// How many of the newest entries are rendered.
+    shown: usize,
     pub paginating: bool,
     pub at_start: bool,
     pub error: Option<String>,
+}
+
+/// What scrolling to the top should do.
+pub enum Older {
+    None,
+    /// Render more of the already loaded entries.
+    ShowMore,
+    /// Load older events from the server.
+    Paginate,
 }
 
 impl Room {
@@ -42,21 +59,38 @@ impl Room {
             entries: timeline.current(),
             timeline,
             composer: text_editor::Content::new(),
+            shown: WINDOW,
             paginating: false,
             at_start: false,
             error: None,
         }
     }
 
-    /// Wants older events: scrolled near the top (the view is anchored to the
-    /// bottom, so the top is relative offset 1).
-    pub fn wants_more(&self, viewport: &Viewport) -> bool {
-        !self.paginating && !self.at_start && viewport.relative_offset().y > 0.9
+    /// Reaction to a scroll: near the top (the view is anchored to the
+    /// bottom, so the top is relative offset 1) we want older entries.
+    pub fn older(&self, viewport: &Viewport) -> Older {
+        if viewport.relative_offset().y < 0.9 {
+            Older::None
+        } else if self.shown < self.entries.len() {
+            Older::ShowMore
+        } else if !self.paginating && !self.at_start {
+            Older::Paginate
+        } else {
+            Older::None
+        }
     }
 
-    /// Messages with math, for rendering.
+    pub fn show_more(&mut self) {
+        self.shown += WINDOW_STEP;
+    }
+
+    fn visible(&self) -> &[TimelineEntry] {
+        &self.entries[self.entries.len().saturating_sub(self.shown)..]
+    }
+
+    /// Rendered messages with math, for typesetting.
     pub fn math_documents(&self) -> impl Iterator<Item = &mtrx_format::Document> {
-        self.entries.iter().filter_map(|e| match e {
+        self.visible().iter().filter_map(|e| match e {
             TimelineEntry::Event(Event {
                 content: EventContent::Message(m),
                 ..
@@ -75,19 +109,20 @@ impl Room {
         let header = container(text(name).size(18).font(fonts::SEMIBOLD)).padding([12, 24]);
 
         let mut timeline = column![].spacing(2).padding([12, 24]);
-        if self.at_start {
+        let all_shown = self.shown >= self.entries.len();
+        if self.at_start && all_shown {
             timeline = timeline.push(
                 text("This is the start of the room.")
                     .size(12)
                     .style(text::secondary),
             );
-        } else if self.paginating {
+        } else if self.paginating || !all_shown {
             timeline = timeline.push(text("Loading…").size(12).style(text::secondary));
         }
         let mut previous: Option<&Event> = None;
         // Consecutive state events (joins, settings) collapse into one line.
         let mut state: Vec<&Event> = Vec::new();
-        for entry in &self.entries {
+        for entry in self.visible() {
             if let TimelineEntry::Event(event) = entry
                 && is_state(event)
             {

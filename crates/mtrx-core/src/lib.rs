@@ -14,7 +14,7 @@ mod timeline;
 pub mod test_support;
 
 pub use encryption::{
-    DeviceInfo, RecoveryStatus, Verification, VerificationEmoji, VerificationState,
+    DeviceInfo, RecoveryStatus, RecoveryStep, Verification, VerificationEmoji, VerificationState,
 };
 pub use error::{Error, Result};
 pub use profile::{Profile, SecretStore};

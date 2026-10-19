@@ -42,6 +42,7 @@ pub struct Session {
     /// Serializes enqueueing messages, see [`crate::RoomTimeline::send_markdown`].
     pub(crate) send_lock: Arc<Mutex<()>>,
     pub(crate) verification_tx: broadcast::Sender<VerificationRequest>,
+    pub(crate) room_keys: Arc<crate::encryption::RoomKeys>,
     profile: Profile,
     _save_tokens: AbortOnDrop,
 }
@@ -199,6 +200,7 @@ impl Session {
             sync: Arc::new(sync),
             send_lock: Default::default(),
             verification_tx,
+            room_keys: Default::default(),
             profile,
             _save_tokens: save_tokens,
         })

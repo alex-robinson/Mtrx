@@ -17,8 +17,8 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 use futures_util::StreamExt;
 use mtrx_core::{
-    EventContent, NewRoom, OwnedRoomId, OwnedUserId, Profile, RoomList, RoomTimeline, SecretStore,
-    Session, TimelineEntry, Verification, VerificationState,
+    EventContent, NewRoom, OwnedRoomId, OwnedUserId, Profile, RecoveryStep, RoomList, RoomTimeline,
+    SecretStore, Session, TimelineEntry, Verification, VerificationState,
 };
 
 /// How long one-shot commands wait for the first sync.
@@ -332,7 +332,17 @@ async fn main() -> Result<()> {
         Command::Recovery(RecoveryCommand::Recover { key_stdin }) => {
             let key = read_secret(key_stdin, "Recovery key: ")?;
             let (session, _list) = synced(profile).await?;
-            session.recover(&key).await?;
+            session
+                .recover(&key, |step| match step {
+                    RecoveryStep::CheckingKey => println!("Checking the recovery key…"),
+                    RecoveryStep::ImportingIdentity => {
+                        println!("Verifying this device and connecting to the key backup…")
+                    }
+                    RecoveryStep::DownloadingKeys { done, total } => {
+                        println!("Downloading message keys for recent rooms: {done} of {total}…")
+                    }
+                })
+                .await?;
             println!(
                 "Recovered; this device verified: {}",
                 session.is_device_verified().await?

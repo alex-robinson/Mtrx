@@ -246,6 +246,11 @@ impl PendingSend {
 
 impl Session {
     pub async fn timeline(&self, room_id: &OwnedRoomId) -> Result<RoomTimeline> {
+        if self.room(room_id)?.encryption_state().is_encrypted() {
+            let (client, keys, room) =
+                (self.client.clone(), self.room_keys.clone(), room_id.clone());
+            tokio::spawn(async move { keys.download(&client, &room).await });
+        }
         let timeline = Arc::new(
             self.room(room_id)?
                 .timeline()

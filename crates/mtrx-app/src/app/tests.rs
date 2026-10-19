@@ -222,3 +222,114 @@ async fn main_screen_with_math() {
         snapshot(&app, name);
     }
 }
+
+/// Timings for a big encrypted room opened on a new, recovered device:
+/// `cargo test --release -p mtrx-app big_room -- --ignored --nocapture`
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs local Synapse (testserver/run.sh); slow"]
+async fn big_room_benchmark() {
+    const MESSAGES: usize = 1500;
+    let dir = TempDir::new().unwrap();
+    let (name, first) = user("bench", &dir).await;
+    let room = first
+        .create_room(NewRoom {
+            name: Some("big".into()),
+            encrypted: true,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let timeline = first.timeline(&room).await.unwrap();
+    let start = std::time::Instant::now();
+    let mut last = None;
+    for i in 0..MESSAGES {
+        let text = if i % 10 == 0 {
+            format!("message {i} with math $x_{{{i}}} = \\frac{{a}}{{b}}$")
+        } else {
+            format!("message {i}: some **text** to read")
+        };
+        last = Some(timeline.send_markdown(&text).await.unwrap());
+    }
+    tokio::time::timeout(Duration::from_secs(300), last.unwrap().sent())
+        .await
+        .unwrap()
+        .unwrap();
+    println!("sent {MESSAGES} messages in {:.1?}", start.elapsed());
+    let key = first.enable_recovery().await.unwrap();
+
+    // New device, recovered: like a fresh install.
+    let dir2 = TempDir::new().unwrap();
+    let profile = Profile::new("second", Some(dir2.path()), SecretStore::File).unwrap();
+    let second = Session::login(profile, &homeserver(), &name, PASSWORD)
+        .await
+        .unwrap();
+    second.start_sync().await;
+    second.room_list().await.unwrap().wait_loaded().await;
+    second.recover(&key, |_| {}).await.unwrap();
+
+    let start = std::time::Instant::now();
+    let timeline = Arc::new(second.timeline(&room).await.unwrap());
+    let mut updates = std::pin::pin!(timeline.updates());
+    let paginate = {
+        let timeline = timeline.clone();
+        tokio::spawn(async move { while !timeline.paginate_back(50).await.unwrap() {} })
+    };
+    let mut count = 0;
+    let decrypted = |entries: &[TimelineEntry]| {
+        let messages = entries
+            .iter()
+            .filter(|e| matches!(e, TimelineEntry::Event(ev) if matches!(ev.content, EventContent::Message(_))))
+            .count();
+        let utd = entries
+            .iter()
+            .filter(|e| matches!(e, TimelineEntry::Event(ev) if ev.content == EventContent::UnableToDecrypt))
+            .count();
+        (messages, utd)
+    };
+    let mut paginated_at = None;
+    while let Some(entries) = tokio::time::timeout(Duration::from_secs(120), updates.next())
+        .await
+        .unwrap()
+    {
+        count += 1;
+        if paginate.is_finished() && paginated_at.is_none() {
+            paginated_at = Some(start.elapsed());
+        }
+        let (messages, utd) = decrypted(&entries);
+        if messages == MESSAGES && utd == 0 {
+            break;
+        }
+    }
+    println!(
+        "new device: history loaded after {:.1?}, all decrypted after {:.1?} ({count} timeline updates)",
+        paginated_at.unwrap_or_default(),
+        start.elapsed()
+    );
+
+    let start = std::time::Instant::now();
+    for _ in 0..100 {
+        std::hint::black_box(timeline.current());
+    }
+    println!(
+        "timeline snapshot ({} entries): {:.2?} each",
+        timeline.current().len(),
+        start.elapsed() / 100
+    );
+
+    // View cost with every entry in the room view.
+    let session = Arc::new(second);
+    let mut main = Main::new(session);
+    let mut open = Room::new(room.clone(), timeline.clone());
+    open.at_start = true;
+    main.room = Some(open);
+    let app = app(Screen::Main(Box::new(main)), Mode::Light);
+    let start = std::time::Instant::now();
+    for _ in 0..5 {
+        let mut ui = Simulator::with_size(fonts::settings(), Size::new(1200.0, 800.0), app.view());
+        std::hint::black_box(ui.snapshot(&app.theme()).unwrap());
+    }
+    println!(
+        "view + layout + draw: {:.1?} per frame",
+        start.elapsed() / 5
+    );
+}
