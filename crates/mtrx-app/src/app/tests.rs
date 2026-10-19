@@ -330,7 +330,7 @@ async fn main_screen_with_math() {
                 messages().any(|m| m.in_reply_to.as_ref().is_some_and(|r| r.preview.is_some()));
             let reactions = messages().filter(|m| !m.reactions.is_empty()).count() == 2
                 && messages().any(|m| m.reactions.iter().any(|r| r.count == 2));
-            let read = events().any(|ev| ev.read_by.contains(&bob.user_id()));
+            let read = events().any(|ev| ev.read_by.iter().any(|r| r.id == bob.user_id()));
             if from_carol && reply_loaded && reactions && read {
                 return entries;
             }

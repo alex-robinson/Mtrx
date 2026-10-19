@@ -5,7 +5,7 @@ use iced::{
     Alignment, Element, Length,
     widget::{button, container, row, space, text, tooltip},
 };
-use mtrx_core::{Event, EventKey, OwnedEventId, Reaction, Reply, ScheduledMessage};
+use mtrx_core::{Event, EventKey, MxcUri, OwnedEventId, Reaction, Reader, Reply, ScheduledMessage};
 
 use crate::{
     app,
@@ -243,11 +243,11 @@ pub fn read_markers<'a>(event: &Event, avatars: &Avatars) -> Option<Element<'a, 
     let mut markers = row![space::horizontal()]
         .spacing(2)
         .align_y(Alignment::Center);
-    for user in event.read_by.iter().take(MAX_READERS) {
+    for reader in event.read_by.iter().take(MAX_READERS) {
         markers = markers.push(avatars.view(
-            user.as_str(),
-            user.localpart(),
-            None,
+            reader.id.as_str(),
+            reader_name(reader),
+            reader.avatar.as_deref(),
             READER_AVATAR,
             Shape::Circle,
         ));
@@ -259,7 +259,7 @@ pub fn read_markers<'a>(event: &Event, avatars: &Avatars) -> Option<Element<'a, 
                 .style(text::secondary),
         );
     }
-    let names: Vec<_> = event.read_by.iter().map(|u| u.localpart()).collect();
+    let names: Vec<_> = event.read_by.iter().map(reader_name).collect();
     Some(
         tooltip(
             markers,
@@ -270,6 +270,19 @@ pub fn read_markers<'a>(event: &Event, avatars: &Avatars) -> Option<Element<'a, 
         )
         .into(),
     )
+}
+
+fn reader_name(reader: &Reader) -> &str {
+    reader.name.as_deref().unwrap_or(reader.id.localpart())
+}
+
+/// Pictures of readers shown, with their sizes.
+pub fn reader_avatars(event: &Event) -> impl Iterator<Item = (&MxcUri, f32)> {
+    event
+        .read_by
+        .iter()
+        .take(MAX_READERS)
+        .filter_map(|r| Some((r.avatar.as_deref()?, READER_AVATAR)))
 }
 
 /// Others typing, above the composer.

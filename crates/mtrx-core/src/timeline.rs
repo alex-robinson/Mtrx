@@ -1,6 +1,11 @@
 //! Live room timeline: messages, state changes, sending.
 
-use std::{collections::HashSet, path::Path, sync::Arc, time::SystemTime};
+use std::{
+    collections::{HashMap, HashSet},
+    path::Path,
+    sync::Arc,
+    time::SystemTime,
+};
 
 use eyeball_im::Vector;
 use futures_util::{Stream, StreamExt, stream};
@@ -22,7 +27,7 @@ use matrix_sdk_ui::timeline::{
     TimelineItemContent, TimelineItemKind, VirtualTimelineItem,
 };
 use tokio::{
-    sync::{Mutex, broadcast, watch},
+    sync::{Mutex, broadcast, mpsc, watch},
     task::JoinHandle,
 };
 use tokio_stream::wrappers::{BroadcastStream, WatchStream};
@@ -63,7 +68,16 @@ pub struct Event {
     pub content: EventContent,
     pub send_state: SendState,
     /// Others whose read receipt is on this event: they read up to here.
-    pub read_by: Vec<OwnedUserId>,
+    pub read_by: Vec<Reader>,
+}
+
+/// Someone who read up to an event.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Reader {
+    pub id: OwnedUserId,
+    /// Display name and avatar, once known.
+    pub name: Option<String>,
+    pub avatar: Option<OwnedMxcUri>,
 }
 
 /// Identifies a timeline event for actions on it.
@@ -454,16 +468,22 @@ impl Session {
         let mut converter = Converter {
             own: self.user_id(),
             missing_replies: Vec::new(),
+            profiles: HashMap::new(),
+            missing_profiles: Vec::new(),
         };
+        let mut items = items;
         let mut converted: Vector<Option<TimelineEntry>> =
             items.iter().map(|item| converter.convert(item)).collect();
         let (tx, entries) = watch::channel(flatten(&converted));
         let mut stream = Box::pin(stream);
+        let (profile_tx, mut profile_rx) = mpsc::unbounded_channel();
         let task = tokio::spawn({
             let timeline = timeline.clone();
             async move {
-                // Replies whose original is not loaded are fetched once.
+                // Replies whose original is not loaded, and readers not seen
+                // as senders, are fetched once.
                 let mut requested = HashSet::new();
+                let mut requested_profiles = HashSet::new();
                 loop {
                     for event_id in converter.missing_replies.drain(..) {
                         if requested.insert(event_id.clone()) {
@@ -475,12 +495,38 @@ impl Session {
                             });
                         }
                     }
-                    let Some(diffs) = stream.next().await else {
-                        return;
-                    };
-                    for diff in diffs {
-                        diff.map(|item| converter.convert(&item))
-                            .apply(&mut converted);
+                    for user in converter.missing_profiles.drain(..) {
+                        if requested_profiles.insert(user.clone()) {
+                            let (room, profile_tx) = (timeline.room().clone(), profile_tx.clone());
+                            tokio::spawn(async move {
+                                let profile = member_profile(&room, &user).await;
+                                profile_tx.send((user, profile)).ok();
+                            });
+                        }
+                    }
+                    tokio::select! {
+                        diffs = stream.next() => {
+                            let Some(diffs) = diffs else {
+                                return;
+                            };
+                            for diff in diffs {
+                                diff.clone().apply(&mut items);
+                                diff.map(|item| converter.convert(&item))
+                                    .apply(&mut converted);
+                            }
+                        }
+                        Some((user, profile)) = profile_rx.recv() => {
+                            converter.profiles.insert(user.clone(), profile);
+                            // Redraw the events this reader is on.
+                            for (index, item) in items.iter().enumerate() {
+                                let reads = item
+                                    .as_event()
+                                    .is_some_and(|e| e.read_receipts().contains_key(&user));
+                                if reads {
+                                    converted.set(index, converter.convert(item));
+                                }
+                            }
+                        }
                     }
                     tx.send_replace(flatten(&converted));
                 }
@@ -496,6 +542,32 @@ impl Session {
     }
 }
 
+/// A member's name and avatar from the store, else from their profile.
+async fn member_profile(room: &Room, user: &OwnedUserId) -> Profile {
+    if let Ok(Some(member)) = room.get_member_no_sync(user).await {
+        return (
+            member.display_name().map(ToOwned::to_owned),
+            member.avatar_url().map(ToOwned::to_owned),
+        );
+    }
+    match room.client().account().fetch_user_profile_of(user).await {
+        Ok(profile) => (
+            profile
+                .get_static::<matrix_sdk::ruma::api::client::profile::DisplayName>()
+                .ok()
+                .flatten(),
+            profile
+                .get_static::<matrix_sdk::ruma::api::client::profile::AvatarUrl>()
+                .ok()
+                .flatten(),
+        ),
+        Err(e) => {
+            warn!("could not load the profile of {user}: {e}");
+            (None, None)
+        }
+    }
+}
+
 fn timeline_error(e: impl std::fmt::Display) -> Error {
     Error::Timeline(e.to_string())
 }
@@ -508,7 +580,14 @@ fn flatten(entries: &Vector<Option<TimelineEntry>>) -> Vec<TimelineEntry> {
 struct Converter {
     own: OwnedUserId,
     missing_replies: Vec<OwnedEventId>,
+    /// Names and avatars of senders and readers.
+    profiles: HashMap<OwnedUserId, Profile>,
+    /// Readers whose profile is not known.
+    missing_profiles: Vec<OwnedUserId>,
 }
+
+/// Display name and avatar.
+type Profile = (Option<String>, Option<OwnedMxcUri>);
 
 impl Converter {
     fn convert(&mut self, item: &TimelineItem) -> Option<TimelineEntry> {
@@ -592,6 +671,19 @@ impl Converter {
             }
             _ => (None, None),
         };
+        if sender_name.is_some() || sender_avatar.is_some() {
+            self.profiles.insert(
+                event.sender().to_owned(),
+                (sender_name.clone(), sender_avatar.clone()),
+            );
+        }
+        let own = self.own.clone();
+        let read_by = event
+            .read_receipts()
+            .keys()
+            .filter(|user| **user != own)
+            .map(|user| self.reader(user))
+            .collect();
 
         Some(Event {
             id: id.to_owned(),
@@ -605,13 +697,23 @@ impl Converter {
             editable: event.is_editable(),
             content,
             send_state,
-            read_by: event
-                .read_receipts()
-                .keys()
-                .filter(|user| **user != self.own)
-                .cloned()
-                .collect(),
+            read_by,
         })
+    }
+
+    fn reader(&mut self, user: &OwnedUserId) -> Reader {
+        let (name, avatar) = match self.profiles.get(user) {
+            Some(profile) => profile.clone(),
+            None => {
+                self.missing_profiles.push(user.clone());
+                (None, None)
+            }
+        };
+        Reader {
+            id: user.clone(),
+            name,
+            avatar,
+        }
     }
 
     fn reply(&mut self, reply: &InReplyToDetails) -> Reply {

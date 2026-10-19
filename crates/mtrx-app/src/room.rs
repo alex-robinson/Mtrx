@@ -157,10 +157,17 @@ impl Room {
         summary: Option<&'a RoomSummary>,
     ) -> impl Iterator<Item = (&'a MxcUri, f32)> {
         let room = summary.and_then(|s| Some((s.avatar.as_deref()?, HEADER_AVATAR)));
-        let senders = self.visible().iter().filter_map(|e| match e {
-            TimelineEntry::Event(event) => Some((event.sender_avatar.as_deref()?, SENDER_AVATAR)),
-            _ => None,
-        });
+        let senders = self
+            .visible()
+            .iter()
+            .filter_map(|e| match e {
+                TimelineEntry::Event(event) => Some(event),
+                _ => None,
+            })
+            .flat_map(|event| {
+                let sender = event.sender_avatar.as_deref().map(|a| (a, SENDER_AVATAR));
+                sender.into_iter().chain(actions::reader_avatars(event))
+            });
         let members = self.members.iter().flat_map(crate::members::avatars);
         room.into_iter().chain(senders).chain(members)
     }

@@ -845,10 +845,14 @@ async fn replies_reactions_edits_typing_receipts() -> Result<()> {
     alice_timeline.typing(true).await?;
     wait_for("bob sees alice typing", typing, |names| names.len() == 1).await?;
 
-    // Read receipts: bob read up to the latest event.
+    // Read receipts: bob read up to the latest event, shown with his name.
     bob_timeline.mark_read().await?;
+    let bob_id = bob.session.user_id();
     wait_for("alice sees bob's receipt", alice_timeline.updates(), |e| {
-        e.iter().any(|x| matches!(x, TimelineEntry::Event(ev) if ev.read_by.contains(&bob.session.user_id())))
+        e.iter().any(|x| {
+            matches!(x, TimelineEntry::Event(ev)
+                if ev.read_by.iter().any(|r| r.id == bob_id && r.name.as_deref() == Some(bob_id.localpart())))
+        })
     })
     .await?;
     Ok(())

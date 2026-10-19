@@ -112,6 +112,8 @@ pub enum Message {
     /// Start or open a direct chat with a member.
     ChatWith(OwnedUserId),
     Notified(Notification),
+    /// A desktop notification about the room was clicked.
+    NotificationClicked(OwnedRoomId),
     WindowFocused(bool),
     Calls(OwnedRoomId, calls::Message),
     RecoveryKey(String),
@@ -748,7 +750,21 @@ impl App {
                 if !self.settings.desktop_notifications || looking {
                     return Task::none();
                 }
-                Task::future(notify(notification)).discard()
+                let room = notification.room_id.clone();
+                Task::future(notify(notification)).then(move |clicked| {
+                    if clicked {
+                        Task::done(Message::NotificationClicked(room.clone()))
+                    } else {
+                        Task::none()
+                    }
+                })
+            }
+            Message::NotificationClicked(room) => {
+                let raise = window::oldest().then(|id| match id {
+                    Some(id) => window::gain_focus(id),
+                    None => Task::none(),
+                });
+                Task::batch([raise, self.update(Message::OpenRoom(room))])
             }
             Message::WindowFocused(focused) => {
                 self.focused = focused;
@@ -1919,9 +1935,9 @@ fn load_members(session: Arc<Session>, room: OwnedRoomId) -> Task<Message> {
     )
 }
 
-/// Show a system notification. The call blocks on some systems, so it runs
-/// off the UI thread.
-async fn notify(notification: Notification) {
+/// Show a system notification; true when it was clicked. The calls block,
+/// so they run off the UI thread.
+async fn notify(notification: Notification) -> bool {
     const MAX_BODY: usize = 200;
     let title = if notification.direct {
         notification.sender_name.clone()
@@ -1930,16 +1946,27 @@ async fn notify(notification: Notification) {
     };
     let body: String = notification.body.chars().take(MAX_BODY).collect();
     let shown = tokio::task::spawn_blocking(move || {
-        notify_rust::Notification::new()
-            .appname("Mtrx")
-            .summary(&title)
-            .body(&body)
-            .show()
-            .map(|_| ())
+        let mut desktop = notify_rust::Notification::new();
+        desktop.appname("Mtrx").summary(&title).body(&body);
+        // Freedesktop servers report clicks only for a "default" action.
+        #[cfg(all(unix, not(target_os = "macos")))]
+        desktop.action("default", "Open");
+        let mut clicked = false;
+        desktop
+            .show()?
+            .wait_for_response(|response: &notify_rust::NotificationResponse| {
+                clicked = matches!(response, notify_rust::NotificationResponse::Default);
+            })?;
+        Ok::<_, notify_rust::error::Error>(clicked)
     })
     .await;
-    if let Ok(Err(e)) = shown {
-        tracing::warn!("could not show a notification: {e}");
+    match shown {
+        Ok(Ok(clicked)) => clicked,
+        Ok(Err(e)) => {
+            tracing::warn!("could not show a notification: {e}");
+            false
+        }
+        Err(_) => false,
     }
 }
 
