@@ -12,6 +12,14 @@ pub enum Error {
     NotLoggedIn(String),
     #[error("profile `{0}` is already logged in; log out first")]
     AlreadyLoggedIn(String),
+    #[error("no room matches `{0}`")]
+    RoomNotFound(String),
+    #[error("`{0}` matches several rooms: {1:?}")]
+    AmbiguousRoom(String, Vec<matrix_sdk::ruma::OwnedRoomId>),
+    #[error("sync: {0}")]
+    Sync(String),
+    #[error("room list: {0}")]
+    RoomList(String),
 
     #[error(transparent)]
     Matrix(#[from] matrix_sdk::Error),

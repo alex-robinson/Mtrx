@@ -1,11 +1,14 @@
 //! A logged-in account: login, restore and logout.
 
+use std::sync::Arc;
+
 use matrix_sdk::{
     Client,
     encryption::{BackupDownloadStrategy, EncryptionSettings},
     ruma::{OwnedDeviceId, OwnedUserId},
     store::RoomLoadSettings,
 };
+use matrix_sdk_ui::sync_service::SyncService;
 use tracing::warn;
 
 use crate::{
@@ -17,7 +20,8 @@ const DEVICE_DISPLAY_NAME: &str = "Mtrx";
 
 /// A logged-in Matrix account bound to a [`Profile`].
 pub struct Session {
-    client: Client,
+    pub(crate) client: Client,
+    pub(crate) sync: Arc<SyncService>,
     profile: Profile,
 }
 
@@ -59,7 +63,7 @@ impl Session {
         .await;
 
         match result {
-            Ok(client) => Ok(Self { client, profile }),
+            Ok(client) => Self::new(client, profile).await,
             Err(e) => {
                 profile.wipe()?;
                 Err(e)
@@ -75,7 +79,26 @@ impl Session {
         let client = build_client(&profile, &stored.homeserver, &stored.store_passphrase).await?;
         client.matrix_auth().restore_session(stored.session, RoomLoadSettings::default()).await?;
         client.encryption().wait_for_e2ee_initialization_tasks().await;
-        Ok(Self { client, profile })
+        Self::new(client, profile).await
+    }
+
+    async fn new(client: Client, profile: Profile) -> Result<Self> {
+        let sync = SyncService::builder(client.clone())
+            .build()
+            .await
+            .map_err(|e| Error::Sync(e.to_string()))?;
+        Ok(Self { client, sync: Arc::new(sync), profile })
+    }
+
+    /// Start syncing in the background. Live views ([`crate::RoomList`], ...)
+    /// only update while sync runs.
+    pub async fn start_sync(&self) {
+        self.sync.start().await;
+    }
+
+    /// Stop syncing and persist the sync position.
+    pub async fn stop_sync(&self) {
+        self.sync.stop().await;
     }
 
     /// Log out on the server and delete all local data of the profile.
@@ -86,7 +109,9 @@ impl Session {
         if let Err(e) = self.client.matrix_auth().logout().await {
             warn!("server-side logout failed, removing local data anyway: {e}");
         }
-        let Self { client, profile } = self;
+        self.sync.stop().await;
+        let Self { client, sync, profile } = self;
+        drop(sync);
         drop(client);
         profile.wipe()
     }
