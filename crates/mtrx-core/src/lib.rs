@@ -28,7 +28,7 @@ pub use error::{Error, Result};
 pub use google::{Google, GoogleClient};
 pub use permissions::{Permissions, SpaceUpdate};
 pub use profile::Profile;
-pub use rooms::{NewRoom, RoomKind, RoomList, RoomListState, RoomSummary};
+pub use rooms::{NewRoom, RoomKind, RoomList, RoomListState, RoomSummary, UserSummary};
 pub use scheduled::ScheduledMessage;
 pub use secrets::SecretStore;
 pub use send_time::{describe_send_time, parse_send_time};

@@ -11,6 +11,7 @@ use mtrx_core::{MxcUri, OwnedRoomId, RoomKind, RoomSummary, ScheduledMessage};
 use crate::{
     app::Message,
     avatar::{Avatars, Shape},
+    dialog::Kind,
     ellipsis::ellipsis,
     fonts, icons,
     style::{self, ROOM_AVATAR, ROOM_LIST_WIDTH, ROOM_ROW, SPACE_AVATAR, SPACE_BAR_WIDTH},
@@ -172,6 +173,15 @@ pub fn space_bar<'a>(
             unread,
         ));
     }
+    let new_space = button(
+        container(text("+").size(22).font(fonts::SEMIBOLD))
+            .center(SPACE_AVATAR)
+            .style(style::new_space_tile),
+    )
+    .padding(4)
+    .style(style::list_item(false))
+    .on_press(Message::OpenDialog(Kind::NewSpace));
+    bar = bar.push(container(with_tooltip(new_space, "New space".into())).center_x(Length::Fill));
     let settings = button(icons::gear(20.0, |theme| {
         theme
             .extended_palette()
@@ -210,6 +220,7 @@ pub fn room_list<'a>(
     loaded: bool,
     avatars: &Avatars,
     scheduled: &[ScheduledMessage],
+    add_menu: bool,
 ) -> Element<'a, Message> {
     let title = match selected_space {
         Some(id) => rooms
@@ -220,9 +231,24 @@ pub fn room_list<'a>(
         None => "Home",
     };
 
-    let mut list =
-        column![container(ellipsis(title).size(16).font(fonts::SEMIBOLD)).padding([4, 8])]
-            .padding(8);
+    let add = button(text("+").size(18).font(fonts::SEMIBOLD))
+        .padding([0, 8])
+        .style(style::list_item(add_menu))
+        .on_press(Message::AddMenu(!add_menu));
+    let mut list = column![
+        row![
+            container(ellipsis(title).size(16).font(fonts::SEMIBOLD))
+                .padding([4, 8])
+                .width(Length::Fill),
+            with_tooltip(add, "Add".into()),
+        ]
+        .align_y(Alignment::Center)
+    ]
+    .padding(8);
+    if add_menu {
+        let space = selected_space.map(|id| (id.clone(), title.to_owned()));
+        list = list.push(add_menu_view(space));
+    }
     for (heading, entries) in sections(rooms, selected_space) {
         if entries.is_empty() {
             continue;
@@ -241,6 +267,56 @@ pub fn room_list<'a>(
         .width(ROOM_LIST_WIDTH)
         .height(Length::Fill)
         .style(style::panel)
+        .into()
+}
+
+/// What the room list's "+" offers; more inside a space.
+fn add_menu_view<'a>(space: Option<(OwnedRoomId, String)>) -> Element<'a, Message> {
+    let item = |label: String, kind: Kind| {
+        button(text(label).size(14))
+            .width(Length::Fill)
+            .padding([5, 10])
+            .style(style::list_item(false))
+            .on_press(Message::OpenDialog(kind))
+    };
+    let mut menu = column![].spacing(1);
+    menu = menu.push(item(
+        match &space {
+            Some((_, name)) => format!("New room in {name}"),
+            None => "New room".into(),
+        },
+        Kind::NewRoom {
+            space: space.clone(),
+        },
+    ));
+    menu = menu
+        .push(item("New direct chat".into(), Kind::DirectChat))
+        .push(item("Join a room…".into(), Kind::Join));
+    if let Some((id, name)) = space {
+        menu = menu
+            .push(item(
+                "Add existing rooms…".into(),
+                Kind::AddExisting {
+                    space: id.clone(),
+                    name: name.clone(),
+                },
+            ))
+            .push(item(
+                "Invite people to the space…".into(),
+                Kind::Invite {
+                    room: id.clone(),
+                    name: name.clone(),
+                },
+            ))
+            .push(item(
+                "Leave the space…".into(),
+                Kind::Leave { room: id, name },
+            ));
+    }
+    container(menu)
+        .padding(4)
+        .width(Length::Fill)
+        .style(style::code_block)
         .into()
 }
 

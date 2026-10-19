@@ -5,7 +5,7 @@ use std::{
     hash::{Hash, Hasher},
     path::PathBuf,
     sync::Arc,
-    time::{Duration, SystemTime},
+    time::{Duration, Instant, SystemTime},
 };
 
 use futures_util::{SinkExt, StreamExt};
@@ -20,12 +20,14 @@ use iced::{
 };
 use mtrx_core::{
     CallService, Google, OwnedMxcUri, OwnedRoomId, Profile, RecoveryStep, RoomList, RoomListState,
-    RoomTimeline, ScheduledMessage, SecretStore, ServiceKind, Session, TimelineEntry, Url,
+    RoomOrAliasId, RoomTimeline, ScheduledMessage, SecretStore, ServiceKind, Session,
+    TimelineEntry, Url,
 };
 
 use crate::{
     avatar::{self, Avatars},
     calls,
+    dialog::{self, Dialog},
     login::{self, Login},
     math::{self, Math, Rendered},
     room::{Look, Older, Room},
@@ -37,6 +39,8 @@ use crate::{
 
 /// How often times shown relative to now are refreshed.
 const TICK: Duration = Duration::from_secs(20);
+/// How often progress (elapsed seconds) is refreshed while something runs.
+const PROGRESS_TICK: Duration = Duration::from_secs(1);
 
 /// An `Arc` that identifies by pointer: lets live core handles be used as
 /// subscription keys and carried in messages.
@@ -82,6 +86,16 @@ pub enum Message {
     Tick,
     ShowSettings(bool),
     Settings(settings::Message),
+    AddMenu(bool),
+    RoomMenu(bool),
+    OpenDialog(dialog::Kind),
+    Dialog(dialog::Message),
+    /// Accept (`true`) or decline an invite.
+    AnswerInvite(OwnedRoomId, bool),
+    InviteAnswered(OwnedRoomId, bool, Result<(), String>),
+    CloseNotice,
+    /// Fast ticks while something is in progress.
+    Progress,
     Calls(OwnedRoomId, calls::Message),
     RecoveryKey(String),
     Recover,
@@ -137,6 +151,23 @@ struct Main {
     now: SystemTime,
     error: Option<String>,
     avatars: Avatars,
+    dialog: Option<Dialog>,
+    /// A dialog closed while its request runs: notices for success and failure.
+    background: Option<(String, String)>,
+    /// The room list's "+" menu is open.
+    add_menu: bool,
+    /// The invite shown instead of a room, and whether it is being answered.
+    invite: Option<(OwnedRoomId, bool)>,
+    /// A room being opened (its timeline loads).
+    opening: Option<OwnedRoomId>,
+    /// Something finished in the background, or failed.
+    notice: Option<Notice>,
+}
+
+struct Notice {
+    text: String,
+    room: Option<OwnedRoomId>,
+    error: bool,
 }
 
 impl Main {
@@ -155,6 +186,12 @@ impl Main {
             session,
             error: None,
             avatars: Avatars::new(),
+            dialog: None,
+            background: None,
+            add_menu: false,
+            invite: None,
+            opening: None,
+            notice: None,
         }
     }
 }
@@ -319,9 +356,18 @@ impl App {
                 let Screen::Main(main) = &mut self.screen else {
                     return Task::none();
                 };
-                if main.room.as_ref().is_some_and(|r| r.id == id) {
+                main.add_menu = false;
+                if main.room.as_ref().is_some_and(|r| r.id == id) && main.invite.is_none() {
                     return Task::none();
                 }
+                // An invite shows Accept and Decline instead of a timeline.
+                if main.rooms.rooms.iter().any(|r| r.id == id && r.invited) {
+                    main.invite = Some((id, false));
+                    main.room = None;
+                    return Task::none();
+                }
+                main.invite = None;
+                main.opening = Some(id.clone());
                 let session = main.session.clone();
                 Task::perform(
                     async move {
@@ -335,6 +381,11 @@ impl App {
                 let Screen::Main(main) = &mut self.screen else {
                     return Task::none();
                 };
+                if main.opening.as_ref() != Some(&id) {
+                    // Another room was chosen meanwhile.
+                    return Task::none();
+                }
+                main.opening = None;
                 match result {
                     Ok(Shared(timeline)) => {
                         let mut room = Room::new(id.clone(), timeline);
@@ -455,6 +506,95 @@ impl App {
             Message::ShowSettings(true) => self.open_settings(),
             Message::Settings(message) => self.settings_update(message),
             Message::Calls(room, message) => self.calls(room, message),
+            Message::AddMenu(open) => {
+                if let Screen::Main(main) = &mut self.screen {
+                    main.add_menu = open;
+                }
+                Task::none()
+            }
+            Message::RoomMenu(open) => {
+                if let Screen::Main(main) = &mut self.screen
+                    && let Some(room) = &mut main.room
+                {
+                    room.menu = open;
+                }
+                Task::none()
+            }
+            Message::OpenDialog(kind) => {
+                self.settings_panel = None;
+                if let Screen::Main(main) = &mut self.screen {
+                    main.add_menu = false;
+                    if let Some(room) = &mut main.room {
+                        room.menu = false;
+                    }
+                    main.dialog = Some(Dialog::new(kind));
+                }
+                Task::none()
+            }
+            Message::Dialog(message) => self.dialog(message),
+            Message::AnswerInvite(id, accept) => {
+                let Screen::Main(main) = &mut self.screen else {
+                    return Task::none();
+                };
+                main.invite = Some((id.clone(), true));
+                let session = main.session.clone();
+                Task::perform(
+                    {
+                        let id = id.clone();
+                        async move {
+                            if accept {
+                                session.join(<&RoomOrAliasId>::from(&*id)).await.map(|_| ())
+                            } else {
+                                session.leave(&id).await
+                            }
+                        }
+                    },
+                    move |result| {
+                        Message::InviteAnswered(
+                            id.clone(),
+                            accept,
+                            result.map_err(|e| e.to_string()),
+                        )
+                    },
+                )
+            }
+            Message::InviteAnswered(id, accept, result) => {
+                let Screen::Main(main) = &mut self.screen else {
+                    return Task::none();
+                };
+                if main.invite.as_ref().is_some_and(|(i, _)| *i == id) {
+                    main.invite = None;
+                }
+                match result {
+                    Ok(()) if accept => self.update(Message::OpenRoom(id)),
+                    Ok(()) => Task::none(),
+                    Err(e) => {
+                        main.notice = Some(Notice {
+                            text: format!(
+                                "Could not {} the invite: {e}",
+                                if accept { "accept" } else { "decline" }
+                            ),
+                            room: None,
+                            error: true,
+                        });
+                        Task::none()
+                    }
+                }
+            }
+            Message::CloseNotice => {
+                if let Screen::Main(main) = &mut self.screen {
+                    main.notice = None;
+                }
+                Task::none()
+            }
+            Message::Progress => {
+                if let Screen::Main(main) = &mut self.screen
+                    && let Some(dialog) = &mut main.dialog
+                {
+                    dialog.tick(Instant::now());
+                }
+                Task::none()
+            }
             Message::Scheduled(scheduled) => {
                 if let Screen::Main(main) = &mut self.screen {
                     if let Some(room) = main.room.as_mut()
@@ -570,6 +710,85 @@ impl App {
         }
     }
 
+    fn dialog(&mut self, message: dialog::Message) -> Task<Message> {
+        let Screen::Main(main) = &mut self.screen else {
+            return Task::none();
+        };
+        let Some(dialog) = &mut main.dialog else {
+            // The dialog was closed while its request ran.
+            if let dialog::Message::Done(result) = message {
+                let (done, failed) = main.background.take().unwrap_or_default();
+                main.notice = Some(match result {
+                    Ok(opened) => Notice {
+                        text: done,
+                        room: match opened {
+                            dialog::Opened::Room(id) | dialog::Opened::Space(id) => Some(id),
+                            _ => None,
+                        },
+                        error: false,
+                    },
+                    Err(e) => Notice {
+                        text: format!("{failed}: {e}"),
+                        room: None,
+                        error: true,
+                    },
+                });
+            }
+            return Task::none();
+        };
+        let session = main.session.clone();
+        match dialog.update(message) {
+            dialog::Action::None => Task::none(),
+            dialog::Action::Close => {
+                main.dialog = None;
+                Task::none()
+            }
+            dialog::Action::Background => {
+                main.background = Some(dialog.outcome());
+                main.dialog = None;
+                Task::none()
+            }
+            dialog::Action::Search(query) => {
+                let (task, handle) = Task::perform(
+                    {
+                        let query = query.clone();
+                        async move { session.search_users(&query, 10).await.unwrap_or_default() }
+                    },
+                    move |users| {
+                        Message::Dialog(dialog::Message::Suggestions(query.clone(), users))
+                    },
+                )
+                .abortable();
+                dialog.search = Some(handle);
+                task
+            }
+            dialog::Action::Submit(request) => Task::perform(run_request(session, request), |r| {
+                Message::Dialog(dialog::Message::Done(r))
+            }),
+            dialog::Action::Finished(opened) => {
+                main.dialog = None;
+                match opened {
+                    dialog::Opened::Nothing => Task::none(),
+                    dialog::Opened::Room(id) => self.update(Message::OpenRoom(id)),
+                    dialog::Opened::Space(id) => self.update(Message::SelectSpace(Some(id))),
+                    dialog::Opened::Left(id) => {
+                        if main.room.as_ref().is_some_and(|r| r.id == id) {
+                            main.room = None;
+                        }
+                        if main.space.as_ref() == Some(&id) {
+                            main.space = None;
+                        }
+                        Task::none()
+                    }
+                    dialog::Opened::SignedOut => {
+                        self.screen = Screen::Login(Login::default());
+                        Task::none()
+                    }
+                }
+            }
+        }
+    }
+
     fn open_settings(&mut self) -> Task<Message> {
         let mut panel = settings::Panel::default();
         panel.google.account = self.google.account().unwrap_or_else(|e| {
@@ -578,6 +797,7 @@ impl App {
         });
         let mut tasks = Vec::new();
         if let Screen::Main(main) = &self.screen {
+            panel.account = Some(main.session.user_id().to_string());
             let name = |id: &OwnedRoomId| {
                 main.rooms
                     .rooms
@@ -965,6 +1185,9 @@ impl App {
             if !main.scheduled.is_empty() {
                 subscriptions.push(iced::time::every(TICK).map(|_| Message::Tick));
             }
+            if main.dialog.as_ref().is_some_and(Dialog::busy) {
+                subscriptions.push(iced::time::every(PROGRESS_TICK).map(|_| Message::Progress));
+            }
             if let Some(list) = &main.room_list {
                 subscriptions.push(
                     Subscription::run_with(Shared(list.clone()), |list| list.0.updates())
@@ -1005,17 +1228,25 @@ impl App {
         match &self.screen {
             Screen::Starting => container(text("Starting…")).center(Length::Fill).into(),
             Screen::Login(login) => login.view().map(Message::Login),
-            Screen::Main(main) if let Some(panel) = &self.settings_panel => {
-                let panel = panel.view(&self.settings);
+            Screen::Main(main) => {
+                let (panel, close) = if let Some(panel) = &self.settings_panel {
+                    (panel.view(&self.settings), Message::ShowSettings(false))
+                } else if let Some(dialog) = &main.dialog {
+                    (
+                        dialog.view(&main.rooms.rooms),
+                        Message::Dialog(dialog::Message::Cancel),
+                    )
+                } else {
+                    return self.main_view(main);
+                };
                 let backdrop = mouse_area(
                     container(opaque(panel))
                         .center(Length::Fill)
                         .style(style::backdrop),
                 )
-                .on_press(Message::ShowSettings(false));
+                .on_press(close);
                 stack![self.main_view(main), opaque(backdrop)].into()
             }
-            Screen::Main(main) => self.main_view(main),
         }
     }
 
@@ -1026,10 +1257,14 @@ impl App {
         let room_list = sidebar::room_list(
             rooms,
             main.space.as_ref(),
-            main.room.as_ref().map(|r| &r.id),
+            main.opening
+                .as_ref()
+                .or(main.invite.as_ref().map(|(id, _)| id))
+                .or(main.room.as_ref().map(|r| &r.id)),
             main.rooms.loaded,
             &main.avatars,
             &main.scheduled,
+            main.add_menu,
         );
 
         let mut content = column![];
@@ -1039,11 +1274,20 @@ impl App {
         if let Some(banner) = overdue_banner(main) {
             content = content.push(banner);
         }
+        if let Some(notice) = &main.notice {
+            content = content.push(notice_bar(notice));
+        }
         if let Some(error) = &main.error {
             content = content.push(container(text(error).style(text::danger)).padding(12));
         }
-        let room_view: Element<'a, Message> = match &main.room {
-            Some(room) => {
+        let room_view: Element<'a, Message> = match (&main.invite, &main.opening, &main.room) {
+            (Some((id, answering)), _, _) => {
+                invite_view(rooms.iter().find(|r| &r.id == id), id, *answering)
+            }
+            (None, Some(_), _) => container(text("Opening…").style(text::secondary))
+                .center(Length::Fill)
+                .into(),
+            (None, None, Some(room)) => {
                 let summary = rooms.iter().find(|r| r.id == room.id);
                 let scheduled = send_later::Pending {
                     messages: main
@@ -1063,7 +1307,7 @@ impl App {
                 };
                 room.view(summary, &look, &scheduled)
             }
-            None => container(text("Select a room").style(text::secondary))
+            (None, None, None) => container(text("Select a room").style(text::secondary))
                 .center(Length::Fill)
                 .into(),
         };
@@ -1167,6 +1411,126 @@ fn overdue_banner(main: &Main) -> Option<Element<'_, Message>> {
         .padding([8, 24])
         .into(),
     )
+}
+
+/// Something finished in the background, or failed.
+fn notice_bar(notice: &Notice) -> Element<'_, Message> {
+    let mut bar = row![
+        text(&notice.text)
+            .size(13)
+            .style(if notice.error {
+                text::danger
+            } else {
+                text::default
+            })
+            .width(Length::Fill)
+    ]
+    .spacing(8)
+    .align_y(iced::Alignment::Center);
+    if let Some(room) = &notice.room {
+        bar = bar.push(
+            button(text("Open").size(13))
+                .padding([3, 10])
+                .style(style::primary_button)
+                .on_press(Message::OpenRoom(room.clone())),
+        );
+    }
+    bar = bar.push(
+        button(text("Dismiss").size(13))
+            .padding([3, 8])
+            .style(style::text_button)
+            .on_press(Message::CloseNotice),
+    );
+    container(container(bar).padding([6, 12]).style(style::code_block))
+        .padding([8, 24])
+        .into()
+}
+
+/// An invite, with Accept and Decline.
+fn invite_view<'a>(
+    summary: Option<&'a mtrx_core::RoomSummary>,
+    id: &'a OwnedRoomId,
+    answering: bool,
+) -> Element<'a, Message> {
+    let name = summary.map_or(id.as_str(), |s| s.name.as_str());
+    let actions: Element<'a, Message> = if answering {
+        text("Answering the invite…").style(text::secondary).into()
+    } else {
+        row![
+            button(text("Decline"))
+                .style(style::secondary_button)
+                .on_press(Message::AnswerInvite(id.clone(), false)),
+            button(text("Accept"))
+                .style(style::primary_button)
+                .on_press(Message::AnswerInvite(id.clone(), true)),
+        ]
+        .spacing(8)
+        .into()
+    };
+    container(
+        column![
+            text(format!("You are invited to {name}"))
+                .size(18)
+                .font(crate::fonts::SEMIBOLD),
+            text("Its messages show once you accept.").style(text::secondary),
+            actions,
+        ]
+        .spacing(12)
+        .align_x(iced::Alignment::Center),
+    )
+    .center(Length::Fill)
+    .into()
+}
+
+/// Carry out a dialog's request.
+async fn run_request(
+    session: Arc<Session>,
+    request: dialog::Request,
+) -> Result<dialog::Opened, String> {
+    use dialog::{Opened, Request};
+    let result = async {
+        Ok(match request {
+            Request::CreateRoom(new) => Opened::Room(session.create_room(new).await?),
+            Request::CreateSpace(new) => Opened::Space(session.create_room(new).await?),
+            Request::DirectChat(user) => Opened::Room(session.direct_chat(&user).await?),
+            Request::Join(address) => {
+                let address = <&RoomOrAliasId>::try_from(address.as_str())
+                    .map_err(|_| mtrx_core::Error::RoomNotFound(address.clone()))?;
+                Opened::Room(session.join(address).await?)
+            }
+            Request::Invite(room, people) => {
+                for person in &people {
+                    session.invite(&room, person).await?;
+                }
+                Opened::Nothing
+            }
+            Request::Edit { room, name, topic } => {
+                if let Some(name) = name {
+                    session.set_room_name(&room, &name).await?;
+                }
+                if let Some(topic) = topic {
+                    session.set_room_topic(&room, &topic).await?;
+                }
+                Opened::Nothing
+            }
+            Request::AddToSpace(space, rooms) => {
+                for room in &rooms {
+                    session.add_to_space(&space, room).await?;
+                }
+                Opened::Nothing
+            }
+            Request::Leave(room) => {
+                session.leave(&room).await?;
+                Opened::Left(room)
+            }
+            Request::SignOut => {
+                session.logout().await?;
+                Opened::SignedOut
+            }
+        })
+    }
+    .await;
+    result.map_err(|e: mtrx_core::Error| e.to_string())
 }
 
 /// Who may edit `room`, and whether we may change that, for the settings panel.

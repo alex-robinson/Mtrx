@@ -23,6 +23,7 @@ use crate::{
     app::Message,
     avatar::{self, Avatars, Shape},
     calls::{self, RoomCalls},
+    dialog::Kind,
     ellipsis::ellipsis,
     fonts,
     math::{self, Math, Rendered},
@@ -52,6 +53,8 @@ pub struct Room {
     pub composer: text_editor::Content,
     pub later: SendLater,
     pub calls: RoomCalls,
+    /// The room menu (invite, edit, leave) is open.
+    pub menu: bool,
     /// How many of the newest entries are rendered.
     shown: usize,
     pub paginating: bool,
@@ -74,6 +77,7 @@ impl Room {
     pub fn new(id: OwnedRoomId, timeline: Arc<RoomTimeline>) -> Self {
         Self {
             calls: RoomCalls::new(id.clone()),
+            menu: false,
             id,
             entries: timeline.current(),
             timeline,
@@ -272,6 +276,49 @@ impl Room {
     }
 
     /// Room picture, name and topic, above a separator.
+    /// Invite, edit name and topic, leave.
+    fn menu_view<'a>(&self, summary: Option<&'a RoomSummary>) -> Element<'a, Message> {
+        let name = summary.map_or_else(String::new, |s| s.name.clone());
+        let item = |label, kind| {
+            button(text(label).size(13))
+                .padding([4, 10])
+                .style(style::secondary_button)
+                .on_press(Message::OpenDialog(kind))
+        };
+        container(
+            row![
+                item(
+                    "Invite people…",
+                    Kind::Invite {
+                        room: self.id.clone(),
+                        name: name.clone(),
+                    }
+                ),
+                item(
+                    "Name and topic…",
+                    Kind::Edit {
+                        room: self.id.clone(),
+                        name: name.clone(),
+                        topic: summary.and_then(|s| s.topic.clone()).unwrap_or_default(),
+                    }
+                ),
+                space::horizontal(),
+                item(
+                    "Leave room…",
+                    Kind::Leave {
+                        room: self.id.clone(),
+                        name,
+                    }
+                ),
+            ]
+            .spacing(6),
+        )
+        .padding([8, 12])
+        .width(Length::Fill)
+        .style(style::code_block)
+        .into()
+    }
+
     /// Picture, name and topic, the call controls, and their panel when open.
     fn header<'a>(
         &'a self,
@@ -281,6 +328,14 @@ impl Room {
         let avatars = look.avatars;
         let name = summary.map_or("", |s| s.name.as_str());
         let mut title = column![ellipsis(name).size(16).font(fonts::SEMIBOLD)];
+        // A room just created or joined is listed once sync delivers it.
+        if summary.is_none() {
+            title = title.push(
+                text("Setting up the room… it appears in the list in a moment.")
+                    .size(12)
+                    .style(text::secondary),
+            );
+        }
         if let Some(topic) = summary
             .and_then(|s| s.topic.as_deref())
             .and_then(|t| t.lines().next())
@@ -298,12 +353,22 @@ impl Room {
             row![
                 avatar,
                 title.width(Length::Fill),
-                self.calls.header_controls(look.call_services)
+                self.calls.header_controls(look.call_services),
+                button(text("⋯").size(16))
+                    .padding([2, 10])
+                    .style(style::list_item(self.menu))
+                    .on_press(Message::RoomMenu(!self.menu)),
             ]
             .spacing(10)
             .align_y(Alignment::Center)
             .padding([8.0, TIMELINE_PADDING + MESSAGE_PADDING]),
         ];
+        if self.menu {
+            header = header.push(
+                container(self.menu_view(summary))
+                    .padding(Padding::from([0.0, TIMELINE_PADDING + MESSAGE_PADDING]).bottom(8.0)),
+            );
+        }
         if let Some(panel) = self.calls.panel(look.call_services) {
             header = header.push(
                 container(panel)

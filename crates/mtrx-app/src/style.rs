@@ -230,6 +230,23 @@ pub fn dialog(theme: &Theme) -> container::Style {
     }
 }
 
+/// The "+" tile below the spaces: an outline of a space avatar.
+pub fn new_space_tile(theme: &Theme) -> container::Style {
+    let palette = theme.extended_palette();
+    container::Style {
+        text_color: Some(palette.background.base.text.scale_alpha(0.7)),
+        border: Border::default()
+            .rounded(SPACE_AVATAR / 4.0)
+            .width(1.5)
+            .color(palette.background.strong.color),
+        ..Default::default()
+    }
+}
+
+pub fn danger_button(theme: &Theme, status: button::Status) -> button::Style {
+    rounded_button(button::danger)(theme, status)
+}
+
 /// A call card in the timeline.
 pub fn card(theme: &Theme) -> container::Style {
     let palette = theme.extended_palette();

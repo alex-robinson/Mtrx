@@ -106,10 +106,20 @@ impl Profile {
     /// Delete the profile's secrets and all local data.
     pub(crate) fn wipe(&self) -> Result<()> {
         self.secret.delete()?;
+        self.remove_data()
+    }
+
+    /// Delete the local data (the encrypted store), keeping the secrets.
+    pub(crate) fn remove_data(&self) -> Result<()> {
         match fs::remove_dir_all(&self.dir) {
             Ok(()) => Ok(()),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
             Err(e) => Err(e.into()),
         }
+    }
+
+    /// Forget the session: without its secrets the store cannot be opened.
+    pub(crate) fn forget_session(&self) -> Result<()> {
+        self.secret.delete()
     }
 }

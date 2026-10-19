@@ -629,3 +629,75 @@ async fn everyone_can_edit() -> Result<()> {
     assert!(!bob.session.can_change_permissions(&room).await?);
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs local Synapse (testserver/run.sh)"]
+async fn room_management() -> Result<()> {
+    let (_, alice) = new_user("manage").await?;
+    let (bob_name, bob) = new_user("manage").await?;
+    let s = &alice.session;
+    let space = s
+        .create_room(NewRoom {
+            name: Some("Lab".into()),
+            space: true,
+            ..Default::default()
+        })
+        .await?;
+    let room = s
+        .create_room(NewRoom {
+            name: Some("papers".into()),
+            parent: Some(space.clone()),
+            ..Default::default()
+        })
+        .await?;
+    let list = s.room_list().await?;
+    wait_for("room in space", list.updates(), |state| {
+        state
+            .rooms
+            .iter()
+            .any(|r| r.id == room && r.parents.contains(&space))
+    })
+    .await?;
+
+    s.set_room_name(&room, "reading list").await?;
+    s.set_room_topic(&room, "Papers to read").await?;
+    wait_for("renamed", list.updates(), |state| {
+        state.rooms.iter().any(|r| {
+            r.id == room && r.name == "reading list" && r.topic.as_deref() == Some("Papers to read")
+        })
+    })
+    .await?;
+
+    let dm = s.direct_chat(&bob.session.user_id()).await?;
+    wait_for("dm listed", list.updates(), |state| {
+        state
+            .rooms
+            .iter()
+            .any(|r| r.id == dm && r.kind == RoomKind::Direct)
+    })
+    .await?;
+    assert_eq!(s.direct_chat(&bob.session.user_id()).await?, dm, "reused");
+
+    // The directory lists people sharing a room with us, once both joined;
+    // it updates in the background.
+    bob.session
+        .join(<&mtrx_core::RoomOrAliasId>::from(&*dm))
+        .await?;
+    timeout("bob in the user directory", async {
+        loop {
+            let found = s.search_users(&bob_name, 10).await?;
+            if found.iter().any(|u| u.id == bob.session.user_id()) {
+                return anyhow::Ok(());
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    })
+    .await??;
+
+    s.leave(&room).await?;
+    wait_for("left", list.updates(), |state| {
+        !state.rooms.iter().any(|r| r.id == room)
+    })
+    .await?;
+    Ok(())
+}

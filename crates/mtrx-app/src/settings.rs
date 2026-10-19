@@ -16,7 +16,7 @@ use iced::{
 use mtrx_core::{CallService, GoogleClient, OwnedRoomId, Permissions, ServiceKind};
 use serde::{Deserialize, Serialize};
 
-use crate::{app, fonts, style};
+use crate::{app, dialog::Kind, fonts, style};
 
 const FILE: &str = "settings.json";
 
@@ -115,6 +115,8 @@ pub struct Panel {
     /// The selected space, while one is.
     pub space: Option<SpaceCalls>,
     pub google: GoogleState,
+    /// The signed-in Matrix account.
+    pub account: Option<String>,
 }
 
 /// The Google connection, for Meet links.
@@ -444,6 +446,18 @@ impl Panel {
                 .push(heading(&format!("Space: {}", space.name)))
                 .push(space.access.view())
                 .push(space.view(settings));
+        }
+        if let Some(account) = &self.account {
+            panel = panel.push(heading("Account")).push(
+                row![
+                    text(account).width(Length::Fill),
+                    button(text("Sign out…").size(13))
+                        .padding([4, 10])
+                        .style(style::secondary_button)
+                        .on_press(app::Message::OpenDialog(Kind::SignOut)),
+                ]
+                .align_y(Alignment::Center),
+            );
         }
         if let Some(error) = &self.error {
             panel = panel.push(

@@ -228,21 +228,19 @@ impl Session {
     /// Log out on the server and delete all local data of the profile.
     ///
     /// Local data is deleted even if the server is unreachable or the token
-    /// was already revoked.
-    pub async fn logout(self) -> Result<()> {
+    /// was already revoked. The session must not be used afterwards.
+    pub async fn logout(&self) -> Result<()> {
         if let Err(e) = self.client.logout().await {
             warn!("server-side logout failed, removing local data anyway: {e}");
         }
         self.sync.stop().await;
-        let Self {
-            client,
-            sync,
-            profile,
-            ..
-        } = self;
-        drop(sync);
-        drop(client);
-        profile.wipe()
+        self.profile.forget_session()?;
+        // Store files may still be open (e.g. on Windows they then cannot be
+        // deleted); the next login removes anything left behind.
+        if let Err(e) = self.profile.remove_data() {
+            warn!("could not delete all local data: {e}");
+        }
+        Ok(())
     }
 
     pub fn profile(&self) -> &Profile {

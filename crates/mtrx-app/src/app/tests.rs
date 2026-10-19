@@ -525,3 +525,90 @@ async fn big_room_benchmark() {
         start.elapsed() / 5
     );
 }
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs local Synapse (testserver/run.sh)"]
+async fn room_management_screens() {
+    let dir = TempDir::new().unwrap();
+    let (_, alice) = user("manage", &dir).await;
+    let space = alice
+        .create_room(NewRoom {
+            name: Some("Climate".into()),
+            space: true,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let room = alice
+        .create_room(NewRoom {
+            name: Some("ice-sheets".into()),
+            parent: Some(space.clone()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let list = alice.room_list().await.unwrap();
+    let rooms = tokio::time::timeout(TIMEOUT, async {
+        let mut updates = std::pin::pin!(list.updates());
+        while let Some(state) = updates.next().await {
+            if state.loaded
+                && state
+                    .rooms
+                    .iter()
+                    .any(|r| r.id == room && r.parents.contains(&space) && r.name == "ice-sheets")
+            {
+                return state;
+            }
+        }
+        unreachable!()
+    })
+    .await
+    .unwrap();
+    let timeline = Arc::new(alice.timeline(&room).await.unwrap());
+    let session = Arc::new(alice);
+
+    let main_with = |configure: &dyn Fn(&mut Main)| {
+        let mut main = Main::new(session.clone());
+        main.rooms = rooms.clone();
+        main.space = Some(space.clone());
+        main.verified = Some(true);
+        let mut open = Room::new(room.clone(), timeline.clone());
+        open.entries = timeline.current();
+        open.at_start = true;
+        main.room = Some(open);
+        configure(&mut main);
+        app(Screen::Main(Box::new(main)), Mode::Light)
+    };
+
+    snapshot(
+        &main_with(&|main| {
+            main.add_menu = true;
+            main.room.as_mut().unwrap().menu = true;
+        }),
+        "menus",
+    );
+    snapshot(
+        &main_with(&|main| {
+            let mut dialog = Dialog::new(dialog::Kind::NewRoom {
+                space: Some((space.clone(), "Climate".into())),
+            });
+            dialog.update(dialog::Message::Name("model runs".into()));
+            dialog.update(dialog::Message::Submit);
+            dialog.tick(Instant::now() + Duration::from_secs(20));
+            main.dialog = Some(dialog);
+        }),
+        "dialog-slow",
+    );
+    snapshot(
+        &main_with(&|main| {
+            main.room = None;
+            main.invite = Some((room.clone(), false));
+            main.notice = Some(Notice {
+                text: "The room “model runs” is ready.".into(),
+                room: Some(room.clone()),
+                error: false,
+            });
+        }),
+        "invite",
+    );
+}

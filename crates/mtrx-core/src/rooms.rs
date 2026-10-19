@@ -8,13 +8,14 @@ use matrix_sdk::{
     Client, Room, RoomState,
     deserialized_responses::SyncOrStrippedState,
     ruma::{
-        OwnedMxcUri, OwnedRoomId, OwnedUserId, RoomId, RoomOrAliasId,
+        OwnedMxcUri, OwnedRoomId, OwnedServerName, OwnedUserId, RoomId, RoomOrAliasId, UserId,
         api::client::room::create_room::v3::{
             CreationContent, Request as CreateRoomRequest, RoomPreset,
         },
         events::{
-            InitialStateEvent, SyncStateEvent, room::encryption::RoomEncryptionEventContent,
-            space::child::SpaceChildEventContent,
+            InitialStateEvent, SyncStateEvent,
+            room::encryption::RoomEncryptionEventContent,
+            space::{child::SpaceChildEventContent, parent::SpaceParentEventContent},
         },
         room::RoomType,
         serde::Raw,
@@ -278,6 +279,16 @@ pub struct NewRoom {
     pub invite: Vec<OwnedUserId>,
     pub direct: bool,
     pub permissions: Permissions,
+    /// Space to create the room in.
+    pub parent: Option<OwnedRoomId>,
+}
+
+/// A user found by [`Session::search_users`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UserSummary {
+    pub id: OwnedUserId,
+    pub name: Option<String>,
+    pub avatar: Option<OwnedMxcUri>,
 }
 
 impl Session {
@@ -312,7 +323,56 @@ impl Session {
             );
             request.initial_state.push(Raw::new(&event)?.cast());
         }
-        Ok(self.client.create_room(request).await?.room_id().to_owned())
+        if let Some(parent) = &new.parent {
+            let mut content = SpaceParentEventContent::new(self.via());
+            content.canonical = true;
+            let event = InitialStateEvent::new(parent.clone(), content);
+            request.initial_state.push(Raw::new(&event)?.cast());
+        }
+        let room = self.client.create_room(request).await?.room_id().to_owned();
+        if let Some(parent) = &new.parent {
+            self.add_to_space(parent, &room).await?;
+        }
+        Ok(room)
+    }
+
+    /// The direct chat with `user`: the existing one, or a new encrypted one.
+    pub async fn direct_chat(&self, user: &UserId) -> Result<OwnedRoomId> {
+        let room = match self.client.get_dm_room(user) {
+            Some(room) => room,
+            None => self.client.create_dm(user).await?,
+        };
+        Ok(room.room_id().to_owned())
+    }
+
+    pub async fn set_room_name(&self, room: &RoomId, name: &str) -> Result<()> {
+        self.room(room)?.set_name(name.to_owned()).await?;
+        Ok(())
+    }
+
+    pub async fn set_room_topic(&self, room: &RoomId, topic: &str) -> Result<()> {
+        self.room(room)?.set_room_topic(topic).await?;
+        Ok(())
+    }
+
+    /// Users matching `term` by name or ID in the server's user directory
+    /// (people sharing a room with us, or everyone if the server allows).
+    pub async fn search_users(&self, term: &str, limit: u64) -> Result<Vec<UserSummary>> {
+        let response = self.client.search_users(term, limit).await?;
+        Ok(response
+            .results
+            .into_iter()
+            .map(|user| UserSummary {
+                id: user.user_id,
+                name: user.display_name,
+                avatar: user.avatar_url,
+            })
+            .collect())
+    }
+
+    /// Servers to name in space links: ours.
+    fn via(&self) -> Vec<OwnedServerName> {
+        vec![self.user_id().server_name().to_owned()]
     }
 
     /// Join by room ID or alias, or accept an invite.
@@ -335,9 +395,8 @@ impl Session {
 
     /// Add `child` to `space` (sends `m.space.child` in the space).
     pub async fn add_to_space(&self, space: &OwnedRoomId, child: &OwnedRoomId) -> Result<()> {
-        let via = vec![self.user_id().server_name().to_owned()];
         self.room(space)?
-            .send_state_event_for_key(child, SpaceChildEventContent::new(via))
+            .send_state_event_for_key(child, SpaceChildEventContent::new(self.via()))
             .await?;
         Ok(())
     }
