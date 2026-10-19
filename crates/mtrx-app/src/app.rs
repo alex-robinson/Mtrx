@@ -576,29 +576,39 @@ impl App {
             panel.google.error = Some(e.to_string());
             None
         });
-        let mut task = Task::none();
-        if let Screen::Main(main) = &self.screen
-            && let Some(space) = &main.space
-        {
-            let name = main
-                .rooms
-                .rooms
-                .iter()
-                .find(|r| &r.id == space)
-                .map_or_else(|| space.to_string(), |r| r.name.clone());
-            panel.space = Some(settings::SpaceCalls::new(space.clone(), name));
-            let (session, space) = (main.session.clone(), space.clone());
-            task = Task::perform(
-                async move {
-                    let service = session.space_call_service(&space).await.ok().flatten();
-                    let can_set = session.can_set_space_call_service(&space).await.ok();
-                    settings::Message::SpaceLoaded(space, service, can_set)
-                },
-                Message::Settings,
-            );
+        let mut tasks = Vec::new();
+        if let Screen::Main(main) = &self.screen {
+            let name = |id: &OwnedRoomId| {
+                main.rooms
+                    .rooms
+                    .iter()
+                    .find(|r| &r.id == id)
+                    .map_or_else(|| id.to_string(), |r| r.name.clone())
+            };
+            if let Some(room) = &main.room {
+                panel.room = Some(settings::Access::new(
+                    room.id.clone(),
+                    name(&room.id),
+                    false,
+                ));
+                tasks.push(load_access(main.session.clone(), room.id.clone()));
+            }
+            if let Some(space) = &main.space {
+                panel.space = Some(settings::SpaceCalls::new(space.clone(), name(space)));
+                tasks.push(load_access(main.session.clone(), space.clone()));
+                let (session, space) = (main.session.clone(), space.clone());
+                tasks.push(Task::perform(
+                    async move {
+                        let service = session.space_call_service(&space).await.ok().flatten();
+                        let can_set = session.can_set_space_call_service(&space).await.ok();
+                        settings::Message::SpaceLoaded(space, service, can_set)
+                    },
+                    Message::Settings,
+                ));
+            }
         }
         self.settings_panel = Some(panel);
-        task
+        Task::batch(tasks)
     }
 
     fn settings_update(&mut self, message: settings::Message) -> Task<Message> {
@@ -642,6 +652,41 @@ impl App {
                         result.map_err(|e| e.to_string()),
                     ))
                 })
+            }
+            settings::Action::LetEveryoneEdit { id, space } => {
+                let Screen::Main(main) = &self.screen else {
+                    return Task::none();
+                };
+                let session = main.session.clone();
+                Task::perform(
+                    {
+                        let id = id.clone();
+                        async move {
+                            if space {
+                                session.let_everyone_edit_space(&id).await.map(|update| {
+                                    let skipped = match update.not_allowed.len() {
+                                        0 => String::new(),
+                                        n => format!(
+                                            " {n} could not be changed: you are not an admin there."
+                                        ),
+                                    };
+                                    format!("Opened {} room(s).{skipped}", update.changed.len())
+                                })
+                            } else {
+                                session
+                                    .let_everyone_edit(&id)
+                                    .await
+                                    .map(|()| "Done.".to_owned())
+                            }
+                        }
+                    },
+                    move |result| {
+                        Message::Settings(settings::Message::Opened(
+                            id.clone(),
+                            result.map_err(|e| e.to_string()),
+                        ))
+                    },
+                )
             }
             settings::Action::SetSpaceService(space, service) => {
                 let Screen::Main(main) = &self.screen else {
@@ -1121,6 +1166,18 @@ fn overdue_banner(main: &Main) -> Option<Element<'_, Message>> {
         )
         .padding([8, 24])
         .into(),
+    )
+}
+
+/// Who may edit `room`, and whether we may change that, for the settings panel.
+fn load_access(session: Arc<Session>, room: OwnedRoomId) -> Task<Message> {
+    Task::perform(
+        async move {
+            let permissions = session.permissions(&room).await.ok();
+            let can_change = session.can_change_permissions(&room).await.ok();
+            settings::Message::AccessLoaded(room, permissions, can_change)
+        },
+        Message::Settings,
     )
 }
 

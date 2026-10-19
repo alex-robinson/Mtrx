@@ -39,6 +39,12 @@ Scheduled messages are kept (encrypted) on this device and sent while the app
 or `mtrx watch` runs. One whose time passed while neither ran is held as
 overdue until you send or cancel it.
 
+Rooms and spaces created with Mtrx trust their members: anyone may invite,
+rename, change the topic and picture, pin messages and set the call link.
+Removing people, deleting others' messages and changing permissions stay with
+admins. `--moderated` gives the usual Matrix rules instead, and
+`let-everyone-edit ROOM_OR_SPACE` opens existing rooms (needs admin rights).
+
 `--profile NAME` selects an account. Secrets go to the OS keychain;
 `--secret-store file` keeps them in a plain file instead (development only).
 

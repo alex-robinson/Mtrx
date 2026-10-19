@@ -18,9 +18,9 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 use futures_util::StreamExt;
 use mtrx_core::{
-    EventContent, NewRoom, OwnedRoomId, OwnedUserId, Profile, RecoveryStep, RoomList, RoomTimeline,
-    SecretStore, Session, TimelineEntry, Verification, VerificationState, describe_send_time,
-    parse_send_time,
+    EventContent, NewRoom, OwnedRoomId, OwnedUserId, Permissions, Profile, RecoveryStep, RoomKind,
+    RoomList, RoomTimeline, SecretStore, Session, TimelineEntry, Verification, VerificationState,
+    describe_send_time, parse_send_time,
 };
 
 /// How long one-shot commands wait for the first sync.
@@ -84,18 +84,29 @@ enum Command {
         #[arg(long)]
         ids: bool,
     },
-    /// Create a room.
+    /// Create a room. Every member may invite and edit it unless --moderated.
     CreateRoom {
         name: String,
         /// Create an unencrypted room.
         #[arg(long)]
         unencrypted: bool,
+        /// Only moderators may edit the room (the usual Matrix default).
+        #[arg(long)]
+        moderated: bool,
         /// Users to invite.
         #[arg(long)]
         invite: Vec<OwnedUserId>,
     },
-    /// Create a space.
-    CreateSpace { name: String },
+    /// Create a space. Every member may edit it unless --moderated.
+    CreateSpace {
+        name: String,
+        /// Only moderators may edit the space.
+        #[arg(long)]
+        moderated: bool,
+    },
+    /// Let every member invite and edit a room; for a space, also every
+    /// room in it. Removing people and changing permissions stay with admins.
+    LetEveryoneEdit { room: String },
     /// Join a room by ID or alias, or accept an invite.
     Join { room: String },
     /// Leave a room.
@@ -226,6 +237,7 @@ async fn main() -> Result<()> {
         Command::CreateRoom {
             name,
             unencrypted,
+            moderated,
             invite,
         } => {
             let session = Session::restore(profile).await?;
@@ -233,15 +245,17 @@ async fn main() -> Result<()> {
                 name: Some(name),
                 encrypted: !unencrypted,
                 invite,
+                permissions: permissions(moderated),
                 ..Default::default()
             };
             println!("{}", session.create_room(new).await?);
         }
-        Command::CreateSpace { name } => {
+        Command::CreateSpace { name, moderated } => {
             let session = Session::restore(profile).await?;
             let new = NewRoom {
                 name: Some(name),
                 space: true,
+                permissions: permissions(moderated),
                 ..Default::default()
             };
             println!("{}", session.create_room(new).await?);
@@ -253,6 +267,27 @@ async fn main() -> Result<()> {
                 .try_into()
                 .context("expected a room ID or alias")?;
             println!("{}", session.join(room).await?);
+        }
+        Command::LetEveryoneEdit { room } => {
+            let (session, list) = synced(profile).await?;
+            let id = session.find_room(&room).await?;
+            let is_space = list
+                .current()
+                .rooms
+                .iter()
+                .any(|r| r.id == id && r.kind == RoomKind::Space);
+            if is_space {
+                let update = session.let_everyone_edit_space(&id).await?;
+                println!(
+                    "Opened {} room(s); {} already open; {} not allowed (not an admin there).",
+                    update.changed.len(),
+                    update.unchanged.len(),
+                    update.not_allowed.len()
+                );
+            } else {
+                session.let_everyone_edit(&id).await?;
+            }
+            session.stop_sync().await;
         }
         Command::Leave { room } => {
             let (session, _list) = synced(profile).await?;
@@ -557,6 +592,14 @@ fn start_scheduler(session: &Session) {
             "{overdue} scheduled message(s) are overdue and held; see `mtrx scheduled`, \
              then `mtrx send-now ID` or `mtrx unschedule ID`."
         );
+    }
+}
+
+fn permissions(moderated: bool) -> Permissions {
+    if moderated {
+        Permissions::Moderators
+    } else {
+        Permissions::Everyone
     }
 }
 

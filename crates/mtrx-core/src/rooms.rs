@@ -28,7 +28,11 @@ use tokio::{sync::watch, task::JoinHandle};
 use tokio_stream::wrappers::WatchStream;
 use tracing::warn;
 
-use crate::{Error, Result, Session, system_time};
+use crate::{
+    Error, Result, Session,
+    permissions::{Permissions, open_power_levels_raw},
+    system_time,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RoomKind {
@@ -235,7 +239,7 @@ async fn direct_avatar(room: &Room) -> Option<OwnedMxcUri> {
 
 /// Children listed by `m.space.child` events. Events without `via` mean the
 /// child was removed.
-async fn space_children(space: &Room) -> Vec<OwnedRoomId> {
+pub(crate) async fn space_children(space: &Room) -> Vec<OwnedRoomId> {
     let events = match space
         .get_state_events_static::<SpaceChildEventContent>()
         .await
@@ -273,6 +277,7 @@ pub struct NewRoom {
     pub encrypted: bool,
     pub invite: Vec<OwnedUserId>,
     pub direct: bool,
+    pub permissions: Permissions,
 }
 
 impl Session {
@@ -292,6 +297,10 @@ impl Session {
         } else {
             RoomPreset::PrivateChat
         });
+        // Direct chats make both people admins anyway.
+        if new.permissions == Permissions::Everyone && !new.direct {
+            request.power_level_content_override = Some(open_power_levels_raw()?);
+        }
         if new.space {
             let mut creation = CreationContent::new();
             creation.room_type = Some(RoomType::Space);

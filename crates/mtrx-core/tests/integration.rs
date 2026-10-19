@@ -18,8 +18,8 @@ use std::{
 use anyhow::{Context, Result, bail};
 use futures_util::{Stream, StreamExt};
 use mtrx_core::{
-    CallService, EventContent, MembershipChange, NewRoom, Profile, RecoveryStatus, RoomKind,
-    SecretStore, Session, TimelineEntry, VerificationState,
+    CallService, EventContent, MembershipChange, NewRoom, Permissions, Profile, RecoveryStatus,
+    RoomKind, SecretStore, Session, TimelineEntry, VerificationState,
     test_support::{self, PASSWORD, homeserver, unique_name},
 };
 use mtrx_format::{Block, Inline, Style};
@@ -476,6 +476,7 @@ async fn call_links_and_space_services() -> Result<()> {
         .create_room(NewRoom {
             name: Some("meetings".into()),
             invite: vec![bob.session.user_id()],
+            permissions: Permissions::Moderators,
             ..Default::default()
         })
         .await?;
@@ -510,7 +511,7 @@ async fn call_links_and_space_services() -> Result<()> {
         .await?;
     assert_eq!(s.space_call_service(&space).await?, Some(service));
 
-    // Invited members are normal users: by default they cannot change room state.
+    // In a moderated room, members cannot change room state.
     let bob_list = bob.session.room_list().await?;
     wait_for("bob invited", bob_list.updates(), |s| {
         s.rooms.iter().any(|r| r.id == room)
@@ -536,5 +537,95 @@ async fn call_links_and_space_services() -> Result<()> {
     })
     .await?;
     assert!(!can_set);
+    Ok(())
+}
+
+/// Join `room` as `user` and wait until its state (with the power levels) synced.
+async fn join_synced(user: &Device, room: &mtrx_core::OwnedRoomId, name: &str) -> Result<()> {
+    let list = user.session.room_list().await?;
+    wait_for("invited", list.updates(), |s| {
+        s.rooms.iter().any(|r| &r.id == room)
+    })
+    .await?;
+    user.session
+        .join(<&mtrx_core::RoomOrAliasId>::from(&**room))
+        .await?;
+    wait_for("joined", list.updates(), |s| {
+        s.rooms
+            .iter()
+            .any(|r| &r.id == room && !r.invited && r.name == name)
+    })
+    .await?;
+    timeout("power levels synced", async {
+        while user.session.permissions(room).await.is_err() {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs local Synapse (testserver/run.sh)"]
+async fn everyone_can_edit() -> Result<()> {
+    let (_, alice) = new_user("perm").await?;
+    let (_, bob) = new_user("perm").await?;
+    let (_, carol) = new_user("perm").await?;
+    let s = &alice.session;
+    let new_room = |name: &str, space, permissions| NewRoom {
+        name: Some(name.into()),
+        space,
+        invite: vec![bob.session.user_id()],
+        permissions,
+        ..Default::default()
+    };
+
+    // New rooms are open: bob may rename and invite, but not change permissions.
+    let open = s
+        .create_room(new_room("open", false, Permissions::Everyone))
+        .await?;
+    join_synced(&bob, &open, "open").await?;
+    assert_eq!(bob.session.permissions(&open).await?, Permissions::Everyone);
+    assert!(bob.session.can_set_call_link(&open).await?);
+    assert!(!bob.session.can_change_permissions(&open).await?);
+    bob.session.invite(&open, &carol.session.user_id()).await?;
+
+    // A moderated space with a moderated room, opened by alice in one go.
+    let space = s
+        .create_room(new_room("team", true, Permissions::Moderators))
+        .await?;
+    let room = s
+        .create_room(new_room("closed", false, Permissions::Moderators))
+        .await?;
+    s.add_to_space(&space, &room).await?;
+    join_synced(&bob, &room, "closed").await?;
+    assert_eq!(
+        bob.session.permissions(&room).await?,
+        Permissions::Moderators
+    );
+    assert!(!bob.session.can_set_call_link(&room).await?);
+    wait_for("space synced", s.room_list().await?.updates(), |state| {
+        state
+            .rooms
+            .iter()
+            .any(|r| r.id == room && r.parents.contains(&space))
+    })
+    .await?;
+
+    let update = s.let_everyone_edit_space(&space).await?;
+    let mut changed = update.changed.clone();
+    changed.sort();
+    let mut expected = vec![space.clone(), room.clone()];
+    expected.sort();
+    assert_eq!(changed, expected);
+    assert!(update.not_allowed.is_empty());
+
+    timeout("bob sees the change", async {
+        while bob.session.permissions(&room).await.ok() != Some(Permissions::Everyone) {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await?;
+    assert!(bob.session.can_set_call_link(&room).await?);
+    assert!(!bob.session.can_change_permissions(&room).await?);
     Ok(())
 }

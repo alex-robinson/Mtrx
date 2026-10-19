@@ -11,7 +11,8 @@ use futures_util::StreamExt;
 use iced::Size;
 use iced_test::simulator::Simulator;
 use mtrx_core::{
-    EventContent, NewRoom, Profile, RoomOrAliasId, SecretStore, Session, TimelineEntry,
+    EventContent, NewRoom, Permissions, Profile, RoomOrAliasId, SecretStore, Session,
+    TimelineEntry,
     test_support::{PASSWORD, homeserver, register, unique_name},
 };
 use tempfile::TempDir;
@@ -400,7 +401,17 @@ async fn send_later_bar() {
     main.room = Some(open);
     let mut app = app(Screen::Main(Box::new(main)), Mode::Light);
     snapshot(&app, "send-later");
-    app.settings_panel = Some(settings::Panel::default());
+    let mut panel = settings::Panel::default();
+    panel.room = Some(settings::Access::new(
+        room.clone(),
+        "ice-sheets".into(),
+        false,
+    ));
+    panel.update(
+        &mut app.settings,
+        settings::Message::AccessLoaded(room.clone(), Some(Permissions::Moderators), Some(true)),
+    );
+    app.settings_panel = Some(panel);
     snapshot(&app, "settings");
 }
 

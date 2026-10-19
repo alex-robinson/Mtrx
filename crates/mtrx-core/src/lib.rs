@@ -8,6 +8,7 @@ mod encryption;
 mod error;
 mod google;
 mod media;
+mod permissions;
 mod profile;
 mod rooms;
 mod scheduled;
@@ -25,6 +26,7 @@ pub use encryption::{
 };
 pub use error::{Error, Result};
 pub use google::{Google, GoogleClient};
+pub use permissions::{Permissions, SpaceUpdate};
 pub use profile::Profile;
 pub use rooms::{NewRoom, RoomKind, RoomList, RoomListState, RoomSummary};
 pub use scheduled::ScheduledMessage;

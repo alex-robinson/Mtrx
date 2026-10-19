@@ -34,6 +34,8 @@ pub enum Error {
     SendTimeInPast,
     #[error("not a valid call service link: `{0}`")]
     InvalidCallService(String),
+    #[error("permissions: {0}")]
+    Permissions(String),
     #[error("invalid media type `{0}`")]
     InvalidMediaType(String),
 
