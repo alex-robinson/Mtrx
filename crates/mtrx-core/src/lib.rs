@@ -6,10 +6,12 @@
 mod calls;
 mod encryption;
 mod error;
+mod google;
 mod media;
 mod profile;
 mod rooms;
 mod scheduled;
+mod secrets;
 mod send_time;
 mod session;
 mod timeline;
@@ -22,9 +24,11 @@ pub use encryption::{
     DeviceInfo, RecoveryStatus, RecoveryStep, Verification, VerificationEmoji, VerificationState,
 };
 pub use error::{Error, Result};
-pub use profile::{Profile, SecretStore};
+pub use google::{Google, GoogleClient};
+pub use profile::Profile;
 pub use rooms::{NewRoom, RoomKind, RoomList, RoomListState, RoomSummary};
 pub use scheduled::ScheduledMessage;
+pub use secrets::SecretStore;
 pub use send_time::{describe_send_time, parse_send_time};
 pub use session::Session;
 pub use timeline::{

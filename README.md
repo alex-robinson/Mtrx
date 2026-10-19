@@ -42,6 +42,30 @@ overdue until you send or cancel it.
 `--profile NAME` selects an account. Secrets go to the OS keychain;
 `--secret-store file` keeps them in a plain file instead (development only).
 
+## Google Meet links
+
+Mtrx can create Google Meet links with your own Google OAuth client; it ships
+no Google credentials. One-time setup in the
+[Google Cloud console](https://console.cloud.google.com/):
+
+1. Create a project.
+2. APIs & Services > Library: enable "Google Meet REST API".
+3. APIs & Services > OAuth consent screen: user type External; add your
+   Google account under Test users.
+4. APIs & Services > Credentials > Create credentials > OAuth client ID,
+   application type "Desktop app". Note the client ID and secret.
+
+Then sign in once (or later in the app's Settings):
+
+```sh
+cargo run -p mtrx-cli -- google login --client-id ID   # prompts for the secret
+cargo run -p mtrx-cli -- google meet                   # prints a new Meet link
+cargo run -p mtrx-cli -- google status                 # or: google logout
+```
+
+As long as the app is unverified ("Testing" status), only the listed test
+users can sign in. The Google sign-in is app-wide, not per profile.
+
 ## Local test server
 
 Needs Docker (on macOS e.g. `brew install colima docker && colima start`).

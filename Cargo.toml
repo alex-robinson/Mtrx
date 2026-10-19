@@ -33,6 +33,10 @@ chrono = "0.4.45"
 tempfile = "3.27.0"
 hmac = "0.13.0"
 sha1 = "0.11.0"
+# Same version and TLS backend as matrix-sdk's.
+reqwest = { version = "0.13.5", default-features = false, features = ["rustls", "json", "form"] }
+sha2 = "0.11.1"
+base64 = "0.23.1"
 
 # Dependencies are slow unoptimized (store key derivation, crypto); our crates stay quick to rebuild.
 [profile.dev.package."*"]

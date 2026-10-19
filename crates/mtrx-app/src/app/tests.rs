@@ -61,6 +61,7 @@ fn snapshot(app: &App, name: &str) {
 fn app(screen: Screen, mode: Mode) -> App {
     App {
         profile: Profile::new("ui", None, SecretStore::File).unwrap(),
+        google: Arc::new(Google::new(&snapshot_dir(), SecretStore::File)),
         settings: Settings::default(),
         settings_file: None,
         settings_panel: None,

@@ -8,11 +8,12 @@ use std::{
 
 use iced::{
     Alignment, Element, Length,
+    task::Handle,
     widget::{
         button, column, container, pick_list, row, scrollable, space, text, text_input, toggler,
     },
 };
-use mtrx_core::{CallService, OwnedRoomId, ServiceKind};
+use mtrx_core::{CallService, GoogleClient, OwnedRoomId, ServiceKind};
 use serde::{Deserialize, Serialize};
 
 use crate::{app, fonts, style};
@@ -73,6 +74,14 @@ pub enum Message {
     SpaceLoaded(OwnedRoomId, Option<CallService>, Option<bool>),
     SetSpaceService(SpaceChoice),
     SpaceSaved(Result<(), String>),
+    GoogleClientId(String),
+    GoogleClientSecret(String),
+    GoogleSignIn,
+    GoogleCancel,
+    /// The signed-in account's email.
+    GoogleSignedIn(Result<String, String>),
+    GoogleSignOut,
+    GoogleSignedOut(Result<(), String>),
 }
 
 /// What the app should do after a [`Message`].
@@ -81,6 +90,8 @@ pub enum Action {
     /// The settings changed; save them.
     Save,
     SetSpaceService(OwnedRoomId, Option<CallService>),
+    GoogleSignIn(GoogleClient),
+    GoogleSignOut,
 }
 
 /// State of the open settings panel.
@@ -91,6 +102,19 @@ pub struct Panel {
     form: ServiceForm,
     /// The selected space, while one is.
     pub space: Option<SpaceCalls>,
+    pub google: GoogleState,
+}
+
+/// The Google connection, for Meet links.
+#[derive(Default)]
+pub struct GoogleState {
+    /// The signed-in account's email.
+    pub account: Option<String>,
+    client_id: String,
+    client_secret: String,
+    /// Browser sign-in running; aborting the handle cancels it.
+    pub signing_in: Option<Handle>,
+    pub error: Option<String>,
 }
 
 /// The call service of a space, as shown in the panel.
@@ -215,6 +239,48 @@ impl Panel {
                     space.error = result.err();
                 }
             }
+            Message::GoogleClientId(id) => self.google.client_id = id,
+            Message::GoogleClientSecret(secret) => self.google.client_secret = secret,
+            Message::GoogleSignIn if self.google.can_sign_in() => {
+                self.google.error = None;
+                return Action::GoogleSignIn(GoogleClient {
+                    client_id: self.google.client_id.trim().to_owned(),
+                    client_secret: self.google.client_secret.trim().to_owned(),
+                });
+            }
+            Message::GoogleSignIn => {}
+            Message::GoogleCancel => {
+                if let Some(handle) = self.google.signing_in.take() {
+                    handle.abort();
+                }
+            }
+            Message::GoogleSignedIn(result) => {
+                self.google.signing_in = None;
+                match result {
+                    Ok(account) => {
+                        self.google.account = Some(account);
+                        self.google.client_secret.clear();
+                        // Offer Meet links right away.
+                        if !settings
+                            .call_services
+                            .iter()
+                            .any(|s| s.kind == ServiceKind::GoogleMeet)
+                        {
+                            settings.call_services.push(CallService::google_meet());
+                            return Action::Save;
+                        }
+                    }
+                    Err(e) => self.google.error = Some(e),
+                }
+            }
+            Message::GoogleSignOut => {
+                self.google.error = None;
+                return Action::GoogleSignOut;
+            }
+            Message::GoogleSignedOut(result) => match result {
+                Ok(()) => self.google.account = None,
+                Err(e) => self.google.error = Some(e),
+            },
         }
         Action::None
     }
@@ -248,6 +314,7 @@ impl Panel {
             self.form.view(),
         ]
         .spacing(14);
+        panel = panel.push(heading("Google Meet")).push(self.google.view());
         if let Some(space) = &self.space {
             panel = panel.push(heading("Space")).push(space.view(settings));
         }
@@ -303,6 +370,76 @@ impl Panel {
         )
         .spacing(8)
         .into()
+    }
+}
+
+impl GoogleState {
+    fn can_sign_in(&self) -> bool {
+        self.signing_in.is_none()
+            && !self.client_id.trim().is_empty()
+            && !self.client_secret.trim().is_empty()
+    }
+
+    fn view(&self) -> Element<'_, app::Message> {
+        let mut section = column![].spacing(8);
+        if let Some(account) = &self.account {
+            section = section.push(
+                row![
+                    text(format!("Connected as {account}")).width(Length::Fill),
+                    small_button("Disconnect", message(Message::GoogleSignOut)),
+                ]
+                .align_y(Alignment::Center),
+            );
+        } else if self.signing_in.is_some() {
+            section = section.push(
+                row![
+                    text("Continue in your browser…").width(Length::Fill),
+                    small_button("Cancel", message(Message::GoogleCancel)),
+                ]
+                .align_y(Alignment::Center),
+            );
+        } else {
+            let field = |placeholder, value: &str, on_input: fn(String) -> Message| {
+                text_input(placeholder, value)
+                    .on_input(move |v| message(on_input(v)))
+                    .on_submit(message(Message::GoogleSignIn))
+                    .style(style::input)
+                    .padding(6)
+                    .size(13)
+            };
+            section = section
+                .push(
+                    text(
+                        "Creates Meet links with your Google account. Needs an OAuth client \
+                         of your own Google Cloud project (see the README).",
+                    )
+                    .size(12)
+                    .style(text::secondary),
+                )
+                .push(
+                    row![
+                        field("Client ID", &self.client_id, Message::GoogleClientId),
+                        field(
+                            "Client secret",
+                            &self.client_secret,
+                            Message::GoogleClientSecret
+                        )
+                        .secure(true),
+                        button(text("Connect").size(13))
+                            .padding([5, 12])
+                            .style(style::secondary_button)
+                            .on_press_maybe(
+                                self.can_sign_in().then(|| message(Message::GoogleSignIn))
+                            ),
+                    ]
+                    .spacing(6)
+                    .align_y(Alignment::Center),
+                );
+        }
+        if let Some(error) = &self.error {
+            section = section.push(text(error).size(12).style(text::danger));
+        }
+        section.into()
     }
 }
 

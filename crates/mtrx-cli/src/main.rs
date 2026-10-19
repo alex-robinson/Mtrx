@@ -3,6 +3,7 @@
 // matrix-sdk futures are deeply nested.
 #![recursion_limit = "256"]
 
+mod google;
 mod rooms;
 mod timeline;
 
@@ -52,7 +53,7 @@ struct Cli {
 enum SecretStoreArg {
     /// OS credential store.
     Keyring,
-    /// Plain-text file in the profile directory (development only).
+    /// Plain-text files in the data directory (development only).
     File,
 }
 
@@ -140,6 +141,9 @@ enum Command {
         #[arg(long)]
         wait: bool,
     },
+    /// Google account for Meet links (app-wide, not per profile).
+    #[command(subcommand)]
+    Google(google::GoogleCommand),
 }
 
 #[derive(Subcommand)]
@@ -425,6 +429,13 @@ async fn main() -> Result<()> {
                 .await
                 .context("timed out verifying")??;
             session.stop_sync().await;
+        }
+        Command::Google(command) => {
+            let data_root = match cli.data_dir {
+                Some(dir) => dir,
+                None => Profile::default_data_root()?,
+            };
+            google::run(command, &data_root, secrets).await?;
         }
     }
     Ok(())

@@ -19,8 +19,8 @@ use iced::{
     window,
 };
 use mtrx_core::{
-    CallService, OwnedMxcUri, OwnedRoomId, Profile, RecoveryStep, RoomList, RoomListState,
-    RoomTimeline, ScheduledMessage, SecretStore, Session, TimelineEntry, Url,
+    CallService, Google, OwnedMxcUri, OwnedRoomId, Profile, RecoveryStep, RoomList, RoomListState,
+    RoomTimeline, ScheduledMessage, SecretStore, ServiceKind, Session, TimelineEntry, Url,
 };
 
 use crate::{
@@ -99,6 +99,8 @@ pub enum Message {
 
 pub struct App {
     profile: Profile,
+    /// Connection for creating Google Meet links, shared by all accounts.
+    google: Arc<Google>,
     settings: Settings,
     /// Where settings are saved; `None` keeps them in memory (tests).
     settings_file: Option<PathBuf>,
@@ -175,7 +177,7 @@ impl Main {
 
 /// Profile from the same environment variables the CLI reads.
 /// Profile and data directory from the same environment variables the CLI reads.
-fn environment() -> Result<(Profile, PathBuf), String> {
+fn environment() -> Result<(Profile, PathBuf, SecretStore), String> {
     let name = std::env::var("MTRX_PROFILE").unwrap_or_else(|_| "default".into());
     let data_root = match std::env::var_os("MTRX_DATA_DIR") {
         Some(dir) => PathBuf::from(dir),
@@ -186,15 +188,17 @@ fn environment() -> Result<(Profile, PathBuf), String> {
         _ => SecretStore::Keyring,
     };
     let profile = Profile::new(&name, Some(&data_root), secrets).map_err(|e| e.to_string())?;
-    Ok((profile, data_root))
+    Ok((profile, data_root, secrets))
 }
 
 impl App {
     pub fn boot() -> (Self, Task<Message>) {
-        let (profile, data_root) = environment().expect("valid MTRX_PROFILE and data directory");
+        let (profile, data_root, secrets) =
+            environment().expect("valid MTRX_PROFILE and data directory");
         let settings_file = Settings::path(&data_root);
         let app = Self {
             profile: profile.clone(),
+            google: Arc::new(Google::new(&data_root, secrets)),
             settings: Settings::load(&settings_file),
             settings_file: Some(settings_file),
             settings_panel: None,
@@ -568,6 +572,10 @@ impl App {
 
     fn open_settings(&mut self) -> Task<Message> {
         let mut panel = settings::Panel::default();
+        panel.google.account = self.google.account().unwrap_or_else(|e| {
+            panel.google.error = Some(e.to_string());
+            None
+        });
         let mut task = Task::none();
         if let Screen::Main(main) = &self.screen
             && let Some(space) = &main.space
@@ -607,6 +615,34 @@ impl App {
                     .map(|e| e.to_string());
                 Task::none()
             }
+            settings::Action::GoogleSignIn(client) => {
+                let google = self.google.clone();
+                let (task, handle) = Task::perform(
+                    async move {
+                        google
+                            .sign_in(client, |url| {
+                                let _ = open::that_detached(url.as_str());
+                            })
+                            .await
+                    },
+                    |result| {
+                        Message::Settings(settings::Message::GoogleSignedIn(
+                            result.map_err(|e| e.to_string()),
+                        ))
+                    },
+                )
+                .abortable();
+                panel.google.signing_in = Some(handle);
+                task
+            }
+            settings::Action::GoogleSignOut => {
+                let google = self.google.clone();
+                Task::perform(async move { google.sign_out().await }, |result| {
+                    Message::Settings(settings::Message::GoogleSignedOut(
+                        result.map_err(|e| e.to_string()),
+                    ))
+                })
+            }
             settings::Action::SetSpaceService(space, service) => {
                 let Screen::Main(main) = &self.screen else {
                     return Task::none();
@@ -633,6 +669,7 @@ impl App {
             return Task::none();
         };
         let session = main.session.clone();
+        let google = self.google.clone();
         let state = &mut room.calls;
         let reply = move |message| Message::Calls(room_id.clone(), message);
         match message {
@@ -651,7 +688,7 @@ impl App {
                 let room = room.id.clone();
                 return Task::perform(
                     async move {
-                        let link = new_call_link(&service).await?;
+                        let link = new_call_link(&service, &google).await?;
                         session
                             .post_call(&room, &service.name, &link)
                             .await
@@ -1088,13 +1125,17 @@ fn overdue_banner(main: &Main) -> Option<Element<'_, Message>> {
 }
 
 /// A link for a new call with `service`.
-async fn new_call_link(service: &CallService) -> Result<Url, String> {
-    match service.new_link() {
-        Some(link) => Ok(link),
-        None => Err(format!(
-            "{} needs the Google connection, which is not set up yet.",
-            service.name
-        )),
+async fn new_call_link(service: &CallService, google: &Google) -> Result<Url, String> {
+    match service.kind {
+        ServiceKind::GoogleMeet => google.create_meeting().await.map_err(|e| match e {
+            mtrx_core::Error::GoogleNotSignedIn => {
+                "Connect your Google account in Settings to create Meet links.".to_owned()
+            }
+            e => e.to_string(),
+        }),
+        _ => service
+            .new_link()
+            .ok_or_else(|| format!("{} cannot make call links", service.name)),
     }
 }
 
