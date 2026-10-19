@@ -30,6 +30,8 @@ const MITEX_FILES: &[(&str, &str)] = &[
     ),
 ];
 const MAIN: &str = "/main.typ";
+/// Vertical page margin for content outside the line boxes, in em.
+const OVERFLOW_EM: f32 = 2.0;
 const MATH_FONT: &str = "New Computer Modern Math";
 const MONO_FONT: &str = "DejaVu Sans Mono";
 
@@ -76,11 +78,16 @@ pub struct Renderer {
 
 impl Renderer {
     /// `text_fonts` are font files (TTF/OTF) for message text. Math and
-    /// monospace fonts are built in.
-    pub fn new(text_fonts: impl IntoIterator<Item = Vec<u8>>) -> Self {
+    /// monospace fonts are built in; the system emoji font is used as
+    /// fallback when found.
+    pub fn new<F>(text_fonts: impl IntoIterator<Item = F>) -> Self
+    where
+        F: AsRef<[u8]> + Send + Sync + 'static,
+    {
         let fonts: Vec<Font> = typst_assets::fonts()
             .map(Bytes::new)
             .chain(text_fonts.into_iter().map(Bytes::new))
+            .chain(system_emoji_font())
             .flat_map(Font::iter)
             .collect();
         let files = MITEX_FILES
@@ -127,7 +134,8 @@ impl Renderer {
                 render_bleed: false,
             },
         );
-        let rgba = pixmap
+        let width = pixmap.width() as usize;
+        let rgba: Vec<u8> = pixmap
             .pixels()
             .iter()
             .flat_map(|p| {
@@ -135,12 +143,53 @@ impl Renderer {
                 [c.red(), c.green(), c.blue(), c.alpha()]
             })
             .collect();
-        Ok(Image {
-            width: pixmap.width(),
-            height: pixmap.height(),
-            rgba,
-        })
+        Ok(trim_rows(rgba, width, (style.scale * 2.0) as usize))
     }
+}
+
+/// Drop fully transparent rows above and below the content, keeping `pad`.
+fn trim_rows(rgba: Vec<u8>, width: usize, pad: usize) -> Image {
+    let row_len = width * 4;
+    let rows = rgba.len() / row_len.max(1);
+    let inked = |row: usize| {
+        rgba[row * row_len..(row + 1) * row_len]
+            .chunks(4)
+            .any(|p| p[3] > 0)
+    };
+    let Some(first) = (0..rows).find(|&r| inked(r)) else {
+        return Image {
+            width: width as u32,
+            height: 0,
+            rgba: Vec::new(),
+        };
+    };
+    let last = (0..rows).rev().find(|&r| inked(r)).unwrap_or(first);
+    let top = first.saturating_sub(pad);
+    let bottom = (last + 1 + pad).min(rows);
+    Image {
+        width: width as u32,
+        height: (bottom - top) as u32,
+        rgba: rgba[top * row_len..bottom * row_len].to_vec(),
+    }
+}
+
+/// Emoji font files shipped with the OS.
+const EMOJI_FONTS: &[&str] = &[
+    "/System/Library/Fonts/Apple Color Emoji.ttc",
+    "C:\\Windows\\Fonts\\seguiemj.ttf",
+    "/usr/share/fonts/truetype/noto/NotoColorEmoji.ttf",
+    "/usr/share/fonts/noto/NotoColorEmoji.ttf",
+    "/usr/share/fonts/google-noto-emoji/NotoColorEmoji.ttf",
+];
+
+/// The system emoji font, memory-mapped (Apple's is ~180 MB).
+fn system_emoji_font() -> Option<Bytes> {
+    EMOJI_FONTS.iter().find_map(|path| {
+        let file = std::fs::File::open(path).ok()?;
+        // Safety: system font files are not modified while we run.
+        let map = unsafe { memmap2::Mmap::map(&file) }.ok()?;
+        Some(Bytes::new(map))
+    })
 }
 
 fn file_id(path: &str) -> FileId {
@@ -206,9 +255,11 @@ fn typst_source(document: &Document, style: &RenderStyle) -> Result<String, Rend
     let _ = write!(
         out,
         r#"#import "/mitex/mod.typ": mitex-scope
-#set page(width: auto, height: auto, margin: 0pt, fill: none)
-#set text(font: ({font}, {math}), size: {size}pt, fill: {text}, top-edge: "ascender", bottom-edge: "descender")
-#set par(spacing: 0.7em, leading: 0.45em)
+// Typst does not grow lines for tall inline math, so it can stick out of
+// the page; the vertical margin keeps it, and empty rows are trimmed after.
+#set page(width: auto, height: auto, margin: (x: 0pt, y: {overflow}em), fill: none)
+#set text(font: ({font}, {math}), size: {size}pt, fill: {text})
+#set par(spacing: 1em, leading: 0.75em)
 #show raw: set text(font: {mono}, size: 0.9em)
 #show link: set text(fill: {link})
 #let muted = {muted}
@@ -226,6 +277,7 @@ fn typst_source(document: &Document, style: &RenderStyle) -> Result<String, Rend
         link = color(style.link_color),
         muted = color(style.muted_color),
         max_width = style.max_width,
+        overflow = OVERFLOW_EM,
     );
     Ok(out)
 }

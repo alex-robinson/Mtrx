@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/mtrx-core", "crates/mtrx-format", "crates/mtrx-cli"]
+members = ["crates/mtrx-core", "crates/mtrx-format", "crates/mtrx-cli", "crates/mtrx-app"]
 
 [workspace.package]
 version = "0.1.0"

@@ -5,6 +5,10 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+# Helpers for tests against the local Synapse.
+test-support = ["dep:hmac", "dep:sha1"]
+
 [dependencies]
 mtrx-format.workspace = true
 matrix-sdk.workspace = true
@@ -21,10 +25,11 @@ tracing.workspace = true
 keyring.workspace = true
 directories.workspace = true
 rand.workspace = true
+hmac = { workspace = true, optional = true }
+sha1 = { workspace = true, optional = true }
 
 [dev-dependencies]
+mtrx-core = { path = ".", features = ["test-support"] }
 mtrx-format.workspace = true
 tempfile.workspace = true
 anyhow.workspace = true
-hmac.workspace = true
-sha1.workspace = true

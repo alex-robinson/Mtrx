@@ -21,7 +21,9 @@ fn main() {
         link_color: [30, 90, 200, 255],
         muted_color: [150, 150, 150, 255],
     };
-    let image = Renderer::new([]).render(&doc, &style).expect("render");
+    let image = Renderer::new::<Vec<u8>>([])
+        .render(&doc, &style)
+        .expect("render");
     let file = std::fs::File::create(&out).expect("create");
     let mut encoder = png::Encoder::new(file, image.width, image.height);
     encoder.set_color(png::ColorType::Rgba);

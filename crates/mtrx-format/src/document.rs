@@ -8,12 +8,12 @@ use ruma_html::{
     matrix::{AnchorUri, MatrixElement},
 };
 
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub struct Document {
     pub blocks: Vec<Block>,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Block {
     Paragraph(Vec<Inline>),
     Heading {
@@ -35,7 +35,7 @@ pub enum Block {
     Rule,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Inline {
     Text(String),
     Styled {
@@ -52,7 +52,7 @@ pub enum Inline {
     LineBreak,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Style {
     Bold,
     Italic,

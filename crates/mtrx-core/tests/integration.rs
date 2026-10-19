@@ -10,74 +10,24 @@
 
 #![recursion_limit = "256"]
 
-use std::{
-    future::Future,
-    sync::atomic::{AtomicU32, Ordering},
-    time::{Duration, SystemTime, UNIX_EPOCH},
-};
+use std::{future::Future, time::Duration};
 
 use anyhow::{Context, Result, bail};
 use futures_util::{Stream, StreamExt};
-use hmac::{Hmac, KeyInit, Mac};
 use mtrx_core::{
     EventContent, MembershipChange, NewRoom, Profile, RecoveryStatus, RoomKind, SecretStore,
     Session, TimelineEntry, VerificationState,
+    test_support::{self, PASSWORD, homeserver, unique_name},
 };
 use mtrx_format::{Block, Inline, Style};
-use sha1::Sha1;
 use tempfile::TempDir;
 
-const SHARED_SECRET: &str = "mtrx-test-shared-secret";
-const PASSWORD: &str = "test-password";
 const TIMEOUT: Duration = Duration::from_secs(30);
 
-fn homeserver() -> String {
-    std::env::var("MTRX_TEST_HOMESERVER").unwrap_or_else(|_| "http://localhost:8008".into())
-}
-
-/// A unique user name per call, across test runs.
-fn unique_name(prefix: &str) -> String {
-    static COUNTER: AtomicU32 = AtomicU32::new(0);
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    format!(
-        "{prefix}{nanos}x{}",
-        COUNTER.fetch_add(1, Ordering::Relaxed)
-    )
-}
-
-/// Register a user with Synapse's shared-secret admin API.
 async fn register(name: &str) -> Result<()> {
-    let http = matrix_sdk::reqwest::Client::new();
-    let url = format!("{}/_synapse/admin/v1/register", homeserver());
-    let nonce: serde_json::Value =
-        serde_json::from_str(&http.get(&url).send().await?.text().await?)?;
-    let nonce = nonce["nonce"].as_str().context("no nonce")?;
-
-    let mut mac = Hmac::<Sha1>::new_from_slice(SHARED_SECRET.as_bytes())?;
-    mac.update(format!("{nonce}\0{name}\0{PASSWORD}\0notadmin").as_bytes());
-    let mac: String = mac
-        .finalize()
-        .into_bytes()
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect();
-
-    let body = serde_json::json!({
-        "nonce": nonce, "username": name, "password": PASSWORD, "admin": false, "mac": mac,
-    });
-    let response = http
-        .post(&url)
-        .header("content-type", "application/json")
-        .body(body.to_string())
-        .send()
-        .await?;
-    if !response.status().is_success() {
-        bail!("registering {name} failed: {}", response.text().await?);
-    }
-    Ok(())
+    test_support::register(name)
+        .await
+        .map_err(anyhow::Error::msg)
 }
 
 /// A logged-in device with its own data directory.

@@ -10,6 +10,9 @@ mod rooms;
 mod session;
 mod timeline;
 
+#[cfg(feature = "test-support")]
+pub mod test_support;
+
 pub use encryption::{
     DeviceInfo, RecoveryStatus, Verification, VerificationEmoji, VerificationState,
 };

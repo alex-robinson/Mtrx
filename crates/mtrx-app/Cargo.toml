@@ -1,0 +1,25 @@
+[package]
+name = "mtrx-app"
+description = "Mtrx desktop app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "mtrx-app"
+path = "src/main.rs"
+
+[dependencies]
+mtrx-core.workspace = true
+mtrx-format = { workspace = true, features = ["render"] }
+iced = { version = "0.14.0", features = ["tokio", "image"] }
+tokio.workspace = true
+futures-util.workspace = true
+chrono.workspace = true
+tracing-subscriber.workspace = true
+open = "5.4.4"
+
+[dev-dependencies]
+iced_test = "0.14.0"
+mtrx-core = { workspace = true, features = ["test-support"] }
+tempfile.workspace = true

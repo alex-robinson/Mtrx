@@ -8,8 +8,17 @@ Native Rust Matrix client for macOS, Windows and Linux, built on
 
 - `crates/mtrx-core`: Matrix logic and state (sessions, room list, timelines,
   encryption). No UI; exposes plain types and live update streams.
+- `crates/mtrx-format`: Markdown/LaTeX to Matrix HTML, HTML to a document
+  model, math typesetting with Typst.
 - `crates/mtrx-cli`: the `mtrx` command-line client on top of core.
+- `crates/mtrx-app`: the desktop app (iced).
 - `testserver/`: local Synapse for development and tests.
+
+## Desktop app
+
+```sh
+cargo run --release -p mtrx-app
+```
 
 ## CLI
 
@@ -35,4 +44,5 @@ Needs Docker (on macOS e.g. `brew install colima docker && colima start`).
 testserver/run.sh                  # Synapse on http://localhost:8008
 testserver/add_user.sh alice alicepw
 cargo test -p mtrx-core --test integration -- --ignored
+cargo test -p mtrx-app -- --ignored   # UI snapshots in target/ui-snapshots/
 ```

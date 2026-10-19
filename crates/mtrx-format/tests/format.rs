@@ -127,7 +127,7 @@ mod render {
 
     #[test]
     fn renders_common_latex() {
-        let renderer = Renderer::new([]);
+        let renderer = Renderer::new::<Vec<u8>>([]);
         for tex in [
             r"E=mc^2",
             r"\frac{\partial T}{\partial t} = \kappa \nabla^2 T",
@@ -152,7 +152,7 @@ mod render {
     #[test]
     fn all_latex_symbols_render() {
         let spec = include_str!("../typst/mitex/latex/standard.typ");
-        let renderer = Renderer::new([]);
+        let renderer = Renderer::new::<Vec<u8>>([]);
         let mut failures = Vec::new();
         for line in spec.lines() {
             let Some((key, rest)) = line.trim().split_once(": ") else {
@@ -180,7 +180,7 @@ mod render {
 
     #[test]
     fn wraps_at_max_width_and_shrinks_short_text() {
-        let renderer = Renderer::new([]);
+        let renderer = Renderer::new::<Vec<u8>>([]);
         let long = doc(&"word ".repeat(100));
         let image = renderer.render(&long, &style(200.0)).unwrap();
         assert!(image.width <= 400, "2x scale of 200 px: {}", image.width);
@@ -194,7 +194,7 @@ mod render {
 
     #[test]
     fn bad_latex_is_an_error_not_a_panic() {
-        let renderer = Renderer::new([]);
+        let renderer = Renderer::new::<Vec<u8>>([]);
         let result = renderer.render(&doc(r"$$\notacommand{x}$$"), &style(400.0));
         assert!(
             matches!(
@@ -209,7 +209,7 @@ mod render {
 
     #[test]
     fn typst_syntax_in_text_is_literal() {
-        let renderer = Renderer::new([]);
+        let renderer = Renderer::new::<Vec<u8>>([]);
         // Would be code / markup if it were not escaped.
         let image = renderer.render(&doc(r#"#panic("x") \ " $x$ *a* [b]"#), &style(400.0));
         assert!(image.is_ok(), "{image:?}");

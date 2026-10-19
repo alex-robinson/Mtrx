@@ -6,7 +6,7 @@ edition.workspace = true
 license.workspace = true
 
 [features]
-render = ["dep:idna_adapter", "dep:mitex", "dep:mitex-spec-gen", "dep:fxhash", "dep:typst", "dep:typst-layout", "dep:typst-render", "dep:typst-assets", "dep:thiserror"]
+render = ["dep:idna_adapter", "dep:mitex", "dep:mitex-spec-gen", "dep:fxhash", "dep:memmap2", "dep:typst", "dep:typst-layout", "dep:typst-render", "dep:typst-assets", "dep:thiserror"]
 
 [dependencies]
 pulldown-cmark = { version = "0.13.4", default-features = false, features = ["html"] }
@@ -14,6 +14,7 @@ ruma-html = { version = "0.9.0", features = ["matrix"] }
 mitex = { version = "0.2.4", optional = true }
 mitex-spec-gen = { version = "0.2.4", optional = true }
 fxhash = { version = "0.2.1", optional = true }
+memmap2 = { version = "0.9.11", optional = true }
 typst = { version = "0.15.1", optional = true }
 typst-layout = { version = "0.15.1", optional = true }
 typst-render = { version = "0.15.1", optional = true }
