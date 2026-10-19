@@ -22,6 +22,7 @@ use tokio::{
 use tokio_stream::wrappers::WatchStream;
 
 use crate::{Error, Result, Session, system_time};
+use mtrx_format::{Document, markdown_to_matrix};
 
 /// One row of a timeline.
 // Nearly all entries are events, so boxing would only add indirection.
@@ -84,9 +85,9 @@ pub struct Message {
     pub kind: MessageKind,
     /// Plain-text body (fallback for every kind).
     pub body: String,
-    /// `org.matrix.custom.html` body, if any. Math arrives here as
-    /// `data-mx-maths` elements.
-    pub html: Option<String>,
+    /// The formatted body, or the plain body if there is none. Math keeps its
+    /// LaTeX source.
+    pub document: Document,
     pub edited: bool,
     pub in_reply_to: Option<OwnedEventId>,
     /// Reaction key and how many users reacted with it.
@@ -160,11 +161,15 @@ impl RoomTimeline {
             .map_err(timeline_error)
     }
 
-    /// Queue a message written in Markdown. Its local echo shows as
+    /// Queue a message written in Markdown, with `$…$` / `$$…$$` math. Its local echo shows as
     /// [`SendState::Sending`] until the server confirms; await
     /// [`PendingSend::sent`] to wait for that.
     pub async fn send_markdown(&self, text: &str) -> Result<PendingSend> {
-        let content = RoomMessageEventContent::text_markdown(text);
+        let formatted = markdown_to_matrix(text);
+        let content = match formatted.html {
+            Some(html) => RoomMessageEventContent::text_html(formatted.body, html),
+            None => RoomMessageEventContent::text_plain(formatted.body),
+        };
         // The SDK's send handle does not expose the transaction ID, so we take
         // it from the first new local echo after subscribing. The lock makes
         // sure no other send of this session enqueues in between.
@@ -248,13 +253,18 @@ impl Session {
                 .map_err(timeline_error)?,
         );
         let (items, stream) = timeline.subscribe().await;
-        let (tx, entries) = watch::channel(convert_all(&items));
+        // Convert each item once, when it is added or changed, by mirroring
+        // the SDK's diffs onto converted entries.
+        let mut converted: Vector<Option<TimelineEntry>> =
+            items.iter().map(|item| convert(item)).collect();
+        let (tx, entries) = watch::channel(flatten(&converted));
         let task = tokio::spawn(async move {
-            let mut items = items;
             pin_mut!(stream);
             while let Some(diffs) = stream.next().await {
-                diffs.into_iter().for_each(|d| d.apply(&mut items));
-                tx.send_replace(convert_all(&items));
+                for diff in diffs {
+                    diff.map(|item| convert(&item)).apply(&mut converted);
+                }
+                tx.send_replace(flatten(&converted));
             }
         });
         Ok(RoomTimeline {
@@ -271,8 +281,8 @@ fn timeline_error(e: impl std::fmt::Display) -> Error {
     Error::Timeline(e.to_string())
 }
 
-fn convert_all(items: &Vector<Arc<TimelineItem>>) -> Vec<TimelineEntry> {
-    items.iter().filter_map(|item| convert(item)).collect()
+fn flatten(entries: &Vector<Option<TimelineEntry>>) -> Vec<TimelineEntry> {
+    entries.iter().flatten().cloned().collect()
 }
 
 fn convert(item: &TimelineItem) -> Option<TimelineEntry> {
@@ -297,7 +307,10 @@ fn convert_event(event: &EventTimelineItem, id: &str) -> Option<Event> {
             MsgLikeKind::Message(message) => EventContent::Message(Message {
                 kind: message_kind(message.msgtype()),
                 body: message.body().to_owned(),
-                html: html_body(message.msgtype()),
+                document: match html_body(message.msgtype()) {
+                    Some(html) => Document::from_html(html),
+                    None => Document::from_plain(message.body()),
+                },
                 edited: message.is_edited(),
                 in_reply_to: msg_like.in_reply_to.as_ref().map(|r| r.event_id.clone()),
                 reactions: msg_like
@@ -372,14 +385,14 @@ fn message_kind(msgtype: &MessageType) -> MessageKind {
     }
 }
 
-fn html_body(msgtype: &MessageType) -> Option<String> {
+fn html_body(msgtype: &MessageType) -> Option<&str> {
     let formatted = match msgtype {
         MessageType::Text(c) => c.formatted.as_ref(),
         MessageType::Notice(c) => c.formatted.as_ref(),
         MessageType::Emote(c) => c.formatted.as_ref(),
         _ => None,
     }?;
-    (formatted.format.as_str() == "org.matrix.custom.html").then(|| formatted.body.clone())
+    (formatted.format.as_str() == "org.matrix.custom.html").then_some(formatted.body.as_str())
 }
 
 fn membership_change(change: SdkMembershipChange) -> MembershipChange {

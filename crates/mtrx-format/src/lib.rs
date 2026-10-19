@@ -1,0 +1,18 @@
+//! Message formatting for Mtrx, shared by all frontends:
+//!
+//! - [`markdown_to_matrix`]: composer text (Markdown, `$…$` math) to Matrix
+//!   message bodies, compatible with Element.
+//! - [`Document`]: received Matrix HTML as a small document model; math keeps
+//!   its LaTeX source.
+//! - [`Renderer`] (feature `render`): typeset a document, math included, into
+//!   an image with Typst.
+
+mod document;
+mod markdown;
+#[cfg(feature = "render")]
+mod render;
+
+pub use document::{Block, Document, Inline, Style};
+pub use markdown::{Formatted, markdown_to_matrix};
+#[cfg(feature = "render")]
+pub use render::{Image, RenderError, RenderStyle, Renderer};

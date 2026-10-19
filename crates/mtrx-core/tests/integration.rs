@@ -23,6 +23,7 @@ use mtrx_core::{
     EventContent, MembershipChange, NewRoom, Profile, RecoveryStatus, RoomKind, SecretStore,
     Session, TimelineEntry, VerificationState,
 };
+use mtrx_format::{Block, Inline, Style};
 use sha1::Sha1;
 use tempfile::TempDir;
 
@@ -264,7 +265,16 @@ async fn encrypted_messages_between_users() -> Result<()> {
     let EventContent::Message(m) = message.content else {
         bail!("not a message")
     };
-    assert_eq!(m.html.as_deref(), Some("hello <strong>bob</strong>"));
+    assert_eq!(
+        m.document.blocks,
+        vec![Block::Paragraph(vec![
+            Inline::Text("hello ".into()),
+            Inline::Styled {
+                style: Style::Bold,
+                content: vec![Inline::Text("bob".into())]
+            },
+        ])]
+    );
     assert_eq!(message.sender, alice.session.user_id());
     Ok(())
 }

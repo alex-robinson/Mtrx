@@ -6,6 +6,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+mtrx-format.workspace = true
 matrix-sdk.workspace = true
 matrix-sdk-ui.workspace = true
 eyeball-im.workspace = true
@@ -22,6 +23,7 @@ directories.workspace = true
 rand.workspace = true
 
 [dev-dependencies]
+mtrx-format.workspace = true
 tempfile.workspace = true
 anyhow.workspace = true
 hmac.workspace = true

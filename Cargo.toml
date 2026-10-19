@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/mtrx-core", "crates/mtrx-cli"]
+members = ["crates/mtrx-core", "crates/mtrx-format", "crates/mtrx-cli"]
 
 [workspace.package]
 version = "0.1.0"
@@ -9,7 +9,8 @@ license = "MIT"
 
 [workspace.dependencies]
 mtrx-core = { path = "crates/mtrx-core" }
-matrix-sdk = { version = "0.19.1", features = ["bundled-sqlite", "markdown"] }
+mtrx-format = { path = "crates/mtrx-format" }
+matrix-sdk = { version = "0.19.1", features = ["bundled-sqlite"] }
 matrix-sdk-ui = "0.19.1"
 eyeball-im = "0.9.1"
 imbl = "7.0.2"
@@ -35,3 +36,7 @@ sha1 = "0.11.0"
 # Dependencies are slow unoptimized (store key derivation, crypto); our crates stay quick to rebuild.
 [profile.dev.package."*"]
 opt-level = 2
+
+# mitex 0.2.4 ignores a custom command spec when writing output; patched copy.
+[patch.crates-io]
+mitex = { path = "vendor/mitex" }
