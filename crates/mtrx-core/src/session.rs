@@ -9,6 +9,7 @@ use matrix_sdk::{
     store::RoomLoadSettings,
 };
 use matrix_sdk_ui::sync_service::SyncService;
+use tokio::sync::Mutex;
 use tracing::warn;
 
 use crate::{
@@ -22,6 +23,8 @@ const DEVICE_DISPLAY_NAME: &str = "Mtrx";
 pub struct Session {
     pub(crate) client: Client,
     pub(crate) sync: Arc<SyncService>,
+    /// Serializes enqueueing messages, see [`crate::RoomTimeline::send_markdown`].
+    pub(crate) send_lock: Arc<Mutex<()>>,
     profile: Profile,
 }
 
@@ -87,7 +90,7 @@ impl Session {
             .build()
             .await
             .map_err(|e| Error::Sync(e.to_string()))?;
-        Ok(Self { client, sync: Arc::new(sync), profile })
+        Ok(Self { client, sync: Arc::new(sync), send_lock: Default::default(), profile })
     }
 
     /// Start syncing in the background. Live views ([`crate::RoomList`], ...)
@@ -110,7 +113,7 @@ impl Session {
             warn!("server-side logout failed, removing local data anyway: {e}");
         }
         self.sync.stop().await;
-        let Self { client, sync, profile } = self;
+        let Self { client, sync, profile, .. } = self;
         drop(sync);
         drop(client);
         profile.wipe()

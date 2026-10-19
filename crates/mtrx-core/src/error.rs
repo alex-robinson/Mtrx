@@ -20,6 +20,8 @@ pub enum Error {
     Sync(String),
     #[error("room list: {0}")]
     RoomList(String),
+    #[error("timeline: {0}")]
+    Timeline(String),
 
     #[error(transparent)]
     Matrix(#[from] matrix_sdk::Error),

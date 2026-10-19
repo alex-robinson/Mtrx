@@ -1,10 +1,6 @@
 //! Live room list (rooms, spaces, DMs) and room management.
 
-use std::{
-    collections::HashMap,
-    sync::Arc,
-    time::{Duration, SystemTime, UNIX_EPOCH},
-};
+use std::{collections::HashMap, sync::Arc, time::SystemTime};
 
 use eyeball_im::Vector;
 use futures_util::{Stream, StreamExt, pin_mut};
@@ -30,7 +26,7 @@ use tokio::{sync::watch, task::JoinHandle};
 use tokio_stream::wrappers::WatchStream;
 use tracing::warn;
 
-use crate::{Error, Result, Session};
+use crate::{Error, Result, Session, system_time};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RoomKind {
@@ -186,9 +182,7 @@ async fn summarize(items: &Vector<RoomListItem>) -> Vec<RoomSummary> {
             unread_messages: room.num_unread_messages(),
             unread_mentions: room.num_unread_mentions(),
             unread_notifications: room.num_unread_notifications(),
-            last_activity: room
-                .latest_event_timestamp()
-                .map(|ts| UNIX_EPOCH + Duration::from_millis(ts.get().into())),
+            last_activity: room.latest_event_timestamp().map(system_time),
             parents: parents.remove(room.room_id()).unwrap_or_default(),
         });
     }

@@ -1,12 +1,25 @@
 //! `mtrx`: command-line Matrix client built on `mtrx-core`.
 
-mod rooms;
+// matrix-sdk futures are deeply nested.
+#![recursion_limit = "256"]
 
-use std::{io::BufRead, path::PathBuf, time::Duration};
+mod rooms;
+mod timeline;
+
+use std::{
+    collections::HashMap,
+    io::{BufRead, Read},
+    path::PathBuf,
+    time::Duration,
+};
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
-use mtrx_core::{NewRoom, OwnedRoomId, OwnedUserId, Profile, RoomList, SecretStore, Session};
+use futures_util::StreamExt;
+use mtrx_core::{
+    NewRoom, OwnedRoomId, OwnedUserId, Profile, RoomList, RoomTimeline, SecretStore, Session,
+    TimelineEntry,
+};
 
 /// How long one-shot commands wait for the first sync.
 const SYNC_TIMEOUT: Duration = Duration::from_secs(60);
@@ -79,6 +92,17 @@ enum Command {
     Invite { room: String, user: OwnedUserId },
     /// Add a room to a space.
     SpaceAdd { space: String, room: String },
+    /// Print recent messages of a room.
+    Read {
+        room: String,
+        /// Number of events to show.
+        #[arg(short = 'n', default_value_t = 20)]
+        count: usize,
+    },
+    /// Send a Markdown message (from the argument, or stdin if omitted).
+    Send { room: String, text: Option<String> },
+    /// Follow a room's messages, or unread counts of all rooms, until Ctrl-C.
+    Watch { room: Option<String> },
 }
 
 #[tokio::main]
@@ -159,8 +183,102 @@ async fn main() -> Result<()> {
             session.add_to_space(&space, &session.find_room(&room).await?).await?;
             session.stop_sync().await;
         }
+        Command::Read { room, count } => {
+            let (session, _list) = synced(profile).await?;
+            let timeline = session.timeline(&session.find_room(&room).await?).await?;
+            load_events(&timeline, count).await?;
+            let entries = timeline.current();
+            let skip = entries.len().saturating_sub(count);
+            for entry in &entries[skip..] {
+                println!("{}", timeline::entry_line(entry));
+            }
+            session.stop_sync().await;
+        }
+        Command::Send { room, text } => {
+            let text = match text {
+                Some(text) => text,
+                None => {
+                    let mut text = String::new();
+                    std::io::stdin().read_to_string(&mut text)?;
+                    text
+                }
+            };
+            let (session, _list) = synced(profile).await?;
+            let timeline = session.timeline(&session.find_room(&room).await?).await?;
+            let pending = timeline.send_markdown(&text).await?;
+            let sent = tokio::time::timeout(SYNC_TIMEOUT, pending.sent()).await;
+            session.stop_sync().await;
+            sent.context("timed out sending")??;
+        }
+        Command::Watch { room: Some(room) } => {
+            let (session, _list) = synced(profile).await?;
+            let timeline = session.timeline(&session.find_room(&room).await?).await?;
+            load_events(&timeline, 10).await?;
+            watch_timeline(&timeline).await;
+            session.stop_sync().await;
+        }
+        Command::Watch { room: None } => {
+            let (session, list) = synced(profile).await?;
+            watch_rooms(&list).await;
+            session.stop_sync().await;
+        }
     }
     Ok(())
+}
+
+/// Paginate until at least `count` events are loaded or the room start is reached.
+async fn load_events(timeline: &RoomTimeline, count: usize) -> Result<()> {
+    let events = |t: &RoomTimeline| {
+        t.current().iter().filter(|e| matches!(e, TimelineEntry::Event(_))).count()
+    };
+    while events(timeline) < count {
+        if timeline.paginate_back(count.max(20) as u16).await? {
+            break;
+        }
+    }
+    Ok(())
+}
+
+/// Print the timeline, then new and changed events, until Ctrl-C.
+async fn watch_timeline(timeline: &RoomTimeline) {
+    let mut seen: HashMap<String, String> = HashMap::new();
+    let mut updates = timeline.updates();
+    loop {
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => return,
+            entries = updates.next() => {
+                let Some(entries) = entries else { return };
+                for entry in entries {
+                    let TimelineEntry::Event(event) = &entry else { continue };
+                    let line = timeline::event_line(event);
+                    match seen.insert(event.id.clone(), line.clone()) {
+                        None => println!("{line}"),
+                        Some(old) if old != line => println!("~ {line}"),
+                        Some(_) => {}
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Print rooms whose unread count changes, until Ctrl-C.
+async fn watch_rooms(list: &RoomList) {
+    let mut unread: HashMap<OwnedRoomId, u64> = HashMap::new();
+    let mut updates = list.updates();
+    loop {
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => return,
+            state = updates.next() => {
+                let Some(state) = state else { return };
+                for room in state.rooms {
+                    if unread.insert(room.id.clone(), room.unread_messages) != Some(room.unread_messages) {
+                        println!("{}: {} unread", room.name, room.unread_messages);
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// Restore the session and wait until the room list is loaded.
