@@ -13,6 +13,7 @@ mod fonts;
 mod icons;
 mod login;
 mod math;
+mod media;
 mod members;
 mod message;
 mod room;

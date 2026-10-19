@@ -15,8 +15,8 @@ use iced::{
     },
 };
 use mtrx_core::{
-    CallService, Event, EventContent, MembershipChange, MessageKind, MxcUri, OwnedRoomId,
-    OwnedUserId, RoomSummary, RoomTimeline, SendState, TimelineEntry,
+    CallService, Event, EventContent, MediaKind, MediaRef, MembershipChange, MessageKind, MxcUri,
+    OwnedRoomId, OwnedUserId, RoomSummary, RoomTimeline, SendState, TimelineEntry,
 };
 
 use crate::{
@@ -28,6 +28,7 @@ use crate::{
     ellipsis::ellipsis,
     fonts,
     math::{self, Math, Rendered},
+    media::{self, Previews},
     members::Members,
     message,
     send_later::{self, SendLater},
@@ -164,6 +165,21 @@ impl Room {
         room.into_iter().chain(senders).chain(members)
     }
 
+    /// Images of the rendered messages, for loading their previews.
+    pub fn images(&self) -> impl Iterator<Item = &MediaRef> {
+        self.visible().iter().filter_map(|e| match e {
+            TimelineEntry::Event(Event {
+                content: EventContent::Message(m),
+                ..
+            }) => m
+                .media
+                .as_ref()
+                .filter(|media| media.kind == MediaKind::Image)
+                .map(|media| &media.source),
+            _ => None,
+        })
+    }
+
     pub fn view<'a>(
         &'a self,
         summary: Option<&'a RoomSummary>,
@@ -176,6 +192,7 @@ impl Room {
             math: look.math,
             params: &look.params,
             avatars: look.avatars,
+            previews: look.previews,
             colored_names: look.colored_names,
             call_services: look.call_services,
             hovered: self.hovered.as_deref(),
@@ -284,7 +301,11 @@ impl Room {
         if let Some(bar) = self.compose.bar() {
             bottom = bottom.push(bar);
         }
-        let mut input = row![composer].spacing(8).align_y(Alignment::End);
+        let attach = button(text("Attach…").size(13))
+            .padding([10, 12])
+            .style(style::secondary_button)
+            .on_press(Message::Attach);
+        let mut input = row![composer, attach].spacing(8).align_y(Alignment::End);
         if let Some(later) = later {
             input = input.push(later);
         }
@@ -428,6 +449,7 @@ pub struct Look<'a> {
     /// Our call services, to recognise and start calls.
     pub call_services: &'a [CallService],
     pub own_user: &'a OwnedUserId,
+    pub previews: &'a Previews,
 }
 
 /// What rendering an event needs besides the event.
@@ -436,6 +458,7 @@ struct Context<'a, 'b> {
     math: &'a Math,
     params: &'b math::Params,
     avatars: &'b Avatars,
+    previews: &'b Previews,
     colored_names: bool,
     call_services: &'b [CallService],
     hovered: Option<&'b str>,
@@ -471,9 +494,12 @@ fn event_view<'a>(
                 (MessageKind::Text | MessageKind::Notice | MessageKind::Emote, false) => {
                     message::view(&m.document, theme, Message::LinkClicked)
                 }
-                (kind, _) => text(format!("[{kind:?}] {}", m.body))
-                    .style(text::secondary)
-                    .into(),
+                (kind, _) => match &m.media {
+                    Some(file) => media::view(file, &m.body, context.previews),
+                    None => text(format!("[{kind:?}] {}", m.body))
+                        .style(text::secondary)
+                        .into(),
+                },
             };
             let mut parts = column![].spacing(4);
             if let Some(reply) = &m.in_reply_to {

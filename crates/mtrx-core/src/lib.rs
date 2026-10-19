@@ -31,6 +31,7 @@ pub use encryption::{
 };
 pub use error::{Error, Result};
 pub use google::{Google, GoogleClient};
+pub use media::MediaRef;
 pub use members::{Member, Role};
 pub use notifications::Notification;
 pub use permissions::{Permissions, SpaceUpdate};
@@ -41,8 +42,8 @@ pub use secrets::SecretStore;
 pub use send_time::{describe_send_time, parse_send_time};
 pub use session::Session;
 pub use timeline::{
-    Event, EventContent, EventKey, MembershipChange, Message, MessageKind, PendingSend, Reaction,
-    Reply, RoomTimeline, SendState, TimelineEntry,
+    Event, EventContent, EventKey, Media, MediaKind, MembershipChange, Message, MessageKind,
+    PendingSend, Reaction, Reply, RoomTimeline, SendState, TimelineEntry,
 };
 
 pub use url::Url;

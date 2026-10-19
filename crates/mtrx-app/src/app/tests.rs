@@ -11,8 +11,8 @@ use futures_util::StreamExt;
 use iced::Size;
 use iced_test::simulator::Simulator;
 use mtrx_core::{
-    EventContent, NewRoom, OwnedEventId, Permissions, Profile, RoomOrAliasId, SecretStore, Session,
-    TimelineEntry,
+    EventContent, NewRoom, OwnedEventId, Permissions, Profile, RoomOrAliasId, SecretStore,
+    SendState, Session, TimelineEntry,
     test_support::{PASSWORD, homeserver, register, unique_name},
 };
 use tempfile::TempDir;
@@ -82,9 +82,13 @@ fn login_screen() {
 
 /// A diagonal gradient as PNG, for avatars.
 fn picture(from: [u8; 3], to: [u8; 3]) -> Vec<u8> {
-    const SIZE: u32 = 96;
-    let img = ::image::RgbImage::from_fn(SIZE, SIZE, |x, y| {
-        let t = (x + y) as f32 / (2 * SIZE) as f32;
+    gradient(96, 96, from, to)
+}
+
+/// A `width`×`height` diagonal gradient as PNG.
+fn gradient(width: u32, height: u32, from: [u8; 3], to: [u8; 3]) -> Vec<u8> {
+    let img = ::image::RgbImage::from_fn(width, height, |x, y| {
+        let t = (x + y) as f32 / (width + height) as f32;
         ::image::Rgb(std::array::from_fn(|i| {
             (from[i] as f32 * (1.0 - t) + to[i] as f32 * t) as u8
         }))
@@ -718,5 +722,112 @@ async fn room_management_screens() {
             });
         }),
         "members-search",
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs local Synapse (testserver/run.sh)"]
+async fn media_messages() {
+    let dir = TempDir::new().unwrap();
+    let (_, alice) = user("media", &dir).await;
+    let room = alice
+        .create_room(NewRoom {
+            name: Some("ice-sheets".into()),
+            encrypted: true,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let list = alice.room_list().await.unwrap();
+    let rooms = tokio::time::timeout(TIMEOUT, async {
+        let mut updates = std::pin::pin!(list.updates());
+        while let Some(state) = updates.next().await {
+            if state.loaded
+                && state
+                    .rooms
+                    .iter()
+                    .any(|r| r.id == room && r.name == "ice-sheets")
+            {
+                return state;
+            }
+        }
+        unreachable!()
+    })
+    .await
+    .unwrap();
+    let timeline = Arc::new(alice.timeline(&room).await.unwrap());
+    send(
+        &timeline,
+        "Melt-rate map from last night's run, and the draft:",
+    )
+    .await;
+    let map = gradient(640, 400, [16, 52, 120], [110, 205, 225]);
+    timeline
+        .send_file_bytes("melt-rate-map.png", "image/png", map)
+        .await
+        .unwrap();
+    timeline
+        .send_file_bytes("ice-flux-draft.pdf", "application/pdf", vec![0; 2_400_000])
+        .await
+        .unwrap();
+    while !timeline.paginate_back(50).await.unwrap() {}
+    let entries = tokio::time::timeout(TIMEOUT, async {
+        let mut updates = std::pin::pin!(timeline.updates());
+        while let Some(entries) = updates.next().await {
+            let sent = entries
+                .iter()
+                .filter(|e| match e {
+                    TimelineEntry::Event(ev) => {
+                        ev.send_state == SendState::Sent
+                            && matches!(&ev.content, EventContent::Message(m) if m.media.is_some())
+                    }
+                    _ => false,
+                })
+                .count();
+            if sent == 2 {
+                return entries;
+            }
+        }
+        unreachable!()
+    })
+    .await
+    .unwrap();
+    let image = entries
+        .iter()
+        .find_map(|e| match e {
+            TimelineEntry::Event(ev) => match &ev.content {
+                EventContent::Message(m) => {
+                    m.media.clone().filter(|m| m.filename.ends_with(".png"))
+                }
+                _ => None,
+            },
+            _ => None,
+        })
+        .unwrap();
+
+    let session = Arc::new(alice);
+    let main_with = async |viewer: Option<Viewer>| {
+        let mut main = Main::new(session.clone());
+        main.rooms = rooms.clone();
+        main.verified = Some(true);
+        let mut open = Room::new(room.clone(), timeline.clone());
+        open.entries = entries.clone();
+        open.at_start = true;
+        let images: Vec<MediaRef> = open.images().cloned().collect();
+        for media in &images {
+            main.previews.load_now(&session, media).await;
+        }
+        main.room = Some(open);
+        main.viewer = viewer;
+        Box::new(main)
+    };
+    for (mode, name) in [(Mode::Light, "media-light"), (Mode::Dark, "media-dark")] {
+        snapshot(&app(Screen::Main(main_with(None).await), mode), name);
+    }
+    let mut viewer = Viewer::new(image);
+    viewer.load_now(&session).await;
+    snapshot(
+        &app(Screen::Main(main_with(Some(viewer)).await), Mode::Light),
+        "image-viewer",
     );
 }
