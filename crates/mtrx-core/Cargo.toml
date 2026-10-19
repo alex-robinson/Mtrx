@@ -24,3 +24,5 @@ rand.workspace = true
 [dev-dependencies]
 tempfile.workspace = true
 anyhow.workspace = true
+hmac.workspace = true
+sha1.workspace = true

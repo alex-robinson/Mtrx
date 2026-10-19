@@ -2603,6 +2603,7 @@ dependencies = [
  "directories",
  "eyeball-im",
  "futures-util",
+ "hmac",
  "imbl",
  "keyring",
  "matrix-sdk",
@@ -2610,6 +2611,7 @@ dependencies = [
  "rand 0.10.3",
  "serde",
  "serde_json",
+ "sha1",
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
@@ -3831,6 +3833,17 @@ checksum = "66cf8fedced2fcf12406bcb34223dffb92eaf34908ede12fed414c82b7f00b3e"
 dependencies = [
  "base16ct",
  "serde",
+]
+
+[[package]]
+name = "sha1"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "aacc4cc499359472b4abe1bf11d0b12e688af9a805fa5e3016f9a386dc2d0214"
+dependencies = [
+ "cfg-if",
+ "cpufeatures 0.3.1",
+ "digest 0.11.3",
 ]
 
 [[package]]
