@@ -143,18 +143,16 @@ impl Room {
     pub fn view<'a>(
         &'a self,
         summary: Option<&'a RoomSummary>,
-        theme: &Theme,
-        math: &'a Math,
-        params: &math::Params,
-        avatars: &Avatars,
+        look: &Look<'a>,
         scheduled: &send_later::Pending<'a>,
     ) -> Element<'a, Message> {
-        let header = self.header(summary, avatars);
+        let header = self.header(summary, look.avatars);
         let context = Context {
-            theme,
-            math,
-            params,
-            avatars,
+            theme: &look.theme,
+            math: look.math,
+            params: &look.params,
+            avatars: look.avatars,
+            colored_names: look.colored_names,
             hovered: self.hovered.as_deref(),
         };
 
@@ -210,6 +208,7 @@ impl Room {
 
         let editing = self.later.editing.is_some();
         let composer = text_editor(&self.composer)
+            .style(style::editor)
             .placeholder("Message…  (Markdown, $…$ for math; Shift+Enter for a new line)")
             .on_action(Message::Composer)
             .key_binding(move |press| match press.key {
@@ -232,7 +231,7 @@ impl Room {
             .size(13),
         )
         .padding([10, 12])
-        .style(button::secondary)
+        .style(style::secondary_button)
         .on_press(Message::Later(send_later::Message::TogglePicker));
 
         let composer_empty = self.composer.text().trim().is_empty();
@@ -253,7 +252,7 @@ impl Room {
                         .style(text::secondary),
                     button(text("Cancel editing").size(12))
                         .padding([2, 8])
-                        .style(button::text)
+                        .style(style::text_button)
                         .on_press(Message::Later(send_later::Message::CancelEdit)),
                 ]
                 .spacing(8)
@@ -300,12 +299,23 @@ impl Room {
     }
 }
 
+/// What rendering a room needs from the rest of the app.
+pub struct Look<'a> {
+    pub theme: Theme,
+    pub math: &'a Math,
+    pub params: math::Params,
+    pub avatars: &'a Avatars,
+    /// Senders' names in their colour instead of the text colour.
+    pub colored_names: bool,
+}
+
 /// What rendering an event needs besides the event.
 struct Context<'a, 'b> {
     theme: &'b Theme,
     math: &'a Math,
     params: &'b math::Params,
     avatars: &'b Avatars,
+    colored_names: bool,
     hovered: Option<&'b str>,
 }
 
@@ -377,7 +387,7 @@ fn event_view<'a>(
 
     let mut item = column![].spacing(2).width(Length::Fill);
     if with_header {
-        item = item.push(sender_line(event));
+        item = item.push(sender_line(event, context.colored_names));
     }
     item = item.push(body);
     match &event.send_state {
@@ -422,20 +432,20 @@ fn event_view<'a>(
     }
 }
 
-/// Coloured sender name and time, above the first message of a group.
-fn sender_line<'a>(event: &Event) -> Element<'a, Message> {
-    row![
-        text(display_name(event)).font(fonts::SEMIBOLD).style({
-            let sender = event.sender.clone();
-            move |theme| text::Style {
-                color: Some(avatar::name_color(sender.as_str(), theme)),
-            }
-        }),
-        text(time(event)).size(11).style(text::secondary)
-    ]
-    .spacing(8)
-    .align_y(Alignment::End)
-    .into()
+/// Sender name, in their colour if `colored`, and time above the first
+/// message of a group.
+fn sender_line<'a>(event: &Event, colored: bool) -> Element<'a, Message> {
+    let mut name = text(display_name(event)).font(fonts::SEMIBOLD);
+    if colored {
+        let sender = event.sender.clone();
+        name = name.style(move |theme| text::Style {
+            color: Some(avatar::name_color(sender.as_str(), theme)),
+        });
+    }
+    row![name, text(time(event)).size(11).style(text::secondary)]
+        .spacing(8)
+        .align_y(Alignment::End)
+        .into()
 }
 
 fn time(event: &Event) -> String {

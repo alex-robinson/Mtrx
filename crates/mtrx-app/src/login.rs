@@ -6,6 +6,8 @@ use iced::{
     widget::{button, column, container, rule, text, text_input},
 };
 
+use crate::style;
+
 #[derive(Debug, Clone)]
 pub enum Message {
     Homeserver(String),
@@ -99,7 +101,9 @@ impl Login {
 
     pub fn view(&self) -> Element<'_, Message> {
         let input = |placeholder, value: &str, on_input: fn(String) -> Message, submit| {
-            let field = text_input(placeholder, value).padding(10);
+            let field = text_input(placeholder, value)
+                .padding(10)
+                .style(style::input);
             if self.idle() {
                 field.on_input(on_input).on_submit(submit)
             } else {
@@ -124,12 +128,13 @@ impl Login {
         form = match &self.state {
             State::Browser(_) => form.push(text("Continue in your browser…")).push(
                 button(text("Cancel"))
-                    .style(button::secondary)
+                    .style(style::secondary_button)
                     .on_press(Message::Cancel),
             ),
             State::Idle | State::Password => form
                 .push(
                     button(text("Sign in with browser").width(Length::Fill).center())
+                        .style(style::primary_button)
                         .width(Length::Fill)
                         .padding(10)
                         .on_press_maybe(self.idle().then_some(Message::Browser)),
@@ -162,7 +167,7 @@ impl Login {
                     } else {
                         "Sign in with password"
                     }))
-                    .style(button::secondary)
+                    .style(style::secondary_button)
                     .padding([8, 16])
                     .on_press_maybe(
                         self.can_submit_password()

@@ -9,7 +9,7 @@ use iced::{
 };
 use mtrx_core::{ScheduledMessage, describe_send_time, parse_send_time};
 
-use crate::app;
+use crate::{app, style};
 
 #[derive(Debug, Clone)]
 pub enum Message {
@@ -91,9 +91,9 @@ fn item<'a>(
         button(text(label).size(12))
             .padding([2, 8])
             .style(if primary {
-                button::primary
+                style::primary_button
             } else {
-                button::text
+                style::text_button
             })
             .on_press_maybe(on_press.map(app::Message::Later))
     };
@@ -156,7 +156,7 @@ pub fn picker<'a>(
     let preset = |label: &'a str, at: Option<SystemTime>| {
         button(text(label).size(13))
             .padding([4, 10])
-            .style(button::secondary)
+            .style(style::secondary_button)
             .on_press_maybe(
                 at.filter(|_| can_schedule)
                     .map(|at| app::Message::Later(Message::At(at))),
@@ -170,7 +170,7 @@ pub fn picker<'a>(
         space::horizontal(),
         button(text("Close").size(12))
             .padding([2, 8])
-            .style(button::text)
+            .style(style::text_button)
             .on_press(app::Message::Later(Message::TogglePicker)),
     ]
     .spacing(8)
@@ -194,7 +194,8 @@ pub fn picker<'a>(
     )
     .size(13)
     .padding(6)
-    .width(360);
+    .width(360)
+    .style(style::input);
 
     let picker = column![
         presets,

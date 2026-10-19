@@ -13,7 +13,8 @@ use iced::{
     Element, Length, Size, Subscription, Task, Theme,
     theme::Mode,
     widget::{
-        button, column, container, image, row, scrollable::Viewport, text, text_editor, text_input,
+        button, column, container, image, mouse_area, opaque, row, scrollable::Viewport, stack,
+        text, text_editor, text_input,
     },
     window,
 };
@@ -26,8 +27,10 @@ use crate::{
     avatar::{self, Avatars},
     login::{self, Login},
     math::{self, Math, Rendered},
-    room::{Older, Room},
-    send_later, sidebar,
+    room::{Look, Older, Room},
+    send_later,
+    settings::Settings,
+    sidebar,
     style::{self, MESSAGE_INSET, ROOM_LIST_WIDTH, SPACE_BAR_WIDTH},
 };
 
@@ -76,6 +79,8 @@ pub enum Message {
     Scheduled(Vec<ScheduledMessage>),
     /// Refreshes times shown relative to now.
     Tick,
+    ShowSettings(bool),
+    ColoredNames(bool),
     RecoveryKey(String),
     Recover,
     RecoveryProgress(RecoveryStep),
@@ -92,6 +97,11 @@ pub enum Message {
 
 pub struct App {
     profile: Profile,
+    settings: Settings,
+    /// Where settings are saved; `None` keeps them in memory (tests).
+    settings_file: Option<PathBuf>,
+    settings_open: bool,
+    settings_error: Option<String>,
     screen: Screen,
     mode: Mode,
     window_width: f32,
@@ -162,21 +172,31 @@ impl Main {
 }
 
 /// Profile from the same environment variables the CLI reads.
-fn profile() -> Result<Profile, String> {
+/// Profile and data directory from the same environment variables the CLI reads.
+fn environment() -> Result<(Profile, PathBuf), String> {
     let name = std::env::var("MTRX_PROFILE").unwrap_or_else(|_| "default".into());
-    let data_dir = std::env::var_os("MTRX_DATA_DIR").map(PathBuf::from);
+    let data_root = match std::env::var_os("MTRX_DATA_DIR") {
+        Some(dir) => PathBuf::from(dir),
+        None => Profile::default_data_root().map_err(|e| e.to_string())?,
+    };
     let secrets = match std::env::var("MTRX_SECRET_STORE").as_deref() {
         Ok("file") => SecretStore::File,
         _ => SecretStore::Keyring,
     };
-    Profile::new(&name, data_dir.as_deref(), secrets).map_err(|e| e.to_string())
+    let profile = Profile::new(&name, Some(&data_root), secrets).map_err(|e| e.to_string())?;
+    Ok((profile, data_root))
 }
 
 impl App {
     pub fn boot() -> (Self, Task<Message>) {
-        let profile = profile().expect("valid MTRX_PROFILE");
+        let (profile, data_root) = environment().expect("valid MTRX_PROFILE and data directory");
+        let settings_file = Settings::path(&data_root);
         let app = Self {
             profile: profile.clone(),
+            settings: Settings::load(&settings_file),
+            settings_file: Some(settings_file),
+            settings_open: false,
+            settings_error: None,
             screen: Screen::Starting,
             mode: Mode::Light,
             window_width: 1200.0,
@@ -417,6 +437,15 @@ impl App {
                 Task::none()
             }
             Message::Later(message) => self.later(message),
+            Message::ShowSettings(open) => {
+                self.settings_open = open;
+                Task::none()
+            }
+            Message::ColoredNames(colored) => {
+                self.settings.colored_names = colored;
+                self.save_settings();
+                Task::none()
+            }
             Message::Scheduled(scheduled) => {
                 if let Screen::Main(main) = &mut self.screen {
                     if let Some(room) = main.room.as_mut()
@@ -530,6 +559,14 @@ impl App {
                 Task::none()
             }
         }
+    }
+
+    fn save_settings(&mut self) {
+        self.settings_error = self
+            .settings_file
+            .as_ref()
+            .and_then(|file| self.settings.save(file).err())
+            .map(|e| e.to_string());
     }
 
     fn later(&mut self, message: send_later::Message) -> Task<Message> {
@@ -694,6 +731,16 @@ impl App {
         match &self.screen {
             Screen::Starting => container(text("Starting…")).center(Length::Fill).into(),
             Screen::Login(login) => login.view().map(Message::Login),
+            Screen::Main(main) if self.settings_open => {
+                let panel = self.settings.view(self.settings_error.as_deref());
+                let backdrop = mouse_area(
+                    container(opaque(panel))
+                        .center(Length::Fill)
+                        .style(style::backdrop),
+                )
+                .on_press(Message::ShowSettings(false));
+                stack![self.main_view(main), opaque(backdrop)].into()
+            }
             Screen::Main(main) => self.main_view(main),
         }
     }
@@ -732,14 +779,14 @@ impl App {
                         .collect(),
                     now: main.now,
                 };
-                room.view(
-                    summary,
-                    &theme,
-                    &self.math,
-                    &self.math_params(),
-                    &main.avatars,
-                    &scheduled,
-                )
+                let look = Look {
+                    theme: theme.clone(),
+                    math: &self.math,
+                    params: self.math_params(),
+                    avatars: &main.avatars,
+                    colored_names: self.settings.colored_names,
+                };
+                room.view(summary, &look, &scheduled)
             }
             None => container(text("Select a room").style(text::secondary))
                 .center(Length::Fill)
@@ -754,6 +801,7 @@ impl App {
 fn recovery_banner(main: &Main) -> Element<'_, Message> {
     let busy = main.recovery_step.is_some();
     let mut input = text_input("Recovery key", &main.recovery_key)
+        .style(style::input)
         .secure(true)
         .padding(8)
         .width(320);
@@ -763,6 +811,7 @@ fn recovery_banner(main: &Main) -> Element<'_, Message> {
             .on_submit(Message::Recover);
     }
     let unlock = button(text(if busy { "Unlocking…" } else { "Unlock" }))
+        .style(style::primary_button)
         .on_press_maybe((!busy).then_some(Message::Recover));
     let mut banner = column![
         text("This device is not verified, so older encrypted messages cannot be read."),
@@ -829,7 +878,7 @@ fn overdue_banner(main: &Main) -> Option<Element<'_, Message>> {
         banner = banner.push(
             button(text(label).size(13))
                 .padding([2, 8])
-                .style(button::secondary)
+                .style(style::secondary_button)
                 .on_press(Message::OpenRoom(id.clone())),
         );
     }

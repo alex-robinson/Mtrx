@@ -13,6 +13,7 @@ mod math;
 mod message;
 mod room;
 mod send_later;
+mod settings;
 mod sidebar;
 mod style;
 

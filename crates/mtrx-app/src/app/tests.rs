@@ -61,6 +61,10 @@ fn snapshot(app: &App, name: &str) {
 fn app(screen: Screen, mode: Mode) -> App {
     App {
         profile: Profile::new("ui", None, SecretStore::File).unwrap(),
+        settings: Settings::default(),
+        settings_file: None,
+        settings_open: false,
+        settings_error: None,
         screen,
         mode,
         window_width: 1200.0,
@@ -277,6 +281,8 @@ async fn main_screen_with_math() {
         }
 
         let mut app = app(Screen::Main(Box::new(main)), mode);
+        // Both name styles: plain (the default) in light, coloured in dark.
+        app.settings.colored_names = mode == Mode::Dark;
         let params = app.math_params();
         if let Screen::Main(main) = &app.screen {
             for document in main.room.as_ref().unwrap().math_documents() {
@@ -383,10 +389,10 @@ async fn send_later_bar() {
     open.composer = text_editor::Content::with_text("Who can take the Monday slot?");
     open.later.picker = Some("tomorrow 8:00".into());
     main.room = Some(open);
-    snapshot(
-        &app(Screen::Main(Box::new(main)), Mode::Light),
-        "send-later",
-    );
+    let mut app = app(Screen::Main(Box::new(main)), Mode::Light);
+    snapshot(&app, "send-later");
+    app.settings_open = true;
+    snapshot(&app, "settings");
 }
 
 /// Timings for a big encrypted room opened on a new, recovered device:

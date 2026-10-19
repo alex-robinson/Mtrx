@@ -4863,6 +4863,8 @@ dependencies = [
  "mtrx-core",
  "mtrx-format",
  "open",
+ "serde",
+ "serde_json",
  "tempfile",
  "tokio",
  "tracing-subscriber",

@@ -148,9 +148,23 @@ pub fn space_bar<'a>(
             unread,
         ));
     }
-    container(scrollable(
-        bar.spacing(4).width(Length::Fill).padding([8, 0]),
-    ))
+    let settings = button(icons::gear(20.0, |theme| {
+        theme
+            .extended_palette()
+            .background
+            .base
+            .text
+            .scale_alpha(0.7)
+    }))
+    .padding(8)
+    .style(style::list_item(false))
+    .on_press(Message::ShowSettings(true));
+    container(column![
+        scrollable(bar.spacing(4).width(Length::Fill).padding([8, 0])).height(Length::Fill),
+        container(with_tooltip(settings, "Settings".into()))
+            .center_x(Length::Fill)
+            .padding([8, 0]),
+    ])
     .width(SPACE_BAR_WIDTH)
     .height(Length::Fill)
     .style(style::space_bar)

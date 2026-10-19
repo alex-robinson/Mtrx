@@ -2,7 +2,7 @@
 
 use iced::{
     Background, Border, Color, Theme,
-    widget::{button, container, rule},
+    widget::{button, container, rule, text_editor, text_input},
 };
 
 pub const SPACE_BAR_WIDTH: f32 = 56.0;
@@ -164,6 +164,77 @@ pub fn list_item(selected: bool) -> impl Fn(&Theme, button::Status) -> button::S
             border: Border::default().rounded(8),
             ..Default::default()
         }
+    }
+}
+
+/// Corner radius of buttons.
+const BUTTON_RADIUS: f32 = 6.0;
+/// Corner radius of text fields.
+const INPUT_RADIUS: f32 = 8.0;
+
+fn rounded_button(
+    base: fn(&Theme, button::Status) -> button::Style,
+) -> impl Fn(&Theme, button::Status) -> button::Style {
+    move |theme, status| {
+        let style = base(theme, status);
+        button::Style {
+            border: style.border.rounded(BUTTON_RADIUS),
+            ..style
+        }
+    }
+}
+
+pub fn primary_button(theme: &Theme, status: button::Status) -> button::Style {
+    rounded_button(button::primary)(theme, status)
+}
+
+pub fn secondary_button(theme: &Theme, status: button::Status) -> button::Style {
+    rounded_button(button::secondary)(theme, status)
+}
+
+pub fn text_button(theme: &Theme, status: button::Status) -> button::Style {
+    rounded_button(button::text)(theme, status)
+}
+
+pub fn input(theme: &Theme, status: text_input::Status) -> text_input::Style {
+    let style = text_input::default(theme, status);
+    text_input::Style {
+        border: style.border.rounded(INPUT_RADIUS),
+        ..style
+    }
+}
+
+pub fn editor(theme: &Theme, status: text_editor::Status) -> text_editor::Style {
+    let style = text_editor::default(theme, status);
+    text_editor::Style {
+        border: style.border.rounded(INPUT_RADIUS),
+        ..style
+    }
+}
+
+/// A panel floating above the window, e.g. settings.
+pub fn dialog(theme: &Theme) -> container::Style {
+    let palette = theme.extended_palette();
+    container::Style {
+        background: Some(Background::Color(palette.background.base.color)),
+        border: Border::default()
+            .rounded(10)
+            .width(1)
+            .color(palette.background.strong.color),
+        shadow: iced::Shadow {
+            color: Color::BLACK.scale_alpha(0.25),
+            offset: iced::Vector::new(0.0, 4.0),
+            blur_radius: 16.0,
+        },
+        ..Default::default()
+    }
+}
+
+/// Dims the window behind a dialog.
+pub fn backdrop(_theme: &Theme) -> container::Style {
+    container::Style {
+        background: Some(Background::Color(Color::BLACK.scale_alpha(0.35))),
+        ..Default::default()
     }
 }
 
