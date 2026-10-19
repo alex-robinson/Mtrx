@@ -4,12 +4,12 @@ use std::{sync::Arc, time::SystemTime};
 
 use eyeball_im::Vector;
 use futures_util::{Stream, StreamExt, pin_mut};
-use matrix_sdk::send_queue::RoomSendQueueUpdate;
 use matrix_sdk::ruma::{
     OwnedEventId, OwnedRoomId, OwnedTransactionId, OwnedUserId,
     api::client::receipt::create_receipt::v3::ReceiptType,
     events::room::message::{MessageType, RoomMessageEventContent},
 };
+use matrix_sdk::send_queue::RoomSendQueueUpdate;
 use matrix_sdk_ui::timeline::{
     EventSendState, EventTimelineItem, MembershipChange as SdkMembershipChange, MsgLikeKind,
     RoomExt, Timeline, TimelineDetails, TimelineItem, TimelineItemContent, TimelineItemKind,
@@ -24,6 +24,8 @@ use tokio_stream::wrappers::WatchStream;
 use crate::{Error, Result, Session, system_time};
 
 /// One row of a timeline.
+// Nearly all entries are events, so boxing would only add indirection.
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug, PartialEq)]
 pub enum TimelineEntry {
     Event(Event),
@@ -58,12 +60,23 @@ pub enum EventContent {
     Redacted,
     /// Encrypted and no key (yet). Keys may still arrive from backup or other devices.
     UnableToDecrypt,
-    Membership { user: OwnedUserId, name: Option<String>, change: MembershipChange },
-    DisplayNameChange { user: OwnedUserId, new_name: Option<String> },
+    Membership {
+        user: OwnedUserId,
+        name: Option<String>,
+        change: MembershipChange,
+    },
+    DisplayNameChange {
+        user: OwnedUserId,
+        new_name: Option<String>,
+    },
     /// A state event we do not render in detail, e.g. `m.room.topic`.
-    OtherState { event_type: String },
+    OtherState {
+        event_type: String,
+    },
     /// A message-like event we do not render, e.g. a poll or sticker.
-    Other { description: String },
+    Other {
+        description: String,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -141,7 +154,10 @@ impl RoomTimeline {
     /// Load up to `events` older events. Returns `true` once the start of the
     /// room is reached.
     pub async fn paginate_back(&self, events: u16) -> Result<bool> {
-        self.timeline.paginate_backwards(events).await.map_err(timeline_error)
+        self.timeline
+            .paginate_backwards(events)
+            .await
+            .map_err(timeline_error)
     }
 
     /// Queue a message written in Markdown. Its local echo shows as
@@ -153,13 +169,24 @@ impl RoomTimeline {
         // it from the first new local echo after subscribing. The lock makes
         // sure no other send of this session enqueues in between.
         let _guard = self.send_lock.lock().await;
-        let (_, mut updates) =
-            self.timeline.room().send_queue().subscribe().await.map_err(timeline_error)?;
-        self.timeline.send(content.into()).await.map_err(timeline_error)?;
+        let (_, mut updates) = self
+            .timeline
+            .room()
+            .send_queue()
+            .subscribe()
+            .await
+            .map_err(timeline_error)?;
+        self.timeline
+            .send(content.into())
+            .await
+            .map_err(timeline_error)?;
         loop {
             match updates.try_recv() {
                 Ok(RoomSendQueueUpdate::NewLocalEvent(echo)) => {
-                    return Ok(PendingSend { transaction_id: echo.transaction_id, updates });
+                    return Ok(PendingSend {
+                        transaction_id: echo.transaction_id,
+                        updates,
+                    });
                 }
                 Ok(_) => {}
                 Err(e) => return Err(Error::Timeline(format!("no local echo after send: {e}"))),
@@ -185,14 +212,17 @@ impl PendingSend {
     pub async fn sent(mut self) -> Result<OwnedEventId> {
         loop {
             match self.updates.recv().await {
-                Ok(RoomSendQueueUpdate::SentEvent { transaction_id, event_id })
-                    if transaction_id == self.transaction_id =>
-                {
+                Ok(RoomSendQueueUpdate::SentEvent {
+                    transaction_id,
+                    event_id,
+                }) if transaction_id == self.transaction_id => {
                     return Ok(event_id);
                 }
-                Ok(RoomSendQueueUpdate::SendError { transaction_id, error, .. })
-                    if transaction_id == self.transaction_id =>
-                {
+                Ok(RoomSendQueueUpdate::SendError {
+                    transaction_id,
+                    error,
+                    ..
+                }) if transaction_id == self.transaction_id => {
                     return Err(Error::Timeline(format!("sending failed: {error}")));
                 }
                 Ok(RoomSendQueueUpdate::CancelledLocalEvent { transaction_id })
@@ -211,7 +241,12 @@ impl PendingSend {
 
 impl Session {
     pub async fn timeline(&self, room_id: &OwnedRoomId) -> Result<RoomTimeline> {
-        let timeline = Arc::new(self.room(room_id)?.timeline().await.map_err(timeline_error)?);
+        let timeline = Arc::new(
+            self.room(room_id)?
+                .timeline()
+                .await
+                .map_err(timeline_error)?,
+        );
         let (items, stream) = timeline.subscribe().await;
         let (tx, entries) = watch::channel(convert_all(&items));
         let task = tokio::spawn(async move {
@@ -242,9 +277,10 @@ fn convert_all(items: &Vector<Arc<TimelineItem>>) -> Vec<TimelineEntry> {
 
 fn convert(item: &TimelineItem) -> Option<TimelineEntry> {
     match item.kind() {
-        TimelineItemKind::Event(event) => {
-            Some(TimelineEntry::Event(convert_event(event, &item.unique_id().0)?))
-        }
+        TimelineItemKind::Event(event) => Some(TimelineEntry::Event(convert_event(
+            event,
+            &item.unique_id().0,
+        )?)),
         TimelineItemKind::Virtual(VirtualTimelineItem::DateDivider(ts)) => {
             Some(TimelineEntry::DayDivider(system_time(*ts)))
         }
@@ -272,14 +308,18 @@ fn convert_event(event: &EventTimelineItem, id: &str) -> Option<Event> {
             }),
             MsgLikeKind::Redacted => EventContent::Redacted,
             MsgLikeKind::UnableToDecrypt(_) => EventContent::UnableToDecrypt,
-            MsgLikeKind::Sticker(_) => EventContent::Other { description: "sticker".into() },
-            MsgLikeKind::Poll(_) => EventContent::Other { description: "poll".into() },
-            MsgLikeKind::LiveLocation(_) => {
-                EventContent::Other { description: "live location".into() }
-            }
-            MsgLikeKind::Other(other) => {
-                EventContent::Other { description: other.event_type().to_string() }
-            }
+            MsgLikeKind::Sticker(_) => EventContent::Other {
+                description: "sticker".into(),
+            },
+            MsgLikeKind::Poll(_) => EventContent::Other {
+                description: "poll".into(),
+            },
+            MsgLikeKind::LiveLocation(_) => EventContent::Other {
+                description: "live location".into(),
+            },
+            MsgLikeKind::Other(other) => EventContent::Other {
+                description: other.event_type().to_string(),
+            },
         },
         TimelineItemContent::MembershipChange(change) => EventContent::Membership {
             user: change.user_id().to_owned(),
@@ -290,9 +330,9 @@ fn convert_event(event: &EventTimelineItem, id: &str) -> Option<Event> {
             user: change.user_id().to_owned(),
             new_name: change.displayname_change()?.new.clone(),
         },
-        TimelineItemContent::OtherState(state) => {
-            EventContent::OtherState { event_type: state.content().event_type().to_string() }
-        }
+        TimelineItemContent::OtherState(state) => EventContent::OtherState {
+            event_type: state.content().event_type().to_string(),
+        },
         _ => return None,
     };
 

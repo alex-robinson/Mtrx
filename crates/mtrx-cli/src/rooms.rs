@@ -19,15 +19,25 @@ pub fn print_tree(rooms: &[RoomSummary], ids: bool) {
     }
     let in_list = |r: &RoomSummary| r.parents.iter().any(|p| by_id.contains_key(p));
 
-    let top_spaces: Vec<_> =
-        rooms.iter().filter(|r| r.kind == RoomKind::Space && !r.invited && !in_list(r)).collect();
+    let top_spaces: Vec<_> = rooms
+        .iter()
+        .filter(|r| r.kind == RoomKind::Space && !r.invited && !in_list(r))
+        .collect();
     for space in &top_spaces {
         print_node(space, &children, 0, &mut HashSet::new(), ids);
     }
 
     let loose = |r: &&RoomSummary, kind| !r.invited && r.kind == kind && !in_list(r);
-    print_section("Rooms", rooms.iter().filter(|r| loose(r, RoomKind::Room)), ids);
-    print_section("Direct messages", rooms.iter().filter(|r| loose(r, RoomKind::Direct)), ids);
+    print_section(
+        "Rooms",
+        rooms.iter().filter(|r| loose(r, RoomKind::Room)),
+        ids,
+    );
+    print_section(
+        "Direct messages",
+        rooms.iter().filter(|r| loose(r, RoomKind::Direct)),
+        ids,
+    );
     print_section("Invites", rooms.iter().filter(|r| r.invited), ids);
 }
 
@@ -67,7 +77,11 @@ fn line(room: &RoomSummary, ids: bool) -> String {
     };
     let mut out = format!("{marker} {}", room.name);
     if room.unread_mentions > 0 {
-        let _ = write!(out, "  [{} unread, {} mentions]", room.unread_messages, room.unread_mentions);
+        let _ = write!(
+            out,
+            "  [{} unread, {} mentions]",
+            room.unread_messages, room.unread_mentions
+        );
     } else if room.unread_messages > 0 {
         let _ = write!(out, "  [{} unread]", room.unread_messages);
     }

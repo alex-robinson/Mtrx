@@ -22,11 +22,17 @@ pub enum Error {
     RoomList(String),
     #[error("timeline: {0}")]
     Timeline(String),
+    #[error("verification: {0}")]
+    Verification(String),
 
     #[error(transparent)]
     Matrix(#[from] matrix_sdk::Error),
     #[error(transparent)]
     Http(#[from] matrix_sdk::HttpError),
+    #[error(transparent)]
+    Recovery(#[from] matrix_sdk::encryption::recovery::RecoveryError),
+    #[error(transparent)]
+    Crypto(#[from] matrix_sdk::encryption::CryptoStoreError),
     #[error(transparent)]
     ClientBuild(#[from] matrix_sdk::ClientBuildError),
     #[error("secret storage: {0}")]

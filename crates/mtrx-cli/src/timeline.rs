@@ -15,7 +15,10 @@ pub fn entry_line(entry: &TimelineEntry) -> String {
 
 pub fn event_line(event: &Event) -> String {
     let time = local(event.timestamp).format("%H:%M");
-    let who = event.sender_name.clone().unwrap_or_else(|| event.sender.to_string());
+    let who = event
+        .sender_name
+        .clone()
+        .unwrap_or_else(|| event.sender.to_string());
     let text = match &event.content {
         EventContent::Message(m) => {
             let mut text = match m.kind {
@@ -42,7 +45,9 @@ pub fn event_line(event: &Event) -> String {
                 MembershipChange::Left => format!("{name} left"),
                 MembershipChange::Invited => format!("{who} invited {name}"),
                 MembershipChange::InvitationRejected => format!("{name} rejected the invite"),
-                MembershipChange::InvitationRevoked => format!("{who} revoked the invite for {name}"),
+                MembershipChange::InvitationRevoked => {
+                    format!("{who} revoked the invite for {name}")
+                }
                 MembershipChange::Kicked => format!("{who} removed {name}"),
                 MembershipChange::Banned => format!("{who} banned {name}"),
                 MembershipChange::Unbanned => format!("{who} unbanned {name}"),

@@ -17,12 +17,14 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 use futures_util::StreamExt;
 use mtrx_core::{
-    NewRoom, OwnedRoomId, OwnedUserId, Profile, RoomList, RoomTimeline, SecretStore, Session,
-    TimelineEntry,
+    EventContent, NewRoom, OwnedRoomId, OwnedUserId, Profile, RoomList, RoomTimeline, SecretStore,
+    Session, TimelineEntry, Verification, VerificationState,
 };
 
 /// How long one-shot commands wait for the first sync.
 const SYNC_TIMEOUT: Duration = Duration::from_secs(60);
+/// How long `read` waits for late room keys.
+const DECRYPTION_GRACE: Duration = Duration::from_secs(5);
 
 #[derive(Parser)]
 #[command(name = "mtrx", version, about = "Matrix client")]
@@ -34,7 +36,12 @@ struct Cli {
     #[arg(long, global = true, env = "MTRX_DATA_DIR")]
     data_dir: Option<PathBuf>,
     /// Where to keep access tokens and store passphrases.
-    #[arg(long, global = true, env = "MTRX_SECRET_STORE", default_value = "keyring")]
+    #[arg(
+        long,
+        global = true,
+        env = "MTRX_SECRET_STORE",
+        default_value = "keyring"
+    )]
     secret_store: SecretStoreArg,
     #[command(subcommand)]
     command: Command,
@@ -103,6 +110,36 @@ enum Command {
     Send { room: String, text: Option<String> },
     /// Follow a room's messages, or unread counts of all rooms, until Ctrl-C.
     Watch { room: Option<String> },
+    /// Show our devices, verification and recovery status.
+    Devices,
+    /// Manage recovery (encrypted key backup).
+    #[command(subcommand)]
+    Recovery(RecoveryCommand),
+    /// Verify this device with another of our devices by comparing emojis.
+    Verify {
+        /// Wait for the other device to send the request instead.
+        #[arg(long)]
+        wait: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum RecoveryCommand {
+    /// Set up recovery and print the recovery key.
+    Enable,
+    /// Create a new encryption identity and recovery key, when no other device
+    /// or recovery key is available. Old encrypted messages may become unreadable.
+    Reset {
+        /// Read the account password from the first line of stdin.
+        #[arg(long)]
+        password_stdin: bool,
+    },
+    /// Unlock recovery on this device with the recovery key.
+    Recover {
+        /// Read the key from the first line of stdin instead of prompting.
+        #[arg(long)]
+        key_stdin: bool,
+    },
 }
 
 #[tokio::main]
@@ -123,18 +160,20 @@ async fn main() -> Result<()> {
     let profile = Profile::new(&cli.profile, cli.data_dir.as_deref(), secrets)?;
 
     match cli.command {
-        Command::Login { homeserver, user, password_stdin } => {
-            let password = if password_stdin {
-                let mut line = String::new();
-                std::io::stdin().lock().read_line(&mut line)?;
-                line.trim_end_matches(['\r', '\n']).to_owned()
-            } else {
-                rpassword::prompt_password("Password: ")?
-            };
+        Command::Login {
+            homeserver,
+            user,
+            password_stdin,
+        } => {
+            let password = read_secret(password_stdin, "Password: ")?;
             let session = Session::login(profile, &homeserver, &user, &password)
                 .await
                 .context("login failed")?;
-            println!("Logged in as {} (device {})", session.user_id(), session.device_id());
+            println!(
+                "Logged in as {} (device {})",
+                session.user_id(),
+                session.device_id()
+            );
         }
         Command::Logout => {
             Session::restore(profile).await?.logout().await?;
@@ -152,19 +191,35 @@ async fn main() -> Result<()> {
             rooms::print_tree(&list.current().rooms, ids);
             session.stop_sync().await;
         }
-        Command::CreateRoom { name, unencrypted, invite } => {
+        Command::CreateRoom {
+            name,
+            unencrypted,
+            invite,
+        } => {
             let session = Session::restore(profile).await?;
-            let new = NewRoom { name: Some(name), encrypted: !unencrypted, invite, ..Default::default() };
+            let new = NewRoom {
+                name: Some(name),
+                encrypted: !unencrypted,
+                invite,
+                ..Default::default()
+            };
             println!("{}", session.create_room(new).await?);
         }
         Command::CreateSpace { name } => {
             let session = Session::restore(profile).await?;
-            let new = NewRoom { name: Some(name), space: true, ..Default::default() };
+            let new = NewRoom {
+                name: Some(name),
+                space: true,
+                ..Default::default()
+            };
             println!("{}", session.create_room(new).await?);
         }
         Command::Join { room } => {
             let session = Session::restore(profile).await?;
-            let room = room.as_str().try_into().context("expected a room ID or alias")?;
+            let room = room
+                .as_str()
+                .try_into()
+                .context("expected a room ID or alias")?;
             println!("{}", session.join(room).await?);
         }
         Command::Leave { room } => {
@@ -174,19 +229,24 @@ async fn main() -> Result<()> {
         }
         Command::Invite { room, user } => {
             let (session, _list) = synced(profile).await?;
-            session.invite(&session.find_room(&room).await?, &user).await?;
+            session
+                .invite(&session.find_room(&room).await?, &user)
+                .await?;
             session.stop_sync().await;
         }
         Command::SpaceAdd { space, room } => {
             let (session, _list) = synced(profile).await?;
             let space: OwnedRoomId = session.find_room(&space).await?;
-            session.add_to_space(&space, &session.find_room(&room).await?).await?;
+            session
+                .add_to_space(&space, &session.find_room(&room).await?)
+                .await?;
             session.stop_sync().await;
         }
         Command::Read { room, count } => {
             let (session, _list) = synced(profile).await?;
             let timeline = session.timeline(&session.find_room(&room).await?).await?;
             load_events(&timeline, count).await?;
+            settle_decryption(&timeline).await;
             let entries = timeline.current();
             let skip = entries.len().saturating_sub(count);
             for entry in &entries[skip..] {
@@ -222,6 +282,120 @@ async fn main() -> Result<()> {
             watch_rooms(&list).await;
             session.stop_sync().await;
         }
+        Command::Devices => {
+            let (session, _list) = synced(profile).await?;
+            println!("recovery: {:?}", session.recovery_status());
+            for device in session.devices().await? {
+                println!(
+                    "{} {}  {}{}",
+                    if device.verified {
+                        "[verified]  "
+                    } else {
+                        "[unverified]"
+                    },
+                    device.id,
+                    device.name.as_deref().unwrap_or(""),
+                    if device.current {
+                        "  (this device)"
+                    } else {
+                        ""
+                    },
+                );
+            }
+            session.stop_sync().await;
+        }
+        Command::Recovery(RecoveryCommand::Enable) => {
+            let (session, _list) = synced(profile).await?;
+            let key = session.enable_recovery().await?;
+            println!("Recovery key (store it safely, it is shown only once):\n{key}");
+            session.stop_sync().await;
+        }
+        Command::Recovery(RecoveryCommand::Reset { password_stdin }) => {
+            let password = read_secret(password_stdin, "Account password: ")?;
+            let (session, _list) = synced(profile).await?;
+            let key = session.reset_encryption(&password).await?;
+            println!("New recovery key (store it safely, it is shown only once):\n{key}");
+            session.stop_sync().await;
+        }
+        Command::Recovery(RecoveryCommand::Recover { key_stdin }) => {
+            let key = read_secret(key_stdin, "Recovery key: ")?;
+            let (session, _list) = synced(profile).await?;
+            session.recover(&key).await?;
+            println!(
+                "Recovered; this device verified: {}",
+                session.is_device_verified().await?
+            );
+            session.stop_sync().await;
+        }
+        Command::Verify { wait } => {
+            let (session, _list) = synced(profile).await?;
+            let verification = if wait {
+                println!("Waiting for a verification request (Ctrl-C to stop)...");
+                let mut requests = std::pin::pin!(session.verification_requests());
+                let verification = tokio::select! {
+                    v = requests.next() => v.context("verification requests ended")?,
+                    _ = tokio::signal::ctrl_c() => return Ok(()),
+                };
+                verification.accept().await?;
+                verification
+            } else {
+                println!("Request sent; accept it on your other device.");
+                session.request_self_verification().await?
+            };
+            tokio::time::timeout(SYNC_TIMEOUT, run_verification(&verification))
+                .await
+                .context("timed out verifying")??;
+            session.stop_sync().await;
+        }
+    }
+    Ok(())
+}
+
+/// Prompt without echo, or read the first line of stdin (for scripts).
+fn read_secret(from_stdin: bool, prompt: &str) -> Result<String> {
+    if from_stdin {
+        let mut line = String::new();
+        std::io::stdin().lock().read_line(&mut line)?;
+        Ok(line.trim_end_matches(['\r', '\n']).to_owned())
+    } else {
+        Ok(rpassword::prompt_password(prompt)?)
+    }
+}
+
+/// Show emojis, ask the user to compare, until done or cancelled.
+async fn run_verification(verification: &Verification) -> Result<()> {
+    let mut states = verification.states();
+    while let Some(state) = states.next().await {
+        match state {
+            VerificationState::Waiting | VerificationState::Confirmed => {}
+            VerificationState::SharingKeys => println!("Emojis match; exchanging keys..."),
+            VerificationState::Emojis(emojis) => {
+                for emoji in &emojis {
+                    print!("{} {}   ", emoji.symbol, emoji.description);
+                }
+                println!();
+                let answer = tokio::task::spawn_blocking(|| {
+                    print!("Do the emojis match on both devices? [y/N] ");
+                    std::io::Write::flush(&mut std::io::stdout())?;
+                    let mut line = String::new();
+                    std::io::stdin().lock().read_line(&mut line)?;
+                    Ok::<_, std::io::Error>(line.trim().eq_ignore_ascii_case("y"))
+                })
+                .await??;
+                if answer {
+                    verification.confirm().await?;
+                } else {
+                    verification.mismatch().await?;
+                }
+            }
+            VerificationState::Done => {
+                println!("Verified.");
+                return Ok(());
+            }
+            VerificationState::Cancelled(reason) => {
+                anyhow::bail!("verification cancelled: {reason}")
+            }
+        }
     }
     Ok(())
 }
@@ -229,7 +403,10 @@ async fn main() -> Result<()> {
 /// Paginate until at least `count` events are loaded or the room start is reached.
 async fn load_events(timeline: &RoomTimeline, count: usize) -> Result<()> {
     let events = |t: &RoomTimeline| {
-        t.current().iter().filter(|e| matches!(e, TimelineEntry::Event(_))).count()
+        t.current()
+            .iter()
+            .filter(|e| matches!(e, TimelineEntry::Event(_)))
+            .count()
     };
     while events(timeline) < count {
         if timeline.paginate_back(count.max(20) as u16).await? {
@@ -237,6 +414,25 @@ async fn load_events(timeline: &RoomTimeline, count: usize) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Keys for undecryptable events may still arrive (key backup, other
+/// devices); give them a moment before printing.
+async fn settle_decryption(timeline: &RoomTimeline) {
+    let undecryptable = |entries: &Vec<TimelineEntry>| {
+        entries.iter().any(|e| {
+            matches!(e, TimelineEntry::Event(ev) if ev.content == EventContent::UnableToDecrypt)
+        })
+    };
+    let mut updates = timeline.updates();
+    let wait = async {
+        while let Some(entries) = updates.next().await {
+            if !undecryptable(&entries) {
+                return;
+            }
+        }
+    };
+    let _ = tokio::time::timeout(DECRYPTION_GRACE, wait).await;
 }
 
 /// Print the timeline, then new and changed events, until Ctrl-C.

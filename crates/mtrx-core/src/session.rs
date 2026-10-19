@@ -4,18 +4,15 @@ use std::sync::Arc;
 
 use matrix_sdk::{
     Client,
-    encryption::{BackupDownloadStrategy, EncryptionSettings},
+    encryption::{BackupDownloadStrategy, EncryptionSettings, verification::VerificationRequest},
     ruma::{OwnedDeviceId, OwnedUserId},
     store::RoomLoadSettings,
 };
 use matrix_sdk_ui::sync_service::SyncService;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, broadcast};
 use tracing::warn;
 
-use crate::{
-    Error, Profile, Result,
-    profile::StoredSession,
-};
+use crate::{Error, Profile, Result, profile::StoredSession};
 
 const DEVICE_DISPLAY_NAME: &str = "Mtrx";
 
@@ -25,6 +22,7 @@ pub struct Session {
     pub(crate) sync: Arc<SyncService>,
     /// Serializes enqueueing messages, see [`crate::RoomTimeline::send_markdown`].
     pub(crate) send_lock: Arc<Mutex<()>>,
+    pub(crate) verification_tx: broadcast::Sender<VerificationRequest>,
     profile: Profile,
 }
 
@@ -54,8 +52,14 @@ impl Session {
                 .await?;
             // Cross-signing and backup setup run in the background; finish them
             // before the caller can exit or start syncing.
-            client.encryption().wait_for_e2ee_initialization_tasks().await;
-            let session = client.matrix_auth().session().expect("session exists after login");
+            client
+                .encryption()
+                .wait_for_e2ee_initialization_tasks()
+                .await;
+            let session = client
+                .matrix_auth()
+                .session()
+                .expect("session exists after login");
             profile.save_session(&StoredSession {
                 homeserver: client.homeserver().to_string(),
                 session,
@@ -80,8 +84,14 @@ impl Session {
             .load_session()?
             .ok_or_else(|| Error::NotLoggedIn(profile.name().to_owned()))?;
         let client = build_client(&profile, &stored.homeserver, &stored.store_passphrase).await?;
-        client.matrix_auth().restore_session(stored.session, RoomLoadSettings::default()).await?;
-        client.encryption().wait_for_e2ee_initialization_tasks().await;
+        client
+            .matrix_auth()
+            .restore_session(stored.session, RoomLoadSettings::default())
+            .await?;
+        client
+            .encryption()
+            .wait_for_e2ee_initialization_tasks()
+            .await;
         Self::new(client, profile).await
     }
 
@@ -90,7 +100,14 @@ impl Session {
             .build()
             .await
             .map_err(|e| Error::Sync(e.to_string()))?;
-        Ok(Self { client, sync: Arc::new(sync), send_lock: Default::default(), profile })
+        let verification_tx = crate::encryption::register_handlers(&client);
+        Ok(Self {
+            client,
+            sync: Arc::new(sync),
+            send_lock: Default::default(),
+            verification_tx,
+            profile,
+        })
     }
 
     /// Start syncing in the background. Live views ([`crate::RoomList`], ...)
@@ -113,7 +130,12 @@ impl Session {
             warn!("server-side logout failed, removing local data anyway: {e}");
         }
         self.sync.stop().await;
-        let Self { client, sync, profile, .. } = self;
+        let Self {
+            client,
+            sync,
+            profile,
+            ..
+        } = self;
         drop(sync);
         drop(client);
         profile.wipe()
@@ -124,11 +146,17 @@ impl Session {
     }
 
     pub fn user_id(&self) -> OwnedUserId {
-        self.client.user_id().expect("session is logged in").to_owned()
+        self.client
+            .user_id()
+            .expect("session is logged in")
+            .to_owned()
     }
 
     pub fn device_id(&self) -> OwnedDeviceId {
-        self.client.device_id().expect("session is logged in").to_owned()
+        self.client
+            .device_id()
+            .expect("session is logged in")
+            .to_owned()
     }
 
     pub fn homeserver(&self) -> String {

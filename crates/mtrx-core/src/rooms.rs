@@ -9,7 +9,9 @@ use matrix_sdk::{
     deserialized_responses::SyncOrStrippedState,
     ruma::{
         OwnedRoomId, OwnedUserId, RoomOrAliasId,
-        api::client::room::create_room::v3::{CreationContent, Request as CreateRoomRequest, RoomPreset},
+        api::client::room::create_room::v3::{
+            CreationContent, Request as CreateRoomRequest, RoomPreset,
+        },
         events::{
             InitialStateEvent, SyncStateEvent, room::encryption::RoomEncryptionEventContent,
             space::child::SpaceChildEventContent,
@@ -110,7 +112,10 @@ async fn run_room_list(
     service: Arc<RoomListService>,
     tx: watch::Sender<RoomListState>,
 ) -> Result<()> {
-    let list = service.all_rooms().await.map_err(|e| Error::RoomList(e.to_string()))?;
+    let list = service
+        .all_rooms()
+        .await
+        .map_err(|e| Error::RoomList(e.to_string()))?;
     // One page that holds every room; the frontends do their own scrolling.
     let (entries, controller) = list.entries_with_dynamic_adapters(u32::MAX as usize);
     controller.set_filter(Box::new(new_filter_non_left()));
@@ -144,9 +149,9 @@ async fn run_room_list(
         let loaded = synced
             && match loading.get() {
                 RoomListLoadingState::NotLoaded => false,
-                RoomListLoadingState::Loaded { maximum_number_of_rooms } => {
-                    items.len() >= maximum_number_of_rooms.unwrap_or(0) as usize
-                }
+                RoomListLoadingState::Loaded {
+                    maximum_number_of_rooms,
+                } => items.len() >= maximum_number_of_rooms.unwrap_or(0) as usize,
             };
         let rooms = summarize(&items).await;
         tx.send_replace(RoomListState { rooms, loaded });
@@ -155,9 +160,15 @@ async fn run_room_list(
 
 async fn summarize(items: &Vector<RoomListItem>) -> Vec<RoomSummary> {
     let mut parents: HashMap<OwnedRoomId, Vec<OwnedRoomId>> = HashMap::new();
-    for space in items.iter().filter(|r| r.is_space() && r.state() == RoomState::Joined) {
+    for space in items
+        .iter()
+        .filter(|r| r.is_space() && r.state() == RoomState::Joined)
+    {
         for child in space_children(space).await {
-            parents.entry(child).or_default().push(space.room_id().to_owned());
+            parents
+                .entry(child)
+                .or_default()
+                .push(space.room_id().to_owned());
         }
     }
 
@@ -192,7 +203,10 @@ async fn summarize(items: &Vector<RoomListItem>) -> Vec<RoomSummary> {
 /// Children listed by `m.space.child` events. Events without `via` mean the
 /// child was removed.
 async fn space_children(space: &Room) -> Vec<OwnedRoomId> {
-    let events = match space.get_state_events_static::<SpaceChildEventContent>().await {
+    let events = match space
+        .get_state_events_static::<SpaceChildEventContent>()
+        .await
+    {
         Ok(events) => events,
         Err(e) => {
             warn!(space = %space.room_id(), "could not read m.space.child events: {e}");
@@ -259,7 +273,12 @@ impl Session {
 
     /// Join by room ID or alias, or accept an invite.
     pub async fn join(&self, room: &RoomOrAliasId) -> Result<OwnedRoomId> {
-        Ok(self.client.join_room_by_id_or_alias(room, &[]).await?.room_id().to_owned())
+        Ok(self
+            .client
+            .join_room_by_id_or_alias(room, &[])
+            .await?
+            .room_id()
+            .to_owned())
     }
 
     pub async fn leave(&self, room: &OwnedRoomId) -> Result<()> {
@@ -288,7 +307,10 @@ impl Session {
             match OwnedRoomId::try_from(id.as_str()) {
                 Ok(room_id) => return Ok(room_id),
                 Err(_) => {
-                    let alias = id.as_str().try_into().expect("alias is valid if not a room ID");
+                    let alias = id
+                        .as_str()
+                        .try_into()
+                        .expect("alias is valid if not a room ID");
                     return Ok(self.client.resolve_room_alias(alias).await?.room_id);
                 }
             }
@@ -298,7 +320,10 @@ impl Session {
             .rooms()
             .into_iter()
             .filter(|r| r.state() != RoomState::Left)
-            .filter(|r| r.cached_display_name().is_some_and(|n| n.to_string() == query))
+            .filter(|r| {
+                r.cached_display_name()
+                    .is_some_and(|n| n.to_string() == query)
+            })
             .map(|r| r.room_id().to_owned())
             .collect();
         match matches.as_slice() {
@@ -309,6 +334,8 @@ impl Session {
     }
 
     pub(crate) fn room(&self, id: &OwnedRoomId) -> Result<Room> {
-        self.client.get_room(id).ok_or_else(|| Error::RoomNotFound(id.to_string()))
+        self.client
+            .get_room(id)
+            .ok_or_else(|| Error::RoomNotFound(id.to_string()))
     }
 }

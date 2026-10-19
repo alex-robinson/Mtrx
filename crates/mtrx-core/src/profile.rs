@@ -45,7 +45,9 @@ impl Profile {
     /// Profile `name` under `data_root` (default: [`Profile::default_data_root`]).
     pub fn new(name: &str, data_root: Option<&Path>, secrets: SecretStore) -> Result<Self> {
         let valid = !name.is_empty()
-            && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+            && name
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
         if !valid {
             return Err(Error::InvalidProfileName(name.to_owned()));
         }
@@ -53,7 +55,11 @@ impl Profile {
             Some(root) => root.to_owned(),
             None => Self::default_data_root()?,
         };
-        Ok(Self { name: name.to_owned(), dir: root.join("profiles").join(name), secrets })
+        Ok(Self {
+            name: name.to_owned(),
+            dir: root.join("profiles").join(name),
+            secrets,
+        })
     }
 
     /// Platform data directory, e.g. `~/Library/Application Support/org.mtrx.Mtrx`.
@@ -118,7 +124,10 @@ impl Profile {
     /// Keyed by the profile directory, so profiles under different data roots
     /// never share a secret.
     fn keyring_entry(&self) -> Result<keyring::Entry> {
-        Ok(keyring::Entry::new(KEYRING_SERVICE, &self.dir.to_string_lossy())?)
+        Ok(keyring::Entry::new(
+            KEYRING_SERVICE,
+            &self.dir.to_string_lossy(),
+        )?)
     }
 }
 
