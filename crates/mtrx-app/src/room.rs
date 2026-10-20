@@ -16,9 +16,8 @@ use iced::{
     },
 };
 use mtrx_core::{
-    CallService, Event, EventContent, MediaKind, MediaRef, MembershipChange, MessageKind, MxcUri,
-    OwnedRoomId, OwnedUserId, RoomKind, RoomSummary, RoomTimeline, ScheduledMessage, SendState,
-    TimelineEntry,
+    CallService, Event, EventContent, Media, MembershipChange, MessageKind, MxcUri, OwnedRoomId,
+    OwnedUserId, RoomKind, RoomSummary, RoomTimeline, ScheduledMessage, SendState, TimelineEntry,
 };
 
 use crate::{
@@ -246,16 +245,13 @@ impl Room {
     }
 
     /// Images of the rendered messages, for loading their previews.
-    pub fn images(&self) -> impl Iterator<Item = &MediaRef> {
+    /// Files with previews: images and PDFs.
+    pub fn previewed(&self) -> impl Iterator<Item = &Media> {
         self.visible().iter().filter_map(|e| match e {
             TimelineEntry::Event(Event {
                 content: EventContent::Message(m),
                 ..
-            }) => m
-                .media
-                .as_ref()
-                .filter(|media| media.kind == MediaKind::Image)
-                .map(|media| &media.source),
+            }) => m.media.as_ref().filter(|media| media::previewed(media)),
             _ => None,
         })
     }

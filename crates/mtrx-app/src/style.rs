@@ -419,6 +419,21 @@ pub fn media_placeholder(theme: &Theme) -> container::Style {
     }
 }
 
+/// A PDF page in the timeline: a thin edge, so white pages stand out.
+pub fn pdf_page(theme: &Theme) -> container::Style {
+    container::Style {
+        border: Border::default()
+            .width(1)
+            .color(theme.extended_palette().background.strong.color),
+        shadow: iced::Shadow {
+            color: Color::BLACK.scale_alpha(0.1),
+            offset: iced::Vector::new(0.0, 1.0),
+            blur_radius: 3.0,
+        },
+        ..Default::default()
+    }
+}
+
 /// Darkens the window behind the image viewer.
 pub fn viewer_backdrop(_theme: &Theme) -> container::Style {
     container::Style {

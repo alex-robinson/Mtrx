@@ -137,6 +137,11 @@ pub enum Message {
     CloseImage,
     /// The whole image for the viewer.
     ImageLoaded(MediaRef, Result<media::Picture, String>),
+    /// A PDF in the viewer was loaded, with its first page drawn.
+    PdfLoaded(MediaRef, Result<(media::Document, media::Picture), String>),
+    /// Show the PDF page this many pages on in the viewer.
+    TurnPage(isize),
+    PageDrawn(MediaRef, usize, Result<media::Picture, String>),
     /// Ask where to save a message's file, then save it.
     SaveMedia(Media),
     MediaSaved(Result<(), String>),
@@ -1356,6 +1361,26 @@ impl App {
                 }
                 Task::none()
             }
+            Message::PdfLoaded(media, result) => {
+                if let Screen::Main(main) = &mut self.screen
+                    && let Some(viewer) = &mut main.viewer
+                {
+                    viewer.pdf_loaded(&media, result);
+                }
+                Task::none()
+            }
+            Message::TurnPage(by) => match &mut self.screen {
+                Screen::Main(main) => main.viewer.as_mut().map_or_else(Task::none, |v| v.turn(by)),
+                _ => Task::none(),
+            },
+            Message::PageDrawn(media, page, result) => {
+                if let Screen::Main(main) = &mut self.screen
+                    && let Some(viewer) = &mut main.viewer
+                {
+                    viewer.page_drawn(&media, page, result);
+                }
+                Task::none()
+            }
             Message::SaveMedia(file) => {
                 let Screen::Main(main) = &self.screen else {
                     return Task::none();
@@ -2096,7 +2121,7 @@ impl App {
             return Task::none();
         };
         let tasks: Vec<_> = room
-            .images()
+            .previewed()
             .map(|media| {
                 main.previews
                     .request(&main.session, media, Message::PreviewLoaded)
@@ -2543,15 +2568,19 @@ async fn run_request(
 /// search; window focus.
 fn shortcuts(
     event: iced::Event,
-    _status: iced::event::Status,
+    status: iced::event::Status,
     _window: window::Id,
 ) -> Option<Message> {
     use iced::keyboard::{self, Key, key::Named};
+    // Arrows not used by a text field turn a PDF's pages in the viewer.
+    let free = status == iced::event::Status::Ignored;
     match event {
         iced::Event::Keyboard(keyboard::Event::KeyPressed { key, modifiers, .. }) => match key {
             Key::Character(c) if c == "k" && modifiers.command() => Some(Message::FocusSearch),
             Key::Character(c) if c == "r" && modifiers.command() => Some(Message::Reload),
             Key::Named(Named::Escape) => Some(Message::Escape),
+            Key::Named(Named::ArrowLeft) if free => Some(Message::TurnPage(-1)),
+            Key::Named(Named::ArrowRight) if free => Some(Message::TurnPage(1)),
             _ => None,
         },
         iced::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {

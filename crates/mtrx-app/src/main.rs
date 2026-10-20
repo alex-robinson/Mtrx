@@ -22,6 +22,7 @@ mod math;
 mod media;
 mod members;
 mod message;
+mod pdf;
 mod popover;
 mod room;
 mod send_later;

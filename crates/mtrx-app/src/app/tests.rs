@@ -63,6 +63,9 @@ fn snapshot(app: &App, name: &str) {
         }
     }
     let mut ui = Simulator::with_size(fonts::settings(), Size::new(1200.0, 800.0), app.view());
+    // Images too large for the renderer's first texture atlas only show
+    // from the second frame on (as in the app, which draws many).
+    let _ = ui.snapshot(&app.theme()).unwrap();
     let snapshot = ui.snapshot(&app.theme()).unwrap();
     assert!(snapshot.matches_image(&path).unwrap());
 }
@@ -953,7 +956,11 @@ async fn media_messages() {
         .await
         .unwrap();
     timeline
-        .send_file_bytes("ice-flux-draft.pdf", "application/pdf", vec![0; 2_400_000])
+        .send_file_bytes(
+            "ice-flux-draft.pdf",
+            "application/pdf",
+            crate::pdf::sample(),
+        )
         .await
         .unwrap();
     while !timeline.paginate_back(50).await.unwrap() {}
@@ -978,18 +985,21 @@ async fn media_messages() {
     })
     .await
     .unwrap();
-    let image = entries
-        .iter()
-        .find_map(|e| match e {
-            TimelineEntry::Event(ev) => match &ev.content {
-                EventContent::Message(m) => {
-                    m.media.clone().filter(|m| m.filename.ends_with(".png"))
-                }
+    let file = |extension: &str| {
+        entries
+            .iter()
+            .find_map(|e| match e {
+                TimelineEntry::Event(ev) => match &ev.content {
+                    EventContent::Message(m) => {
+                        m.media.clone().filter(|m| m.filename.ends_with(extension))
+                    }
+                    _ => None,
+                },
                 _ => None,
-            },
-            _ => None,
-        })
-        .unwrap();
+            })
+            .unwrap()
+    };
+    let (image, pdf) = (file(".png"), file(".pdf"));
 
     let session = Arc::new(alice);
     let main_with = async |viewer: Option<Viewer>| {
@@ -999,7 +1009,7 @@ async fn media_messages() {
         let mut open = Room::new(room.clone(), timeline.clone());
         open.entries = entries.clone();
         with_start(&mut open.entries);
-        let images: Vec<MediaRef> = open.images().cloned().collect();
+        let images: Vec<Media> = open.previewed().cloned().collect();
         for media in &images {
             main.previews.load_now(&session, media).await;
         }
@@ -1011,10 +1021,16 @@ async fn media_messages() {
         snapshot(&app(Screen::Main(main_with(None).await), mode), name);
     }
     let mut viewer = Viewer::new(image);
-    viewer.load_now(&session).await;
+    viewer.load_now(&session, 0).await;
     snapshot(
         &app(Screen::Main(main_with(Some(viewer)).await), Mode::Light),
         "image-viewer",
+    );
+    let mut viewer = Viewer::new(pdf);
+    viewer.load_now(&session, 1).await;
+    snapshot(
+        &app(Screen::Main(main_with(Some(viewer)).await), Mode::Light),
+        "pdf-viewer",
     );
 }
 

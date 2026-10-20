@@ -1,6 +1,7 @@
 //! Files in messages: images inline, with previews downloaded in the
-//! background and cached; cards for other files; the image viewer; saving
-//! and sending files.
+//! background and cached; PDFs with their first page above their card;
+//! cards for other files; the viewer for images and PDFs; saving and
+//! sending files.
 
 use std::{
     collections::{HashMap, HashSet},
@@ -22,11 +23,16 @@ use crate::{
     ellipsis::ellipsis,
     fonts,
     hint::{Position, hint},
-    icons, style,
+    icons, pdf, style,
 };
 
 /// Largest size of an image in the timeline, in logical pixels.
 const MAX_INLINE: Size = Size::new(360.0, 300.0);
+/// Largest size of a PDF's first page in the timeline.
+const MAX_PDF_INLINE: Size = Size::new(220.0, 300.0);
+/// A PDF page in the viewer is drawn at most this large, in pixels (2048
+/// is the largest texture every GPU takes).
+const MAX_PDF_PAGE: (u32, u32) = (2048, 2048);
 /// An image's size in the timeline while its dimensions are unknown.
 const PLACEHOLDER: Size = Size::new(240.0, 160.0);
 /// Longest side of an image in the viewer, in pixels (GPUs limit texture
@@ -84,13 +90,16 @@ impl Previews {
         matches!(self.loaded.get(media), Some(Loaded::Failed(_)))
     }
 
-    /// Start downloading unless it is cached, running, or failed recently.
+    /// Start downloading unless it is cached, running, or failed recently:
+    /// an image's preview, or a PDF's first page.
     pub fn request<M: Send + 'static>(
         &mut self,
         session: &Arc<Session>,
-        media: &MediaRef,
+        media: &Media,
         done: fn(MediaRef, Option<Picture>) -> M,
     ) -> Task<M> {
+        let pdf = pdf::is_pdf(media);
+        let media = &media.source;
         let wanted = match self.loaded.get(media) {
             Some(Loaded::Ready(_)) => false,
             Some(Loaded::Failed(at)) => at.elapsed() >= RETRY_AFTER,
@@ -105,6 +114,12 @@ impl Previews {
                 let picture = async {
                     // Never closed, so this only waits.
                     let _permit = downloads.acquire().await.ok()?;
+                    if pdf {
+                        let bytes = Arc::new(session.media_content(&media).await.ok()?);
+                        return tokio::task::spawn_blocking(move || pdf_preview(bytes))
+                            .await
+                            .ok()?;
+                    }
                     let bytes = session.media_preview(&media).await.ok()?;
                     tokio::task::spawn_blocking(move || decode_preview(&bytes))
                         .await
@@ -131,11 +146,35 @@ impl Previews {
 #[cfg(test)]
 impl Previews {
     /// Download and decode right away (tests).
-    pub async fn load_now(&mut self, session: &Session, media: &MediaRef) {
-        let bytes = session.media_preview(media).await.unwrap();
-        let picture = decode_preview(&bytes);
+    pub async fn load_now(&mut self, session: &Session, media: &Media) {
+        let picture = if pdf::is_pdf(media) {
+            let bytes = session.media_content(&media.source).await.unwrap();
+            pdf_preview(Arc::new(bytes))
+        } else {
+            decode_preview(&session.media_preview(&media.source).await.unwrap())
+        };
         assert!(picture.is_some(), "decoding failed");
-        self.insert(media.clone(), picture);
+        self.insert(media.source.clone(), picture);
+    }
+}
+
+/// A PDF's first page, drawn at twice the size shown (HiDPI).
+fn pdf_preview(bytes: Arc<Vec<u8>>) -> Option<Picture> {
+    let (_, page) = pdf::render(
+        bytes,
+        0,
+        (2.0 * MAX_PDF_INLINE.width) as u32,
+        (2.0 * MAX_PDF_INLINE.height) as u32,
+    )?;
+    Some(page_picture(page))
+}
+
+/// A rendered PDF page, sized at half its pixels (drawn for HiDPI).
+fn page_picture(page: pdf::Page) -> Picture {
+    Picture {
+        handle: image::Handle::from_rgba(page.width, page.height, page.rgba),
+        width: page.width / 2,
+        height: page.height / 2,
     }
 }
 
@@ -184,13 +223,23 @@ fn dimensions(media: &Media, picture: Option<&Picture>) -> Option<(u32, u32)> {
         .or(picture.map(|p| (p.width, p.height)))
 }
 
-/// A message's file: an image (a placeholder until loaded), else a card.
-/// `body` shows below it if it is a caption rather than the filename.
+/// Whether a message's file gets a preview: images, and PDFs that are not
+/// too large to download for it.
+pub fn previewed(media: &Media) -> bool {
+    media.kind == MediaKind::Image
+        || (pdf::is_pdf(media) && media.size.is_none_or(|size| size <= pdf::MAX_PREVIEW_BYTES))
+}
+
+/// A message's file: an image (a placeholder until loaded); a PDF's first
+/// page above its card; else a card. `body` shows below it if it is a
+/// caption rather than the filename.
 pub fn view<'a>(media: &'a Media, body: &'a str, previews: &Previews) -> Element<'a, Message> {
+    let preview = previewed(media) && !previews.failed(&media.source);
     let content = match media.kind {
-        MediaKind::Image if !previews.failed(&media.source) => {
-            inline_image(media, previews.ready(&media.source))
-        }
+        MediaKind::Image if preview => inline_image(media, previews.ready(&media.source)),
+        _ if preview => column![pdf_page(media, previews.ready(&media.source)), card(media)]
+            .spacing(4)
+            .into(),
         _ => card(media),
     };
     if body == media.filename {
@@ -223,6 +272,36 @@ fn placeholder<'a>(size: Size) -> Element<'a, Message> {
         .center_y(size.height)
         .style(style::media_placeholder)
         .into()
+}
+
+/// A PDF's first page (a placeholder until drawn); clicking it opens the
+/// viewer.
+fn pdf_page<'a>(media: &'a Media, picture: Option<&Picture>) -> Element<'a, Message> {
+    let content: Element<'a, Message> = match picture {
+        Some(picture) => {
+            let size = fit(picture.width, picture.height, MAX_PDF_INLINE);
+            container(
+                image(picture.handle.clone())
+                    .width(size.width)
+                    .height(size.height),
+            )
+            .padding(1)
+            .style(style::pdf_page)
+            .into()
+        }
+        None => container(text("Loading preview…").size(12).style(text::secondary))
+            .center_x(MAX_PDF_INLINE.width)
+            .center_y(MAX_PDF_INLINE.height)
+            .style(style::media_placeholder)
+            .into(),
+    };
+    hint(
+        mouse_area(content)
+            .interaction(mouse::Interaction::Pointer)
+            .on_press(Message::OpenImage(media.clone())),
+        "Open the PDF",
+        Position::Right,
+    )
 }
 
 /// A file: icon, name, size and type, and a download button.
@@ -308,11 +387,29 @@ fn on_primary(theme: &Theme) -> iced::Color {
     theme.extended_palette().primary.base.text
 }
 
-/// An image shown large over the window.
+/// A PDF in the viewer, kept for turning its pages.
+#[derive(Clone)]
+pub struct Document {
+    bytes: Arc<Vec<u8>>,
+    pages: usize,
+    /// The page shown, from 0.
+    page: usize,
+}
+
+impl std::fmt::Debug for Document {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Document(page {} of {})", self.page + 1, self.pages)
+    }
+}
+
+/// An image, or a PDF's pages, shown large over the window.
 pub struct Viewer {
     pub media: Media,
-    /// The whole image, once loaded; until then the preview shows.
+    /// The whole image or the page shown, once drawn; until then the
+    /// preview shows.
     full: Option<Picture>,
+    /// For a PDF, once loaded.
+    document: Option<Document>,
     pub error: Option<String>,
 }
 
@@ -321,12 +418,16 @@ impl Viewer {
         Self {
             media,
             full: None,
+            document: None,
             error: None,
         }
     }
 
-    /// Download and decode the whole image.
+    /// Download the file, and decode the image or draw the PDF's first page.
     pub fn load(&self, session: Arc<Session>) -> Task<Message> {
+        if pdf::is_pdf(&self.media) {
+            return self.load_pdf(session);
+        }
         let media = self.media.source.clone();
         Task::perform(
             {
@@ -347,6 +448,31 @@ impl Viewer {
         )
     }
 
+    fn load_pdf(&self, session: Arc<Session>) -> Task<Message> {
+        let media = self.media.source.clone();
+        Task::perform(
+            {
+                let media = media.clone();
+                async move {
+                    let bytes = Arc::new(
+                        session
+                            .media_content(&media)
+                            .await
+                            .map_err(|e| e.to_string())?,
+                    );
+                    let (pages, page) = draw_page(bytes.clone(), 0).await?;
+                    let document = Document {
+                        bytes,
+                        pages,
+                        page: 0,
+                    };
+                    Ok((document, page))
+                }
+            },
+            move |result| Message::PdfLoaded(media.clone(), result),
+        )
+    }
+
     /// The whole image of `media` was loaded, or not.
     pub fn loaded(&mut self, media: &MediaRef, result: Result<Picture, String>) {
         if *media != self.media.source {
@@ -355,6 +481,54 @@ impl Viewer {
         match result {
             Ok(picture) => self.full = Some(picture),
             Err(e) => self.error = Some(format!("Could not load the image: {e}")),
+        }
+    }
+
+    /// The PDF `media` was loaded with its first page drawn, or not.
+    pub fn pdf_loaded(&mut self, media: &MediaRef, result: Result<(Document, Picture), String>) {
+        if *media != self.media.source {
+            return;
+        }
+        match result {
+            Ok((document, page)) => {
+                self.document = Some(document);
+                self.full = Some(page);
+            }
+            Err(e) => self.error = Some(format!("Could not open the PDF: {e}")),
+        }
+    }
+
+    /// Show the page `by` pages on; the current one stays until drawn.
+    pub fn turn(&mut self, by: isize) -> Task<Message> {
+        let Some(document) = &mut self.document else {
+            return Task::none();
+        };
+        let page = document
+            .page
+            .saturating_add_signed(by)
+            .min(document.pages.saturating_sub(1));
+        if page == document.page {
+            return Task::none();
+        }
+        document.page = page;
+        let (bytes, media) = (document.bytes.clone(), self.media.source.clone());
+        Task::perform(
+            async move { draw_page(bytes, page).await.map(|(_, picture)| picture) },
+            move |result| Message::PageDrawn(media.clone(), page, result),
+        )
+    }
+
+    /// Page `page` of `media` was drawn, or not.
+    pub fn page_drawn(&mut self, media: &MediaRef, page: usize, result: Result<Picture, String>) {
+        if *media != self.media.source || self.document.as_ref().map(|d| d.page) != Some(page) {
+            return;
+        }
+        match result {
+            Ok(picture) => {
+                self.full = Some(picture);
+                self.error = None;
+            }
+            Err(e) => self.error = Some(e),
         }
     }
 
@@ -405,17 +579,39 @@ impl Viewer {
         if let Some(error) = &self.error {
             name = name.push(ellipsis(error).size(12).style(text::danger));
         }
+        let mut buttons = row![name].spacing(8).align_y(Alignment::Center);
+        if let Some(document) = &self.document {
+            let turn = |label, tip, by: isize, enabled: bool| {
+                hint(
+                    button(text(label).size(16))
+                        .padding([2, 10])
+                        .style(style::secondary_button)
+                        .on_press_maybe(enabled.then_some(Message::TurnPage(by))),
+                    tip,
+                    Position::Top,
+                )
+            };
+            buttons = buttons
+                .push(turn("‹", "Previous page (←)", -1, document.page > 0))
+                .push(
+                    text(format!("{} / {}", document.page + 1, document.pages))
+                        .size(13)
+                        .style(text::secondary),
+                )
+                .push(turn(
+                    "›",
+                    "Next page (→)",
+                    1,
+                    document.page + 1 < document.pages,
+                ));
+        }
         container(
-            row![
-                name,
-                save_button(&self.media),
+            buttons.push(save_button(&self.media)).push(
                 button(text("Close").size(13))
                     .padding([5, 12])
                     .style(style::primary_button)
                     .on_press(Message::CloseImage),
-            ]
-            .spacing(8)
-            .align_y(Alignment::Center),
+            ),
         )
         .padding([0, 12])
         .center_y(VIEWER_BAR)
@@ -427,12 +623,30 @@ impl Viewer {
 
 #[cfg(test)]
 impl Viewer {
-    /// Load the whole image right away (tests).
-    pub async fn load_now(&mut self, session: &Session) {
+    /// Load the whole image, or a PDF's page `page`, right away (tests).
+    pub async fn load_now(&mut self, session: &Session, page: usize) {
         let bytes = session.media_content(&self.media.source).await.unwrap();
-        self.full = decode(&bytes, MAX_FULL, MAX_FULL);
-        assert!(self.full.is_some(), "decoding failed");
+        if !pdf::is_pdf(&self.media) {
+            self.full = decode(&bytes, MAX_FULL, MAX_FULL);
+            assert!(self.full.is_some(), "decoding failed");
+            return;
+        }
+        let bytes = Arc::new(bytes);
+        let (pages, picture) = draw_page(bytes.clone(), page).await.unwrap();
+        self.document = Some(Document { bytes, pages, page });
+        self.full = Some(picture);
     }
+}
+
+/// The number of pages, and page `index` of a PDF drawn for the viewer.
+async fn draw_page(bytes: Arc<Vec<u8>>, index: usize) -> Result<(usize, Picture), String> {
+    let (width, height) = MAX_PDF_PAGE;
+    tokio::task::spawn_blocking(move || pdf::render(bytes, index, width, height))
+        .await
+        .ok()
+        .flatten()
+        .map(|(pages, page)| (pages, page_picture(page)))
+        .ok_or_else(|| "not a PDF we can show".to_owned())
 }
 
 /// Ask where to save a message's file, then download it there. Cancelling
