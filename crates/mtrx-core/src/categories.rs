@@ -422,6 +422,8 @@ mod tests {
             parents: Vec::new(),
             tag: RoomTag::None,
             direct_user: None,
+            alias: None,
+            joined_members: 0,
         }
     }
 

@@ -10,6 +10,7 @@ pub fn entry_line(entry: &TimelineEntry) -> String {
         TimelineEntry::Event(event) => event_line(event),
         TimelineEntry::DayDivider(day) => format!("--- {} ---", local(*day).format("%A %e %B %Y")),
         TimelineEntry::ReadMarker => "--- unread ---".to_owned(),
+        TimelineEntry::Start => "--- start of the room ---".to_owned(),
     }
 }
 

@@ -1053,3 +1053,77 @@ async fn room_categories_and_tags() -> Result<()> {
     .await?;
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs local Synapse (testserver/run.sh)"]
+async fn timeline_shows_its_start() -> Result<()> {
+    let (_, alice) = new_user("start").await?;
+    let room = alice
+        .session
+        .create_room(NewRoom {
+            name: Some("short".into()),
+            ..Default::default()
+        })
+        .await?;
+    let timeline = alice.session.timeline(&room).await?;
+    timeout("paginate", async {
+        while !timeline.paginate_back(20).await? {}
+        anyhow::Ok(())
+    })
+    .await??;
+    wait_for("start entry", timeline.updates(), |entries| {
+        matches!(entries.first(), Some(TimelineEntry::Start))
+    })
+    .await?;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs local Synapse (testserver/run.sh)"]
+async fn contacts_and_user_info() -> Result<()> {
+    let (_, alice) = new_user("people").await?;
+    let (_, bob) = new_user("people").await?;
+    let (_, carol) = new_user("people").await?;
+    let s = &alice.session;
+    let space = s
+        .create_room(NewRoom {
+            name: Some("lab".into()),
+            space: true,
+            invite: vec![bob.session.user_id()],
+            ..Default::default()
+        })
+        .await?;
+    let room = s
+        .create_room(NewRoom {
+            name: Some("ice".into()),
+            parent: Some(space.clone()),
+            invite: vec![bob.session.user_id(), carol.session.user_id()],
+            ..Default::default()
+        })
+        .await?;
+    join_synced(&bob, &space, "lab").await?;
+    join_synced(&bob, &room, "ice").await?;
+    join_synced(&carol, &room, "ice").await?;
+
+    let (bob_id, carol_id) = (bob.session.user_id(), carol.session.user_id());
+    let contacts = timeout("contacts", async {
+        loop {
+            let contacts = s.contacts().await?;
+            let ids: Vec<_> = contacts.iter().map(|c| c.user.id.clone()).collect();
+            if ids.contains(&bob_id) && ids.contains(&carol_id) {
+                return anyhow::Ok(contacts);
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    })
+    .await??;
+    // Bob shares the space too, so he comes first.
+    assert_eq!(contacts[0].user.id, bob_id);
+    assert_eq!(contacts[0].spaces, std::slice::from_ref(&space));
+    assert!(!contacts.iter().any(|c| c.user.id == s.user_id()));
+
+    let info = s.user_info(&bob_id).await?;
+    assert_eq!(info.user.name.as_deref(), Some(bob_id.localpart()));
+    assert!(info.shared.contains(&space) && info.shared.contains(&room));
+    Ok(())
+}

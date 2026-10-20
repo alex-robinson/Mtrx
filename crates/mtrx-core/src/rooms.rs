@@ -63,6 +63,9 @@ pub struct RoomSummary {
     pub tag: RoomTag,
     /// For a direct chat, the other user.
     pub direct_user: Option<OwnedUserId>,
+    /// The room's address, e.g. `#ice-sheets:example.org`.
+    pub alias: Option<String>,
+    pub joined_members: u64,
 }
 
 /// Snapshot published by [`RoomList`].
@@ -228,6 +231,8 @@ async fn summarize(items: &Vector<RoomListItem>) -> Vec<RoomSummary> {
             parents: parents.remove(room.room_id()).unwrap_or_default(),
             tag,
             direct_user,
+            alias: room.canonical_alias().map(|a| a.to_string()),
+            joined_members: room.joined_members_count(),
         });
     }
     rooms

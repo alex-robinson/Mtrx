@@ -8,7 +8,9 @@ use iced::{
     task::Handle,
     widget::{button, column, container, row, scrollable, space, text, text_input, toggler},
 };
-use mtrx_core::{NewRoom, OwnedRoomId, OwnedUserId, Permissions, RoomSummary, UserSummary};
+use mtrx_core::{
+    Contact, NewRoom, OwnedRoomId, OwnedUserId, Permissions, RoomSummary, UserId, UserSummary,
+};
 
 use crate::{app, fonts, style};
 
@@ -51,6 +53,9 @@ pub enum Message {
     Address(String),
     /// The people search field changed.
     Query(String),
+    /// People the user shares spaces, rooms or chats with.
+    Contacts(Vec<Contact>),
+    /// The server's user directory's answer to a query.
     Suggestions(String, Vec<UserSummary>),
     Pick(UserSummary),
     Unpick(usize),
@@ -107,7 +112,12 @@ pub struct Dialog {
     moderated: bool,
     address: String,
     query: String,
-    suggestions: Vec<UserSummary>,
+    /// People the user knows, closest first.
+    contacts: Vec<Contact>,
+    /// Spaces whose members are suggested first.
+    near: Vec<OwnedRoomId>,
+    /// The server's user directory's results for the query.
+    directory: Vec<UserSummary>,
     people: Vec<UserSummary>,
     rooms: Vec<OwnedRoomId>,
     /// The running user search; replaced by each new query.
@@ -136,7 +146,9 @@ impl Dialog {
             moderated: false,
             address: String::new(),
             query: String::new(),
-            suggestions: Vec::new(),
+            contacts: Vec::new(),
+            near: Vec::new(),
+            directory: Vec::new(),
             people: Vec::new(),
             rooms: Vec::new(),
             search: None,
@@ -144,6 +156,57 @@ impl Dialog {
             now: Instant::now(),
             error: None,
         }
+    }
+
+    /// The dialog picks people.
+    pub fn picks_people(&self) -> bool {
+        matches!(
+            self.kind,
+            Kind::NewRoom { .. } | Kind::NewSpace | Kind::DirectChat | Kind::Invite { .. }
+        )
+    }
+
+    /// Suggest members of these spaces first.
+    pub fn prefer_spaces(&mut self, spaces: Vec<OwnedRoomId>) {
+        self.near = spaces;
+    }
+
+    /// People to suggest: those the user knows that match the query (the
+    /// closest, and those in nearby spaces, first), then the server's
+    /// directory results. Picked people are left out.
+    fn suggestions(&self) -> (Vec<&UserSummary>, Vec<&UserSummary>) {
+        const KNOWN: usize = 8;
+        let query = self.query.trim().trim_start_matches('@').to_lowercase();
+        let picked = |user: &UserSummary| self.people.iter().any(|p| p.id == user.id);
+        let mut known: Vec<(bool, bool, &Contact)> = self
+            .contacts
+            .iter()
+            .filter(|c| !picked(&c.user))
+            .filter_map(|c| {
+                let name = c.user.name.as_deref().unwrap_or_default().to_lowercase();
+                let id = c.user.id.as_str()[1..].to_lowercase();
+                let starts = name.starts_with(&query)
+                    || name.split_whitespace().any(|w| w.starts_with(&query))
+                    || id.starts_with(&query);
+                (starts || name.contains(&query) || id.contains(&query)).then(|| {
+                    let near = c.spaces.iter().any(|s| self.near.contains(s));
+                    (!starts, !near, c)
+                })
+            })
+            .collect();
+        // Stable: within equal keys, the closest first.
+        known.sort_by_key(|(later, far, _)| (*later, *far));
+        let known: Vec<&UserSummary> = known
+            .into_iter()
+            .take(KNOWN)
+            .map(|(_, _, c)| &c.user)
+            .collect();
+        let others = self
+            .directory
+            .iter()
+            .filter(|u| !picked(u) && !known.iter().any(|k| k.id == u.id))
+            .collect();
+        (known, others)
     }
 
     /// A request is running.
@@ -241,14 +304,15 @@ impl Dialog {
                 if let Some(search) = self.search.take() {
                     search.abort();
                 }
-                if query.trim().len() >= 2 {
+                self.directory.clear();
+                if query.trim().trim_start_matches('@').len() >= 2 {
                     return Action::Search(query.trim().to_owned());
                 }
-                self.suggestions.clear();
             }
+            Message::Contacts(contacts) => self.contacts = contacts,
             Message::Suggestions(query, users) => {
                 if query == self.query.trim() {
-                    self.suggestions = users;
+                    self.directory = users;
                 }
             }
             Message::Pick(user) => {
@@ -259,7 +323,7 @@ impl Dialog {
                     self.people.push(user);
                 }
                 self.query.clear();
-                self.suggestions.clear();
+                self.directory.clear();
             }
             Message::Unpick(index) if index < self.people.len() => {
                 self.people.remove(index);
@@ -495,27 +559,40 @@ impl Dialog {
         if !single {
             section = section.push(self.field(placeholder, &self.query, Message::Query));
         }
-        if !self.suggestions.is_empty() {
-            let list = self.suggestions.iter().map(|user| {
-                button(
-                    column![
-                        text(
-                            user.name
-                                .clone()
-                                .unwrap_or_else(|| user.id.localpart().to_owned())
-                        ),
-                        text(user.id.to_string()).size(12).style(text::secondary),
-                    ]
-                    .spacing(1),
-                )
-                .width(Length::Fill)
-                .padding([4, 8])
-                .style(style::list_item(false))
-                .on_press(message(Message::Pick(user.clone())))
-                .into()
-            });
-            section = section.push(scrollable(column(list).spacing(2)).height(Length::Shrink));
+        if single {
+            return section.into();
         }
+        let (known, others) = self.suggestions();
+        let mut list = column![].spacing(2);
+        if !known.is_empty() {
+            list = list.push(list_heading("People you know"));
+            for user in known {
+                list = list.push(person(user));
+            }
+        }
+        if !others.is_empty() {
+            list = list.push(list_heading("Others on the server"));
+            for user in others {
+                list = list.push(person(user));
+            }
+        }
+        // A full user ID can be picked even if no one by it was found.
+        let query = self.query.trim();
+        let listed = |id: &UserId| {
+            self.people.iter().any(|p| p.id == id)
+                || self.contacts.iter().any(|c| c.user.id == id)
+                || self.directory.iter().any(|u| u.id == id)
+        };
+        if let Ok(id) = UserId::parse(query)
+            && !listed(&id)
+        {
+            list = list.push(person(&UserSummary {
+                id,
+                name: None,
+                avatar: None,
+            }));
+        }
+        section = section.push(scrollable(list).height(Length::Shrink));
         section.into()
     }
 
@@ -545,6 +622,33 @@ impl Dialog {
         });
         scrollable(column(list).spacing(2)).height(260).into()
     }
+}
+
+fn list_heading<'a>(heading: &'a str) -> Element<'a, app::Message> {
+    container(
+        text(heading)
+            .size(11)
+            .font(fonts::SEMIBOLD)
+            .style(text::secondary),
+    )
+    .padding([4, 8])
+    .into()
+}
+
+/// A suggested person; picks them.
+fn person<'a>(user: &UserSummary) -> Element<'a, app::Message> {
+    button(
+        column![
+            text(label(user)),
+            text(user.id.to_string()).size(12).style(text::secondary),
+        ]
+        .spacing(1),
+    )
+    .width(Length::Fill)
+    .padding([4, 8])
+    .style(style::list_item(false))
+    .on_press(message(Message::Pick(user.clone())))
+    .into()
 }
 
 fn label(user: &UserSummary) -> String {

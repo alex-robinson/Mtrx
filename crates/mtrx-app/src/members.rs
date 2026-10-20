@@ -100,7 +100,7 @@ fn heading<'a>(label: String) -> Element<'a, Message> {
     .into()
 }
 
-/// A member; clicking starts a direct chat with them.
+/// A member; clicking shows who they are.
 fn entry<'a>(member: &'a Member, own: &OwnedUserId, avatars: &Avatars) -> Element<'a, Message> {
     let name = member.name.as_deref().unwrap_or(member.id.localpart());
     let role = match member.role {
@@ -129,8 +129,12 @@ fn entry<'a>(member: &'a Member, own: &OwnedUserId, avatars: &Avatars) -> Elemen
             .width(Length::Fill)
             .padding([3, 4])
             .style(style::list_item(false))
-            .on_press(Message::ChatWith(member.id.clone())),
-        container(text(format!("Message {}", member.id)).size(12))
+            .on_press(Message::ShowInfo(crate::info::sender(
+                member.id.clone(),
+                member.name.clone(),
+                member.avatar.clone(),
+            ))),
+        container(text(member.id.to_string()).size(12))
             .padding(6)
             .style(container::rounded_box),
         tooltip::Position::Left,

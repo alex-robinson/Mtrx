@@ -45,6 +45,9 @@ use mtrx_format::{Document, markdown_to_matrix};
 #[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug, PartialEq)]
 pub enum TimelineEntry {
+    /// The first entry once back-pagination reached the room's creation.
+    /// Gone again if the timeline is reset (e.g. after a gap in sync).
+    Start,
     Event(Event),
     DayDivider(SystemTime),
     /// Everything below was not read yet.
@@ -601,7 +604,9 @@ impl Converter {
             TimelineItemKind::Virtual(VirtualTimelineItem::ReadMarker) => {
                 Some(TimelineEntry::ReadMarker)
             }
-            TimelineItemKind::Virtual(_) => None,
+            TimelineItemKind::Virtual(VirtualTimelineItem::TimelineStart) => {
+                Some(TimelineEntry::Start)
+            }
         }
     }
 

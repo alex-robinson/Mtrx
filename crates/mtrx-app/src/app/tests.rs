@@ -361,7 +361,7 @@ async fn main_screen_with_math() {
         main.verified = Some(true);
         let mut open = Room::new(room.clone(), timeline.clone());
         open.entries = entries.clone();
-        open.at_start = true;
+        open.entries.insert(0, TimelineEntry::Start);
         open.hover(hovered.clone(), true);
         open.calls.link = Some(Url::parse("https://meet.jit.si/ice-sheets-weekly").unwrap());
         open.calls.space_service =
@@ -496,7 +496,7 @@ async fn send_later_bar() {
     ];
     let mut open = Room::new(room.clone(), timeline.clone());
     open.entries = timeline.current();
-    open.at_start = true;
+    open.entries.insert(0, TimelineEntry::Start);
     open.composer = text_editor::Content::with_text("Who can take the Monday slot?");
     open.later.picker = Some("tomorrow 8:00".into());
     main.room = Some(open);
@@ -613,7 +613,7 @@ async fn big_room_benchmark() {
     let session = Arc::new(second);
     let mut main = Main::new(session);
     let mut open = Room::new(room.clone(), timeline.clone());
-    open.at_start = true;
+    open.entries.insert(0, TimelineEntry::Start);
     main.room = Some(open);
     let app = app(Screen::Main(Box::new(main)), Mode::Light);
     let start = std::time::Instant::now();
@@ -678,7 +678,7 @@ async fn room_management_screens() {
         main.verified = Some(true);
         let mut open = Room::new(room.clone(), timeline.clone());
         open.entries = timeline.current();
-        open.at_start = true;
+        open.entries.insert(0, TimelineEntry::Start);
         main.room = Some(open);
         configure(&mut main);
         app(Screen::Main(Box::new(main)), Mode::Light)
@@ -723,6 +723,38 @@ async fn room_management_screens() {
             });
         }),
         "members-search",
+    );
+
+    let bob_info = session.user_info(&bob.user_id()).await.unwrap();
+    let contacts = session.contacts().await.unwrap();
+    snapshot(
+        &main_with(&|main| {
+            let mut card = info::Card::new(info::Target::User(bob_info.user.clone()));
+            card.update(info::Message::UserLoaded(
+                bob.user_id(),
+                Ok(bob_info.clone()),
+            ));
+            card.update(info::Message::Copy(bob.user_id().to_string()));
+            main.info = Some(card);
+        }),
+        "info-user",
+    );
+    snapshot(
+        &main_with(&|main| {
+            main.info = Some(info::Card::new(info::Target::Room(room.clone())));
+        }),
+        "info-room",
+    );
+    snapshot(
+        &main_with(&|main| {
+            let mut dialog = Dialog::new(dialog::Kind::NewRoom {
+                space: Some((space.clone(), "Climate".into())),
+            });
+            dialog.prefer_spaces(vec![space.clone()]);
+            dialog.update(dialog::Message::Contacts(contacts.clone()));
+            main.dialog = Some(dialog);
+        }),
+        "new-room-people",
     );
 }
 
@@ -813,7 +845,7 @@ async fn media_messages() {
         main.verified = Some(true);
         let mut open = Room::new(room.clone(), timeline.clone());
         open.entries = entries.clone();
-        open.at_start = true;
+        open.entries.insert(0, TimelineEntry::Start);
         let images: Vec<MediaRef> = open.images().cloned().collect();
         for media in &images {
             main.previews.load_now(&session, media).await;

@@ -9,6 +9,7 @@ use chrono::{DateTime, Local};
 use iced::{
     Alignment, Element, Length, Padding, Theme,
     keyboard::{Key, key::Named},
+    mouse,
     widget::{
         button, column, container, image, mouse_area, row, rule, scrollable, scrollable::Viewport,
         space, stack, text, text_editor,
@@ -26,7 +27,7 @@ use crate::{
     calls::{self, RoomCalls},
     dialog::Kind,
     ellipsis::ellipsis,
-    fonts,
+    fonts, info,
     math::{self, Math, Rendered},
     media::{self, Previews},
     members::Members,
@@ -42,6 +43,10 @@ use crate::{
 const WINDOW: usize = 80;
 /// Entries added to the window when scrolling up.
 const WINDOW_STEP: usize = 50;
+/// Older events are loaded until there are this many entries (or the room
+/// has no more): fewer may not fill the view, and then there is nothing to
+/// scroll up for more.
+const FILL: usize = 40;
 
 /// Consecutive messages of one sender within this gap share a header.
 const GROUP_GAP: Duration = Duration::from_secs(5 * 60);
@@ -70,7 +75,8 @@ pub struct Room {
     /// How many of the newest entries are rendered.
     shown: usize,
     pub paginating: bool,
-    pub at_start: bool,
+    /// A new timeline is being loaded (⌘R).
+    pub reloading: bool,
     pub error: Option<String>,
     /// [`Event::id`] of the message under the cursor.
     hovered: Option<String>,
@@ -102,7 +108,7 @@ impl Room {
             later: SendLater::default(),
             shown: WINDOW,
             paginating: false,
-            at_start: false,
+            reloading: false,
             error: None,
             hovered: None,
         }
@@ -125,11 +131,33 @@ impl Room {
             Older::None
         } else if self.shown < self.entries.len() {
             Older::ShowMore
-        } else if !self.paginating && !self.at_start {
+        } else if !self.paginating && !self.at_start() {
             Older::Paginate
         } else {
             Older::None
         }
+    }
+
+    /// Show a freshly loaded timeline, keeping what is being written.
+    pub fn reload(&mut self, timeline: Arc<RoomTimeline>) {
+        self.entries = timeline.current();
+        self.timeline = timeline;
+        self.shown = WINDOW;
+        self.paginating = false;
+        self.reloading = false;
+        self.picker = None;
+        self.confirm_delete = None;
+        self.error = None;
+    }
+
+    /// Back-pagination reached the room's creation.
+    pub fn at_start(&self) -> bool {
+        matches!(self.entries.first(), Some(TimelineEntry::Start))
+    }
+
+    /// Too few entries are loaded to fill the view.
+    pub fn wants_older(&self) -> bool {
+        !self.paginating && !self.at_start() && self.entries.len() < FILL
     }
 
     pub fn show_more(&mut self) {
@@ -210,9 +238,9 @@ impl Room {
 
         let mut timeline = column![].padding([8.0, TIMELINE_PADDING]);
         let all_shown = self.shown >= self.entries.len();
-        if self.at_start && all_shown {
-            timeline = timeline.push(notice("This is the start of the room."));
-        } else if self.paginating || !all_shown {
+        if self.reloading {
+            timeline = timeline.push(notice("Reloading…"));
+        } else if !(self.at_start() && all_shown) && (self.paginating || !all_shown) {
             timeline = timeline.push(notice("Loading…"));
         }
         let mut previous: Option<&Event> = None;
@@ -245,6 +273,9 @@ impl Room {
                 TimelineEntry::DayDivider(day) => {
                     timeline = timeline.push(day_divider(*day));
                     previous = None;
+                }
+                TimelineEntry::Start => {
+                    timeline = timeline.push(notice("This is the start of the room."));
                 }
                 TimelineEntry::ReadMarker => {}
             }
@@ -409,10 +440,18 @@ impl Room {
             HEADER_AVATAR,
             Shape::Circle,
         );
+        // The name and picture open the room's info card.
+        let info = summary.map_or(info::Target::Room(self.id.clone()), info::target_of);
+        let about = mouse_area(
+            row![avatar, title.width(Length::Fill)]
+                .spacing(10)
+                .align_y(Alignment::Center),
+        )
+        .interaction(mouse::Interaction::Pointer)
+        .on_press(Message::ShowInfo(info));
         let mut header = column![
             row![
-                avatar,
-                title.width(Length::Fill),
+                about,
                 self.calls.header_controls(look.call_services),
                 button(text("Members").size(13))
                     .padding([5, 10])
@@ -544,7 +583,11 @@ fn event_view<'a>(
 
     let mut item = column![].spacing(2).width(Length::Fill);
     if with_header {
-        item = item.push(sender_line(event, context.colored_names));
+        item = item.push(
+            mouse_area(sender_line(event, context.colored_names))
+                .interaction(mouse::Interaction::Pointer)
+                .on_press(sender_info(event)),
+        );
     }
     item = item.push(body);
     let message = match &event.content {
@@ -573,13 +616,16 @@ fn event_view<'a>(
     // The avatar starts a group; follow-ups show their time there on hover.
     let hovered = context.hovered == Some(event.id.as_str());
     let gutter: Element<'a, Message> = if with_header {
-        context.avatars.view(
+        mouse_area(context.avatars.view(
             event.sender.as_str(),
             &display_name(event),
             event.sender_avatar.as_deref(),
             SENDER_AVATAR,
             Shape::Circle,
-        )
+        ))
+        .interaction(mouse::Interaction::Pointer)
+        .on_press(sender_info(event))
+        .into()
     } else if hovered {
         container(text(time(event)).size(10).style(text::secondary))
             .center_x(SENDER_AVATAR)
@@ -635,6 +681,15 @@ fn sender_line<'a>(event: &Event, colored: bool) -> Element<'a, Message> {
         .spacing(8)
         .align_y(Alignment::End)
         .into()
+}
+
+/// Opens the sender's info card.
+fn sender_info(event: &Event) -> Message {
+    Message::ShowInfo(info::sender(
+        event.sender.clone(),
+        event.sender_name.clone(),
+        event.sender_avatar.clone(),
+    ))
 }
 
 fn time(event: &Event) -> String {

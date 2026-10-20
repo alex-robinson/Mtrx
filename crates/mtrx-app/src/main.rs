@@ -12,6 +12,7 @@ mod dialog;
 mod ellipsis;
 mod fonts;
 mod icons;
+mod info;
 mod login;
 mod logo;
 mod math;

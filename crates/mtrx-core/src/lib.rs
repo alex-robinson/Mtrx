@@ -14,6 +14,7 @@ mod google;
 mod media;
 mod members;
 mod notifications;
+mod people;
 mod permissions;
 mod profile;
 mod rooms;
@@ -36,6 +37,7 @@ pub use google::{Google, GoogleClient};
 pub use media::MediaRef;
 pub use members::{Member, Role};
 pub use notifications::Notification;
+pub use people::{Contact, UserInfo};
 pub use permissions::{Permissions, SpaceUpdate};
 pub use profile::Profile;
 pub use rooms::{NewRoom, RoomKind, RoomList, RoomListState, RoomSummary, UserSummary};
@@ -53,7 +55,7 @@ pub use url::Url;
 /// Matrix identifier types used in this crate's API.
 pub use matrix_sdk::ruma::{
     MxcUri, OwnedDeviceId, OwnedEventId, OwnedMxcUri, OwnedRoomId, OwnedRoomOrAliasId, OwnedUserId,
-    RoomOrAliasId,
+    RoomOrAliasId, UserId,
 };
 
 pub(crate) fn system_time(

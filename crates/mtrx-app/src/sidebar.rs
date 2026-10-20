@@ -20,7 +20,7 @@ use crate::{
     avatar::{Avatars, Shape},
     dialog::Kind,
     ellipsis::ellipsis,
-    fonts, icons,
+    fonts, icons, info,
     style::{self, ROOM_AVATAR, ROOM_LIST_WIDTH, ROOM_ROW, SPACE_AVATAR, SPACE_BAR_WIDTH},
 };
 
@@ -521,7 +521,7 @@ fn menu<'a>(items: Vec<(String, Message)>) -> Element<'a, Message> {
 /// Favourite, low priority and categories for a room.
 fn room_menu<'a>(room: &RoomSummary, layout: &Layout, grouping: &Grouping) -> Element<'a, Message> {
     let move_to = |section| arrange_message(arrange::Message::MoveTo(room.id.clone(), section));
-    let mut items = Vec::new();
+    let mut items = vec![("Info".to_owned(), Message::ShowInfo(info::target_of(room)))];
     if grouping.favourites {
         items.push(match room.tag {
             RoomTag::Favourite => ("Remove from favourites".into(), move_to(Section::Rooms)),
