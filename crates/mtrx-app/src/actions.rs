@@ -446,9 +446,7 @@ pub fn read_markers<'a>(event: &Event, avatars: &Avatars) -> Option<Element<'a, 
     if event.read_by.is_empty() {
         return None;
     }
-    let mut markers = row![space::horizontal()]
-        .spacing(2)
-        .align_y(Alignment::Center);
+    let mut markers = row![].spacing(2).align_y(Alignment::Center);
     for reader in event.read_by.iter().take(MAX_READERS) {
         markers = markers.push(avatars.view(
             reader.id.as_str(),
@@ -466,11 +464,13 @@ pub fn read_markers<'a>(event: &Event, avatars: &Avatars) -> Option<Element<'a, 
         );
     }
     let names: Vec<_> = event.read_by.iter().map(reader_name).collect();
-    Some(hint(
+    // The names show over the pictures, which sit at the right.
+    let markers = hint(
         markers,
         format!("Read by {}", names.join(", ")),
-        Position::Left,
-    ))
+        Position::Top,
+    );
+    Some(container(markers).align_right(Length::Fill).into())
 }
 
 fn reader_name(reader: &Reader) -> &str {
