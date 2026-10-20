@@ -42,7 +42,7 @@ pub struct Session {
     pub(crate) sync: Arc<SyncService>,
     pub(crate) verification_tx: broadcast::Sender<VerificationRequest>,
     pub(crate) room_keys: Arc<crate::encryption::RoomKeys>,
-    /// Serializes enqueueing messages, see [`crate::timeline::send_markdown`].
+    /// Serializes enqueueing messages, see [`crate::timeline::send_message`].
     pub(crate) send_lock: Arc<Mutex<()>>,
     pub(crate) schedule: Arc<Schedule>,
     /// Set once [`Session::start_scheduler`] ran.

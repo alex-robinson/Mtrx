@@ -51,13 +51,13 @@ pub use profile::Profile;
 pub use room_colours::RoomListColours;
 pub use room_settings::{Access, NotifyMode, RoomSettings};
 pub use rooms::{NewRoom, RoomKind, RoomList, RoomListState, RoomSummary, UserSummary};
-pub use scheduled::ScheduledMessage;
+pub use scheduled::{ScheduledFile, ScheduledMessage};
 pub use secrets::SecretStore;
 pub use send_time::{describe_send_time, parse_send_time};
 pub use session::Session;
 pub use timeline::{
-    Event, EventContent, EventKey, Media, MediaKind, MembershipChange, Message, MessageKind,
-    PendingSend, Reaction, Reader, Reply, RoomTimeline, SendState, TimelineEntry,
+    Attachment, Event, EventContent, EventKey, Media, MediaKind, MembershipChange, Message,
+    MessageKind, PendingSend, Reaction, Reader, Reply, RoomTimeline, SendState, TimelineEntry,
 };
 
 pub use url::Url;

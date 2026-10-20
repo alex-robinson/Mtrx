@@ -292,6 +292,11 @@ fn item<'a>(
         text(format!("{when} · {}", until(message.send_at, now)))
     };
     let preview = message.text.lines().next().unwrap_or_default().to_owned();
+    let files = match message.files.as_slice() {
+        [] => None,
+        [file] => Some(file.filename.clone()),
+        files => Some(format!("{} files", files.len())),
+    };
 
     let action = |label, on_press: Option<Message>, primary: bool| {
         button(text(label).size(12))
@@ -314,10 +319,24 @@ fn item<'a>(
             .into(),
         None => row![
             status.size(12).width(Length::Shrink),
-            text(preview)
+            crate::ellipsis::ellipsis(preview)
                 .size(13)
-                .wrapping(Wrapping::None)
                 .width(Length::Fill),
+            files.map(|files| {
+                row![
+                    crate::icons::paperclip(14.0, |theme| {
+                        theme
+                            .extended_palette()
+                            .background
+                            .base
+                            .text
+                            .scale_alpha(0.55)
+                    }),
+                    text(files).size(12).style(text::secondary),
+                ]
+                .spacing(2)
+                .align_y(Alignment::Center)
+            }),
             row![
                 action("Edit", Some(Message::Edit(message.clone())), false),
                 action(

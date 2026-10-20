@@ -84,8 +84,21 @@ pub fn in_field<'a>(
     compact: bool,
     message: app::Message,
 ) -> Element<'a, app::Message> {
-    let (size, edge) = if compact { (15.0, 4.0) } else { (19.0, 6.0) };
-    let toggle = hint(
+    let edge = if compact { 4.0 } else { 6.0 };
+    iced::widget::stack![
+        field.into(),
+        container(toggle(open, compact, message))
+            .align_right(Length::Fill)
+            .align_bottom(Length::Fill)
+            .padding(iced::Padding::new(edge).top(0)),
+    ]
+    .into()
+}
+
+/// The smiley of [`in_field`], showing or hiding the emoji panel.
+pub fn toggle<'a>(open: bool, compact: bool, message: app::Message) -> Element<'a, app::Message> {
+    let size = if compact { 15.0 } else { 19.0 };
+    hint(
         button(crate::icons::smiley(size, |theme| {
             theme
                 .extended_palette()
@@ -100,15 +113,7 @@ pub fn in_field<'a>(
         .on_press_maybe((!open).then_some(message)),
         "Insert an emoji",
         Position::Top,
-    );
-    iced::widget::stack![
-        field.into(),
-        container(toggle)
-            .align_right(Length::Fill)
-            .align_bottom(Length::Fill)
-            .padding(iced::Padding::new(edge).top(0)),
-    ]
-    .into()
+    )
 }
 
 /// Right padding of a text field with [`in_field`]'s smiley.

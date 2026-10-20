@@ -376,7 +376,7 @@ async fn main() -> Result<()> {
             let (session, _list) = synced(profile).await?;
             let room = session.find_room(&room).await?;
             let message = session
-                .schedule(&room, text.trim_end(), send_at, None)
+                .schedule(&room, text.trim_end(), Vec::new(), send_at, None)
                 .await?;
             session.stop_sync().await;
             println!(
@@ -394,13 +394,19 @@ async fn main() -> Result<()> {
                     .iter()
                     .find(|r| r.id == message.room_id)
                     .map_or(message.room_id.as_str(), |r| r.name.as_str());
+                let files: Vec<&str> = message.files.iter().map(|f| f.filename.as_str()).collect();
                 println!(
-                    "{}  {:<20} {}{}: {}",
+                    "{}  {:<20} {}{}: {}{}",
                     message.id,
                     describe_send_time(message.send_at, now),
                     room,
                     if message.overdue { " [overdue]" } else { "" },
                     message.text.lines().next().unwrap_or_default(),
+                    if files.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" [+ {}]", files.join(", "))
+                    },
                 );
             }
             session.stop_sync().await;
