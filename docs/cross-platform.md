@@ -20,16 +20,27 @@ Status: macOS first. This is the plan for Windows and Linux builds.
 
 ## 2. Windows
 
-- [ ] `#![windows_subsystem = "windows"]` in `mtrx-app` (no console window).
-- [ ] Logo in the `.exe` (an `.ico` from `logo.svg` via `cargo xtask`,
-      embedded in `build.rs`).
-- [ ] Notifications: need an AppUserModelID registered by a Start menu
-      shortcut. Set the same ID in the app (`notify-rust`), or toasts show
-      as PowerShell and clicks do not reach the app.
-- [ ] Credential Manager holds at most 2560 bytes per secret. Measure the
-      stored session (password and OAuth logins). If it can exceed that,
-      keep the session in an encrypted file and only its key in the
-      credential store.
+CI: `.github/workflows/windows.yml` (clippy, tests, `cargo xtask bundle`;
+the packages are the run's artifact).
+
+- [x] `#![windows_subsystem = "windows"]` in `mtrx-app` (no console window).
+- [x] Logo in the `.exe`: `cargo xtask bundle` renders `logo.svg` to an
+      `.ico` (16 to 256 px) and passes it to `mtrx-app`'s `build.rs`
+      (`MTRX_ICON`), which embeds it with version information
+      (`winresource`). Plain `cargo build` has no exe icon, only the window
+      icon set at run time.
+- [x] Notifications: the installer's Start menu shortcut carries the
+      AppUserModelID `org.mtrx.Mtrx`; the app sends toasts with that ID
+      when the shortcut exists (`mtrx-app/src/windows.rs`). The portable
+      zip has no shortcut, so its toasts keep notify-rust's default sender
+      (PowerShell). Not yet tried on a real machine.
+- [x] Credential Manager holds at most 2560 bytes (1280 UTF-16 characters)
+      per secret. A stored session serializes to about 400 characters
+      (password login with Synapse's tokens, OAuth with those of MAS, which
+      matrix.org uses), but tokens are opaque and have no length limit. So on Windows each secret is a file encrypted
+      with XChaCha20-Poly1305 (`secrets.enc` in the profile, `google.enc`)
+      and only its random key is in Credential Manager
+      (`mtrx-core/src/secrets/windows.rs`). macOS and Linux unchanged.
 
 ## 3. Linux
 
@@ -44,6 +55,12 @@ Status: macOS first. This is the plan for Windows and Linux builds.
 - [ ] `cargo xtask bundle` per platform: Windows installer (Start menu
       shortcut with the AppUserModelID, uninstall), Linux AppImage and
       `.deb`.
+  - [x] Windows: `target/bundle/Mtrx-windows-x64.zip` (portable: `Mtrx.exe`,
+        `LICENSE.txt`) and `Mtrx-windows-x64-setup.exe` (Inno Setup; per
+        user, no administrator rights, into `%LOCALAPPDATA%\Programs\Mtrx`;
+        Start menu shortcut with the AppUserModelID; uninstaller in
+        Settings > Apps). Unsigned. The installer is built by CI but not yet
+        run on a real machine.
 - [ ] Release workflow: a version tag builds all three and attaches them to
       a GitHub release.
 
