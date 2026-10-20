@@ -53,6 +53,9 @@ pub enum Message {
     End,
     /// ⌘C: put the selected text on the clipboard.
     Copy,
+    /// ⌘A: select the messages on screen, from the first to the last.
+    SelectAll,
+    All(String, String),
     Clear,
 }
 
@@ -108,13 +111,26 @@ impl Selection {
                 }
             }
             Message::Clear => *selection = None,
+            Message::All(first, last) => {
+                *selection = Some(Self {
+                    anchor: Point {
+                        event: first,
+                        pos: Pos::default(),
+                    },
+                    focus: Point {
+                        event: last,
+                        pos: Pos::END,
+                    },
+                    dragging: false,
+                });
+            }
             Message::End => {
                 if let Some(selection) = selection {
                     selection.dragging = false;
                 }
             }
-            // Handled by the room, which has the text.
-            Message::Copy => {}
+            // Handled by the room, which has the text and the view.
+            Message::Copy | Message::SelectAll => {}
         }
     }
 

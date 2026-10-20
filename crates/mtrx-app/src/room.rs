@@ -9,7 +9,8 @@ use std::{
 
 use chrono::{DateTime, Local};
 use iced::{
-    Alignment, Element, Length, Padding, Theme,
+    Alignment, Element, Length, Padding, Rectangle, Task, Theme, Vector,
+    advanced::widget::{Id, Operation, operation},
     keyboard::{Key, key::Named},
     mouse,
     widget::{
@@ -282,6 +283,29 @@ impl Room {
                 _ => None,
             })
             .collect()
+    }
+
+    /// The first and last message on screen (partly, or wholly), for ⌘A.
+    pub fn on_screen(&self) -> Task<Option<(String, String)>> {
+        let ids: Vec<String> = self
+            .visible()
+            .iter()
+            .filter_map(|entry| match entry {
+                TimelineEntry::Event(event)
+                    if matches!(event.content, EventContent::Message(_)) =>
+                {
+                    Some(event.id.clone())
+                }
+                _ => None,
+            })
+            .collect();
+        let rows = ids.iter().map(|id| row_id(id)).collect();
+        iced::advanced::widget::operate(FindRows {
+            rows,
+            view: None,
+            found: Vec::new(),
+        })
+        .map(move |range| range.map(|(first, last)| (ids[first].clone(), ids[last].clone())))
     }
 
     /// The selected text, as shown; with several messages, each sender's
@@ -914,12 +938,75 @@ fn event_view<'a>(
     let row = mouse_area(row)
         .on_enter(Message::Hover(event.id.clone(), true))
         .on_exit(Message::Hover(event.id.clone(), false));
+    // Found by `on_screen`.
+    let row = container(row).id(row_id(&event.id));
     if with_header {
         // Space between groups, outside the hover background.
         column![space().height(6), row].into()
     } else {
         row.into()
     }
+}
+
+/// The container around a message's row.
+fn row_id(event: &str) -> Id {
+    Id::from(format!("row:{event}"))
+}
+
+/// Where the timeline is and which messages' rows are in its view.
+struct FindRows {
+    rows: Vec<Id>,
+    /// The timeline's bounds and how far it is scrolled.
+    view: Option<(Rectangle, Vector)>,
+    /// Each found row: its index in `rows` and bounds.
+    found: Vec<(usize, Rectangle)>,
+}
+
+impl Operation<Option<(usize, usize)>> for FindRows {
+    fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn Operation<Option<(usize, usize)>>)) {
+        operate(self);
+    }
+
+    fn scrollable(
+        &mut self,
+        id: Option<&Id>,
+        bounds: Rectangle,
+        _content_bounds: Rectangle,
+        translation: Vector,
+        _state: &mut dyn operation::Scrollable,
+    ) {
+        if id == Some(&Id::new(TIMELINE)) {
+            self.view = Some((bounds, translation));
+        }
+    }
+
+    fn container(&mut self, id: Option<&Id>, bounds: Rectangle) {
+        if let Some(index) = id.and_then(|id| self.rows.iter().position(|row| row == id)) {
+            self.found.push((index, bounds));
+        }
+    }
+
+    fn finish(&self) -> operation::Outcome<Option<(usize, usize)>> {
+        operation::Outcome::Some(
+            self.view
+                .and_then(|(view, scrolled)| on_screen(view, scrolled.y, &self.found)),
+        )
+    }
+}
+
+/// The first and last of `rows` (indices and unscrolled bounds) in the
+/// view of a timeline scrolled by `scrolled`.
+fn on_screen(
+    view: Rectangle,
+    scrolled: f32,
+    rows: &[(usize, Rectangle)],
+) -> Option<(usize, usize)> {
+    let (top, bottom) = (view.y + scrolled, view.y + scrolled + view.height);
+    let shown = rows
+        .iter()
+        .filter(|(_, row)| row.y < bottom && row.y + row.height > top)
+        .map(|(index, _)| *index);
+    Some((shown.clone().min()?, shown.max()?))
 }
 
 /// Sender name, in their colour if `colored`, and time above the first
@@ -1078,4 +1165,31 @@ fn state_summary(events: &[&Event]) -> String {
         parts.push(format!("{} left", left.join(", ")));
     }
     parts.join(" · ")
+}
+
+#[cfg(test)]
+mod tests {
+    use iced::{Point, Size};
+
+    use super::*;
+
+    #[test]
+    fn finds_the_messages_on_screen() {
+        // A timeline at y 100, 300 high, scrolled 500 down; rows 100 high.
+        let view = Rectangle::new(Point::new(0.0, 100.0), Size::new(800.0, 300.0));
+        let rows: Vec<_> = (0..12)
+            .map(|i| {
+                let row = Rectangle::new(
+                    Point::new(0.0, 100.0 + 100.0 * i as f32),
+                    Size::new(800.0, 100.0),
+                );
+                (i, row)
+            })
+            .collect();
+        // Content 500..800 shows rows 5, 6 and 7.
+        assert_eq!(on_screen(view, 500.0, &rows), Some((5, 7)));
+        // Partly shown rows count.
+        assert_eq!(on_screen(view, 450.0, &rows), Some((4, 7)));
+        assert_eq!(on_screen(view, 5000.0, &rows), None);
+    }
 }

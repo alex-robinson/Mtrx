@@ -809,10 +809,18 @@ impl App {
                 let Some(room) = main.room.as_mut() else {
                     return Task::none();
                 };
-                if let selection::Message::Copy = message {
-                    return room
-                        .selected_text()
-                        .map_or_else(Task::none, iced::clipboard::write);
+                match message {
+                    selection::Message::Copy => {
+                        return room
+                            .selected_text()
+                            .map_or_else(Task::none, iced::clipboard::write);
+                    }
+                    selection::Message::SelectAll => {
+                        return room.on_screen().and_then(|(first, last)| {
+                            Task::done(Message::Select(selection::Message::All(first, last)))
+                        });
+                    }
+                    _ => {}
                 }
                 Selection::update(&mut room.selection, message);
                 Task::none()
@@ -2788,6 +2796,11 @@ fn shortcuts(
                 if c == "c" && modifiers.command() && status == iced::event::Status::Ignored =>
             {
                 Some(Message::Select(selection::Message::Copy))
+            }
+            Key::Character(c)
+                if c == "a" && modifiers.command() && status == iced::event::Status::Ignored =>
+            {
+                Some(Message::Select(selection::Message::SelectAll))
             }
             Key::Character(c) if c == "k" && modifiers.command() => Some(Message::FocusSearch),
             Key::Character(c) if c == "r" && modifiers.command() => Some(Message::Reload),

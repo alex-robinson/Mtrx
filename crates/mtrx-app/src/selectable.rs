@@ -590,7 +590,9 @@ mod tests {
         // Nothing selected: ⌘C is left to others.
         assert_eq!(ui.simulate([command_c()]), [Status::Ignored]);
         ui.point_at((2.0, 8.0));
-        let _ = ui.simulate([Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left))]);
+        let _ = ui.simulate([Event::Mouse(mouse::Event::ButtonPressed(
+            mouse::Button::Left,
+        ))]);
         ui.point_at((300.0, 8.0));
         let _ = ui.simulate([
             Event::Mouse(mouse::Event::CursorMoved {
@@ -601,7 +603,9 @@ mod tests {
         assert_eq!(ui.simulate([command_c()]), [Status::Captured]);
         // A click elsewhere clears it.
         ui.point_at((350.0, 90.0));
-        let _ = ui.simulate([Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left))]);
+        let _ = ui.simulate([Event::Mouse(mouse::Event::ButtonPressed(
+            mouse::Button::Left,
+        ))]);
         assert_eq!(ui.simulate([command_c()]), [Status::Ignored]);
     }
 }

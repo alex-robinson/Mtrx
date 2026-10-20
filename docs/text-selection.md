@@ -29,7 +29,8 @@ once the timeline itself became selectable.
 
 ## Selection in the timeline
 
-Drag across words, lines and messages. Double-click selects a word (or a
+⌘A selects the messages on screen (partly shown ones too), so it never
+loads or copies the whole history. Drag across words, lines and messages. Double-click selects a word (or a
 formula), triple-click a paragraph, and Shift-click extends. ⌘C copies,
 and Esc or a click beside the text clears. Dragging past the top or bottom
 of the timeline scrolls it.
@@ -103,7 +104,6 @@ copy as `$…$`.
   previews, notices and state lines. Info cards are: names, IDs,
   addresses, links, read-only name and topic, and the facts line use
   `selectable_text`, which keeps its own selection and copies it with ⌘C.
-- ⌘A does not select the timeline.
 
 ## Tests
 
