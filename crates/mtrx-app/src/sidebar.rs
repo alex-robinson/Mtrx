@@ -113,17 +113,20 @@ fn scope<'a>(
 }
 
 /// The room list's sections and their rooms, in display order; sections
-/// may be empty.
-fn sections<'a>(
-    rooms: &'a [RoomSummary],
-    space: Option<&OwnedRoomId>,
-    arrange: &Arrange,
-    grouping: &Grouping,
-) -> Vec<(Section, Vec<&'a RoomSummary>)> {
-    arrange
+/// may be empty. Notes pinned at the top are not in them.
+fn sections<'a>(view: &RoomListView<'a>) -> Vec<(Section, Vec<&'a RoomSummary>)> {
+    let space = view.selected_space;
+    let pinned = match view.notes {
+        Some(Notes::Room(notes)) => Some(&notes.id),
+        _ => None,
+    };
+    let listed = scope(view.rooms, space, view.arrange)
+        .into_iter()
+        .filter(|r| Some(&r.id) != pinned);
+    view.arrange
         .categories
         .layout(space.map(|s| s.as_ref()))
-        .group(scope(rooms, space, arrange), grouping)
+        .group(listed, &view.grouping)
 }
 
 /// Rooms and chats whose name contains `filter` (lower case), names starting
@@ -156,7 +159,7 @@ pub fn avatars<'a>(view: &RoomListView<'a>) -> Vec<(&'a MxcUri, f32)> {
         .filter_map(|s| Some((s.avatar.as_deref()?, SPACE_AVATAR)));
     let filter = view.filter.trim().to_lowercase();
     let listed = if filter.is_empty() {
-        sections(rooms, view.selected_space, view.arrange, &view.grouping)
+        sections(view)
             .into_iter()
             .flat_map(|(_, entries)| entries)
             .collect()
@@ -282,6 +285,16 @@ pub struct RoomListView<'a> {
     pub tint: Tint,
     /// Rooms show their pictures rather than a public/private symbol.
     pub room_pictures: bool,
+    /// The Notes to self, pinned at the top; `None` if not pinned.
+    pub notes: Option<Notes<'a>>,
+}
+
+/// The Notes to self at the top of the room list.
+#[derive(Clone, Copy)]
+pub enum Notes<'a> {
+    /// Not started yet: the row starts them.
+    Missing,
+    Room(&'a RoomSummary),
 }
 
 pub fn room_list<'a>(view: RoomListView<'a>) -> Element<'a, Message> {
@@ -345,6 +358,9 @@ pub fn room_list<'a>(view: RoomListView<'a>) -> Element<'a, Message> {
     );
     let filter = filter.trim().to_lowercase();
     if filter.is_empty() {
+        if let Some(notes) = view.notes {
+            list = list.push(view.notes_entry(notes));
+        }
         list = list.extend(arranged(&view));
     } else {
         let found = search(rooms, &filter);
@@ -385,7 +401,7 @@ fn arranged<'a>(view: &RoomListView<'a>) -> Vec<Element<'a, Message>> {
         .layout(view.selected_space.map(|s| s.as_ref()));
     let dragging = arrange.dragging().is_some();
     let mut elements = Vec::new();
-    for (section, entries) in sections(view.rooms, view.selected_space, arrange, &view.grouping) {
+    for (section, entries) in sections(view) {
         // A new category appears after the others.
         if section == Section::Rooms
             && let Some(naming) = arrange.naming.as_ref().filter(|n| n.category.is_none())
@@ -752,6 +768,97 @@ impl Later {
 }
 
 impl<'a> RoomListView<'a> {
+    /// The pinned Notes row: like a room's, but not dragged or tagged, and
+    /// greyed until the notes are started, which pressing it does.
+    fn notes_entry(&self, notes: Notes<'a>) -> Element<'a, Message> {
+        let room = match notes {
+            Notes::Room(room) => room,
+            Notes::Missing => {
+                let line = row![
+                    container(icons::notebook(16.0, faint)).center(ROOM_AVATAR),
+                    text("Notes").size(14).style(|theme: &Theme| text::Style {
+                        color: Some(faint(theme)),
+                    }),
+                ]
+                .spacing(8)
+                .align_y(Alignment::Center);
+                return hint(
+                    button(container(line).center_y(Length::Fill))
+                        .width(Length::Fill)
+                        .height(ROOM_ROW)
+                        .padding([0, 8])
+                        .style(style::list_item(false))
+                        .on_press(Message::StartNotes),
+                    "Start your notes to self",
+                    Position::Bottom,
+                );
+            }
+        };
+        let selected = self.open == Some(&room.id);
+        let menu_open = self.arrange.room_menu.as_ref() == Some(&room.id);
+        let font = if room.unread_messages > 0 {
+            fonts::SEMIBOLD
+        } else {
+            fonts::INTER
+        };
+        let name = ellipsis("Notes").size(14).font(font);
+        let name = match unread_count(room) {
+            Some(count) => followed_by(name, count, 6.0),
+            None => name.width(Length::Fill).into(),
+        };
+        let mut line = row![
+            container(icons::notebook(16.0, |theme| {
+                theme
+                    .extended_palette()
+                    .background
+                    .base
+                    .text
+                    .scale_alpha(0.7)
+            }))
+            .center(ROOM_AVATAR),
+            name
+        ]
+        .spacing(8)
+        .align_y(Alignment::Center);
+        let toggle_menu = arrange_message(arrange::Message::RoomMenu(
+            (!menu_open).then(|| room.id.clone()),
+        ));
+        if self.arrange.notes_hovered || menu_open {
+            line = line.push(with_tooltip(
+                button(text("⋯").size(13))
+                    .padding([0, 4])
+                    .style(style::list_item(menu_open))
+                    .on_press(toggle_menu.clone()),
+                "Settings (or right-click)".into(),
+            ));
+        } else if let Some(later) = Later::of(self.scheduled, &room.id) {
+            line = line.push(later.view());
+        }
+        let entry = button(container(line).center_y(Length::Fill))
+            .width(Length::Fill)
+            .height(ROOM_ROW)
+            .padding([0, 8])
+            .style(style::list_item(selected))
+            .on_press(Message::OpenRoom(room.id.clone()));
+        let area = mouse_area(entry)
+            .on_enter(arrange_message(arrange::Message::NotesRow(true)))
+            .on_exit(arrange_message(arrange::Message::NotesRow(false)))
+            .on_right_press(toggle_menu);
+        let mut block = column![area];
+        if menu_open {
+            block = block.push(menu(vec![(
+                "Settings".to_owned(),
+                Message::ShowInfo(info::Target::Room(room.id.clone())),
+            )]));
+        }
+        // Found by `find_out_of_view` when unread.
+        if room.unread_messages > 0 {
+            container(block).id(unread_id(&room.id)).into()
+        } else {
+            block.into()
+        }
+    }
+
     /// A room's row: opens the room on click, can be dragged to another
     /// section, and has a menu on right click or its "⋯".
     fn room_entry(&self, room: &'a RoomSummary) -> Element<'a, Message> {
@@ -820,6 +927,16 @@ impl<'a> RoomListView<'a> {
             area.into()
         }
     }
+}
+
+/// Greyed text and icons, e.g. of Notes not started yet.
+fn faint(theme: &Theme) -> Color {
+    theme
+        .extended_palette()
+        .background
+        .base
+        .text
+        .scale_alpha(0.45)
 }
 
 /// In place of a room's picture: # for a public room, a lock for one only

@@ -116,6 +116,8 @@ pub enum Message {
     MembersLoaded(OwnedRoomId, Result<Vec<Member>, String>),
     /// Start or open a direct chat with a member.
     ChatWith(OwnedUserId),
+    /// Start the Notes to self and open them.
+    StartNotes,
     Notified(Notification),
     /// A desktop notification about the room was clicked.
     NotificationClicked(OwnedRoomId),
@@ -361,6 +363,20 @@ impl Main {
             width,
             tint: settings.tint(self.space.as_ref()),
             room_pictures: settings.room_pictures,
+            notes: self.pinned_notes(settings),
+        }
+    }
+
+    /// The Notes to self if pinned; missing ones only once the room list
+    /// is complete, so they are not started twice.
+    fn pinned_notes(&self, settings: &Settings) -> Option<sidebar::Notes<'_>> {
+        if !settings.pinned_notes {
+            return None;
+        }
+        let rooms = &self.rooms.rooms;
+        match rooms.iter().find(|r| r.is_notes(&self.own_user)) {
+            Some(notes) => Some(sidebar::Notes::Room(notes)),
+            None => self.rooms.loaded.then_some(sidebar::Notes::Missing),
         }
     }
 }
@@ -1209,6 +1225,13 @@ impl App {
                     members.list = Some(result);
                 }
                 self.load_avatars()
+            }
+            Message::StartNotes => {
+                let Screen::Main(main) = &self.screen else {
+                    return Task::none();
+                };
+                let own_user = main.own_user.clone();
+                self.update(Message::ChatWith(own_user))
             }
             Message::ChatWith(user) => {
                 let Screen::Main(main) = &mut self.screen else {

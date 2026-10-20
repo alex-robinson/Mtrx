@@ -372,6 +372,17 @@ async fn main_screen_with_math() {
         let session = Arc::new(Session::restore(alice.profile().clone()).await.unwrap());
         let mut main = Main::new(session);
         main.rooms = rooms.clone();
+        if mode == Mode::Dark {
+            // Notes to self, started and unread; pinned above the sections.
+            let mut notes = (rooms.rooms.iter())
+                .find(|r| r.direct_user.is_some())
+                .unwrap()
+                .clone();
+            notes.id = "!notes:localhost".try_into().unwrap();
+            notes.direct_user = Some(alice.user_id());
+            notes.unread_messages = 2;
+            main.rooms.rooms.push(notes);
+        }
         main.verified = Some(true);
         let mut open = Room::new(room.clone(), timeline.clone());
         open.entries = entries.clone();

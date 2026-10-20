@@ -70,6 +70,13 @@ pub struct RoomSummary {
     pub joined_members: u64,
 }
 
+impl RoomSummary {
+    /// Our direct chat with ourselves: the Notes to self.
+    pub fn is_notes(&self, own_user: &UserId) -> bool {
+        self.direct_user.as_deref() == Some(own_user)
+    }
+}
+
 /// Snapshot published by [`RoomList`].
 #[derive(Clone, Debug, Default)]
 pub struct RoomListState {
@@ -366,7 +373,6 @@ impl Session {
         Ok(room)
     }
 
-    /// The direct chat with `user`: the existing one, or a new encrypted one.
     /// The Notes chat (notes to self), if there is one.
     pub fn notes_room(&self) -> Option<OwnedRoomId> {
         self.client

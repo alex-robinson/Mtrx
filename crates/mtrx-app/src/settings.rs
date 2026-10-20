@@ -44,6 +44,8 @@ pub struct Settings {
     /// Rooms show their picture (or initial) rather than a symbol saying
     /// whether they are public or private.
     pub room_pictures: bool,
+    /// The Notes to self at the top of the room list, in every space.
+    pub pinned_notes: bool,
     /// The room list's colour at home, and in spaces without their own.
     pub home_tint: Tint,
     pub space_tints: BTreeMap<OwnedRoomId, Tint>,
@@ -60,6 +62,7 @@ impl Default for Settings {
             room_list: Grouping::default(),
             room_list_width: style::ROOM_LIST_WIDTH,
             room_pictures: false,
+            pinned_notes: true,
             home_tint: Tint::default(),
             space_tints: BTreeMap::new(),
         }
@@ -101,6 +104,7 @@ pub enum Message {
     DesktopNotifications(bool),
     RoomList(Grouping),
     RoomPictures(bool),
+    PinnedNotes(bool),
     /// The room list's colour in a space, or at home.
     Tint(Option<OwnedRoomId>, Tint),
     FormKind(FormKind),
@@ -347,6 +351,10 @@ impl Panel {
                 settings.room_pictures = on;
                 return Action::Save;
             }
+            Message::PinnedNotes(on) => {
+                settings.pinned_notes = on;
+                return Action::Save;
+            }
             Message::Tint(None, tint) => {
                 settings.home_tint = tint;
                 return Action::Save;
@@ -504,6 +512,13 @@ impl Panel {
                  rooms and a lock for private ones.",
                 toggler(settings.room_pictures)
                     .on_toggle(|on| message(Message::RoomPictures(on)))
+                    .into(),
+            ),
+            option(
+                "Notes at the top",
+                "Your notes to self stay at the top of the room list, in every space.",
+                toggler(settings.pinned_notes)
+                    .on_toggle(|on| message(Message::PinnedNotes(on)))
                     .into(),
             ),
             tints(settings, spaces),
@@ -931,6 +946,7 @@ mod tests {
             },
             room_list_width: 320.0,
             room_pictures: true,
+            pinned_notes: false,
             home_tint: Tint::Blue,
             space_tints: BTreeMap::from([("!s:example.org".try_into().unwrap(), Tint::Rose)]),
         };

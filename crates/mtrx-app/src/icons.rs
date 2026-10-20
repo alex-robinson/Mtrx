@@ -711,3 +711,51 @@ impl<M> canvas::Program<M> for Lock {
         vec![frame.into_geometry()]
     }
 }
+
+/// A notebook: notes to self.
+pub fn notebook<'a, M: 'a>(size: f32, color: fn(&Theme) -> Color) -> Element<'a, M> {
+    canvas::Canvas::new(Notebook { color })
+        .width(size)
+        .height(size)
+        .into()
+}
+
+struct Notebook {
+    color: fn(&Theme) -> Color,
+}
+
+impl<M> canvas::Program<M> for Notebook {
+    type State = ();
+
+    fn draw(
+        &self,
+        _state: &(),
+        renderer: &Renderer,
+        theme: &Theme,
+        bounds: Rectangle,
+        _cursor: mouse::Cursor,
+    ) -> Vec<Geometry> {
+        let mut frame = Frame::new(renderer, bounds.size());
+        let s = bounds.width;
+        let stroke = Stroke::default()
+            .with_color((self.color)(theme))
+            .with_width((s / 11.0).max(1.0))
+            .with_line_cap(canvas::LineCap::Round)
+            .with_line_join(canvas::LineJoin::Round);
+        let p = |x: f32, y: f32| iced::Point::new(x * s, y * s);
+        // The cover, its spine, and lines of writing.
+        frame.stroke(
+            &Path::rounded_rectangle(
+                p(0.2, 0.1),
+                iced::Size::new(0.62 * s, 0.8 * s),
+                (0.08 * s).into(),
+            ),
+            stroke,
+        );
+        frame.stroke(&Path::line(p(0.34, 0.1), p(0.34, 0.9)), stroke);
+        for y in [0.32, 0.5, 0.68] {
+            frame.stroke(&Path::line(p(0.47, y), p(0.7, y)), stroke);
+        }
+        vec![frame.into_geometry()]
+    }
+}

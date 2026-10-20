@@ -31,6 +31,8 @@ pub enum Message {
     SpaceMembers(OwnedRoomId, Result<Vec<Member>, String>),
     /// The cursor entered (`true`) or left a room row.
     Row(OwnedRoomId, bool),
+    /// The cursor entered or left the pinned Notes row, which is not dragged.
+    NotesRow(bool),
     /// The left mouse button, anywhere.
     Pressed,
     Released,
@@ -88,6 +90,7 @@ pub struct Arrange {
     space_members: HashMap<OwnedRoomId, HashSet<OwnedUserId>>,
     /// The room row under the cursor.
     pub hovered: Option<OwnedRoomId>,
+    pub notes_hovered: bool,
     pub drag: Option<Drag>,
     /// The section a drag would drop into.
     pub target: Option<Section>,
@@ -179,6 +182,7 @@ impl Arrange {
                     self.hovered = None;
                 }
             }
+            Message::NotesRow(hovered) => self.notes_hovered = hovered,
             Message::Pressed => {
                 self.drag = self.hovered.clone().map(|room| Drag {
                     room,
