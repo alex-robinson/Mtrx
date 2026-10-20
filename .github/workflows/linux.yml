@@ -1,4 +1,5 @@
-# Linux (Ubuntu): checks, tests against a local Synapse, and the packages.
+# Linux (Ubuntu): checks, tests against a local Synapse, and the packages
+# (AppImage, .deb).
 name: Linux
 
 on:
@@ -45,6 +46,15 @@ jobs:
         run: cargo tree -p mtrx-app -e features -i rfd | grep -q 'rfd feature "xdg-portal"'
       - name: Tests
         run: cargo test --workspace
+      - name: Keyring tests (GNOME Keyring)
+        run: |
+          dbus-run-session -- bash -c '
+            echo -n ci | gnome-keyring-daemon --daemonize --unlock --components=secrets >/dev/null
+            cargo test -p mtrx-core --lib -- --ignored keyring_round_trip'
+      - name: Keyring tests (no Secret Service)
+        run: cargo test -p mtrx-core --lib -- --ignored keyring_missing
+        env:
+          DBUS_SESSION_BUS_ADDRESS: unix:path=/nonexistent
       - name: Synapse
         run: |
           # The container runs Synapse as uid 991; it writes to data/.
@@ -64,3 +74,43 @@ jobs:
           name: ui-snapshots
           path: target/ui-snapshots
           if-no-files-found: warn
+
+  package:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      # appimagetool is itself an AppImage; run it without FUSE.
+      APPIMAGE_EXTRACT_AND_RUN: 1
+    steps:
+      - uses: actions/checkout@v4
+      - name: System packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config libxkbcommon-dev dpkg-dev file desktop-file-utils
+      - name: appimagetool
+        run: |
+          sudo curl -fsSL -o /usr/local/bin/appimagetool \
+            https://github.com/AppImage/appimagetool/releases/download/1.9.1/appimagetool-x86_64.AppImage
+          sudo chmod +x /usr/local/bin/appimagetool
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Bundle
+        run: cargo xtask bundle
+      - name: Check the packages
+        run: |
+          dpkg-deb --info target/bundle/mtrx_*_amd64.deb
+          dpkg-deb --contents target/bundle/mtrx_*_amd64.deb
+          sudo apt-get install -y ./target/bundle/mtrx_*_amd64.deb
+          desktop-file-validate /usr/share/applications/org.mtrx.Mtrx.desktop
+          mtrx --help
+          test -x /usr/bin/mtrx-app
+          cd "$RUNNER_TEMP" && "$GITHUB_WORKSPACE"/target/bundle/Mtrx-linux-x86_64.AppImage --appimage-extract >/dev/null
+          ls -la squashfs-root squashfs-root/usr/bin
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-packages
+          path: |
+            target/bundle/*.AppImage
+            target/bundle/*.deb
+          if-no-files-found: error
