@@ -4,9 +4,11 @@
 use std::{
     collections::{HashMap, HashSet},
     hash::{DefaultHasher, Hash, Hasher},
+    io::Cursor,
     sync::Arc,
 };
 
+use ::image::{ImageFormat, RgbImage};
 use iced::{Task, widget::image};
 use mtrx_format::{Document, RenderStyle, Renderer};
 
@@ -102,6 +104,58 @@ impl Math {
         self.pending.remove(&key);
         self.images.insert(key, rendered);
     }
+
+    /// The message typeset as a PNG file: dark text on white, whatever the
+    /// theme, and sharper than on screen.
+    pub fn png(
+        &self,
+        document: &Document,
+    ) -> impl Future<Output = Result<Vec<u8>, String>> + use<> {
+        let renderer = self.renderer.clone();
+        let document = document.clone();
+        async move {
+            tokio::task::spawn_blocking(move || export(&renderer, &document))
+                .await
+                .map_err(|e| e.to_string())?
+        }
+    }
+}
+
+/// Saved pictures: their width in logical pixels, and pixels per logical
+/// pixel.
+const EXPORT_WIDTH: f32 = 680.0;
+const EXPORT_SCALE: f32 = 3.0;
+
+fn export(renderer: &Renderer, document: &Document) -> Result<Vec<u8>, String> {
+    let style = RenderStyle {
+        font_family: fonts::FAMILY.into(),
+        font_size: style::TEXT_SIZE,
+        max_width: EXPORT_WIDTH,
+        scale: EXPORT_SCALE,
+        text_color: [0x1d, 0x1d, 0x1f, 0xff],
+        link_color: [0x1a, 0x5f, 0xb4, 0xff],
+        muted_color: [0xd0, 0xd0, 0xd0, 0xff],
+    };
+    let rendered = renderer
+        .render(document, &style)
+        .map_err(|e| format!("Could not typeset the message: {e}"))?;
+    let on_white = rendered
+        .rgba
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .flat_map(|p| {
+            let alpha = u32::from(p[3]);
+            [0, 1, 2].map(|i| ((u32::from(p[i]) * alpha + 255 * (255 - alpha)) / 255) as u8)
+        })
+        .collect();
+    let picture = RgbImage::from_raw(rendered.width, rendered.height, on_white)
+        .ok_or("The typeset message is empty")?;
+    let mut png = Vec::new();
+    picture
+        .write_to(&mut Cursor::new(&mut png), ImageFormat::Png)
+        .map_err(|e| e.to_string())?;
+    Ok(png)
 }
 
 fn render(renderer: &Renderer, document: &Document, key: Key, params: &Params) -> Rendered {
@@ -132,5 +186,30 @@ impl Math {
         let rendered = render(&self.renderer, document, key, params);
         assert!(matches!(rendered, Rendered::Image { .. }), "render failed");
         self.insert(key, rendered);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn saves_math_as_a_png_on_white() {
+        let math = Math::new();
+        let document = Document::from_html(
+            r#"Melt <span data-mx-maths="\dot m = \frac{G}{\rho L}"><code>m</code></span>"#,
+        );
+        let png = export(&math.renderer, &document).unwrap();
+        let picture = ::image::load_from_memory(&png).unwrap().to_rgb8();
+        assert!(picture.width() > 100 && picture.height() > 30);
+        assert_eq!(
+            picture.get_pixel(0, 0).0,
+            [255, 255, 255],
+            "white background"
+        );
+        assert!(
+            picture.pixels().any(|p| p.0.iter().all(|&c| c < 80)),
+            "dark text"
+        );
     }
 }

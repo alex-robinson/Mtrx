@@ -38,6 +38,7 @@ use crate::{
     math::{self, Math, Rendered},
     media::{self, Previews, Viewer},
     members::Members,
+    message_menu::Selecting,
     pdf_viewer,
     room::{self, Look, Older, Room},
     send_later,
@@ -1178,6 +1179,11 @@ impl App {
                         main.pdf = None;
                     } else if main.info.is_some() {
                         main.info = None;
+                    } else if let Some(room) = main.room.as_mut().filter(|r| r.menu.is_some()) {
+                        room.menu = None;
+                    } else if let Some(room) = main.room.as_mut().filter(|r| r.selecting.is_some())
+                    {
+                        room.selecting = None;
                     } else if let Some(room) =
                         main.room.as_mut().filter(|r| r.composer_emoji.is_some())
                     {
@@ -1889,6 +1895,55 @@ impl App {
                     edit.insert_emoji(&emoji);
                 }
                 Task::batch([InlineEdit::focus(), used_emoji(main, emoji)])
+            }
+            Act::OpenMenu(id, at) => {
+                room.menu = Some((id, at));
+                room.picker = None;
+                room.emoji = None;
+                Task::none()
+            }
+            Act::CloseMenu => {
+                room.menu = None;
+                Task::none()
+            }
+            Act::Copy(text) => {
+                room.menu = None;
+                iced::clipboard::write(text)
+            }
+            Act::SaveImage(document) => {
+                room.menu = None;
+                let png = self.math.png(&document);
+                Task::perform(
+                    async move {
+                        let png = png.await?;
+                        let Some(file) = rfd::AsyncFileDialog::new()
+                            .set_file_name("message.png")
+                            .save_file()
+                            .await
+                        else {
+                            return Ok(());
+                        };
+                        file.write(&png)
+                            .await
+                            .map_err(|e| format!("Could not save {}: {e}", file.file_name()))
+                    },
+                    |result| Message::Act(Act::Done(result)),
+                )
+            }
+            Act::SelectText(id, text) => {
+                room.menu = None;
+                room.selecting = Some(Selecting::new(id, &text));
+                Selecting::focus()
+            }
+            Act::SelectAction(action) => {
+                if let Some(selecting) = &mut room.selecting {
+                    selecting.perform(action);
+                }
+                Task::none()
+            }
+            Act::CloseSelect => {
+                room.selecting = None;
+                Task::none()
             }
             Act::TogglePicker(id, at) => {
                 let picker = (id, at);

@@ -181,18 +181,39 @@ impl<'a, Message: Clone + 'a> Widget<Message, Theme, Renderer> for Popover<'a, M
             translation,
         );
         let panel = self.open.then(|| {
-            overlay::Element::new(Box::new(Panel {
-                panel: &mut self.panel,
-                tree: panel_tree,
-                anchor: layout.bounds() + translation,
-                side: self.side,
-                edge: self.edge,
-                on_dismiss: self.on_dismiss.clone(),
-            }))
+            floating(
+                &mut self.panel,
+                panel_tree,
+                layout.bounds() + translation,
+                self.side,
+                self.edge,
+                self.on_dismiss.clone(),
+            )
         });
         let overlays: Vec<_> = nested.into_iter().chain(panel).collect();
         (!overlays.is_empty()).then(|| overlay::Group::with_children(overlays).overlay())
     }
+}
+
+/// `panel` floating on `side` of `anchor` (in window coordinates), lined
+/// up with its `edge`, over everything else; a click outside it sends
+/// `on_dismiss`.
+pub fn floating<'a, 'b, Message: Clone + 'a>(
+    panel: &'b mut Element<'a, Message>,
+    tree: &'b mut Tree,
+    anchor: Rectangle,
+    side: Side,
+    edge: Edge,
+    on_dismiss: Option<Message>,
+) -> overlay::Element<'b, Message, Theme, Renderer> {
+    overlay::Element::new(Box::new(Panel {
+        panel,
+        tree,
+        anchor,
+        side,
+        edge,
+        on_dismiss,
+    }))
 }
 
 struct Panel<'a, 'b, Message> {

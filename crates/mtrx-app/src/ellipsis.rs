@@ -12,21 +12,23 @@ use iced::{
     alignment,
     widget::text,
 };
+use std::borrow::Cow;
+
 use unicode_segmentation::UnicodeSegmentation;
 
 const ELLIPSIS: &str = "…";
 
 pub struct Ellipsis<'a> {
-    content: &'a str,
+    content: Cow<'a, str>,
     size: Pixels,
     font: Font,
     width: Length,
     style: fn(&Theme) -> text::Style,
 }
 
-pub fn ellipsis(content: &str) -> Ellipsis<'_> {
+pub fn ellipsis<'a>(content: impl Into<Cow<'a, str>>) -> Ellipsis<'a> {
     Ellipsis {
-        content,
+        content: content.into(),
         size: Pixels(crate::style::TEXT_SIZE),
         font: crate::fonts::INTER,
         width: Length::Shrink,
@@ -71,7 +73,7 @@ impl Ellipsis<'_> {
 
     /// The longest prefix (whole graphemes) plus "…" within `max_width`.
     fn fit<P: core_text::Paragraph<Font = Font>>(&self, max_width: f32) -> P {
-        let full: P = self.paragraph(self.content);
+        let full: P = self.paragraph(&self.content);
         if full.min_width() <= max_width {
             return full;
         }
@@ -136,14 +138,14 @@ where
             .fitted
             .as_ref()
             .is_some_and(|(content, width, size, font)| {
-                content == self.content
+                *content == self.content
                     && *width == max_width
                     && *size == self.size
                     && *font == self.font
             });
         if !current {
             state.paragraph = self.fit(max_width);
-            state.fitted = Some((self.content.to_owned(), max_width, self.size, self.font));
+            state.fitted = Some((self.content.to_string(), max_width, self.size, self.font));
         }
         let bounds = state.paragraph.min_bounds();
         layout::Node::new(limits.resolve(self.width, Length::Shrink, bounds))

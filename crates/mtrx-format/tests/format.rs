@@ -58,6 +58,7 @@ fn parses_element_math() {
         ]
     );
     assert!(doc.has_math());
+    assert_eq!(doc.formulas(), ["E=mc^2", r"\sum_i x_i"]);
     assert_eq!(doc.to_plain_text(), "Energy $E=mc^2$\n\n$$\\sum_i x_i$$");
 }
 

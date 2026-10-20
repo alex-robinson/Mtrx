@@ -1,5 +1,6 @@
-//! Actions on messages (react, reply, edit, delete), what the composer is
-//! writing (a new message or a reply), and editing a message in place.
+//! Actions on messages (react, reply, edit, delete, its menu), what the
+//! composer is writing (a new message or a reply), and editing a message in
+//! place.
 
 use iced::{
     Alignment, Element, Length, Theme,
@@ -7,6 +8,7 @@ use iced::{
     widget::{button, column, container, row, space, text, text_editor},
 };
 use mtrx_core::{Event, EventKey, MxcUri, OwnedEventId, Reaction, Reader, Reply};
+use mtrx_format::Document;
 
 use crate::{
     app,
@@ -15,6 +17,7 @@ use crate::{
     emoji, fonts,
     hint::{Position, hint},
     icons,
+    message_menu::MenuAt,
     popover::{Edge, Side, popover},
     style,
 };
@@ -46,6 +49,17 @@ pub enum Message {
     AskDelete(String),
     Delete(EventKey),
     CancelDelete,
+    /// Open a timeline row's menu, there.
+    OpenMenu(String, MenuAt),
+    CloseMenu,
+    /// Put text on the clipboard.
+    Copy(String),
+    /// Save a message with math as a picture.
+    SaveImage(Document),
+    /// Show a timeline row's text in place of it, to select from.
+    SelectText(String, String),
+    SelectAction(text_editor::Action),
+    CloseSelect,
     /// Stop replying.
     CancelCompose,
     Done(Result<(), String>),
@@ -251,6 +265,9 @@ fn tool_color(theme: &Theme) -> iced::Color {
         .scale_alpha(0.7)
 }
 
+/// The toolbar's "⋯" for a message with a menu: the menu while open there.
+pub struct Menu<'a>(pub Option<Element<'a, app::Message>>);
+
 /// Symbols floating over a hovered message, each named on hover; the
 /// reaction window floats from the smiley while `picker` is given.
 pub fn toolbar<'a>(
@@ -258,6 +275,7 @@ pub fn toolbar<'a>(
     target: Option<Target>,
     edit_text: Option<String>,
     picker: Option<Element<'a, app::Message>>,
+    menu: Option<Menu<'a>>,
 ) -> Element<'a, app::Message> {
     let tool = |icon: Element<'a, app::Message>, tip: &'static str, message: Option<Message>| {
         hint(
@@ -301,6 +319,24 @@ pub fn toolbar<'a>(
             "Delete",
             Some(Message::AskDelete(event.id.clone())),
         ));
+    }
+    if let Some(Menu(open)) = menu {
+        // While open, a click on it closes the menu as any outside click.
+        let more = tool(
+            text("⋯")
+                .size(style::TOOL_ICON)
+                .line_height(1.0)
+                .style(|theme: &Theme| text::Style {
+                    color: Some(tool_color(theme)),
+                })
+                .into(),
+            "More: copy, select text",
+            open.is_none()
+                .then(|| Message::OpenMenu(event.id.clone(), MenuAt::Toolbar)),
+        );
+        bar = bar.push(
+            popover(more, open, Side::Below, Edge::Right).on_dismiss(act(Message::CloseMenu)),
+        );
     }
     container(bar)
         .padding(style::TOOLBAR_PADDING)
@@ -500,6 +536,6 @@ pub fn typing<'a>(names: &[String]) -> Option<Element<'a, app::Message>> {
     Some(text(line).size(12).style(text::secondary).into())
 }
 
-fn act(message: Message) -> app::Message {
+pub fn act(message: Message) -> app::Message {
     app::Message::Act(message)
 }

@@ -21,10 +21,11 @@ use mtrx_core::{
 };
 
 use crate::{
-    actions::{self, Compose, Editing, InlineEdit, PickerAt, Target},
+    actions::{self, Compose, Editing, InlineEdit, PickerAt, Target, act},
     app::Message,
     avatar::{self, Avatars, Shape},
     calls::{self, RoomCalls},
+    context_menu::context_menu,
     ellipsis::ellipsis,
     emoji, fonts,
     hint::{Position, hint},
@@ -33,6 +34,7 @@ use crate::{
     media::{self, Previews},
     members::Members,
     message,
+    message_menu::{self, MenuAt, Selecting},
     popover::{Edge, Side, popover},
     send_later::{self, SendLater},
     style::{
@@ -72,6 +74,10 @@ pub struct Room {
     pub editing: Option<InlineEdit>,
     /// The timeline row whose reaction window is open, and where.
     pub picker: Option<(String, PickerAt)>,
+    /// The timeline row whose menu is open, and where.
+    pub menu: Option<(String, MenuAt)>,
+    /// A message's text shown in place of it, to select from.
+    pub selecting: Option<Selecting>,
     /// All emoji in the reaction picker, while shown.
     pub emoji: Option<emoji::Panel>,
     /// The composer's emoji panel, while shown.
@@ -108,6 +114,8 @@ impl Room {
             compose: Compose::New,
             editing: None,
             picker: None,
+            menu: None,
+            selecting: None,
             emoji: None,
             composer_emoji: None,
             confirm_delete: None,
@@ -274,6 +282,8 @@ impl Room {
             call_services: look.call_services,
             hovered: self.hovered.as_deref(),
             picker: self.picker.as_ref().map(|(id, at)| (id.as_str(), *at)),
+            menu: self.menu.as_ref().map(|(id, at)| (id.as_str(), *at)),
+            selecting: self.selecting.as_ref(),
             emoji: self.emoji.as_ref(),
             frequent_emoji: look.frequent_emoji,
             confirm_delete: self.confirm_delete.as_deref(),
@@ -582,6 +592,8 @@ struct Context<'a, 'b> {
     call_services: &'b [CallService],
     hovered: Option<&'b str>,
     picker: Option<(&'b str, PickerAt)>,
+    menu: Option<(&'b str, MenuAt)>,
+    selecting: Option<&'a Selecting>,
     emoji: Option<&'a emoji::Panel>,
     /// The user's most used emoji.
     frequent_emoji: &'b [String],
@@ -606,6 +618,13 @@ fn event_view<'a>(
         .picker
         .filter(|(id, _)| *id == event.id)
         .map(|(_, at)| at);
+    // Where this message's menu is open, if it is.
+    let menu_at = context
+        .menu
+        .filter(|(id, _)| *id == event.id)
+        .map(|(_, at)| at);
+    // Its math is shown typeset, so it can be saved as a picture.
+    let mut math_shown = false;
     let body: Element<'a, Message> = match &event.content {
         EventContent::Message(m) => {
             let content: Element<'a, Message> = match (m.kind, m.document.has_math()) {
@@ -615,7 +634,10 @@ fn event_view<'a>(
                             handle,
                             width,
                             height,
-                        }) => image(handle.clone()).width(*width).height(*height).into(),
+                        }) => {
+                            math_shown = true;
+                            image(handle.clone()).width(*width).height(*height).into()
+                        }
                         _ => message::view(&m.document, theme, Message::LinkClicked),
                     }
                 }
@@ -680,13 +702,23 @@ fn event_view<'a>(
     let edit = context
         .editing
         .filter(|e| e.target == Editing::Sent(event.key.clone()));
-    item = item.push(match edit {
-        Some(edit) => edit.view(context.frequent_emoji),
-        None => body,
+    let selecting = context.selecting.filter(|s| s.id == event.id);
+    item = item.push(match (edit, selecting) {
+        (Some(edit), _) => edit.view(context.frequent_emoji),
+        (None, Some(selecting)) => selecting.view(),
+        (None, None) => body,
     });
     let message = match &event.content {
         EventContent::Message(m) => Some(m),
         _ => None,
+    };
+    let menu_items = message
+        .map(|m| message_menu::items(m, &event.id, math_shown))
+        .filter(|items| !items.is_empty());
+    let menu_view = |at| {
+        (menu_at == Some(at))
+            .then(|| menu_items.clone().map(message_menu::view))
+            .flatten()
     };
     if context.confirm_delete == Some(event.id.as_str()) {
         item = item.push(actions::confirm_delete(event));
@@ -748,7 +780,9 @@ fn event_view<'a>(
     let row: Element<'a, Message> = match message {
         // Also while its reaction window is open.
         Some(m)
-            if (hovered || picking == Some(PickerAt::Toolbar))
+            if (hovered
+                || picking == Some(PickerAt::Toolbar)
+                || menu_at == Some(MenuAt::Toolbar))
                 && event.event_id.is_some()
                 && edit.is_none() =>
         {
@@ -758,15 +792,30 @@ fn event_view<'a>(
             let picker = (picking == Some(PickerAt::Toolbar)).then(|| {
                 actions::picker(event, &m.reactions, context.frequent_emoji, context.emoji)
             });
+            let menu = menu_items
+                .is_some()
+                .then(|| actions::Menu(menu_view(MenuAt::Toolbar)));
             stack![
                 row,
-                container(actions::toolbar(event, target, edit_text, picker))
+                container(actions::toolbar(event, target, edit_text, picker, menu))
                     .align_right(Length::Fill)
                     .padding(Padding::ZERO.top(1.0).right(8.0)),
             ]
             .into()
         }
         _ => row.into(),
+    };
+    // Right-click opens the menu where the cursor is.
+    let row: Element<'a, Message> = if menu_items.is_some() {
+        context_menu(
+            row,
+            menu_view(MenuAt::Cursor),
+            act(actions::Message::OpenMenu(event.id.clone(), MenuAt::Cursor)),
+        )
+        .on_dismiss(act(actions::Message::CloseMenu))
+        .into()
+    } else {
+        row
     };
     let row = mouse_area(row)
         .on_enter(Message::Hover(event.id.clone(), true))

@@ -138,25 +138,39 @@ impl Document {
     }
 
     pub fn has_math(&self) -> bool {
-        fn inline(i: &Inline) -> bool {
-            match i {
-                Inline::Math(_) => true,
-                Inline::Styled { content, .. } | Inline::Link { content, .. } => {
-                    content.iter().any(inline)
+        !self.formulas().is_empty()
+    }
+
+    /// The LaTeX of each formula, inline or displayed, in order of
+    /// appearance.
+    pub fn formulas(&self) -> Vec<&str> {
+        fn inlines<'a>(list: &'a [Inline], out: &mut Vec<&'a str>) {
+            for inline in list {
+                match inline {
+                    Inline::Math(tex) => out.push(tex),
+                    Inline::Styled { content, .. } | Inline::Link { content, .. } => {
+                        inlines(content, out)
+                    }
+                    _ => {}
                 }
-                _ => false,
             }
         }
-        fn block(b: &Block) -> bool {
-            match b {
-                Block::Math(_) => true,
-                Block::Paragraph(c) | Block::Heading { content: c, .. } => c.iter().any(inline),
-                Block::Quote(blocks) => blocks.iter().any(block),
-                Block::List { items, .. } => items.iter().flatten().any(block),
-                Block::CodeBlock { .. } | Block::Rule => false,
+        fn blocks<'a>(list: &'a [Block], out: &mut Vec<&'a str>) {
+            for block in list {
+                match block {
+                    Block::Math(tex) => out.push(tex),
+                    Block::Paragraph(content) | Block::Heading { content, .. } => {
+                        inlines(content, out)
+                    }
+                    Block::Quote(inner) => blocks(inner, out),
+                    Block::List { items, .. } => items.iter().for_each(|item| blocks(item, out)),
+                    Block::CodeBlock { .. } | Block::Rule => {}
+                }
             }
         }
-        self.blocks.iter().any(block)
+        let mut out = Vec::new();
+        blocks(&self.blocks, &mut out);
+        out
     }
 
     /// Plain text for copying: Markdown-like, with math as `$…$` / `$$…$$`.

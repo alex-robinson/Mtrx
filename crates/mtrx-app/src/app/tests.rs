@@ -19,7 +19,10 @@ use mtrx_core::{
 use tempfile::TempDir;
 
 use super::*;
-use crate::fonts;
+use crate::{
+    fonts,
+    message_menu::{MenuAt, Selecting},
+};
 
 const TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -397,6 +400,23 @@ async fn main_screen_with_math() {
         if mode == Mode::Light {
             open.calls.editor = Some("https://meet.jit.si/ice-sheets-weekly".into());
             open.calls.announce = true;
+            // The hovered message's menu, from its toolbar.
+            open.menu = Some((hovered.clone(), MenuAt::Toolbar));
+        } else {
+            // A message's text, to select from.
+            let (id, text) = entries
+                .iter()
+                .find_map(|e| match e {
+                    TimelineEntry::Event(ev) => match &ev.content {
+                        EventContent::Message(m) if m.body.contains("Which geothermal") => {
+                            Some((ev.id.clone(), m.document.to_plain_text()))
+                        }
+                        _ => None,
+                    },
+                    _ => None,
+                })
+                .unwrap();
+            open.selecting = Some(Selecting::new(id, &text));
         }
         open.typing = vec!["bob".into()];
         if mode == Mode::Dark {
