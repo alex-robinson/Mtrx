@@ -74,3 +74,40 @@ pub async fn register(name: &str) -> Result<(), String> {
     }
     Ok(())
 }
+
+/// Log `name` out on all their devices, as if signed out elsewhere: their
+/// sessions' tokens stop working.
+pub async fn log_out_everywhere(name: &str) -> Result<(), String> {
+    let http = matrix_sdk::reqwest::Client::new();
+    let err = |e: &dyn std::fmt::Display| e.to_string();
+    let login = serde_json::json!({
+        "type": "m.login.password",
+        "identifier": { "type": "m.id.user", "user": name },
+        "password": PASSWORD,
+    });
+    let response: serde_json::Value = http
+        .post(format!("{}/_matrix/client/v3/login", homeserver()))
+        .header("content-type", "application/json")
+        .body(login.to_string())
+        .send()
+        .await
+        .map_err(|e| err(&e))?
+        .json()
+        .await
+        .map_err(|e| err(&e))?;
+    let token = response["access_token"]
+        .as_str()
+        .ok_or_else(|| format!("no access token: {response}"))?;
+    let response = http
+        .post(format!("{}/_matrix/client/v3/logout/all", homeserver()))
+        .bearer_auth(token)
+        .header("content-type", "application/json")
+        .body("{}")
+        .send()
+        .await
+        .map_err(|e| err(&e))?;
+    if !response.status().is_success() {
+        return Err(format!("logging out failed: {}", response.status()));
+    }
+    Ok(())
+}

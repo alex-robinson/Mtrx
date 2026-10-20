@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use matrix_sdk::{
-    Client, SessionChange,
+    Client,
     authentication::oauth::{
         ClientId, OAuthSession,
         registration::{ApplicationType, ClientMetadata, Localized, OAuthGrantType},
@@ -54,7 +54,6 @@ pub struct Session {
     /// room's mode right after setting it (sync echoes it later).
     pub(crate) notification_settings: matrix_sdk::notification_settings::NotificationSettings,
     profile: Profile,
-    _save_tokens: AbortOnDrop,
     _connection: AbortOnDrop,
 }
 
@@ -207,10 +206,6 @@ impl Session {
         let (connection, watch_connection) = crate::connection::watch(client.clone(), sync.clone());
         let verification_tx = crate::encryption::register_handlers(&client);
         let notifications = crate::notifications::register(&client).await;
-        let save_tokens = AbortOnDrop(tokio::spawn(save_refreshed_tokens(
-            client.clone(),
-            profile.clone(),
-        )));
         let send_lock = Arc::new(Mutex::new(()));
         let schedule = Arc::new(Schedule::load(client.clone(), send_lock.clone()).await?);
         let categories = crate::categories::Categories::load(client.clone()).await;
@@ -228,7 +223,6 @@ impl Session {
             connection,
             notification_settings,
             profile,
-            _save_tokens: save_tokens,
             _connection: watch_connection,
         })
     }
@@ -252,6 +246,13 @@ impl Session {
         if let Err(e) = self.client.logout().await {
             warn!("server-side logout failed, removing local data anyway: {e}");
         }
+        self.forget().await
+    }
+
+    /// Delete all local data of the profile, for a session the server no
+    /// longer accepts (see [`crate::Connection::SignedOut`]), so it can be
+    /// logged in again. The session must not be used afterwards.
+    pub async fn forget(&self) -> Result<()> {
         self.sync.stop().await;
         self.profile.forget_session()?;
         // Store files may still be open (e.g. on Windows they then cannot be
@@ -296,7 +297,7 @@ fn client_builder(homeserver: &str) -> matrix_sdk::ClientBuilder {
 }
 
 async fn build_client(profile: &Profile, homeserver: &str, passphrase: &str) -> Result<Client> {
-    Ok(client_builder(homeserver)
+    let client = client_builder(homeserver)
         .sqlite_store(profile.store_dir(), Some(passphrase))
         .handle_refresh_tokens()
         .with_encryption_settings(EncryptionSettings {
@@ -305,7 +306,42 @@ async fn build_client(profile: &Profile, homeserver: &str, passphrase: &str) -> 
             auto_enable_backups: true,
         })
         .build()
-        .await?)
+        .await?;
+    share_tokens(&client, profile).await?;
+    Ok(client)
+}
+
+/// Every refresh replaces the refresh token, so the processes using a
+/// profile (the app, the CLI) must not refresh at once, nor lose a new
+/// token: refreshes take a lock in the store they share, new tokens are
+/// saved before a refresh completes, and the other processes reload them.
+async fn share_tokens(client: &Client, profile: &Profile) -> Result<()> {
+    let program = std::env::current_exe()
+        .ok()
+        .and_then(|path| Some(path.file_stem()?.to_string_lossy().into_owned()))
+        .unwrap_or_else(|| "mtrx".to_owned());
+    client
+        .oauth()
+        .enable_cross_process_refresh_lock(format!("{program}-{}", std::process::id()))
+        .await?;
+    let (saved, to_save) = (profile.clone(), profile.clone());
+    client.set_session_callbacks(
+        Box::new(move |_| {
+            let stored = saved
+                .load_session()?
+                .ok_or(Error::NotLoggedIn(saved.name().to_owned()))?;
+            Ok(stored.auth.tokens())
+        }),
+        Box::new(move |client| {
+            // While logging in nothing is saved yet; the login saves it all.
+            if let Some(mut stored) = to_save.load_session()? {
+                stored.auth = stored_auth(&client);
+                to_save.save_session(&stored)?;
+            }
+            Ok(())
+        }),
+    )?;
+    Ok(())
 }
 
 fn stored_auth(client: &Client) -> StoredAuth {
@@ -315,32 +351,6 @@ fn stored_auth(client: &Client) -> StoredAuth {
             session: session.user,
         },
         None => StoredAuth::Password(client.matrix_auth().session().expect("logged in")),
-    }
-}
-
-/// Access tokens expire and get refreshed by the SDK; keep the stored copy current.
-async fn save_refreshed_tokens(client: Client, profile: Profile) {
-    let mut changes = client.subscribe_to_session_changes();
-    loop {
-        match changes.recv().await {
-            Ok(SessionChange::TokensRefreshed) => {
-                let saved = profile.load_session().and_then(|stored| match stored {
-                    Some(mut stored) => {
-                        stored.auth = stored_auth(&client);
-                        profile.save_session(&stored)
-                    }
-                    None => Ok(()),
-                });
-                if let Err(e) = saved {
-                    warn!("could not save refreshed tokens: {e}");
-                }
-            }
-            Ok(SessionChange::UnknownToken(_)) => {
-                warn!("the server no longer accepts this session")
-            }
-            Err(broadcast::error::RecvError::Lagged(_)) => {}
-            Err(broadcast::error::RecvError::Closed) => return,
-        }
     }
 }
 

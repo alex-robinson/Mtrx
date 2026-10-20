@@ -44,6 +44,15 @@ pub(crate) enum StoredAuth {
     },
 }
 
+impl StoredAuth {
+    pub(crate) fn tokens(self) -> matrix_sdk::SessionTokens {
+        match self {
+            Self::Password(session) => session.tokens,
+            Self::OAuth { session, .. } => session.tokens,
+        }
+    }
+}
+
 impl Profile {
     /// Profile `name` under `data_root` (default: [`Profile::default_data_root`]).
     pub fn new(name: &str, data_root: Option<&Path>, secrets: SecretStore) -> Result<Self> {

@@ -825,6 +825,10 @@ async fn room_management_screens() {
         "offline",
     );
     snapshot(
+        &main_with(&|main| main.connection = Connection::SignedOut),
+        "signed-out",
+    );
+    snapshot(
         &main_with(&|main| {
             main.out_of_view = sidebar::OutOfView {
                 above: Some((1, 0.0)),

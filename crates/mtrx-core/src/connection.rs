@@ -1,10 +1,11 @@
-//! Whether the server is reachable. Sync goes offline on network errors and
-//! checks the server until it answers again; meanwhile messages wait in the
-//! send queue, which is re-enabled once the server is back.
+//! Whether the server is reachable and still accepts the session. Sync
+//! goes offline on network errors and checks the server until it answers
+//! again; meanwhile messages wait in the send queue, which is re-enabled
+//! once the server is back. A session the server rejected stays signed out.
 
 use std::{sync::Arc, time::Duration};
 
-use matrix_sdk::Client;
+use matrix_sdk::{Client, SessionChange};
 use matrix_sdk_ui::sync_service::{State, SyncService};
 use tokio::{
     sync::{broadcast, watch},
@@ -26,6 +27,9 @@ pub enum Connection {
     Online,
     /// The server is unreachable; sync checks it until it answers.
     Offline,
+    /// The server no longer accepts the session (it expired or was signed
+    /// out elsewhere): only logging in again helps.
+    SignedOut,
 }
 
 /// Follow sync's state as a [`Connection`] until dropped, restarting sync
@@ -38,9 +42,22 @@ pub(crate) fn watch(
     let task = tokio::spawn(async move {
         let mut states = sync.state();
         let mut errors = client.send_queue().subscribe_errors();
+        let mut sessions = client.subscribe_to_session_changes();
         let mut resend: Option<Instant> = None;
         loop {
             tokio::select! {
+                change = sessions.recv() => match change {
+                    Ok(SessionChange::UnknownToken(_)) => {
+                        warn!("the server no longer accepts this session");
+                        tx.send_replace(Connection::SignedOut);
+                        // Retrying cannot help; and states no longer matter.
+                        sync.stop().await;
+                        return;
+                    }
+                    Ok(SessionChange::TokensRefreshed)
+                    | Err(broadcast::error::RecvError::Lagged(_)) => {}
+                    Err(broadcast::error::RecvError::Closed) => return,
+                },
                 state = states.next() => match state {
                     Some(State::Running) => {
                         tx.send_replace(Connection::Online);

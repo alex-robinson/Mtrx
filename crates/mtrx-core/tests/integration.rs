@@ -1233,3 +1233,32 @@ async fn room_settings() -> Result<()> {
     }
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs local Synapse (testserver/run.sh)"]
+async fn signed_out_elsewhere() -> Result<()> {
+    let name = unique_name("ended");
+    register(&name).await?;
+    let dir = TempDir::new()?;
+    let profile = || Profile::new("p", Some(dir.path()), SecretStore::File);
+    let session = Session::login(profile()?, &homeserver(), &name, PASSWORD).await?;
+    session.start_sync().await;
+    // Restoring in a second process works alongside (tokens are shared).
+    drop(Session::restore(profile()?).await?);
+
+    test_support::log_out_everywhere(&name)
+        .await
+        .map_err(anyhow::Error::msg)?;
+    wait_for("signed out", session.connection_updates(), |c| {
+        *c == Connection::SignedOut
+    })
+    .await?;
+    assert_eq!(session.connection(), Connection::SignedOut);
+
+    session.forget().await?;
+    assert!(matches!(
+        Session::restore(profile()?).await,
+        Err(mtrx_core::Error::NotLoggedIn(_))
+    ));
+    Ok(())
+}

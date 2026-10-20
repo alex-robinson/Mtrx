@@ -31,7 +31,9 @@ use crate::{
     avatar::{self, Avatars},
     calls,
     dialog::{self, Dialog},
-    emoji, info,
+    emoji,
+    hint::{Position, hint},
+    info,
     last_view::LastView,
     login::{self, Login},
     math::{self, Math, Rendered},
@@ -168,6 +170,10 @@ pub enum Message {
     Resize(Resize),
     /// Try the server now.
     Reconnect,
+    /// The server no longer accepts the session: forget it and log in again.
+    SignInAgain,
+    /// The ended session's local data is gone.
+    Forgotten(Result<(), String>),
     Reloaded(OwnedRoomId, Result<Shared<RoomTimeline>, String>),
     /// People the user knows, for suggestions.
     ContactsLoaded(Vec<Contact>),
@@ -702,7 +708,7 @@ impl App {
                             more = fill(room);
                         }
                         // Loaded once the server is back.
-                        Err(_) if main.connection == Connection::Offline => {}
+                        Err(_) if main.connection != Connection::Online => {}
                         Err(e) => room.error = Some(e),
                     }
                 }
@@ -982,8 +988,11 @@ impl App {
                 let Screen::Main(main) = &mut self.screen else {
                     return Task::none();
                 };
-                if main.connection == Connection::Offline {
-                    return self.update(Message::Reconnect);
+                match main.connection {
+                    Connection::Offline => return self.update(Message::Reconnect),
+                    // Its bar offers signing in again.
+                    Connection::SignedOut => return Task::none(),
+                    Connection::Online => {}
                 }
                 let Some(room) = &mut main.room else {
                     return Task::none();
@@ -1010,6 +1019,28 @@ impl App {
                     Some(room) if back => fill(room),
                     _ => Task::none(),
                 }
+            }
+            Message::SignInAgain => {
+                let Screen::Main(main) = &self.screen else {
+                    return Task::none();
+                };
+                let session = main.session.clone();
+                Task::perform(
+                    async move { session.forget().await.map_err(|e| e.to_string()) },
+                    Message::Forgotten,
+                )
+            }
+            Message::Forgotten(result) => {
+                let Screen::Main(main) = &self.screen else {
+                    return Task::none();
+                };
+                // Ready to log in as before.
+                let mut login = Login::default();
+                login.homeserver = main.own_user.server_name().to_string();
+                login.user = main.own_user.localpart().to_owned();
+                login.error = result.err();
+                self.screen = Screen::Login(login);
+                Task::none()
             }
             Message::Reconnect => {
                 let Screen::Main(main) = &self.screen else {
@@ -2339,6 +2370,7 @@ impl App {
         let window: Element<'a, Message> = match main.connection {
             Connection::Online => main_row.into(),
             Connection::Offline => column![main_row, offline_bar()].into(),
+            Connection::SignedOut => column![main_row, signed_out_bar()].into(),
         };
         match sidebar::drag_preview(rooms, &main.arrange, &main.avatars) {
             Some(preview) => stack![window, preview].into(),
@@ -2458,6 +2490,34 @@ fn offline_bar<'a>() -> Element<'a, Message> {
                 .padding([3, 10])
                 .style(style::secondary_button)
                 .on_press(Message::Reconnect),
+        ]
+        .spacing(10)
+        .align_y(iced::Alignment::Center),
+    )
+    .padding([6, 16])
+    .width(Length::Fill)
+    .style(style::offline_bar)
+    .into()
+}
+
+/// Along the bottom once the server no longer accepts the session.
+fn signed_out_bar<'a>() -> Element<'a, Message> {
+    container(
+        row![
+            text("Your session has ended")
+                .size(13)
+                .font(crate::fonts::SEMIBOLD),
+            text("The server no longer accepts this login: it expired or was signed out elsewhere.")
+                .size(13)
+                .width(Length::Fill),
+            hint(
+                button(text("Sign in again").size(13))
+                    .padding([3, 10])
+                    .style(style::primary_button)
+                    .on_press(Message::SignInAgain),
+                "Remove this device's data and log in again (your recovery key unlocks older messages)",
+                Position::Top,
+            ),
         ]
         .spacing(10)
         .align_y(iced::Alignment::Center),
