@@ -759,19 +759,15 @@ impl<'a> RoomListView<'a> {
             None => name.width(Length::Fill).into(),
         };
         let mut line = row![avatar, name].spacing(8).align_y(Alignment::Center);
-        if let Some(later) = Later::of(self.scheduled, &room.id) {
-            line = line.push(later.view());
-        }
         let menu = arrange_message(arrange::Message::RoomMenu(
             (!menu_open).then(|| room.id.clone()),
         ));
         let dragging = self.arrange.dragging().is_some();
         let actions = (hovered || menu_open) && !room.invited && !dragging;
-        let favourite = room.tag == RoomTag::Favourite;
-        if favourite || actions {
-            line = line.push(star_button(&room.id, favourite));
-        }
+        // On hover the star and menu take the place of the scheduled-message
+        // clock, so nothing else moves. Favourites have their own section.
         if actions {
+            line = line.push(star_button(&room.id, room.tag == RoomTag::Favourite));
             line = line.push(with_tooltip(
                 button(text("⋯").size(13))
                     .padding([0, 4])
@@ -779,6 +775,8 @@ impl<'a> RoomListView<'a> {
                     .on_press(menu.clone()),
                 "Settings, low priority, categories (or right-click)".into(),
             ));
+        } else if let Some(later) = Later::of(self.scheduled, &room.id) {
+            line = line.push(later.view());
         }
         let entry = button(container(line).center_y(Length::Fill))
             .width(Length::Fill)
