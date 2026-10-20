@@ -38,6 +38,13 @@ async fn user(prefix: &str, dir: &TempDir) -> (String, Session) {
     (name, session)
 }
 
+/// Show the room's start, as once back-pagination reached it.
+fn with_start(entries: &mut Vec<TimelineEntry>) {
+    if !matches!(entries.first(), Some(TimelineEntry::Start)) {
+        entries.insert(0, TimelineEntry::Start);
+    }
+}
+
 fn snapshot(app: &App, name: &str) {
     // Snapshots are for looking at, not regression baselines: always rewrite.
     // iced_test appends the renderer name, e.g. `login-wgpu.png`.
@@ -361,7 +368,7 @@ async fn main_screen_with_math() {
         main.verified = Some(true);
         let mut open = Room::new(room.clone(), timeline.clone());
         open.entries = entries.clone();
-        open.entries.insert(0, TimelineEntry::Start);
+        with_start(&mut open.entries);
         open.hover(hovered.clone(), true);
         open.calls.link = Some(Url::parse("https://meet.jit.si/ice-sheets-weekly").unwrap());
         open.calls.space_service =
@@ -496,9 +503,11 @@ async fn send_later_bar() {
     ];
     let mut open = Room::new(room.clone(), timeline.clone());
     open.entries = timeline.current();
-    open.entries.insert(0, TimelineEntry::Start);
+    with_start(&mut open.entries);
     open.composer = text_editor::Content::with_text("Who can take the Monday slot?");
-    open.later.picker = Some("tomorrow 8:00".into());
+    let mut picker = send_later::Picker::new(now, None);
+    let _ = picker.update(&send_later::Message::Typed("tomorrow 8:00".into()), now);
+    open.later.picker = Some(picker);
     main.room = Some(open);
     let mut app = app(Screen::Main(Box::new(main)), Mode::Light);
     snapshot(&app, "send-later");
@@ -613,7 +622,7 @@ async fn big_room_benchmark() {
     let session = Arc::new(second);
     let mut main = Main::new(session);
     let mut open = Room::new(room.clone(), timeline.clone());
-    open.entries.insert(0, TimelineEntry::Start);
+    with_start(&mut open.entries);
     main.room = Some(open);
     let app = app(Screen::Main(Box::new(main)), Mode::Light);
     let start = std::time::Instant::now();
@@ -678,7 +687,7 @@ async fn room_management_screens() {
         main.verified = Some(true);
         let mut open = Room::new(room.clone(), timeline.clone());
         open.entries = timeline.current();
-        open.entries.insert(0, TimelineEntry::Start);
+        with_start(&mut open.entries);
         main.room = Some(open);
         configure(&mut main);
         app(Screen::Main(Box::new(main)), Mode::Light)
@@ -845,7 +854,7 @@ async fn media_messages() {
         main.verified = Some(true);
         let mut open = Room::new(room.clone(), timeline.clone());
         open.entries = entries.clone();
-        open.entries.insert(0, TimelineEntry::Start);
+        with_start(&mut open.entries);
         let images: Vec<MediaRef> = open.images().cloned().collect();
         for media in &images {
             main.previews.load_now(&session, media).await;

@@ -624,7 +624,9 @@ impl App {
                         let send_at = editing.send_at;
                         self.later(send_later::Message::At(send_at))
                     } else {
-                        room.later.picker.get_or_insert_default();
+                        room.later.picker.get_or_insert_with(|| {
+                            send_later::Picker::new(SystemTime::now(), None)
+                        });
                         room.error = Some("Its time has passed: pick a new one.".into());
                         Task::none()
                     };
@@ -1583,19 +1585,32 @@ impl App {
         };
         match message {
             Later::TogglePicker => {
-                room.later.picker = match room.later.picker {
-                    Some(_) => None,
-                    None => Some(String::new()),
-                };
-                Task::none()
+                if room.later.picker.take().is_some() {
+                    return Task::none();
+                }
+                // Changing a scheduled message's time starts from it.
+                let at = room.compose.scheduled().map(|m| m.send_at);
+                let picker = send_later::Picker::new(SystemTime::now(), at);
+                let scroll = picker.scroll();
+                room.later.picker = Some(picker);
+                scroll
             }
-            Later::Custom(custom) => {
-                room.later.picker = Some(custom);
-                Task::none()
-            }
-            Later::SubmitCustom => match room.later.custom_time(SystemTime::now()) {
-                Some(at) => self.later(Later::At(at)),
+            Later::Typed(_)
+            | Later::Month(_)
+            | Later::Day(_)
+            | Later::Hour(_)
+            | Later::Minute(_) => match &mut room.later.picker {
+                Some(picker) => picker.update(&message, SystemTime::now()),
                 None => Task::none(),
+            },
+            Later::Schedule => match room
+                .later
+                .picker
+                .as_ref()
+                .map(|p| p.time(SystemTime::now()))
+            {
+                Some(Ok(at)) => self.later(Later::At(at)),
+                _ => Task::none(),
             },
             Later::At(send_at) => {
                 let text = room.composer.text().trim_end().to_owned();
@@ -1625,7 +1640,9 @@ impl App {
                 room.composer
                     .perform(text_editor::Action::Move(text_editor::Motion::DocumentEnd));
                 // An overdue message needs a new time before it can be saved.
-                room.later.picker = message.overdue.then(String::new);
+                room.later.picker = message
+                    .overdue
+                    .then(|| send_later::Picker::new(SystemTime::now(), None));
                 room.compose = Compose::EditScheduled(message);
                 Task::none()
             }

@@ -398,3 +398,24 @@ pub fn drop_target(theme: &Theme, active: bool) -> container::Style {
         ..Default::default()
     }
 }
+
+/// A day of the calendar or an entry of a time wheel; filled when picked,
+/// faint when not available.
+pub fn wheel_item(theme: &Theme, status: button::Status, selected: bool) -> button::Style {
+    let palette = theme.extended_palette();
+    let (background, text_color) = match (selected, status) {
+        (true, _) => (Some(palette.primary.base.color), palette.primary.base.text),
+        (false, button::Status::Disabled) => (None, palette.background.base.text.scale_alpha(0.3)),
+        (false, button::Status::Hovered | button::Status::Pressed) => (
+            Some(palette.background.strong.color.scale_alpha(0.5)),
+            palette.background.base.text,
+        ),
+        (false, button::Status::Active) => (None, palette.background.base.text),
+    };
+    button::Style {
+        background: background.map(Background::Color),
+        text_color,
+        border: Border::default().rounded(6),
+        ..Default::default()
+    }
+}
