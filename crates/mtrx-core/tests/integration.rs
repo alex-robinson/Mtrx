@@ -1227,8 +1227,11 @@ async fn room_settings() -> Result<()> {
     assert!(settings.can_invite);
     assert_eq!(settings.notify, NotifyMode::All);
 
+    // Each change returns once sync confirms it: well before its 10 s limit.
     for mode in [NotifyMode::Mute, NotifyMode::Mentions, NotifyMode::All] {
+        let started = std::time::Instant::now();
         s.set_notify_mode(&room, mode).await?;
+        assert!(started.elapsed() < Duration::from_secs(5), "not confirmed");
         assert_eq!(s.room_settings(&room).await?.notify, mode);
     }
     Ok(())

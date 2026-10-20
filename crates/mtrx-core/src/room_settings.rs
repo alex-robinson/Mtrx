@@ -1,12 +1,17 @@
 //! A room's settings as the user sees them: what they may change, and when
 //! it notifies them.
 
-use std::path::Path;
+use std::{path::Path, time::Duration};
 
+use futures_util::StreamExt;
 use matrix_sdk::{
     Room,
     notification_settings::{IsEncrypted, IsOneToOne, RoomNotificationMode},
-    ruma::{RoomId, events::StateEventType},
+    ruma::{
+        RoomId,
+        events::{StateEventType, push_rules::PushRulesEvent},
+        push::{Action, Ruleset},
+    },
 };
 
 use crate::{Error, Result, Session, media::guess_mimetype, permissions::power_levels};
@@ -40,6 +45,9 @@ impl From<NotifyMode> for RoomNotificationMode {
     }
 }
 
+/// How long a changed mode may take to come back through sync.
+const CONFIRM: Duration = Duration::from_secs(10);
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RoomSettings {
     pub can_rename: bool,
@@ -47,6 +55,25 @@ pub struct RoomSettings {
     pub can_change_picture: bool,
     pub can_invite: bool,
     pub notify: NotifyMode,
+}
+
+/// Whether `rules` give `room` the `mode` the SDK sets: an override rule
+/// muting it, or a room rule that notifies (all messages) or not (mentions).
+fn has_mode(rules: &Ruleset, room: &RoomId, mode: NotifyMode) -> bool {
+    let muted = rules
+        .override_
+        .iter()
+        .any(|rule| rule.rule_id == room.as_str() && rule.enabled);
+    let notifies = rules
+        .room
+        .iter()
+        .find(|rule| rule.rule_id == room)
+        .map(|rule| rule.actions.iter().any(Action::should_notify));
+    match mode {
+        NotifyMode::Mute => muted,
+        NotifyMode::Mentions => !muted && notifies == Some(false),
+        NotifyMode::All => !muted && notifies == Some(true),
+    }
 }
 
 impl Session {
@@ -84,11 +111,26 @@ impl Session {
             .await
     }
 
+    /// Change when a room notifies, returning once sync brings the change
+    /// back (or after a while): a further change then starts from the
+    /// server's rules, not from older ones still on their way.
     pub async fn set_notify_mode(&self, room_id: &RoomId, mode: NotifyMode) -> Result<()> {
+        let echoes = self.client.observe_events::<PushRulesEvent, ()>();
+        let mut echoes = echoes.subscribe();
         self.notification_settings
             .set_room_notification_mode(room_id, mode.into())
             .await
-            .map_err(|e| Error::Notifications(e.to_string()))
+            .map_err(|e| Error::Notifications(e.to_string()))?;
+        let confirmed = async {
+            while let Some((event, ())) = echoes.next().await {
+                if has_mode(&event.content.global, room_id, mode) {
+                    return;
+                }
+            }
+        };
+        // The server took the change either way.
+        let _ = tokio::time::timeout(CONFIRM, confirmed).await;
+        Ok(())
     }
 
     /// Make the image at `path` the room's picture.
