@@ -1,0 +1,11 @@
+[package]
+name = "xtask"
+description = "Build tasks: icons and the macOS app bundle"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+anyhow.workspace = true
+resvg = "0.45.1"

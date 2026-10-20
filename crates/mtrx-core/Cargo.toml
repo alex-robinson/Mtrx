@@ -1,0 +1,47 @@
+[package]
+name = "mtrx-core"
+description = "Matrix client logic and state for Mtrx (no UI)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+# Helpers for tests against the local Synapse.
+test-support = ["dep:hmac", "dep:sha1"]
+
+[dependencies]
+mtrx-format.workspace = true
+matrix-sdk.workspace = true
+matrix-sdk-ui.workspace = true
+eyeball-im.workspace = true
+imbl.workspace = true
+futures-util.workspace = true
+tokio = { workspace = true, features = ["fs"] }
+tokio-stream.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+keyring.workspace = true
+directories.workspace = true
+rand.workspace = true
+chrono.workspace = true
+url.workspace = true
+reqwest.workspace = true
+sha2.workspace = true
+base64.workspace = true
+mime_guess = "2.0.5"
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
+hmac = { workspace = true, optional = true }
+sha1 = { workspace = true, optional = true }
+
+[dev-dependencies]
+mtrx-core = { path = ".", features = ["test-support"] }
+mtrx-format.workspace = true
+tempfile.workspace = true
+anyhow.workspace = true
+tokio = { workspace = true, features = ["net", "io-util"] }
+
+[lints.rust]
+# Used by ruma's `EventContent` derive.
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(ruma_unstable_exhaustive_types)"] }

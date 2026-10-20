@@ -1,0 +1,40 @@
+# Local Synapse for development and integration tests only.
+# Secrets below are fixed test values; never use this config for a real server.
+server_name: "localhost"
+pid_file: /data/homeserver.pid
+listeners:
+  - port: 8008
+    type: http
+    tls: false
+    x_forwarded: true
+    resources:
+      - names: [client]
+        compress: false
+database:
+  name: sqlite3
+  args:
+    database: /data/homeserver.db
+log_config: "/config/log.yaml"
+media_store_path: /data/media_store
+signing_key_path: "/data/localhost.signing.key"
+report_stats: false
+registration_shared_secret: "mtrx-test-shared-secret"
+macaroon_secret_key: "mtrx-test-macaroon-secret"
+form_secret: "mtrx-test-form-secret"
+trusted_key_servers: []
+suppress_key_server_warning: true
+enable_registration: false
+# Tests log in and send often; disable rate limiting.
+rc_message: {per_second: 1000, burst_count: 1000}
+rc_login:
+  address: {per_second: 1000, burst_count: 1000}
+  account: {per_second: 1000, burst_count: 1000}
+  failed_attempts: {per_second: 1000, burst_count: 1000}
+rc_registration: {per_second: 1000, burst_count: 1000}
+rc_joins:
+  local: {per_second: 1000, burst_count: 1000}
+rc_invites:
+  per_room: {per_second: 1000, burst_count: 1000}
+  per_user: {per_second: 1000, burst_count: 1000}
+rc_key_requests: {per_second: 1000, burst_count: 1000}
+rc_room_creation: {per_second: 1000, burst_count: 1000}

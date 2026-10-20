@@ -1,0 +1,41 @@
+[package]
+name = "mtrx-app"
+description = "Mtrx desktop app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "mtrx-app"
+path = "src/main.rs"
+
+[dependencies]
+mtrx-core.workspace = true
+mtrx-format = { workspace = true, features = ["render"] }
+iced = { version = "0.14.0", features = ["tokio", "image", "svg", "canvas", "advanced"] }
+tokio.workspace = true
+futures-util.workspace = true
+chrono.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+open = "5.4.4"
+serde.workspace = true
+serde_json.workspace = true
+unicode-segmentation = "1.13.3"
+# Same version as typst-render's, for previewing PDFs.
+hayro = "0.7.1"
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
+notify-rust = "4.18.2"
+rfd = "0.17.2"
+# Same version as iced's, for the window icon.
+resvg = "0.45.1"
+emojis = "0.9.1"
+# Pictures on the clipboard (iced's clipboard holds text only).
+arboard = { version = "3.7.0", default-features = false, features = ["image-data"] }
+# Same version as iced's: the text layout of its paragraphs, for selecting.
+iced_graphics = "0.14.0"
+
+[dev-dependencies]
+iced_test = "0.14.0"
+mtrx-core = { workspace = true, features = ["test-support"] }
+tempfile.workspace = true
