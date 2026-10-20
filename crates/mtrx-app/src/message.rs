@@ -47,29 +47,48 @@ pub fn view<'a, M: Clone + 'a>(
         theme,
         on_link: Some(on_link),
         select: Some(select),
-        units: Vec::new(),
+        map: TextMap::default(),
     };
     walk.blocks(&document.blocks, "", "\n\n")
 }
 
-/// The message's units, as shown, for copying a selection.
-pub fn units(document: &Document) -> Vec<Unit> {
+/// The message's text as shown, in units, and where each text leaf is in
+/// them.
+#[derive(Clone, Debug, Default)]
+pub struct TextMap {
+    pub units: Vec<Unit>,
+    /// Each text, inline code and inline math, and each code block and
+    /// displayed math, in reading order (as [`mtrx_format::Piece::leaf`]
+    /// counts them).
+    pub leaves: Vec<Leaf>,
+}
+
+/// Where a text leaf is shown: its unit, and its bytes there.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Leaf {
+    pub unit: usize,
+    pub start: usize,
+    pub len: usize,
+}
+
+pub fn text_map(document: &Document) -> TextMap {
     let mut walk: Walk<'_, '_, ()> = Walk {
         theme: &Theme::Light,
         on_link: None,
         select: None,
-        units: Vec::new(),
+        map: TextMap::default(),
     };
     let _ = walk.blocks(&document.blocks, "", "\n\n");
-    walk.units
+    walk.map
 }
 
-/// Builds the view of blocks and records their units, in the same order.
+/// Builds the view of blocks and records their units and leaves, in the
+/// same order.
 struct Walk<'t, 'a, M> {
     theme: &'t Theme,
     on_link: Option<fn(String) -> M>,
     select: Option<Select<'a, M>>,
-    units: Vec<Unit>,
+    map: TextMap,
 }
 
 impl<'a, M: Clone + 'a> Walk<'_, 'a, M> {
@@ -109,10 +128,10 @@ impl<'a, M: Clone + 'a> Walk<'_, 'a, M> {
                     };
                     // The item's first unit gets the marker, the rest its
                     // indent; items are a line apart.
-                    let first = self.units.len();
+                    let first = self.map.units.len();
                     let indent = format!("{prefix}{}", " ".repeat(copied.len()));
                     let content = self.blocks(item, &indent, "\n");
-                    if let Some(unit) = self.units.get_mut(first) {
+                    if let Some(unit) = self.map.units.get_mut(first) {
                         unit.prefix = format!("{prefix}{copied}");
                         unit.gap = if i == 0 { gap } else { "\n" };
                     }
@@ -122,6 +141,7 @@ impl<'a, M: Clone + 'a> Walk<'_, 'a, M> {
             }
             Block::CodeBlock { code, .. } => {
                 let code = code.trim_end().to_owned();
+                self.whole_leaf(code.len());
                 container(self.unit(
                     vec![span(code).font(Font::MONOSPACE)],
                     Some(13.0),
@@ -133,12 +153,16 @@ impl<'a, M: Clone + 'a> Walk<'_, 'a, M> {
                 .style(style::code_block)
                 .into()
             }
-            Block::Math(tex) => self.unit(
-                vec![span(format!("$${tex}$$")).font(Font::MONOSPACE)],
-                Some(13.0),
-                prefix,
-                gap,
-            ),
+            Block::Math(tex) => {
+                let shown = format!("$${tex}$$");
+                self.whole_leaf(shown.len());
+                self.unit(
+                    vec![span(shown).font(Font::MONOSPACE)],
+                    Some(13.0),
+                    prefix,
+                    gap,
+                )
+            }
             Block::Rule => rule::horizontal(1).into(),
         }
     }
@@ -155,8 +179,24 @@ impl<'a, M: Clone + 'a> Walk<'_, 'a, M> {
             bold: size.is_some(),
             ..Flags::default()
         };
-        spans(content, flags, None, self.theme, &mut out);
+        let mut leaves = Vec::new();
+        spans(content, flags, None, self.theme, &mut out, &mut leaves);
+        let unit = self.map.units.len();
+        self.map.leaves.extend(
+            leaves
+                .into_iter()
+                .map(|(start, len)| Leaf { unit, start, len }),
+        );
         self.unit(out, size, prefix, gap)
+    }
+
+    /// A leaf that is all of the next unit's text.
+    fn whole_leaf(&mut self, len: usize) {
+        self.map.leaves.push(Leaf {
+            unit: self.map.units.len(),
+            start: 0,
+            len,
+        });
     }
 
     /// One selectable unit of text.
@@ -167,11 +207,11 @@ impl<'a, M: Clone + 'a> Walk<'_, 'a, M> {
         prefix: &str,
         gap: &'static str,
     ) -> Element<'a, M> {
-        let index = self.units.len();
+        let index = self.map.units.len();
         let text: String = spans.iter().map(|s| s.text.as_ref()).collect();
         let len = text.len();
         let gap = if index == 0 { "" } else { gap };
-        self.units.push(Unit {
+        self.map.units.push(Unit {
             text,
             prefix: prefix.to_owned(),
             gap,
@@ -193,16 +233,21 @@ impl<'a, M: Clone + 'a> Walk<'_, 'a, M> {
     }
 }
 
+/// Styled spans of `content` into `out`; each leaf's start and length in
+/// their text into `leaves`.
 fn spans(
     content: &[Inline],
     flags: Flags,
     link: Option<&str>,
     theme: &Theme,
     out: &mut Vec<Span<'static, String, Font>>,
+    leaves: &mut Vec<(usize, usize)>,
 ) {
     for inline in content {
+        let start: usize = out.iter().map(|s| s.text.len()).sum();
         match inline {
             Inline::Text(t) => {
+                leaves.push((start, t.len()));
                 for (is_emoji, run) in emoji::runs(t) {
                     let run = styled(span(run), flags, link, theme);
                     out.push(if is_emoji {
@@ -222,9 +267,10 @@ fn spans(
                     // No good native equivalent; keep the text.
                     Style::Superscript | Style::Subscript | Style::Spoiler => {}
                 }
-                spans(content, f, link, theme, out);
+                spans(content, f, link, theme, out, leaves);
             }
             Inline::Code(code) => {
+                leaves.push((start, code.len()));
                 out.push(styled(
                     span(code.clone()),
                     Flags {
@@ -235,10 +281,14 @@ fn spans(
                     theme,
                 ));
             }
-            Inline::Link { url, content } => spans(content, flags, Some(url), theme, out),
+            Inline::Link { url, content } => {
+                spans(content, flags, Some(url), theme, out, leaves);
+            }
             Inline::Math(tex) => {
+                let shown = format!("${tex}$");
+                leaves.push((start, shown.len()));
                 out.push(styled(
-                    span(format!("${tex}$")),
+                    span(shown),
                     Flags {
                         code: true,
                         ..flags
@@ -322,7 +372,7 @@ mod tests {
             return String::new();
         };
         let (from, to) = bounds.in_message(0).unwrap();
-        units_text(&units(document), from, to)
+        units_text(&text_map(document).units, from, to)
     }
 
     fn select(document: &Document, dragging: bool, steps: &[((f32, f32), mouse::Event)]) -> String {
@@ -410,7 +460,7 @@ mod tests {
             "<p>Hello <b>you</b><br>there</p><blockquote><p>quoted</p></blockquote>\
              <ol><li>one</li><li><p>two</p><p>more</p></li></ol><pre><code>let x = 1;\n</code></pre>",
         );
-        let units = units(&document);
+        let units = text_map(&document).units;
         let texts: Vec<_> = units.iter().map(|u| u.text.as_str()).collect();
         assert_eq!(
             texts,

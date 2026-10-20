@@ -37,9 +37,10 @@ use crate::{
     media::{self, Previews},
     members::Members,
     message,
-    message_menu::{self, MenuAt, Selecting},
+    message_menu::{self, MenuAt},
     popover::{Edge, Side, popover},
-    selection::{self, Bounds, Pos, Selection, units_text},
+    selectable_image::selectable_image,
+    selection::{self, Bounds, Selection, units_text},
     send_later::{self, SendLater},
     style::{
         self, GUTTER_SPACING, HEADER_AVATAR, MESSAGE_PADDING, SENDER_AVATAR, TEXT_MARGIN,
@@ -82,8 +83,6 @@ pub struct Room {
     pub picker: Option<(String, PickerAt)>,
     /// The timeline row whose menu is open, and where.
     pub menu: Option<(String, MenuAt)>,
-    /// A message's text shown in place of it, to select from.
-    pub selecting: Option<Selecting>,
     /// Text selected in the timeline.
     pub selection: Option<Selection>,
     /// All emoji in the reaction picker, while shown.
@@ -123,7 +122,6 @@ impl Room {
             editing: None,
             picker: None,
             menu: None,
-            selecting: None,
             selection: None,
             emoji: None,
             composer_emoji: None,
@@ -303,16 +301,7 @@ impl Room {
         let mut out = String::new();
         let mut sender = None;
         for (event, m, (from, to)) in messages {
-            let text = if m.document.has_math() {
-                // Typeset, so not selectable inside: all of it or nothing.
-                let whole = from == Pos::default() && to == Pos::END;
-                if !whole {
-                    continue;
-                }
-                m.document.to_plain_text()
-            } else {
-                units_text(&message::units(&m.document), from, to)
-            };
+            let text = units_text(&message::text_map(&m.document).units, from, to);
             if text.is_empty() {
                 continue;
             }
@@ -352,7 +341,6 @@ impl Room {
             hovered: self.hovered.as_deref(),
             picker: self.picker.as_ref().map(|(id, at)| (id.as_str(), *at)),
             menu: self.menu.as_ref().map(|(id, at)| (id.as_str(), *at)),
-            selecting: self.selecting.as_ref(),
             selected,
             dragging: self.selection.as_ref().is_some_and(|s| s.dragging),
             emoji: self.emoji.as_ref(),
@@ -673,7 +661,6 @@ struct Context<'a, 'b> {
     hovered: Option<&'b str>,
     picker: Option<(&'b str, PickerAt)>,
     menu: Option<(&'b str, MenuAt)>,
-    selecting: Option<&'a Selecting>,
     /// The selection, with each message's index in the timeline.
     selected: Option<(Bounds, &'b HashMap<&'b str, usize>)>,
     dragging: bool,
@@ -729,9 +716,18 @@ fn event_view<'a>(
                             handle,
                             width,
                             height,
+                            text,
                         }) => {
                             math_shown = true;
-                            image(handle.clone()).width(*width).height(*height).into()
+                            let select = select();
+                            selectable_image(
+                                image(handle.clone()).width(*width).height(*height),
+                                text.clone(),
+                            )
+                            .selected(select.range)
+                            .dragging(select.dragging)
+                            .on_gesture(select.on_gesture)
+                            .into()
                         }
                         _ => message::view(&m.document, theme, Message::LinkClicked, select()),
                     }
@@ -797,11 +793,9 @@ fn event_view<'a>(
     let edit = context
         .editing
         .filter(|e| e.target == Editing::Sent(event.key.clone()));
-    let selecting = context.selecting.filter(|s| s.id == event.id);
-    item = item.push(match (edit, selecting) {
-        (Some(edit), _) => edit.view(context.frequent_emoji),
-        (None, Some(selecting)) => selecting.view(),
-        (None, None) => body,
+    item = item.push(match edit {
+        Some(edit) => edit.view(context.frequent_emoji),
+        None => body,
     });
     let message = match &event.content {
         EventContent::Message(m) => Some(m),
@@ -813,7 +807,7 @@ fn event_view<'a>(
             .is_some_and(|&i| bounds.in_message(i).is_some())
     });
     let menu_items = message
-        .map(|m| message_menu::items(m, &event.id, math_shown, in_selection))
+        .map(|m| message_menu::items(m, math_shown, in_selection))
         .filter(|items| !items.is_empty());
     let menu_view = |at| {
         (menu_at == Some(at))

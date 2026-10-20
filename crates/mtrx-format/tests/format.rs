@@ -127,6 +127,35 @@ mod render {
     }
 
     #[test]
+    fn finds_where_the_text_is_drawn() {
+        let renderer = Renderer::new::<Vec<u8>>([]);
+        let text = "The melt rate";
+        let document = doc(&format!("{text} $\\dot m$ is high.\n\n$$x^2$$"));
+        let image = renderer.render(&document, &style(400.0)).unwrap();
+        // Leaves: the text, the formula, the text after it, the displayed math.
+        let leaves: Vec<_> = image.pieces.iter().map(|p| p.leaf).collect();
+        assert!(leaves.is_sorted(), "reading order: {leaves:?}");
+        assert_eq!(leaves.last(), Some(&3));
+        // Each glyph of the text, left to right on one line.
+        let first: Vec<_> = image.pieces.iter().filter(|p| p.leaf == 0).collect();
+        let covered: usize = first.iter().map(|p| p.range.clone().unwrap().len()).sum();
+        // The leaf is the text and the space before the formula.
+        assert_eq!(covered, text.len() + 1);
+        assert!(first.windows(2).all(|w| w[0].rect[0] < w[1].rect[0]));
+        assert_eq!(first[0].range, Some(0..1));
+        // The formula is one piece, right of the text, inside the image.
+        let formula: Vec<_> = image.pieces.iter().filter(|p| p.leaf == 1).collect();
+        assert_eq!(formula.len(), 1);
+        assert_eq!(formula[0].range, None);
+        let [x, y, w, h] = formula[0].rect;
+        let last = first.last().unwrap().rect;
+        assert!(x > last[0] && y >= 0.0 && y + h <= image.height as f32 && w > 0.0);
+        // The displayed math is below.
+        let display = image.pieces.iter().find(|p| p.leaf == 3).unwrap();
+        assert!(display.rect[1] > y + h);
+    }
+
+    #[test]
     fn renders_common_latex() {
         let renderer = Renderer::new::<Vec<u8>>([]);
         for tex in [

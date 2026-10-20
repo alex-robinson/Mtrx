@@ -30,6 +30,7 @@ mod pdf_viewer;
 mod popover;
 mod room;
 mod selectable;
+mod selectable_image;
 mod selection;
 mod send_later;
 mod settings;

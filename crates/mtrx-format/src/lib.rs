@@ -15,4 +15,4 @@ mod render;
 pub use document::{Block, Document, Inline, Style};
 pub use markdown::{Formatted, markdown_to_matrix};
 #[cfg(feature = "render")]
-pub use render::{Image, RenderError, RenderStyle, Renderer};
+pub use render::{Image, Piece, RenderError, RenderStyle, Renderer};

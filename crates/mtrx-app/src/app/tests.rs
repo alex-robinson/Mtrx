@@ -21,7 +21,7 @@ use tempfile::TempDir;
 use super::*;
 use crate::{
     fonts,
-    message_menu::{MenuAt, Selecting},
+    message_menu::MenuAt,
     selection::{Point, Pos, Selection},
 };
 
@@ -420,8 +420,8 @@ async fn main_screen_with_math() {
             };
             open.selection = Some(Selection {
                 anchor: Point {
-                    event: id_of("Morning!"),
-                    pos: Pos { unit: 0, offset: 9 },
+                    event: id_of("The basal"),
+                    pos: Pos { unit: 0, offset: 4 },
                 },
                 focus: Point {
                     event: id_of("I can run"),
@@ -429,30 +429,18 @@ async fn main_screen_with_math() {
                 },
                 dragging: false,
             });
-            // Math messages count whole; each sender's name and time first.
+            // From inside typeset math, formulas as LaTeX; each sender's
+            // name and time first.
             let copied = open.selected_text().unwrap();
             let name = |user: &mtrx_core::OwnedUserId| user.localpart().to_owned();
             assert!(copied.starts_with(&format!("{}, ", name(&alice.user_id()))));
-            assert!(copied.contains("\nDraft of the ice flux section is up.\n\nThe basal melt"));
+            assert!(copied.contains(
+                "\nbasal melt rate follows $\\dot m = \\frac{G + \\tau_b u_b}{\\rho_i L}$ where"
+            ));
             assert!(copied.contains(&format!("\n\n{}, ", name(&bob.user_id()))));
             assert!(copied.contains("\nWhich geothermal flux dataset is it?\n\n"));
             assert!(copied.ends_with("\nI can run"));
             assert!(copied.contains(&format!("\n\n{}, ", name(&carol.user_id()))));
-        } else {
-            // A message's text, to select from.
-            let (id, text) = entries
-                .iter()
-                .find_map(|e| match e {
-                    TimelineEntry::Event(ev) => match &ev.content {
-                        EventContent::Message(m) if m.body.contains("Which geothermal") => {
-                            Some((ev.id.clone(), m.document.to_plain_text()))
-                        }
-                        _ => None,
-                    },
-                    _ => None,
-                })
-                .unwrap();
-            open.selecting = Some(Selecting::new(id, &text));
         }
         open.typing = vec!["bob".into()];
         if mode == Mode::Dark {

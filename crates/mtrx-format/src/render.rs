@@ -1,14 +1,17 @@
 //! Typeset a [`Document`] with Typst into an RGBA image. LaTeX math is
-//! converted to Typst math with `mitex`.
+//! converted to Typst math with `mitex`. The image comes with where each
+//! piece of the message's text is drawn, for selecting it.
 
-use std::{collections::HashMap, fmt::Write, sync::LazyLock};
+use std::{collections::HashMap, fmt::Write, ops::Range, sync::LazyLock};
 
 use mitex::{CommandSpec, CommandSpecItem};
 
 use typst::{
     Library, LibraryExt, World,
     diag::{FileError, FileResult},
-    foundations::{Bytes, Datetime, Duration},
+    foundations::{Bytes, Datetime, Duration, Value},
+    introspection::{MetadataElem, Tag},
+    layout::{Frame, FrameItem, Point},
     syntax::{FileId, RootedPath, Source, VirtualPath, VirtualRoot},
     text::{Font, FontBook},
     utils::LazyHash,
@@ -59,12 +62,28 @@ pub struct RenderStyle {
     pub muted_color: [u8; 4],
 }
 
-/// Straight (not premultiplied) RGBA pixels.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// Straight (not premultiplied) RGBA pixels, and where the text is.
+#[derive(Clone, Debug, PartialEq)]
 pub struct Image {
     pub width: u32,
     pub height: u32,
     pub rgba: Vec<u8>,
+    /// The drawn pieces of text, in reading order.
+    pub pieces: Vec<Piece>,
+}
+
+/// Where a piece of a message's text is drawn in its image.
+///
+/// Text is counted in leaves: each text, inline code and inline math, and
+/// each code block and displayed math, in reading order.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Piece {
+    pub leaf: usize,
+    /// Its bytes in the leaf's text; `None` where the leaf is only selected
+    /// whole (math and code), drawn as one piece per line.
+    pub range: Option<Range<usize>>,
+    /// Left, top, width and height, in image pixels.
+    pub rect: [f32; 4],
 }
 
 /// Holds fonts and the Typst standard library; create once and reuse.
@@ -107,7 +126,8 @@ impl Renderer {
     }
 
     pub fn render(&self, document: &Document, style: &RenderStyle) -> Result<Image, RenderError> {
-        let source = Source::new(self.main_id, typst_source(document, style)?);
+        let mut leaves = Vec::new();
+        let source = Source::new(self.main_id, typst_source(document, style, &mut leaves)?);
         let world = MessageWorld {
             renderer: self,
             main: source,
@@ -143,12 +163,109 @@ impl Renderer {
                 [c.red(), c.green(), c.blue(), c.alpha()]
             })
             .collect();
-        Ok(trim_rows(rgba, width, (style.scale * 2.0) as usize))
+        let (mut image, top) = trim_rows(rgba, width, (style.scale * 2.0) as usize);
+        let mut pieces = Vec::new();
+        collect_pieces(&page.frame, Point::zero(), &leaves, &mut None, &mut pieces);
+        let scale = f64::from(style.scale);
+        image.pieces = pieces
+            .into_iter()
+            .map(|(leaf, range, [x, y, w, h])| Piece {
+                leaf,
+                range,
+                rect: [
+                    (x * scale) as f32,
+                    (y * scale) as f32 - top as f32,
+                    (w * scale) as f32,
+                    (h * scale) as f32,
+                ],
+            })
+            .collect();
+        Ok(image)
+    }
+}
+
+/// A piece in points: leaf, its range, and its rectangle.
+type RawPiece = (usize, Option<Range<usize>>, [f64; 4]);
+
+/// The pieces of text in `frame` (placed at `at`), between the markers that
+/// [`marked`] put around each leaf. `leaves` says which are selected whole;
+/// `current` is the leaf whose text is being laid out.
+fn collect_pieces(
+    frame: &Frame,
+    at: Point,
+    leaves: &[bool],
+    current: &mut Option<usize>,
+    out: &mut Vec<RawPiece>,
+) {
+    for (pos, item) in frame.items() {
+        let pos = at + *pos;
+        match item {
+            FrameItem::Group(group) => {
+                let shift = Point::new(group.transform.tx, group.transform.ty);
+                collect_pieces(&group.frame, pos + shift, leaves, current, out);
+            }
+            FrameItem::Tag(Tag::Start(content, _)) => {
+                if let Some(marker) = content.to_packed::<MetadataElem>()
+                    && let Value::Int(n) = marker.value
+                    && let Ok(n) = usize::try_from(n)
+                {
+                    *current = (n % 2 == 0).then_some(n / 2);
+                }
+            }
+            FrameItem::Text(text) => {
+                let Some(leaf) = *current else {
+                    continue;
+                };
+                let metrics = text.font.metrics();
+                let top = (pos.y - metrics.ascender.at(text.size)).to_pt();
+                let height = (metrics.ascender - metrics.descender).at(text.size).to_pt();
+                let mut x = pos.x;
+                let mut whole: Option<[f64; 4]> = None;
+                for glyph in &text.glyphs {
+                    let left = (x + glyph.x_offset.at(text.size)).to_pt();
+                    let width = glyph.x_advance.at(text.size).to_pt();
+                    x += glyph.x_advance.at(text.size);
+                    if leaves.get(leaf).copied().unwrap_or(true) {
+                        let rect = [left, top, width, height];
+                        whole = Some(whole.map_or(rect, |whole| union(&whole, &rect)));
+                    } else {
+                        let start = usize::from(glyph.span.1);
+                        let range = start..start + glyph.range().len();
+                        out.push((leaf, Some(range), [left, top, width, height]));
+                    }
+                }
+                // Runs of the same whole leaf on one line (a formula's
+                // symbols, accents, numerators) make one piece.
+                if let Some(rect) = whole {
+                    match out.last_mut() {
+                        Some((last, None, previous))
+                            if *last == leaf && overlap_vertically(previous, &rect) =>
+                        {
+                            *previous = union(previous, &rect);
+                        }
+                        _ => out.push((leaf, None, rect)),
+                    }
+                }
+            }
+            _ => {}
+        }
     }
 }
 
 /// Drop fully transparent rows above and below the content, keeping `pad`.
-fn trim_rows(rgba: Vec<u8>, width: usize, pad: usize) -> Image {
+fn union([l1, t1, w1, h1]: &[f64; 4], [l2, t2, w2, h2]: &[f64; 4]) -> [f64; 4] {
+    let (left, top) = (l1.min(*l2), t1.min(*t2));
+    let (right, bottom) = ((l1 + w1).max(l2 + w2), (t1 + h1).max(t2 + h2));
+    [left, top, right - left, bottom - top]
+}
+
+fn overlap_vertically([_, t1, _, h1]: &[f64; 4], [_, t2, _, h2]: &[f64; 4]) -> bool {
+    t1 < &(t2 + h2) && t2 < &(t1 + h1)
+}
+
+/// The image without empty rows (keeping `pad`), and how many rows were
+/// dropped above.
+fn trim_rows(rgba: Vec<u8>, width: usize, pad: usize) -> (Image, usize) {
     let row_len = width * 4;
     let rows = rgba.len() / row_len.max(1);
     let inked = |row: usize| {
@@ -157,20 +274,24 @@ fn trim_rows(rgba: Vec<u8>, width: usize, pad: usize) -> Image {
             .any(|p| p[3] > 0)
     };
     let Some(first) = (0..rows).find(|&r| inked(r)) else {
-        return Image {
+        let empty = Image {
             width: width as u32,
             height: 0,
             rgba: Vec::new(),
+            pieces: Vec::new(),
         };
+        return (empty, 0);
     };
     let last = (0..rows).rev().find(|&r| inked(r)).unwrap_or(first);
     let top = first.saturating_sub(pad);
     let bottom = (last + 1 + pad).min(rows);
-    Image {
+    let image = Image {
         width: width as u32,
         height: (bottom - top) as u32,
         rgba: rgba[top * row_len..bottom * row_len].to_vec(),
-    }
+        pieces: Vec::new(),
+    };
+    (image, top)
 }
 
 /// Emoji font files shipped with the OS.
@@ -248,9 +369,14 @@ fn not_found(id: FileId) -> FileError {
 
 /// The whole message as a Typst program. All user text enters as string
 /// literals, so it can never be interpreted as Typst markup or code.
-fn typst_source(document: &Document, style: &RenderStyle) -> Result<String, RenderError> {
+/// `leaves` gets, for each text leaf, whether it is selected only whole.
+fn typst_source(
+    document: &Document,
+    style: &RenderStyle,
+    leaves: &mut Vec<bool>,
+) -> Result<String, RenderError> {
     let mut body = String::new();
-    blocks(&document.blocks, &mut body)?;
+    blocks(&document.blocks, &mut body, leaves)?;
     let mut out = String::new();
     let _ = write!(
         out,
@@ -282,7 +408,23 @@ fn typst_source(document: &Document, style: &RenderStyle) -> Result<String, Rend
     Ok(out)
 }
 
-fn blocks(list: &[Block], out: &mut String) -> Result<(), RenderError> {
+/// Puts invisible markers around text leaf number `leaves.len()`, so its
+/// glyphs can be found in the layout; `atomic` if only selected whole.
+fn marked(
+    out: &mut String,
+    leaves: &mut Vec<bool>,
+    atomic: bool,
+    content: impl FnOnce(&mut String) -> Result<(), RenderError>,
+) -> Result<(), RenderError> {
+    let leaf = leaves.len();
+    leaves.push(atomic);
+    let _ = write!(out, "metadata({});", 2 * leaf);
+    content(out)?;
+    let _ = write!(out, ";metadata({})", 2 * leaf + 1);
+    Ok(())
+}
+
+fn blocks(list: &[Block], out: &mut String, leaves: &mut Vec<bool>) -> Result<(), RenderError> {
     out.push('{');
     for (i, block) in list.iter().enumerate() {
         if i > 0 {
@@ -291,17 +433,17 @@ fn blocks(list: &[Block], out: &mut String) -> Result<(), RenderError> {
         match block {
             Block::Paragraph(content) => {
                 out.push_str("par(");
-                inlines(content, out)?;
+                inlines(content, out, leaves)?;
                 out.push(')');
             }
             Block::Heading { content, .. } => {
                 out.push_str("text(weight: \"bold\", size: 1.15em, ");
-                inlines(content, out)?;
+                inlines(content, out, leaves)?;
                 out.push(')');
             }
             Block::Quote(inner) => {
                 out.push_str("block(inset: (left: 0.6em), stroke: (left: 2pt + muted), ");
-                blocks(inner, out)?;
+                blocks(inner, out, leaves)?;
                 out.push(')');
             }
             Block::List { start, items } => {
@@ -312,20 +454,21 @@ fn blocks(list: &[Block], out: &mut String) -> Result<(), RenderError> {
                     None => out.push_str("list("),
                 }
                 for item in items {
-                    blocks(item, out)?;
+                    blocks(item, out, leaves)?;
                     out.push_str(", ");
                 }
                 out.push(')');
             }
-            Block::CodeBlock { language, code } => {
+            Block::CodeBlock { language, code } => marked(out, leaves, true, |out| {
                 out.push_str("block(fill: muted.transparentize(70%), inset: 0.4em, radius: 3pt, raw(block: true, ");
                 if let Some(language) = language {
                     let _ = write!(out, "lang: {}, ", string(language));
                 }
                 out.push_str(&string(code.trim_end_matches('\n')));
                 out.push_str("))");
-            }
-            Block::Math(tex) => math(tex, true, out)?,
+                Ok(())
+            })?,
+            Block::Math(tex) => marked(out, leaves, true, |out| math(tex, true, out))?,
             Block::Rule => out.push_str("line(length: 100%, stroke: 0.5pt + muted)"),
         }
         out.push(';');
@@ -335,11 +478,18 @@ fn blocks(list: &[Block], out: &mut String) -> Result<(), RenderError> {
 }
 
 /// Inline content as one Typst expression.
-fn inlines(content: &[Inline], out: &mut String) -> Result<(), RenderError> {
+fn inlines(
+    content: &[Inline],
+    out: &mut String,
+    leaves: &mut Vec<bool>,
+) -> Result<(), RenderError> {
     out.push('{');
     for inline in content {
         match inline {
-            Inline::Text(text) => out.push_str(&string(text)),
+            Inline::Text(text) => marked(out, leaves, false, |out| {
+                out.push_str(&string(text));
+                Ok(())
+            })?,
             Inline::Styled { style, content } => {
                 out.push_str(match style {
                     Style::Bold => "strong(",
@@ -350,18 +500,19 @@ fn inlines(content: &[Inline], out: &mut String) -> Result<(), RenderError> {
                     Style::Subscript => "sub(",
                     Style::Spoiler => "box(fill: muted, hide(",
                 });
-                inlines(content, out)?;
+                inlines(content, out, leaves)?;
                 out.push_str(if *style == Style::Spoiler { "))" } else { ")" });
             }
-            Inline::Code(code) => {
+            Inline::Code(code) => marked(out, leaves, true, |out| {
                 let _ = write!(out, "raw({})", string(code));
-            }
+                Ok(())
+            })?,
             Inline::Link { url, content } => {
                 let _ = write!(out, "link({}, ", string(url));
-                inlines(content, out)?;
+                inlines(content, out, leaves)?;
                 out.push(')');
             }
-            Inline::Math(tex) => math(tex, false, out)?,
+            Inline::Math(tex) => marked(out, leaves, true, |out| math(tex, false, out))?,
             Inline::LineBreak => out.push_str("linebreak()"),
         }
         out.push(';');

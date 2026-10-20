@@ -38,7 +38,6 @@ use crate::{
     math::{self, Math, Rendered},
     media::{self, Previews, Viewer},
     members::Members,
-    message_menu::Selecting,
     pdf_viewer,
     room::{self, Look, Older, Room},
     selection::{self, Selection},
@@ -1205,9 +1204,6 @@ impl App {
                         main.info = None;
                     } else if let Some(room) = main.room.as_mut().filter(|r| r.menu.is_some()) {
                         room.menu = None;
-                    } else if let Some(room) = main.room.as_mut().filter(|r| r.selecting.is_some())
-                    {
-                        room.selecting = None;
                     } else if let Some(room) = main.room.as_mut().filter(|r| r.selection.is_some())
                     {
                         room.selection = None;
@@ -1967,21 +1963,6 @@ impl App {
                     },
                     |result| Message::Act(Act::Done(result)),
                 )
-            }
-            Act::SelectText(id, text) => {
-                room.menu = None;
-                room.selecting = Some(Selecting::new(id, &text));
-                Selecting::focus()
-            }
-            Act::SelectAction(action) => {
-                if let Some(selecting) = &mut room.selecting {
-                    selecting.perform(action);
-                }
-                Task::none()
-            }
-            Act::CloseSelect => {
-                room.selecting = None;
-                Task::none()
             }
             Act::TogglePicker(id, at) => {
                 let picker = (id, at);

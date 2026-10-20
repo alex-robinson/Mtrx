@@ -1,133 +1,117 @@
 # Copying from messages and selecting text
 
-Status: steps 1 and 2 are being built; step 3 is planned.
+Status: done. This describes how it works and what is left.
 
-## Why it is missing
+## Why it needed building
 
 - iced only selects text in input fields (`text_input`, `text_editor`).
   The text it displays (`text`, `rich_text`) cannot be selected, and iced
   has no right-click menus.
-- A message with math is drawn as one Typst image of the whole message,
-  not as text.
+- A message with math is drawn as one Typst image of the whole message.
 
-So copying needs a message menu (step 1), and selecting part of a message
-needs either a read-only editor (step 2) or our own selectable text widget
-(step 3).
+## Message menu
 
-## Step 1: message menu
+Right-click on a message, or "⋯" in its hover toolbar, opens a menu
+(`message_menu.rs`). Right-click opens it at the cursor (`context_menu.rs`,
+which records where the click was and floats the menu there through the
+popover's panel); "⋯" opens it below the toolbar.
 
-Right-click on a message, or "⋯" in its hover toolbar, opens a menu.
-Right-click opens it at the cursor; "⋯" opens it below the toolbar.
+| Item                     | When                              | Does                                      |
+|--------------------------|-----------------------------------|-------------------------------------------|
+| Copy selection           | the message is in the selection   | as ⌘C                                     |
+| Copy text                | text messages                     | `Document::to_plain_text`: Markdown-like, math as `$…$` |
+| Copy LaTeX (per formula) | messages with math                | the formula's LaTeX (`Document::formulas`) |
+| Copy link (per link)     | messages with links               | the URL                                   |
+| Copy image               | math messages that rendered       | the picture, via `arboard` (iced's clipboard holds text only) |
+| Save image…              | math messages that rendered       | PNG, dark text on white, 3× scale          |
 
-| Item                    | When                         | Does                                          |
-|-------------------------|------------------------------|-----------------------------------------------|
-| Copy text               | text messages                | `Document::to_plain_text`: Markdown-like, math as `$…$` |
-| Copy LaTeX (per formula)| messages with math           | the formula's LaTeX, without `$`              |
-| Copy link (per link)    | messages with links          | the URL                                       |
-| Save image…             | math messages that rendered  | PNG, dark text on white, 3× scale (save dialog) |
-| Select text…            | text messages                | step 2                                        |
+The "Select text…" stopgap (the text in a read-only editor) was removed
+once the timeline itself became selectable.
 
-Parts:
+## Selection in the timeline
 
-- `context_menu.rs`: a widget wrapping its content. Right-click inside
-  records the cursor position (in widget state) and sends `on_open`;
-  while given a menu, it floats there over everything (popover's panel,
-  anchored at a point). A click outside or Esc closes it.
-- `actions.rs`: `MenuAt { Cursor, Toolbar }` like the reaction window's
-  `PickerAt`; `Message::{OpenMenu, CloseMenu, Copy, SaveImage,
-  SelectText, …}`; `message_menu(event)` builds the items.
-- `mtrx-format`: `Document::formulas()` lists the LaTeX of each formula.
-- Save image renders again with fixed colours (not the theme's), so the
-  file looks the same in light and dark mode.
-- Not included: "Copy image" (iced's clipboard holds text only; it needs
-  e.g. `arboard`). Open question.
+Drag across words, lines and messages. Double-click selects a word (or a
+formula), triple-click a paragraph, and Shift-click extends. ⌘C copies,
+and Esc or a click beside the text clears. Dragging past the top or bottom
+of the timeline scrolls it.
 
-## Step 2: Select text…
+### Units
 
-The message's text (as Copy text gives it) replaces the message in place,
-in a read-only `text_editor`: drag, double-click a word, ⌘A, ⌘C. Esc or
-"Done" returns to the message. It works for math messages too, as their
-LaTeX source. Editing actions are dropped; the editor's own copy binding
-does the copying.
+Each message is split into units: paragraphs, headings, code blocks and
+displayed math (`message.rs`). One walk over the document builds both the
+view and the units (`text_map`), so the two cannot disagree. A unit has:
 
-## Step 3: real selection in the timeline
+- its text as shown;
+- a prefix used when copying from its start along with other units ("> "
+  in quotes, "- " or "1. " in lists);
+- the gap before it ("\n\n" between blocks, "\n" between list items).
 
-Goal: select text in messages as in a browser. Drag across words, lines
-and messages; double-click selects a word, triple-click a paragraph;
-shift-click extends; ⌘C copies; Esc or a click elsewhere clears.
-
-### Widget
-
-`selectable.rs`: a selectable version of `rich_text`.
-
-- Lays out its spans as iced's `rich_text` does. Hit-testing uses
-  `Paragraph::hit_test` (cursor to character offset) and
-  `grapheme_position`.
-- Highlights from the paragraph's cosmic-text buffer
-  (`iced_graphics::text::Paragraph::buffer()`, layout runs and
-  `highlight(start, end)`), one rectangle per line. This ties us to
-  iced_graphics, which both of iced's renderers (wgpu, tiny-skia) use.
-- A press and release without movement is still a click, so links keep
-  working. Movement beyond a few pixels starts a selection.
-- Each message is a `Document` of blocks. The widget maps a selection to
-  (block, character offset) positions. Copying turns the selected range
-  back into plain text with the same rules as `to_plain_text`, so Copy
-  text and a full selection give the same result.
+A selection copies the text as shown, like a browser. It is not the
+Markdown-like text of "Copy text": inline code has no backticks and links
+have no URL, but math is `$…$` and lists and quotes keep their marks.
 
 ### Selection state
 
-The selection lives in `Room`, not in the widgets, so it can span
-messages and survive redraws:
+The selection lives in `Room` (`selection.rs`), not in the widgets:
 
 ```text
-Selection { anchor: Position, focus: Position }
-Position  { event: event id, block: path into the document, offset: usize }
+Selection { anchor: Point, focus: Point, dragging }
+Point     { event: event id, pos: Pos }
+Pos       { unit, offset }   // byte offset in the unit's text
 ```
 
-- A drag starting in one message and moving over another extends the
-  focus into it. Messages between anchor and focus are fully selected.
-- Order comes from the timeline. Copy joins messages with a blank line,
-  each preceded by "Sender, time:" when the selection spans senders, as
-  Element does.
-- New messages arriving or history loading do not change the selection.
-  A message that is edited or deleted drops out of it.
+The room orders the two points by the messages' places in the timeline,
+and gives each message the part it covers (`Bounds::in_message`). With
+several messages, each sender's run of messages is preceded by
+"Name, HH:MM". The mouse release that ends a drag is caught by a
+subscription, wherever it happens.
+
+### Widgets
+
+- `selectable.rs`: rich text as iced's `rich_text` draws it, plus
+  hit-testing and highlighting through the paragraph's cosmic-text layout
+  (`iced_graphics`, same version as iced). It reports `Press` (with the
+  word or paragraph for double and triple clicks) and, while dragging,
+  `Drag` when the cursor is beside its lines. A press and release on a
+  link without moving still opens it. It uses the cursor's position, not
+  the event's, because a scrollable only moves the cursor into its
+  content's coordinates.
+- `selectable_image.rs`: the same for a typeset math message, over the
+  image.
+- `drag_scroll.rs`: wraps the timeline. While dragging past its edge it
+  asks for scrolling each frame, and passes a cursor at the edge to the
+  text, since the content moves under a cursor that does not.
 
 ### Math messages
 
-Two options; to decide when we get there:
+The renderer (`mtrx-format`) puts invisible `metadata` markers around
+each text leaf in the Typst source. A leaf is each text, inline code and
+inline math, and each code block and displayed math, in reading order.
+In the laid-out page, glyphs between a leaf's markers belong to that
+leaf. Text glyphs carry their byte offset within the leaf. Math and code
+are laid out from generated Typst, so they become one piece per line,
+selected whole. `Image::pieces` lists each piece's leaf, byte range and
+rectangle. `message::text_map` says where each leaf is in the units, so
+the image is selected with the same units as native text, and formulas
+copy as `$…$`.
 
-1. **Selection over the image.** Typst's layout (`Frame` items) knows
-   each glyph's position and its source span. Building a map from image
-   rectangles to source text makes the image selectable like text. A
-   formula selects as a whole and copies as `$…$`. This is more work, but
-   keeps the typeset look.
-2. **Native text with formula images.** Text paragraphs are drawn by iced
-   and only formulas are images. This needs inline images in a paragraph,
-   which iced's `rich_text` cannot do, so it would need our own inline
-   layout.
+## Left to do
 
-Option 1 is preferred.
+- Links in typeset (math) messages cannot be clicked; the menu's Copy link
+  covers them.
+- Code inside math messages is selected whole.
+- Other text in the timeline is not selectable: sender names, reply
+  previews, notices and state lines.
+- ⌘A does not select the timeline.
 
-### How steps 1 and 2 change
+## Tests
 
-- The menu stays. It gains "Copy selection" at the top when you
-  right-click inside a selection.
-- "Select text…" is removed once text and math messages are selectable
-  (step 3, including option 1).
-- `context_menu.rs` is reused for links (Copy link, Open) and the
-  selection.
-
-### Phases and effort
-
-| Phase | Content                                              | Effort   |
-|-------|------------------------------------------------------|----------|
-| A     | Selectable widget; selection inside one message; ⌘C  | 3–4 days |
-| B     | Selection across messages; copying with senders      | 2 days   |
-| C     | Math messages: selection over the image (option 1)   | 2–3 days |
-
-### Tests
-
-- Unit: selection range to text (inside blocks, across lists and quotes,
-  across messages), word and paragraph boundaries.
-- UI (iced_test): drag across a message, then ⌘C puts the expected text
-  on the clipboard. Snapshot of the highlight in light and dark mode.
+- Unit: units and their copy text (`message.rs`, `selection.rs`), hit
+  testing and highlighting over an image (`selectable_image.rs`), edge
+  scrolling speed (`drag_scroll.rs`).
+- Simulated mouse: dragging, double and triple clicks, and dragging in a
+  scrolled timeline (`message.rs`).
+- Renderer: pieces in reading order and in the right places
+  (`mtrx-format/tests/format.rs`).
+- Snapshot: a selection from inside a math message across three senders,
+  with its copied text (`app/tests.rs`).
