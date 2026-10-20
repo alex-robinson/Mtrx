@@ -1910,6 +1910,12 @@ impl App {
                 room.menu = None;
                 iced::clipboard::write(text)
             }
+            Act::CopyImage(document) => {
+                room.menu = None;
+                Task::perform(self.math.copy_image(&document), |result| {
+                    Message::Act(Act::Done(result))
+                })
+            }
             Act::SaveImage(document) => {
                 room.menu = None;
                 let png = self.math.png(&document);

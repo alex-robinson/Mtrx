@@ -8,7 +8,7 @@ use std::{
     sync::Arc,
 };
 
-use ::image::{ImageFormat, RgbImage};
+use ::image::{DynamicImage, ImageFormat, RgbImage};
 use iced::{Task, widget::image};
 use mtrx_format::{Document, RenderStyle, Renderer};
 
@@ -113,11 +113,33 @@ impl Math {
     ) -> impl Future<Output = Result<Vec<u8>, String>> + use<> {
         let renderer = self.renderer.clone();
         let document = document.clone();
-        async move {
-            tokio::task::spawn_blocking(move || export(&renderer, &document))
-                .await
-                .map_err(|e| e.to_string())?
-        }
+        blocking(move || {
+            let mut png = Vec::new();
+            picture(&renderer, &document)?
+                .write_to(&mut Cursor::new(&mut png), ImageFormat::Png)
+                .map_err(|e| e.to_string())?;
+            Ok(png)
+        })
+    }
+
+    /// Put the message, typeset as for [`Math::png`], on the clipboard.
+    pub fn copy_image(
+        &self,
+        document: &Document,
+    ) -> impl Future<Output = Result<(), String>> + use<> {
+        let renderer = self.renderer.clone();
+        let document = document.clone();
+        blocking(move || {
+            let picture = DynamicImage::ImageRgb8(picture(&renderer, &document)?).to_rgba8();
+            let image = arboard::ImageData {
+                width: picture.width() as usize,
+                height: picture.height() as usize,
+                bytes: picture.into_raw().into(),
+            };
+            arboard::Clipboard::new()
+                .and_then(|mut clipboard| clipboard.set_image(image))
+                .map_err(|e| format!("Could not copy the picture: {e}"))
+        })
     }
 }
 
@@ -126,7 +148,15 @@ impl Math {
 const EXPORT_WIDTH: f32 = 680.0;
 const EXPORT_SCALE: f32 = 3.0;
 
-fn export(renderer: &Renderer, document: &Document) -> Result<Vec<u8>, String> {
+async fn blocking<T: Send + 'static>(
+    work: impl FnOnce() -> Result<T, String> + Send + 'static,
+) -> Result<T, String> {
+    tokio::task::spawn_blocking(work)
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+fn picture(renderer: &Renderer, document: &Document) -> Result<RgbImage, String> {
     let style = RenderStyle {
         font_family: fonts::FAMILY.into(),
         font_size: style::TEXT_SIZE,
@@ -149,13 +179,8 @@ fn export(renderer: &Renderer, document: &Document) -> Result<Vec<u8>, String> {
             [0, 1, 2].map(|i| ((u32::from(p[i]) * alpha + 255 * (255 - alpha)) / 255) as u8)
         })
         .collect();
-    let picture = RgbImage::from_raw(rendered.width, rendered.height, on_white)
-        .ok_or("The typeset message is empty")?;
-    let mut png = Vec::new();
-    picture
-        .write_to(&mut Cursor::new(&mut png), ImageFormat::Png)
-        .map_err(|e| e.to_string())?;
-    Ok(png)
+    RgbImage::from_raw(rendered.width, rendered.height, on_white)
+        .ok_or_else(|| "The typeset message is empty".to_owned())
 }
 
 fn render(renderer: &Renderer, document: &Document, key: Key, params: &Params) -> Rendered {
@@ -199,8 +224,7 @@ mod tests {
         let document = Document::from_html(
             r#"Melt <span data-mx-maths="\dot m = \frac{G}{\rho L}"><code>m</code></span>"#,
         );
-        let png = export(&math.renderer, &document).unwrap();
-        let picture = ::image::load_from_memory(&png).unwrap().to_rgb8();
+        let picture = super::picture(&math.renderer, &document).unwrap();
         assert!(picture.width() > 100 && picture.height() > 30);
         assert_eq!(
             picture.get_pixel(0, 0).0,

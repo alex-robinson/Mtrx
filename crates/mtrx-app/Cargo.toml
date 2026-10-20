@@ -30,6 +30,10 @@ rfd = "0.17.2"
 # Same version as iced's, for the window icon.
 resvg = "0.45.1"
 emojis = "0.9.1"
+# Pictures on the clipboard (iced's clipboard holds text only).
+arboard = { version = "3.7.0", default-features = false, features = ["image-data"] }
+# Same version as iced's: the text layout of its paragraphs, for selecting.
+iced_graphics = "0.14.0"
 
 [dev-dependencies]
 iced_test = "0.14.0"

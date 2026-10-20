@@ -69,6 +69,10 @@ pub fn items(
     }
     if math_shown {
         items.push((
+            "Copy image".to_owned(),
+            actions::Message::CopyImage(document.clone()),
+        ));
+        items.push((
             "Save image…".to_owned(),
             actions::Message::SaveImage(document.clone()),
         ));
@@ -196,6 +200,7 @@ mod tests {
                 "Copy text",
                 "Copy LaTeX",
                 "Copy link: example.org/a",
+                "Copy image",
                 "Save image…",
                 "Select text…"
             ]
