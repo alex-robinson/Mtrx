@@ -639,7 +639,7 @@ impl Room {
         } else {
             "Show who is in the room"
         };
-        let mut header = column![
+        column![
             row![
                 hint(about, about_tip, Position::Bottom),
                 self.calls.header_controls(look.call_services),
@@ -670,16 +670,9 @@ impl Room {
             .spacing(10)
             .align_y(Alignment::Center)
             .padding([8.0, TIMELINE_PADDING + MESSAGE_PADDING]),
-        ];
-        if let Some(panel) = self.calls.panel(look.call_services) {
-            header = header.push(
-                container(panel)
-                    .padding(Padding::from([0.0, TIMELINE_PADDING + MESSAGE_PADDING]).bottom(8.0)),
-            );
-        }
-        header
-            .push(rule::horizontal(1).style(style::separator))
-            .into()
+            rule::horizontal(1).style(style::separator),
+        ]
+        .into()
     }
 }
 

@@ -490,6 +490,17 @@ async fn main_screen_with_math() {
             "main-light"
         };
         snapshot(&app, name);
+        // A click elsewhere closes the call menu (dark) or link editor (light).
+        let mut ui = Simulator::with_size(fonts::settings(), Size::new(1200.0, 800.0), app.view());
+        ui.point_at(iced::Point::new(400.0, 130.0));
+        ui.simulate(iced_test::simulator::click());
+        let messages: Vec<_> = ui.into_messages().collect();
+        assert!(
+            messages
+                .iter()
+                .any(|m| matches!(m, Message::Calls(_, calls::Message::Close))),
+            "{messages:?}"
+        );
         if mode == Mode::Light {
             composer_keeps_focus(&mut app);
         }

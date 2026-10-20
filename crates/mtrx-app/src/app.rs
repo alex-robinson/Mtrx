@@ -1863,8 +1863,13 @@ impl App {
             Calls::Link(link) => state.link = link,
             Calls::CanSetLink(can_set) => state.can_set_link = can_set,
             Calls::SpaceService(service) => state.space_service = service,
-            Calls::ToggleMenu => {
-                state.menu = !state.menu;
+            Calls::OpenMenu => {
+                state.menu = true;
+                state.editor = None;
+                state.error = None;
+            }
+            Calls::Close => {
+                state.menu = false;
                 state.editor = None;
                 state.error = None;
             }
@@ -1884,10 +1889,20 @@ impl App {
                     move |result| reply(Calls::Started(result)),
                 );
             }
-            Calls::Started(result) | Calls::LinkSaved(result) => {
+            Calls::Started(result) => {
+                state.busy = false;
+                // Shown below the composer, like other sending errors.
+                if let Err(e) = result {
+                    room.error = Some(e);
+                }
+            }
+            Calls::LinkSaved(result) => {
                 state.busy = false;
                 match result {
-                    Ok(()) => state.editor = None,
+                    Ok(()) => {
+                        state.menu = false;
+                        state.editor = None;
+                    }
                     Err(e) => state.error = Some(e),
                 }
             }
@@ -1931,10 +1946,6 @@ impl App {
                     },
                     move |result| reply(Calls::LinkSaved(result)),
                 );
-            }
-            Calls::CancelEdit => {
-                state.editor = None;
-                state.error = None;
             }
         }
         Task::none()

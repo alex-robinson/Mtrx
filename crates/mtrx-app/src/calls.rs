@@ -1,9 +1,11 @@
 //! Calls through links: call cards in the timeline, the room header's call
-//! controls (join the room's call link, start a call, set the link).
+//! controls: one button joining the room's call link or, without one,
+//! starting a call; and a menu for calls with other services and for
+//! setting the room's link.
 
 use iced::{
     Alignment, Element, Length, Theme,
-    widget::{button, checkbox, column, container, row, space, text, text_input},
+    widget::{button, checkbox, column, container, row, rule, space, text, text_input},
 };
 use mtrx_core::{CallService, OwnedRoomId, ServiceKind, Url, recognize_call_link};
 
@@ -12,8 +14,13 @@ use crate::{
     ellipsis::ellipsis,
     fonts,
     hint::{Position, hint},
-    icons, style,
+    icons,
+    popover::{Edge, Side, popover},
+    style,
 };
+
+const MENU_WIDTH: f32 = 230.0;
+const EDITOR_WIDTH: f32 = 520.0;
 
 #[derive(Debug, Clone)]
 pub enum Message {
@@ -23,7 +30,10 @@ pub enum Message {
     CanSetLink(Option<bool>),
     /// The call service of the room's nearest space with one.
     SpaceService(Option<CallService>),
-    ToggleMenu,
+    OpenMenu,
+    /// Close the menu or the link editor.
+    Close,
+    /// Post a new call link of this service in the room.
     Start(CallService),
     Started(Result<(), String>),
     EditLink,
@@ -34,7 +44,6 @@ pub enum Message {
     NewLink(CallService),
     SaveLink,
     RemoveLink,
-    CancelEdit,
     LinkSaved(Result<(), String>),
 }
 
@@ -45,12 +54,13 @@ pub struct RoomCalls {
     pub can_set_link: Option<bool>,
     pub space_service: Option<CallService>,
     pub menu: bool,
-    /// The call link being edited.
+    /// The call link being edited, in a panel below the menu button.
     pub editor: Option<String>,
     /// Post the saved link in the room too, for other clients.
     pub announce: bool,
     /// A call is being started or the link saved.
     pub busy: bool,
+    /// Saving the link failed.
     pub error: Option<String>,
 }
 
@@ -88,105 +98,119 @@ impl RoomCalls {
         all
     }
 
-    /// Buttons at the right of the room header.
-    pub fn header_controls<'a>(&self, own: &[CallService]) -> Element<'a, app::Message> {
-        let mut controls = row![].spacing(6).align_y(Alignment::Center);
-        if let Some(link) = &self.link {
-            let label = recognize_call_link(link.as_str(), own)
-                .map_or_else(|| "Join call".to_owned(), |name| format!("Join {name}"));
-            controls = controls.push(hint(
-                button(row![icons::camera(14.0, on_primary), text(label).size(13)].spacing(6))
-                    .padding([5, 12])
-                    .style(style::primary_button)
-                    .on_press(app::Message::LinkClicked(link.to_string())),
-                "Open the room's call in the browser",
-                Position::Bottom,
-            ));
-        }
-        // The room's link replaces Start call; the menu still offers others.
-        if self.link.is_none() {
-            let start = self.default_service(own).filter(|_| !self.busy);
-            let start_tip = match self.default_service(own) {
-                Some(service) => format!("Start a {} call and post its link here", service.name),
-                None => "Add a call service in Settings to start calls".to_owned(),
-            };
-            controls = controls.push(hint(
-                button(text("Start call").size(13))
-                    .padding([5, 10])
-                    .style(style::secondary_button)
-                    .on_press_maybe(start.map(|s| self.message(Message::Start(s.clone())))),
-                start_tip,
-                Position::Bottom,
-            ));
-        }
-        controls
-            .push(hint(
-                button(text("▾").size(13))
-                    .padding([5, 8])
-                    .style(style::secondary_button)
-                    .on_press(self.message(Message::ToggleMenu)),
-                "Start a call with another service",
-                Position::Bottom,
-            ))
-            .push(hint(
-                button(text("Call link…").size(13))
-                    .padding([5, 8])
-                    .style(style::text_button)
-                    .on_press(self.message(Message::EditLink)),
-                "Set the room's standing call link",
-                Position::Bottom,
-            ))
-            .into()
-    }
-
-    /// The start menu or link editor below the header, when open.
-    pub fn panel<'a>(&'a self, own: &'a [CallService]) -> Option<Element<'a, app::Message>> {
-        let content: Element<'a, app::Message> = if let Some(input) = &self.editor {
-            self.editor_view(input, own)
-        } else if self.menu {
-            self.menu_view(own)
-        } else {
-            return None;
+    /// Buttons at the right of the room header: Join or Start call, and
+    /// the menu, which also holds the link editor.
+    pub fn header_controls<'a>(&'a self, own: &'a [CallService]) -> Element<'a, app::Message> {
+        let main = match &self.link {
+            Some(link) => {
+                let label = recognize_call_link(link.as_str(), own)
+                    .map_or_else(|| "Join call".to_owned(), |name| format!("Join {name}"));
+                hint(
+                    button(row![icons::camera(14.0, on_primary), text(label).size(13)].spacing(6))
+                        .padding([5, 12])
+                        .style(style::primary_button)
+                        .on_press(app::Message::LinkClicked(link.to_string())),
+                    "Open the room's call in the browser",
+                    Position::Bottom,
+                )
+            }
+            None => {
+                let service = self.default_service(own);
+                let tip = match service {
+                    Some(service) => {
+                        format!(
+                            "Start a {} call now: posts a new link in the chat",
+                            service.name
+                        )
+                    }
+                    None => "Add a call service in Settings to start calls".to_owned(),
+                };
+                hint(
+                    button(text("Start call").size(13))
+                        .padding([5, 10])
+                        .style(style::secondary_button)
+                        .on_press_maybe(
+                            service
+                                .filter(|_| !self.busy)
+                                .map(|s| self.message(Message::Start(s.clone()))),
+                        ),
+                    tip,
+                    Position::Bottom,
+                )
+            }
         };
-        let mut panel = column![content].spacing(6);
-        if let Some(error) = &self.error {
-            panel = panel.push(text(error).size(12).style(text::danger));
-        }
-        Some(
-            container(panel)
-                .padding([8, 12])
-                .width(Length::Fill)
-                .style(style::code_block)
-                .into(),
-        )
+        let open = self.menu || self.editor.is_some();
+        let panel = match &self.editor {
+            Some(input) => Some(self.editor_view(input, own)),
+            None => self.menu.then(|| self.menu_view(own)),
+        };
+        // While open, a click on it closes the panel as any outside click.
+        let toggle = hint(
+            button(text("▾").size(13))
+                .padding([5, 8])
+                .style(style::secondary_button)
+                .on_press_maybe((!open).then(|| self.message(Message::OpenMenu))),
+            "Other call services, and the room's call link",
+            Position::Bottom,
+        );
+        row![
+            main,
+            popover(toggle, panel, Side::Below, Edge::Right)
+                .on_dismiss(self.message(Message::Close)),
+        ]
+        .spacing(6)
+        .align_y(Alignment::Center)
+        .into()
     }
 
     fn menu_view<'a>(&'a self, own: &'a [CallService]) -> Element<'a, app::Message> {
+        let item = |label: String, message: Option<Message>| {
+            button(ellipsis(label).size(13))
+                .width(Length::Fill)
+                .padding([4, 10])
+                .style(style::list_item(false))
+                .on_press_maybe(message.filter(|_| !self.busy).map(|m| self.message(m)))
+        };
+        let heading =
+            |label| container(text(label).size(12).style(text::secondary)).padding([4, 10]);
+        let mut menu = column![heading("Start a new call with")].spacing(1);
         let services = self.services(own);
         if services.is_empty() {
-            return text("No call services yet: add one in Settings.")
-                .size(13)
-                .into();
+            menu = menu.push(heading("No call services yet: add one in Settings"));
         }
-        let mut menu = row![text("Start a call with").size(12).style(text::secondary)]
-            .spacing(8)
-            .align_y(Alignment::Center);
         for service in services {
             let label = if Some(service) == self.space_service.as_ref() {
                 format!("{} (space)", service.name)
             } else {
                 service.name.clone()
             };
-            menu = menu.push(
-                button(text(label).size(13))
-                    .padding([4, 10])
-                    .style(style::secondary_button)
-                    .on_press_maybe(
-                        (!self.busy).then(|| self.message(Message::Start(service.clone()))),
-                    ),
-            );
+            menu = menu.push(item(label, Some(Message::Start(service.clone()))));
         }
-        menu.into()
+        menu = menu.push(container(rule::horizontal(1).style(style::separator)).padding([4, 0]));
+        let allowed = self.can_set_link != Some(false);
+        menu = menu.push(item(
+            if self.link.is_some() {
+                "Change room call link…"
+            } else {
+                "Set room call link…"
+            }
+            .to_owned(),
+            Some(Message::EditLink),
+        ));
+        if self.link.is_some() && allowed {
+            menu = menu.push(item(
+                "Remove room call link".to_owned(),
+                Some(Message::RemoveLink),
+            ));
+        }
+        if let Some(error) = &self.error {
+            menu = menu.push(container(text(error).size(12).style(text::danger)).padding([4, 10]));
+        }
+        container(menu)
+            .width(MENU_WIDTH)
+            .padding(4)
+            .style(style::toolbar)
+            .into()
     }
 
     fn editor_view<'a>(
@@ -223,7 +247,7 @@ impl RoomCalls {
                 (allowed && self.link.is_some()).then_some(Message::RemoveLink),
                 false
             ),
-            action("Cancel", Some(Message::CancelEdit), false),
+            action("Cancel", Some(Message::Close), false),
             space::horizontal(),
         ]
         .spacing(4)
@@ -257,7 +281,14 @@ impl RoomCalls {
                     .style(text::secondary),
             );
         }
-        editor.into()
+        if let Some(error) = &self.error {
+            editor = editor.push(text(error).size(12).style(text::danger));
+        }
+        container(editor)
+            .width(EDITOR_WIDTH)
+            .padding([8, 12])
+            .style(style::toolbar)
+            .into()
     }
 }
 
