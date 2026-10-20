@@ -75,6 +75,7 @@ mod tests {
             kind: mtrx_core::RoomKind::Room,
             invited: false,
             encrypted: false,
+            public: false,
             unread_messages: 0,
             unread_mentions: 0,
             unread_notifications: 0,

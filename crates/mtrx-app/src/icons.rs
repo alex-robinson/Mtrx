@@ -654,3 +654,60 @@ impl<M> canvas::Program<M> for Download {
         vec![frame.into_geometry()]
     }
 }
+
+/// A padlock: private.
+pub fn lock<'a, M: 'a>(size: f32, color: fn(&Theme) -> Color) -> Element<'a, M> {
+    canvas::Canvas::new(Lock { color })
+        .width(size)
+        .height(size)
+        .into()
+}
+
+struct Lock {
+    color: fn(&Theme) -> Color,
+}
+
+impl<M> canvas::Program<M> for Lock {
+    type State = ();
+
+    fn draw(
+        &self,
+        _state: &(),
+        renderer: &Renderer,
+        theme: &Theme,
+        bounds: Rectangle,
+        _cursor: mouse::Cursor,
+    ) -> Vec<Geometry> {
+        let mut frame = Frame::new(renderer, bounds.size());
+        let s = bounds.width;
+        let color = (self.color)(theme);
+        let p = |x: f32, y: f32| iced::Point::new(x * s, y * s);
+        // The shackle, then the body.
+        frame.stroke(
+            &Path::new(|path| {
+                path.move_to(p(0.32, 0.48));
+                path.line_to(p(0.32, 0.34));
+                path.arc(canvas::path::Arc {
+                    center: p(0.5, 0.34),
+                    radius: 0.18 * s,
+                    start_angle: iced::Radians(std::f32::consts::PI),
+                    end_angle: iced::Radians(2.0 * std::f32::consts::PI),
+                });
+                path.line_to(p(0.68, 0.48));
+            }),
+            Stroke::default()
+                .with_color(color)
+                .with_width((s / 10.0).max(1.0))
+                .with_line_cap(canvas::LineCap::Round),
+        );
+        frame.fill(
+            &Path::rounded_rectangle(
+                p(0.2, 0.46),
+                iced::Size::new(0.6 * s, 0.42 * s),
+                (0.08 * s).into(),
+            ),
+            color,
+        );
+        vec![frame.into_geometry()]
+    }
+}

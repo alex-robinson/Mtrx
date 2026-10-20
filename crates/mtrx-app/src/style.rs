@@ -1,5 +1,7 @@
 //! Shared sizes and widget styles.
 
+use crate::tint::Tint;
+
 use iced::{
     Background, Border, Color, Theme,
     widget::{button, container, rule, text_editor, text_input},
@@ -22,12 +24,49 @@ pub const TIMELINE_PADDING: f32 = 12.0;
 pub const MESSAGE_PADDING: f32 = 8.0;
 /// Between the sender avatar column and the message text.
 pub const GUTTER_SPACING: f32 = 10.0;
+/// Kept free right of message text, so lines stay shorter and easier to
+/// read.
+pub const TEXT_MARGIN: f32 = 72.0;
 /// Width of the timeline that message text cannot use.
 pub const MESSAGE_INSET: f32 =
-    2.0 * (TIMELINE_PADDING + MESSAGE_PADDING) + SENDER_AVATAR + GUTTER_SPACING;
+    2.0 * (TIMELINE_PADDING + MESSAGE_PADDING) + SENDER_AVATAR + GUTTER_SPACING + TEXT_MARGIN;
 
 pub fn muted(theme: &Theme) -> Color {
     theme.extended_palette().background.strong.color
+}
+
+/// The room list, in its colour.
+pub fn room_list(tint: Tint) -> impl Fn(&Theme) -> container::Style {
+    move |theme| container::Style {
+        background: Some(Background::Color(tint.color(theme))),
+        ..Default::default()
+    }
+}
+
+/// A colour to choose, ringed when chosen.
+pub fn swatch(theme: &Theme, status: button::Status, tint: Tint, selected: bool) -> button::Style {
+    let palette = theme.extended_palette();
+    let ring = if selected {
+        Border::default()
+            .rounded(11)
+            .width(2)
+            .color(palette.primary.base.color)
+    } else if matches!(status, button::Status::Hovered) {
+        Border::default()
+            .rounded(11)
+            .width(2)
+            .color(palette.background.strong.color)
+    } else {
+        Border::default()
+            .rounded(11)
+            .width(1)
+            .color(palette.background.strong.color)
+    };
+    button::Style {
+        background: Some(Background::Color(tint.color(theme))),
+        border: ring,
+        ..Default::default()
+    }
 }
 
 pub fn panel(theme: &Theme) -> container::Style {

@@ -400,7 +400,7 @@ async fn main_screen_with_math() {
             );
         }
         main.room = Some(open);
-        for (mxc, size) in main.avatars_on_screen(Default::default()) {
+        for (mxc, size) in main.avatars_on_screen(&Default::default()) {
             main.avatars.load_now(&alice, &mxc, size).await;
         }
 
@@ -1134,7 +1134,7 @@ async fn room_categories() {
                 session: &session,
                 space: None,
                 rooms: &mut main.rooms.rooms,
-                grouping: Grouping::default(),
+                grouping: mtrx_core::Grouping::default(),
             },
         );
     };

@@ -391,11 +391,19 @@ impl Card {
         } else {
             "not encrypted"
         };
-        card = card.push(
-            text(format!("{kind} · {members} · {encryption}"))
-                .size(13)
-                .style(text::secondary),
-        );
+        let mut facts = vec![kind.to_owned()];
+        if room.kind != RoomKind::Direct {
+            facts.push(
+                if room.public {
+                    "Public: anyone can join"
+                } else {
+                    "Private: by invitation"
+                }
+                .to_owned(),
+            );
+        }
+        facts.extend([members, encryption.to_owned()]);
+        card = card.push(text(facts.join(" · ")).size(13).style(text::secondary));
         let parents: Vec<&str> = room
             .parents
             .iter()

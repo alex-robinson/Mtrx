@@ -36,7 +36,8 @@ use crate::{
     popover::{Edge, Side, popover},
     send_later::{self, SendLater},
     style::{
-        self, GUTTER_SPACING, HEADER_AVATAR, MESSAGE_PADDING, SENDER_AVATAR, TIMELINE_PADDING,
+        self, GUTTER_SPACING, HEADER_AVATAR, MESSAGE_PADDING, SENDER_AVATAR, TEXT_MARGIN,
+        TIMELINE_PADDING,
     },
 };
 
@@ -657,7 +658,10 @@ fn event_view<'a>(
         | EventContent::OtherState { .. } => return space().into(),
     };
 
-    let mut item = column![].spacing(2).width(Length::Fill);
+    let mut item = column![]
+        .spacing(2)
+        .width(Length::Fill)
+        .padding(Padding::ZERO.right(TEXT_MARGIN));
     if with_header {
         item = item.push(
             mouse_area(sender_line(event, context.colored_names))

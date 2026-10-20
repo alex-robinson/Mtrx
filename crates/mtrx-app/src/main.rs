@@ -30,6 +30,7 @@ mod send_later;
 mod settings;
 mod sidebar;
 mod style;
+mod tint;
 
 fn main() -> iced::Result {
     tracing_subscriber::fmt()

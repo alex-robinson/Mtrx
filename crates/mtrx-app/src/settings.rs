@@ -2,6 +2,7 @@
 //! profiles, and the settings panel.
 
 use std::{
+    collections::BTreeMap,
     fmt, io,
     path::{Path, PathBuf},
 };
@@ -16,7 +17,14 @@ use iced::{
 use mtrx_core::{CallService, GoogleClient, Grouping, OwnedRoomId, Permissions, ServiceKind};
 use serde::{Deserialize, Serialize};
 
-use crate::{app, dialog::Kind, fonts, style};
+use crate::{
+    app,
+    dialog::Kind,
+    fonts,
+    hint::{Position, hint},
+    style,
+    tint::Tint,
+};
 
 const FILE: &str = "settings.json";
 
@@ -33,6 +41,12 @@ pub struct Settings {
     pub room_list: Grouping,
     /// The room list's width, as dragged.
     pub room_list_width: f32,
+    /// Rooms show their picture (or initial) rather than a symbol saying
+    /// whether they are public or private.
+    pub room_pictures: bool,
+    /// The room list's colour at home, and in spaces without their own.
+    pub home_tint: Tint,
+    pub space_tints: BTreeMap<OwnedRoomId, Tint>,
 }
 
 impl Default for Settings {
@@ -45,11 +59,22 @@ impl Default for Settings {
             ],
             room_list: Grouping::default(),
             room_list_width: style::ROOM_LIST_WIDTH,
+            room_pictures: false,
+            home_tint: Tint::default(),
+            space_tints: BTreeMap::new(),
         }
     }
 }
 
 impl Settings {
+    /// The room list's colour in `space`, or at home.
+    pub fn tint(&self, space: Option<&OwnedRoomId>) -> Tint {
+        space
+            .and_then(|space| self.space_tints.get(space))
+            .copied()
+            .unwrap_or(self.home_tint)
+    }
+
     pub fn path(data_root: &Path) -> PathBuf {
         data_root.join(FILE)
     }
@@ -75,6 +100,9 @@ pub enum Message {
     ColoredNames(bool),
     DesktopNotifications(bool),
     RoomList(Grouping),
+    RoomPictures(bool),
+    /// The room list's colour in a space, or at home.
+    Tint(Option<OwnedRoomId>, Tint),
     FormKind(FormKind),
     FormName(String),
     FormUrl(String),
@@ -315,6 +343,18 @@ impl Panel {
                 settings.room_list = grouping;
                 return Action::Save;
             }
+            Message::RoomPictures(on) => {
+                settings.room_pictures = on;
+                return Action::Save;
+            }
+            Message::Tint(None, tint) => {
+                settings.home_tint = tint;
+                return Action::Save;
+            }
+            Message::Tint(Some(space), tint) => {
+                settings.space_tints.insert(space, tint);
+                return Action::Save;
+            }
             Message::FormKind(kind) => self.form.kind = kind,
             Message::FormName(name) => self.form.name = name,
             Message::FormUrl(url) => self.form.url = url,
@@ -425,7 +465,12 @@ impl Panel {
         Action::None
     }
 
-    pub fn view<'a>(&'a self, settings: &'a Settings) -> Element<'a, app::Message> {
+    /// `spaces`: the top-level spaces, for their room list colours.
+    pub fn view<'a>(
+        &'a self,
+        settings: &'a Settings,
+        spaces: Vec<(OwnedRoomId, String)>,
+    ) -> Element<'a, app::Message> {
         let mut panel = column![
             row![
                 text("Settings").size(18).font(fonts::SEMIBOLD),
@@ -453,6 +498,15 @@ impl Panel {
             ),
             heading("Room list"),
             room_list_options(settings.room_list),
+            option(
+                "Room pictures",
+                "Rooms show their picture or initial, instead of # for public \
+                 rooms and a lock for private ones.",
+                toggler(settings.room_pictures)
+                    .on_toggle(|on| message(Message::RoomPictures(on)))
+                    .into(),
+            ),
+            tints(settings, spaces),
             heading("Calls"),
             text(
                 "Start call uses the space's call service if it has one, \
@@ -743,6 +797,53 @@ fn heading<'a>(label: &str) -> Element<'a, app::Message> {
         .into()
 }
 
+/// The room list's colour at home and in each space.
+fn tints<'a>(settings: &Settings, spaces: Vec<(OwnedRoomId, String)>) -> Element<'a, app::Message> {
+    let line = |label: String, space: Option<OwnedRoomId>, chosen: Tint| {
+        let swatches = Tint::ALL.map(|tint| {
+            let selected = tint == chosen;
+            hint(
+                button(space::horizontal())
+                    .width(22)
+                    .height(22)
+                    .padding(0)
+                    .style(move |theme: &iced::Theme, status| {
+                        style::swatch(theme, status, tint, selected)
+                    })
+                    .on_press(message(Message::Tint(space.clone(), tint))),
+                tint.name(),
+                Position::Top,
+            )
+        });
+        row![
+            text(label)
+                .width(Length::Fill)
+                .wrapping(text::Wrapping::None),
+            row(swatches).spacing(6),
+        ]
+        .spacing(12)
+        .align_y(Alignment::Center)
+        .into()
+    };
+    let mut lines = vec![line("Home".into(), None, settings.home_tint)];
+    for (space, name) in spaces {
+        let chosen = settings.tint(Some(&space));
+        lines.push(line(name, Some(space), chosen));
+    }
+    column![
+        column![
+            text("Colour"),
+            text("The room list's colour; spaces without their own use Home's.")
+                .size(12)
+                .style(text::secondary),
+        ]
+        .spacing(2),
+        column(lines).spacing(8),
+    ]
+    .spacing(8)
+    .into()
+}
+
 /// Which built-in sections the room list has.
 fn room_list_options<'a>(grouping: Grouping) -> Element<'a, app::Message> {
     let toggle = |on: bool, set: fn(&mut Grouping, bool)| {
@@ -829,6 +930,9 @@ mod tests {
                 ..Grouping::default()
             },
             room_list_width: 320.0,
+            room_pictures: true,
+            home_tint: Tint::Blue,
+            space_tints: BTreeMap::from([("!s:example.org".try_into().unwrap(), Tint::Rose)]),
         };
         settings.save(&path).unwrap();
         assert_eq!(Settings::load(&path), settings);

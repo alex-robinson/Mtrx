@@ -54,6 +54,8 @@ pub struct RoomSummary {
     /// We are invited but have not joined yet.
     pub invited: bool,
     pub encrypted: bool,
+    /// Anyone may join (else only invited people, or members of a space).
+    pub public: bool,
     pub unread_messages: u64,
     pub unread_mentions: u64,
     pub unread_notifications: u64,
@@ -224,6 +226,10 @@ async fn summarize(items: &Vector<RoomListItem>) -> Vec<RoomSummary> {
             kind,
             invited: room.state() == RoomState::Invited,
             encrypted: room.encryption_state().is_encrypted(),
+            public: matches!(
+                room.join_rule(),
+                Some(matrix_sdk::ruma::events::room::join_rules::JoinRule::Public)
+            ),
             unread_messages: room.num_unread_messages(),
             unread_mentions: room.num_unread_mentions(),
             unread_notifications: room.num_unread_notifications(),

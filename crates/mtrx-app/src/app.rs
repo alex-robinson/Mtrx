@@ -19,10 +19,9 @@ use iced::{
     window,
 };
 use mtrx_core::{
-    CallService, Connection, Contact, Google, Grouping, Media, MediaRef, Member, Notification,
-    OwnedMxcUri, OwnedRoomId, OwnedUserId, Profile, RecoveryStep, RoomList, RoomListState,
-    RoomOrAliasId, RoomTag, RoomTimeline, ScheduledMessage, SecretStore, ServiceKind, Session,
-    TimelineEntry, Url,
+    CallService, Connection, Contact, Google, Media, MediaRef, Member, Notification, OwnedMxcUri,
+    OwnedRoomId, OwnedUserId, Profile, RecoveryStep, RoomList, RoomListState, RoomOrAliasId,
+    RoomTag, RoomTimeline, ScheduledMessage, SecretStore, ServiceKind, Session, TimelineEntry, Url,
 };
 
 use crate::{
@@ -328,10 +327,9 @@ impl Main {
 impl Main {
     /// Pictures of the spaces, listed rooms, and the open room's header and
     /// timeline senders, with their sizes.
-    fn avatars_on_screen(&self, grouping: Grouping) -> Vec<(OwnedMxcUri, f32)> {
+    fn avatars_on_screen(&self, settings: &Settings) -> Vec<(OwnedMxcUri, f32)> {
         let rooms = &self.rooms.rooms;
-        // The width does not change which pictures are listed.
-        let mut wanted = sidebar::avatars(&self.room_list_view(grouping, 0.0));
+        let mut wanted = sidebar::avatars(&self.room_list_view(settings));
         wanted.extend(self.info.as_ref().and_then(|c| c.avatar(rooms)));
         if let Some(room) = &self.room {
             wanted.extend(room.avatars(rooms.iter().find(|r| r.id == room.id)));
@@ -342,7 +340,8 @@ impl Main {
             .collect()
     }
 
-    fn room_list_view(&self, grouping: Grouping, width: f32) -> sidebar::RoomListView<'_> {
+    fn room_list_view<'a>(&'a self, settings: &Settings) -> sidebar::RoomListView<'a> {
+        let (grouping, width) = (settings.room_list, settings.room_list_width);
         sidebar::RoomListView {
             rooms: &self.rooms.rooms,
             selected_space: self.space.as_ref(),
@@ -360,6 +359,8 @@ impl Main {
             grouping,
             out_of_view: self.out_of_view,
             width,
+            tint: settings.tint(self.space.as_ref()),
+            room_pictures: settings.room_pictures,
         }
     }
 }
@@ -2145,7 +2146,7 @@ impl App {
             return Task::none();
         };
         let tasks: Vec<_> = main
-            .avatars_on_screen(self.settings.room_list)
+            .avatars_on_screen(&self.settings)
             .into_iter()
             .map(|(mxc, size)| {
                 main.avatars
@@ -2270,7 +2271,14 @@ impl App {
             Screen::Login(login) => login.view().map(Message::Login),
             Screen::Main(main) => {
                 let (panel, close) = if let Some(panel) = &self.settings_panel {
-                    (panel.view(&self.settings), Message::ShowSettings(false))
+                    let spaces = sidebar::top_level_spaces(&main.rooms.rooms)
+                        .into_iter()
+                        .map(|s| (s.id.clone(), s.name.clone()))
+                        .collect();
+                    (
+                        panel.view(&self.settings, spaces),
+                        Message::ShowSettings(false),
+                    )
                 } else if let Some(dialog) = &main.dialog {
                     (
                         dialog.view(&main.rooms.rooms),
@@ -2305,9 +2313,7 @@ impl App {
         let theme = self.theme();
         let rooms = &main.rooms.rooms;
         let space_bar = sidebar::space_bar(rooms, main.space.as_ref(), &main.avatars);
-        let room_list = sidebar::room_list(
-            main.room_list_view(self.settings.room_list, self.settings.room_list_width),
-        );
+        let room_list = sidebar::room_list(main.room_list_view(&self.settings));
 
         let mut content = column![];
         if main.verified == Some(false) {

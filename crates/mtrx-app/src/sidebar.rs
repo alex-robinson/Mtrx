@@ -24,6 +24,7 @@ use crate::{
     hint::{Position, hint},
     icons, info,
     style::{self, ROOM_AVATAR, ROOM_ROW, SPACE_AVATAR, SPACE_BAR_WIDTH},
+    tint::Tint,
 };
 
 /// The room search field, focused by ⌘K / Ctrl+K.
@@ -164,6 +165,7 @@ pub fn avatars<'a>(view: &RoomListView<'a>) -> Vec<(&'a MxcUri, f32)> {
     };
     let listed = listed
         .into_iter()
+        .filter(|r| view.room_pictures || r.kind != RoomKind::Room)
         .filter_map(|r| Some((r.avatar.as_deref()?, ROOM_AVATAR)));
     spaces.chain(listed).collect()
 }
@@ -276,6 +278,10 @@ pub struct RoomListView<'a> {
     pub grouping: Grouping,
     pub out_of_view: OutOfView,
     pub width: f32,
+    /// The list's colour here.
+    pub tint: Tint,
+    /// Rooms show their pictures rather than a public/private symbol.
+    pub room_pictures: bool,
 }
 
 pub fn room_list<'a>(view: RoomListView<'a>) -> Element<'a, Message> {
@@ -299,11 +305,23 @@ pub fn room_list<'a>(view: RoomListView<'a>) -> Element<'a, Message> {
         .padding([0, 8])
         .style(style::list_item(add_menu))
         .on_press(Message::AddMenu(!add_menu));
+    // A space's name opens its settings, with its address and link.
+    let heading: Element<'a, Message> = match selected_space {
+        Some(space) => hint(
+            button(ellipsis(title).size(16).font(fonts::SEMIBOLD))
+                .padding([4, 8])
+                .style(style::list_item(false))
+                .on_press(Message::ShowInfo(info::Target::Room(space.clone()))),
+            "Space settings, address and link",
+            Position::Bottom,
+        ),
+        None => container(ellipsis(title).size(16).font(fonts::SEMIBOLD))
+            .padding([4, 8])
+            .into(),
+    };
     let mut list = column![
         row![
-            container(ellipsis(title).size(16).font(fonts::SEMIBOLD))
-                .padding([4, 8])
-                .width(Length::Fill),
+            container(heading).width(Length::Fill),
             with_tooltip(add, "New room, chat or category; join a room".into()),
         ]
         .align_y(Alignment::Center)
@@ -354,7 +372,7 @@ pub fn room_list<'a>(view: RoomListView<'a>) -> Element<'a, Message> {
     container(out_of_view_arrows(list.into(), view.out_of_view))
         .width(view.width)
         .height(Length::Fill)
-        .style(style::panel)
+        .style(style::room_list(view.tint))
         .into()
 }
 
@@ -745,13 +763,18 @@ impl<'a> RoomListView<'a> {
         } else {
             fonts::INTER
         };
-        let avatar = self.avatars.view(
-            room.id.as_str(),
-            &room.name,
-            room.avatar.as_deref(),
-            ROOM_AVATAR,
-            Shape::Circle,
-        );
+        // People keep their pictures; rooms may show whether they are open.
+        let avatar = if self.room_pictures || room.kind != RoomKind::Room {
+            self.avatars.view(
+                room.id.as_str(),
+                &room.name,
+                room.avatar.as_deref(),
+                ROOM_AVATAR,
+                Shape::Circle,
+            )
+        } else {
+            access_symbol(room.public)
+        };
         let name = ellipsis(&room.name).size(14).font(font);
         // Right after the name, so nothing moves when the star and menu
         // show on hover.
@@ -797,6 +820,37 @@ impl<'a> RoomListView<'a> {
             area.into()
         }
     }
+}
+
+/// In place of a room's picture: # for a public room, a lock for one only
+/// invited people (or a space's members) may join.
+fn access_symbol<'a>(public: bool) -> Element<'a, Message> {
+    let symbol: Element<'a, Message> = if public {
+        text("#")
+            .size(16)
+            .font(fonts::SEMIBOLD)
+            .style(|theme: &Theme| text::Style {
+                color: Some(
+                    theme
+                        .extended_palette()
+                        .background
+                        .base
+                        .text
+                        .scale_alpha(0.55),
+                ),
+            })
+            .into()
+    } else {
+        icons::lock(14.0, |theme| {
+            theme
+                .extended_palette()
+                .background
+                .base
+                .text
+                .scale_alpha(0.5)
+        })
+    };
+    container(symbol).center(ROOM_AVATAR).into()
 }
 
 /// Unread messages, in red when they mention the user.

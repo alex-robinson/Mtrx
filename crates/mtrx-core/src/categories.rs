@@ -415,6 +415,7 @@ mod tests {
             kind,
             invited: false,
             encrypted: false,
+            public: false,
             unread_messages: 0,
             unread_mentions: 0,
             unread_notifications: 0,
