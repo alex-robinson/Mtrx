@@ -2,7 +2,7 @@
 
 use iced::{
     Alignment, Element, Length,
-    widget::{button, column, container, row, scrollable, text, tooltip},
+    widget::{button, column, container, row, scrollable, text},
 };
 use mtrx_core::{Member, OwnedRoomId, OwnedUserId, Role};
 
@@ -11,7 +11,9 @@ use crate::{
     avatar::{Avatars, Shape},
     dialog::Kind,
     ellipsis::ellipsis,
-    fonts, style,
+    fonts,
+    hint::{Position, hint},
+    style,
 };
 
 const WIDTH: f32 = 250.0;
@@ -124,7 +126,7 @@ fn entry<'a>(member: &'a Member, own: &OwnedUserId, avatars: &Avatars) -> Elemen
     if member.id == *own {
         return container(line).padding([3, 4]).into();
     }
-    tooltip(
+    hint(
         button(line)
             .width(Length::Fill)
             .padding([3, 4])
@@ -134,10 +136,7 @@ fn entry<'a>(member: &'a Member, own: &OwnedUserId, avatars: &Avatars) -> Elemen
                 member.name.clone(),
                 member.avatar.clone(),
             ))),
-        container(text(member.id.to_string()).size(12))
-            .padding(6)
-            .style(container::rounded_box),
-        tooltip::Position::Left,
+        member.id.to_string(),
+        Position::Left,
     )
-    .into()
 }

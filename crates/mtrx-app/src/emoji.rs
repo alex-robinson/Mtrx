@@ -9,7 +9,11 @@ use iced::{
 
 use unicode_segmentation::UnicodeSegmentation;
 
-use crate::{app, fonts, style};
+use crate::{
+    app, fonts,
+    hint::{Position, hint},
+    style,
+};
 
 /// Offered before any have been used, and to fill up the most used.
 const COMMON: [&str; 8] = ["👍", "❤️", "😂", "🎉", "😮", "😢", "🙏", "👀"];
@@ -25,16 +29,16 @@ const MAX_VERSION: (u32, u32) = (15, 1);
 pub const SEARCH: &str = "emoji-search";
 
 /// Each group, by the emoji on its tab.
-const GROUPS: [(Group, &str); 9] = [
-    (Group::SmileysAndEmotion, "😀"),
-    (Group::PeopleAndBody, "👋"),
-    (Group::AnimalsAndNature, "🐻"),
-    (Group::FoodAndDrink, "🍔"),
-    (Group::TravelAndPlaces, "✈️"),
-    (Group::Activities, "⚽"),
-    (Group::Objects, "💡"),
-    (Group::Symbols, "❤️"),
-    (Group::Flags, "🏁"),
+const GROUPS: [(Group, &str, &str); 9] = [
+    (Group::SmileysAndEmotion, "😀", "Smileys and emotion"),
+    (Group::PeopleAndBody, "👋", "People and body"),
+    (Group::AnimalsAndNature, "🐻", "Animals and nature"),
+    (Group::FoodAndDrink, "🍔", "Food and drink"),
+    (Group::TravelAndPlaces, "✈️", "Travel and places"),
+    (Group::Activities, "⚽", "Activities"),
+    (Group::Objects, "💡", "Objects"),
+    (Group::Symbols, "❤️", "Symbols"),
+    (Group::Flags, "🏁", "Flags"),
 ];
 
 #[derive(Debug, Clone)]
@@ -81,7 +85,7 @@ pub fn in_field<'a>(
     message: app::Message,
 ) -> Element<'a, app::Message> {
     let (size, edge) = if compact { (15.0, 4.0) } else { (19.0, 6.0) };
-    let toggle = iced::widget::tooltip(
+    let toggle = hint(
         button(crate::icons::smiley(size, |theme| {
             theme
                 .extended_palette()
@@ -94,10 +98,8 @@ pub fn in_field<'a>(
         .style(style::list_item(open))
         // While open, a click on it closes the panel as any outside click.
         .on_press_maybe((!open).then_some(message)),
-        container(text("Emoji").size(12))
-            .padding(6)
-            .style(container::rounded_box),
-        iced::widget::tooltip::Position::Top,
+        "Insert an emoji",
+        Position::Top,
     );
     iced::widget::stack![
         field.into(),
@@ -194,19 +196,22 @@ impl Panel {
             .padding([4, 8])
             .size(13);
         let searching = !self.query.trim().is_empty();
-        let tabs = row(GROUPS.map(|(group, icon)| {
-            button(
-                text(icon)
-                    .size(16)
-                    .font(fonts::EMOJI)
-                    .center()
-                    .width(Length::Fill),
+        let tabs = row(GROUPS.map(|(group, icon, name)| {
+            hint(
+                button(
+                    text(icon)
+                        .size(16)
+                        .font(fonts::EMOJI)
+                        .center()
+                        .width(Length::Fill),
+                )
+                .width(CELL)
+                .padding([2, 0])
+                .style(style::list_item(!searching && group == self.group))
+                .on_press(wrap(Message::Group(group))),
+                name,
+                Position::Top,
             )
-            .width(CELL)
-            .padding([2, 0])
-            .style(style::list_item(!searching && group == self.group))
-            .on_press(wrap(Message::Group(group)))
-            .into()
         }));
         let shown = self.shown();
         let grid: Element<'a, app::Message> = if shown.is_empty() {

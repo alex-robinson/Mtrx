@@ -819,6 +819,15 @@ async fn room_management_screens() {
     );
     snapshot(
         &main_with(&|main| {
+            main.out_of_view = sidebar::OutOfView {
+                above: Some((1, 0.0)),
+                below: Some((3, 400.0)),
+            }
+        }),
+        "unread-arrows",
+    );
+    snapshot(
+        &main_with(&|main| {
             let mut dialog = Dialog::new(dialog::Kind::NewRoom {
                 space: Some((space.clone(), "Climate".into())),
             });

@@ -3,10 +3,10 @@
 use std::collections::{HashMap, HashSet};
 
 use iced::{
-    Alignment, Color, Element, Length, Padding, Theme,
+    Alignment, Color, Element, Length, Padding, Rectangle, Task, Theme, Vector,
+    advanced::widget::{Id, Operation, operation},
     widget::{
         button, column, container, mouse_area, row, scrollable, space, stack, text, text_input,
-        tooltip,
     },
 };
 use mtrx_core::{
@@ -20,7 +20,9 @@ use crate::{
     avatar::{Avatars, Shape},
     dialog::Kind,
     ellipsis::{ellipsis, followed_by},
-    fonts, icons, info,
+    fonts,
+    hint::{Position, hint},
+    icons, info,
     style::{self, ROOM_AVATAR, ROOM_LIST_WIDTH, ROOM_ROW, SPACE_AVATAR, SPACE_BAR_WIDTH},
 };
 
@@ -272,6 +274,7 @@ pub struct RoomListView<'a> {
     pub filter: &'a str,
     pub arrange: &'a Arrange,
     pub grouping: Grouping,
+    pub out_of_view: OutOfView,
 }
 
 pub fn room_list<'a>(view: RoomListView<'a>) -> Element<'a, Message> {
@@ -300,7 +303,7 @@ pub fn room_list<'a>(view: RoomListView<'a>) -> Element<'a, Message> {
             container(ellipsis(title).size(16).font(fonts::SEMIBOLD))
                 .padding([4, 8])
                 .width(Length::Fill),
-            with_tooltip(add, "Add".into()),
+            with_tooltip(add, "New room, chat or category; join a room".into()),
         ]
         .align_y(Alignment::Center)
     ]
@@ -343,7 +346,11 @@ pub fn room_list<'a>(view: RoomListView<'a>) -> Element<'a, Message> {
         list =
             list.push(container(text("Syncing…").size(12).style(text::secondary)).padding([8, 8]));
     }
-    container(scrollable(list))
+    let list = scrollable(list)
+        .id(ROOM_LIST)
+        .on_scroll(|_| Message::RoomListScrolled)
+        .height(Length::Fill);
+    container(out_of_view_arrows(list.into(), view.out_of_view))
         .width(ROOM_LIST_WIDTH)
         .height(Length::Fill)
         .style(style::panel)
@@ -464,14 +471,15 @@ fn section_header<'a>(
     let mut header = row![title].align_y(Alignment::Center);
     if let Section::Category(id) = section {
         let open = arrange.category_menu.as_ref() == Some(id);
-        header = header.push(
+        header = header.push(with_tooltip(
             button(text("⋯").size(13).style(text::secondary))
                 .padding([0, 6])
                 .style(style::list_item(open))
                 .on_press(arrange_message(arrange::Message::CategoryMenu(
                     (!open).then(|| id.clone()),
                 ))),
-        );
+            "Rename, sort, move or delete the category".into(),
+        ));
     }
     container(header)
         .padding(Padding::new(8.0).top(14).bottom(4))
@@ -764,12 +772,13 @@ impl<'a> RoomListView<'a> {
             line = line.push(star_button(&room.id, favourite));
         }
         if actions {
-            line = line.push(
+            line = line.push(with_tooltip(
                 button(text("⋯").size(13))
                     .padding([0, 4])
                     .style(style::list_item(menu_open))
                     .on_press(menu.clone()),
-            );
+                "Settings, low priority, categories (or right-click)".into(),
+            ));
         }
         let entry = button(container(line).center_y(Length::Fill))
             .width(Length::Fill)
@@ -782,7 +791,12 @@ impl<'a> RoomListView<'a> {
         if !room.invited {
             area = area.on_right_press(menu);
         }
-        area.into()
+        // Found by `find_out_of_view` when unread.
+        if room.unread_messages > 0 {
+            container(area).id(unread_id(&room.id)).into()
+        } else {
+            area.into()
+        }
     }
 }
 
@@ -839,12 +853,209 @@ pub fn star_for<'a>(message: Message, favourite: bool) -> Element<'a, Message> {
 }
 
 fn with_tooltip<'a>(content: impl Into<Element<'a, Message>>, tip: String) -> Element<'a, Message> {
-    tooltip(
-        content,
-        container(text(tip).size(12))
-            .padding(6)
-            .style(container::rounded_box),
-        tooltip::Position::Right,
+    hint(content, tip, Position::Right)
+}
+
+/// The room list's scrollable.
+const ROOM_LIST: &str = "room-list";
+/// Room left visible beyond an unread room scrolled to (the arrow covers
+/// the list's edge).
+const SCROLL_MARGIN: f32 = 44.0;
+
+fn unread_id(room: &OwnedRoomId) -> Id {
+    Id::from(format!("unread:{room}"))
+}
+
+/// Unread rooms scrolled out of the room list's view, above and below:
+/// how many, and the offset showing the nearest.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct OutOfView {
+    pub above: Option<(usize, f32)>,
+    pub below: Option<(usize, f32)>,
+}
+
+/// Look where the unread rooms' rows are in the room list.
+pub fn find_out_of_view(rooms: &[RoomSummary]) -> Task<OutOfView> {
+    let ids = rooms
+        .iter()
+        .filter(|r| r.kind != RoomKind::Space && r.unread_messages > 0)
+        .map(|r| unread_id(&r.id))
+        .collect();
+    iced::advanced::widget::operate(FindUnread {
+        ids,
+        list: None,
+        rows: Vec::new(),
+    })
+}
+
+/// Scroll the room list to `offset`.
+pub fn scroll_to(offset: f32) -> Task<Message> {
+    iced::widget::operation::scroll_to(
+        ROOM_LIST,
+        iced::widget::operation::AbsoluteOffset {
+            x: None,
+            y: Some(offset.max(0.0)),
+        },
     )
-    .into()
+}
+
+struct FindUnread {
+    ids: Vec<Id>,
+    /// The list's bounds and scroll offset.
+    list: Option<(Rectangle, Vector)>,
+    /// Unread rows, in content positions.
+    rows: Vec<Rectangle>,
+}
+
+impl Operation<OutOfView> for FindUnread {
+    fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn Operation<OutOfView>)) {
+        operate(self);
+    }
+
+    fn scrollable(
+        &mut self,
+        id: Option<&Id>,
+        bounds: Rectangle,
+        _content_bounds: Rectangle,
+        translation: Vector,
+        _state: &mut dyn operation::Scrollable,
+    ) {
+        if id == Some(&Id::new(ROOM_LIST)) {
+            self.list = Some((bounds, translation));
+        }
+    }
+
+    fn container(&mut self, id: Option<&Id>, bounds: Rectangle) {
+        if id.is_some_and(|id| self.ids.contains(id)) {
+            self.rows.push(bounds);
+        }
+    }
+
+    fn finish(&self) -> operation::Outcome<OutOfView> {
+        operation::Outcome::Some(match self.list {
+            Some((list, scrolled)) => out_of_view(list, scrolled.y, &self.rows),
+            None => OutOfView::default(),
+        })
+    }
+}
+
+/// Which `rows` (in window positions, unscrolled) of a `list` scrolled by
+/// `scrolled` lie wholly above or below its view.
+fn out_of_view(list: Rectangle, scrolled: f32, rows: &[Rectangle]) -> OutOfView {
+    let (top, bottom) = (scrolled, scrolled + list.height);
+    // Row tops and bottoms relative to the list's content.
+    let rows = rows
+        .iter()
+        .map(|row| (row.y - list.y, row.y - list.y + row.height));
+    let above: Vec<f32> = rows
+        .clone()
+        .filter(|(_, end)| *end <= top)
+        .map(|(y, _)| y)
+        .collect();
+    let below: Vec<f32> = rows
+        .filter(|(y, _)| *y >= bottom)
+        .map(|(_, end)| end)
+        .collect();
+    let nearest_above = above.iter().copied().reduce(f32::max);
+    let nearest_below = below.iter().copied().reduce(f32::min);
+    OutOfView {
+        above: nearest_above.map(|y| (above.len(), y - SCROLL_MARGIN)),
+        below: nearest_below.map(|end| (below.len(), end - list.height + SCROLL_MARGIN)),
+    }
+}
+
+/// Arrows over the list's edges pointing at unread rooms out of view.
+fn out_of_view_arrows<'a>(
+    list: Element<'a, Message>,
+    out_of_view: OutOfView,
+) -> Element<'a, Message> {
+    let arrow = |up: bool, (count, offset): (usize, f32)| {
+        let label = match count {
+            1 => "1 unread".to_owned(),
+            n => format!("{n} unread"),
+        };
+        let tip = if up {
+            "Scroll up to unread rooms"
+        } else {
+            "Scroll down to unread rooms"
+        };
+        hint(
+            button(
+                row![
+                    icons::arrow(12.0, up, |theme| theme.extended_palette().primary.base.text),
+                    text(label).size(12).font(fonts::SEMIBOLD),
+                ]
+                .spacing(4)
+                .align_y(Alignment::Center),
+            )
+            .padding([3, 10])
+            .style(|theme, status| {
+                let style = style::primary_button(theme, status);
+                button::Style {
+                    border: style.border.rounded(12),
+                    shadow: iced::Shadow {
+                        color: Color::BLACK.scale_alpha(0.2),
+                        offset: Vector::new(0.0, 1.0),
+                        blur_radius: 4.0,
+                    },
+                    ..style
+                }
+            })
+            .on_press(Message::ScrollRoomList(offset)),
+            tip,
+            Position::Right,
+        )
+    };
+    let mut layers = stack![list];
+    if let Some(above) = out_of_view.above {
+        layers = layers.push(
+            container(arrow(true, above))
+                .center_x(Length::Fill)
+                .padding(Padding::ZERO.top(6)),
+        );
+    }
+    if let Some(below) = out_of_view.below {
+        layers = layers.push(
+            container(arrow(false, below))
+                .center_x(Length::Fill)
+                .align_bottom(Length::Fill)
+                .padding(Padding::ZERO.bottom(8)),
+        );
+    }
+    layers.into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn finds_unread_rooms_out_of_view() {
+        // A list at y 100, 300 high, scrolled down by 200: it shows
+        // content 200..500.
+        let list = Rectangle::new(iced::Point::new(0.0, 100.0), iced::Size::new(260.0, 300.0));
+        let row = |y: f32| {
+            Rectangle::new(
+                iced::Point::new(0.0, 100.0 + y),
+                iced::Size::new(260.0, 32.0),
+            )
+        };
+        let rows = [
+            row(0.0),
+            row(150.0),
+            row(190.0),
+            row(400.0),
+            row(520.0),
+            row(700.0),
+        ];
+        let found = out_of_view(list, 200.0, &rows);
+        // 0 and 150 are above (190 shows partly); the nearest is 150.
+        assert_eq!(found.above, Some((2, 150.0 - SCROLL_MARGIN)));
+        // 520 and 700 are below; scrolling shows 520's bottom (552).
+        assert_eq!(found.below, Some((2, 552.0 - 300.0 + SCROLL_MARGIN)));
+        assert_eq!(
+            out_of_view(list, 200.0, &[row(300.0)]),
+            OutOfView::default()
+        );
+    }
 }

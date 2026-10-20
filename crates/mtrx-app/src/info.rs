@@ -19,8 +19,8 @@ use crate::{
 };
 
 const AVATAR: f32 = 64.0;
-/// Shared rooms listed on a person's card.
-const MAX_SHARED: usize = 8;
+/// Height of a person's shared rooms list; more scroll.
+const SHARED_HEIGHT: f32 = 200.0;
 
 /// What to show a card for.
 #[derive(Debug, Clone)]
@@ -504,22 +504,17 @@ fn heading<'a>(
     .into()
 }
 
-/// Spaces, then rooms, shared with someone; each opens.
+/// Spaces, then rooms, shared with someone, all of them scrolling; each
+/// opens.
 fn shared_view<'a>(shared: &[OwnedRoomId], rooms: &'a [RoomSummary]) -> Element<'a, app::Message> {
     let mut known: Vec<&RoomSummary> = shared
         .iter()
         .filter_map(|id| rooms.iter().find(|r| &r.id == id))
         .collect();
     known.sort_by_key(|r| r.kind != RoomKind::Space);
-    let more = known.len().saturating_sub(MAX_SHARED);
-    let mut list = column![
-        text("Shared spaces and rooms")
-            .size(11)
-            .font(fonts::SEMIBOLD)
-            .style(text::secondary)
-    ]
-    .spacing(2);
-    for room in known.into_iter().take(MAX_SHARED) {
+    let title = format!("Shared spaces and rooms ({})", known.len());
+    let mut list = column![].spacing(2).padding(iced::Padding::ZERO.right(10));
+    for room in known {
         let target = match room.kind {
             RoomKind::Space => app::Message::SelectSpace(Some(room.id.clone())),
             _ => app::Message::OpenRoom(room.id.clone()),
@@ -532,14 +527,15 @@ fn shared_view<'a>(shared: &[OwnedRoomId], rooms: &'a [RoomSummary]) -> Element<
                 .on_press(target),
         );
     }
-    if more > 0 {
-        list = list.push(
-            text(format!("and {more} more"))
-                .size(12)
-                .style(text::secondary),
-        );
-    }
-    list.into()
+    column![
+        text(title)
+            .size(11)
+            .font(fonts::SEMIBOLD)
+            .style(text::secondary),
+        container(scrollable(list).height(Length::Shrink)).max_height(SHARED_HEIGHT),
+    ]
+    .spacing(4)
+    .into()
 }
 
 fn close<'a>() -> Element<'a, app::Message> {

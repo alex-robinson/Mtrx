@@ -2,9 +2,9 @@
 //! writing (a new message or a reply), and editing a message in place.
 
 use iced::{
-    Alignment, Element, Length,
+    Alignment, Element, Length, Theme,
     keyboard::{Key, key::Named},
-    widget::{button, column, container, row, space, text, text_editor, tooltip},
+    widget::{button, column, container, row, space, text, text_editor},
 };
 use mtrx_core::{Event, EventKey, MxcUri, OwnedEventId, Reaction, Reader, Reply};
 
@@ -13,7 +13,9 @@ use crate::{
     avatar::{Avatars, Shape},
     ellipsis::ellipsis,
     emoji, fonts,
-    popover::{Edge, Side, popover},
+    hint::{Position, hint},
+    icons,
+    popover::{Edge, Side, on_click_outside, popover},
     style,
 };
 
@@ -97,10 +99,14 @@ impl Compose {
                         .style(text::secondary)
                         .wrapping(text::Wrapping::None)
                         .width(Length::Fill),
-                    button(text("×").size(14))
-                        .padding([0, 6])
-                        .style(style::text_button)
-                        .on_press(act(Message::CancelCompose)),
+                    hint(
+                        button(text("×").size(14))
+                            .padding([0, 6])
+                            .style(style::text_button)
+                            .on_press(act(Message::CancelCompose)),
+                        "Stop replying (Esc)",
+                        Position::Left,
+                    ),
                 ]
                 .spacing(8)
                 .align_y(Alignment::Center),
@@ -227,37 +233,63 @@ impl InlineEdit {
     }
 }
 
-/// Buttons floating over a hovered message.
+fn tool_color(theme: &Theme) -> iced::Color {
+    theme
+        .extended_palette()
+        .background
+        .base
+        .text
+        .scale_alpha(0.7)
+}
+
+/// Symbols floating over a hovered message, each named on hover.
 pub fn toolbar<'a>(
     event: &Event,
     target: Option<Target>,
     edit_text: Option<String>,
 ) -> Element<'a, app::Message> {
-    let tool = |label, message: Option<Message>| {
-        button(text(label).size(12))
-            .padding([2, 8])
-            .style(style::text_button)
-            .on_press_maybe(message.map(act))
+    let tool = |icon: Element<'a, app::Message>, tip: &'static str, message: Option<Message>| {
+        hint(
+            button(icon)
+                .padding([4, 6])
+                .style(style::text_button)
+                .on_press_maybe(message.map(act)),
+            tip,
+            Position::Top,
+        )
     };
     let mut bar = row![
-        tool("React", Some(Message::TogglePicker(event.id.clone()))),
-        tool("Reply", target.clone().map(Message::Reply)),
+        tool(
+            icons::smiley(16.0, tool_color),
+            "React",
+            Some(Message::TogglePicker(event.id.clone()))
+        ),
+        tool(
+            icons::reply(16.0, tool_color),
+            "Reply",
+            target.clone().map(Message::Reply)
+        ),
     ]
     .spacing(2);
     if event.editable {
         bar = bar.push(tool(
+            icons::pencil(16.0, tool_color),
             "Edit",
             edit_text.map(|text| Message::Edit(event.key.clone(), text)),
         ));
     }
     if event.own && event.event_id.is_some() {
-        bar = bar.push(tool("Delete", Some(Message::AskDelete(event.id.clone()))));
+        bar = bar.push(tool(
+            icons::trash(16.0, tool_color),
+            "Delete",
+            Some(Message::AskDelete(event.id.clone())),
+        ));
     }
     container(bar).padding(2).style(style::toolbar).into()
 }
 
-/// The reactions for a message: the most used, and all emoji below if
-/// opened.
+/// Reacting to a message, under it where its reactions show: the most used
+/// emoji, and all of them floating from "+". A click elsewhere closes it.
 pub fn picker<'a>(
     event: &Event,
     reactions: &[Reaction],
@@ -265,38 +297,42 @@ pub fn picker<'a>(
     all: Option<&'a emoji::Panel>,
 ) -> Element<'a, app::Message> {
     let key = event.key.clone();
-    let quick = emoji::quick(frequent).into_iter().map(|emoji| {
-        let own = reactions.iter().any(|r| r.key == emoji && r.own);
-        button(text(emoji.to_owned()).size(18).font(fonts::EMOJI))
-            .padding([2, 6])
-            .style(style::list_item(own))
-            .on_press(act(Message::React(key.clone(), emoji.to_owned())))
-            .into()
-    });
-    let more = button(text(if all.is_some() { "−" } else { "+" }).size(18))
-        .padding([2, 8])
-        .style(style::list_item(all.is_some()))
-        .on_press(act(Message::Emoji(if all.is_some() {
-            emoji::Message::Close
-        } else {
-            emoji::Message::Open
-        })));
-    let quick = container(row(quick).push(more).spacing(2).align_y(Alignment::Center))
-        .padding(4)
-        .style(style::toolbar);
-    match all {
-        Some(panel) => column![
-            quick,
-            panel.view(
-                &[],
-                move |emoji| act(Message::React(key.clone(), emoji)),
-                |message| act(Message::Emoji(message)),
+    let quick: Vec<Element<'a, app::Message>> = emoji::quick(frequent)
+        .into_iter()
+        .map(|emoji| {
+            let own = reactions.iter().any(|r| r.key == emoji && r.own);
+            button(text(emoji.to_owned()).size(16).font(fonts::EMOJI))
+                .padding([1, 7])
+                .style(style::reaction(own))
+                .on_press(act(Message::React(key.clone(), emoji.to_owned())))
+                .into()
+        })
+        .collect();
+    // While open, a click on it closes the panel as any outside click.
+    let more = hint(
+        button(text("+").size(14).font(fonts::SEMIBOLD))
+            .padding([1, 9])
+            .style(style::reaction(all.is_some()))
+            .on_press_maybe(
+                all.is_none()
+                    .then(|| act(Message::Emoji(emoji::Message::Open))),
             ),
-        ]
-        .spacing(4)
-        .into(),
-        None => quick.into(),
-    }
+        "All emoji",
+        Position::Top,
+    );
+    let panel = all.map(|panel| {
+        panel.view(
+            &[],
+            move |emoji| act(Message::React(key.clone(), emoji)),
+            |message| act(Message::Emoji(message)),
+        )
+    });
+    let more = popover(more, panel, Side::Below, Edge::Left)
+        .on_dismiss(act(Message::Emoji(emoji::Message::Close)));
+    on_click_outside(
+        row(quick).push(more).spacing(4).align_y(Alignment::Center),
+        act(Message::ClosePicker),
+    )
 }
 
 /// Reaction pills; clicking one adds or removes ours.
@@ -388,16 +424,11 @@ pub fn read_markers<'a>(event: &Event, avatars: &Avatars) -> Option<Element<'a, 
         );
     }
     let names: Vec<_> = event.read_by.iter().map(reader_name).collect();
-    Some(
-        tooltip(
-            markers,
-            container(text(format!("Read by {}", names.join(", "))).size(12))
-                .padding(6)
-                .style(container::rounded_box),
-            tooltip::Position::Left,
-        )
-        .into(),
-    )
+    Some(hint(
+        markers,
+        format!("Read by {}", names.join(", ")),
+        Position::Left,
+    ))
 }
 
 fn reader_name(reader: &Reader) -> &str {

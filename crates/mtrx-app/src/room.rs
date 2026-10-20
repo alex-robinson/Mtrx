@@ -12,12 +12,12 @@ use iced::{
     mouse,
     widget::{
         button, column, container, image, mouse_area, row, rule, scrollable, scrollable::Viewport,
-        space, stack, text, text_editor, tooltip,
+        space, stack, text, text_editor,
     },
 };
 use mtrx_core::{
     CallService, Event, EventContent, MediaKind, MediaRef, MembershipChange, MessageKind, MxcUri,
-    OwnedRoomId, OwnedUserId, RoomSummary, RoomTimeline, ScheduledMessage, SendState,
+    OwnedRoomId, OwnedUserId, RoomKind, RoomSummary, RoomTimeline, ScheduledMessage, SendState,
     TimelineEntry,
 };
 
@@ -27,7 +27,9 @@ use crate::{
     avatar::{self, Avatars, Shape},
     calls::{self, RoomCalls},
     ellipsis::ellipsis,
-    emoji, fonts, icons, info,
+    emoji, fonts,
+    hint::{Position, hint},
+    icons, info,
     math::{self, Math, Rendered},
     media::{self, Previews},
     members::Members,
@@ -370,13 +372,17 @@ impl Room {
         let composer = popover(composer, panel, Side::Above, Edge::Right)
             .on_dismiss(Message::ComposerEmoji(emoji::Message::Close));
         let composer_empty = self.composer.text().trim().is_empty();
-        let send = button(text("Send").size(13))
-            .padding([10, 14])
-            .style(style::primary_button)
-            .on_press_maybe((!composer_empty).then_some(Message::Send));
+        let send = hint(
+            button(text("Send").size(13))
+                .padding([10, 14])
+                .style(style::primary_button)
+                .on_press_maybe((!composer_empty).then_some(Message::Send)),
+            "Send now (Enter)",
+            Position::Top,
+        );
         // While open, a click on it closes the picker as any outside click.
         let picking = self.later.picker.is_some() && self.later.rescheduling.is_none();
-        let later = tooltip(
+        let later = hint(
             button(icons::clock(18.0, |theme| {
                 theme
                     .extended_palette()
@@ -388,10 +394,8 @@ impl Room {
             .padding([9, 9])
             .style(style::secondary_button)
             .on_press_maybe((!picking).then_some(Message::Later(send_later::Message::Open))),
-            container(text("Send later").size(12))
-                .padding(6)
-                .style(container::rounded_box),
-            tooltip::Position::Top,
+            "Send later: pick a time",
+            Position::Top,
         );
         let picker = if self.later.rescheduling.is_none() {
             send_later::picker(&self.later, !composer_empty, scheduled.now)
@@ -423,7 +427,7 @@ impl Room {
         if let Some(bar) = self.compose.bar() {
             bottom = bottom.push(bar);
         }
-        let attach = tooltip(
+        let attach = hint(
             button(icons::paperclip(20.0, |theme| {
                 theme
                     .extended_palette()
@@ -435,10 +439,8 @@ impl Room {
             .padding([8, 10])
             .style(style::secondary_button)
             .on_press(Message::Attach),
-            container(text("Attach files").size(12))
-                .padding(6)
-                .style(container::rounded_box),
-            tooltip::Position::Top,
+            "Attach files (or drop them on the window)",
+            Position::Top,
         );
         bottom = bottom.push(
             row![composer, attach, send]
@@ -503,15 +505,28 @@ impl Room {
         )
         .interaction(mouse::Interaction::Pointer)
         .on_press(Message::ShowInfo(info));
+        let about_tip = match summary.map(|s| s.kind) {
+            Some(RoomKind::Direct) => "Who this is",
+            _ => "Room settings and address",
+        };
+        let members_tip = if self.members.is_some() {
+            "Hide the member list"
+        } else {
+            "Show who is in the room"
+        };
         let mut header = column![
             row![
-                about,
+                hint(about, about_tip, Position::Bottom),
                 self.calls.header_controls(look.call_services),
-                button(text("Members").size(13))
-                    .padding([5, 10])
-                    .style(style::list_item(self.members.is_some()))
-                    .on_press(Message::ToggleMembers),
-                tooltip(
+                hint(
+                    button(text("Members").size(13))
+                        .padding([5, 10])
+                        .style(style::list_item(self.members.is_some()))
+                        .on_press(Message::ToggleMembers),
+                    members_tip,
+                    Position::Bottom,
+                ),
+                hint(
                     button(icons::gear(16.0, |theme| {
                         theme
                             .extended_palette()
@@ -523,10 +538,8 @@ impl Room {
                     .padding([5, 8])
                     .style(style::list_item(false))
                     .on_press(Message::ShowInfo(info::Target::Room(self.id.clone()))),
-                    container(text("Settings").size(12))
-                        .padding(6)
-                        .style(container::rounded_box),
-                    tooltip::Position::Bottom,
+                    "Room settings: name, notifications, favourite",
+                    Position::Bottom,
                 ),
             ]
             .spacing(10)
@@ -667,6 +680,16 @@ fn event_view<'a>(
         EventContent::Message(m) => Some(m),
         _ => None,
     };
+    // Reacting happens under the message, where its reactions show.
+    let picking = context.picker == Some(event.id.as_str());
+    if let Some(m) = message.filter(|_| picking) {
+        item = item.push(actions::picker(
+            event,
+            &m.reactions,
+            context.frequent_emoji,
+            context.emoji,
+        ));
+    }
     if context.confirm_delete == Some(event.id.as_str()) {
         item = item.push(actions::confirm_delete(event));
     }
@@ -687,14 +710,6 @@ fn event_view<'a>(
             item = item.push(text(format!("not sent: {e}")).size(11).style(text::danger))
         }
     }
-
-    // The reaction picker floats below the message.
-    let picking = context.picker == Some(event.id.as_str());
-    let picker = message
-        .filter(|_| picking)
-        .map(|m| actions::picker(event, &m.reactions, context.frequent_emoji, context.emoji));
-    let item = popover(item, picker, Side::Below, Edge::Left)
-        .on_dismiss(Message::Act(actions::Message::ClosePicker));
 
     // The avatar starts a group; follow-ups show their time there on hover.
     let hovered = context.hovered == Some(event.id.as_str());

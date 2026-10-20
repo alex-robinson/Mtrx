@@ -155,6 +155,10 @@ pub enum Message {
     Reload,
     /// The server became reachable or not.
     Connection(Connection),
+    RoomListScrolled,
+    OutOfView(sidebar::OutOfView),
+    /// Scroll the room list to this offset.
+    ScrollRoomList(f32),
     /// Try the server now.
     Reconnect,
     Reloaded(OwnedRoomId, Result<Shared<RoomTimeline>, String>),
@@ -239,6 +243,8 @@ struct Main {
     /// reaction picker opens.
     frequent_emoji: Vec<String>,
     connection: Connection,
+    /// Unread rooms scrolled out of the room list's view.
+    out_of_view: sidebar::OutOfView,
 }
 
 struct Notice {
@@ -265,6 +271,7 @@ impl Main {
             contacts: Vec::new(),
             frequent_emoji: Vec::new(),
             connection: session.connection(),
+            out_of_view: Default::default(),
             now: SystemTime::now(),
             session,
             error: None,
@@ -314,6 +321,7 @@ impl Main {
             filter: &self.filter,
             arrange: &self.arrange,
             grouping,
+            out_of_view: self.out_of_view,
         }
     }
 }
@@ -371,7 +379,39 @@ impl App {
     }
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
+        // Unread rooms may have moved into or out of the room list's view.
+        let moved = matches!(
+            message,
+            Message::Rooms(_)
+                | Message::Ready(_)
+                | Message::RoomListScrolled
+                | Message::SelectSpace(_)
+                | Message::RoomFilter(_)
+                | Message::Arrange(_)
+                | Message::AddMenu(_)
+                | Message::OpenRoom(_)
+                | Message::WindowResized(_)
+        );
+        let task = self.handle(message);
+        match &self.screen {
+            Screen::Main(main) if moved => Task::batch([
+                task,
+                sidebar::find_out_of_view(&main.rooms.rooms).map(Message::OutOfView),
+            ]),
+            _ => task,
+        }
+    }
+
+    fn handle(&mut self, message: Message) -> Task<Message> {
         match message {
+            Message::RoomListScrolled => Task::none(),
+            Message::OutOfView(out_of_view) => {
+                if let Screen::Main(main) = &mut self.screen {
+                    main.out_of_view = out_of_view;
+                }
+                Task::none()
+            }
+            Message::ScrollRoomList(offset) => sidebar::scroll_to(offset),
             Message::Restored(Ok(Shared(session))) | Message::LoggedIn(Ok(Shared(session))) => {
                 self.screen = Screen::Main(Box::new(Main::new(session.clone())));
                 Task::perform(

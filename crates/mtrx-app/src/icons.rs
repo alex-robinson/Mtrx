@@ -392,3 +392,212 @@ impl<M> canvas::Program<M> for Star {
         vec![frame.into_geometry()]
     }
 }
+
+/// An arrow curving back to the left: reply.
+pub fn reply<'a, M: 'a>(size: f32, color: fn(&Theme) -> Color) -> Element<'a, M> {
+    canvas::Canvas::new(Reply { color })
+        .width(size)
+        .height(size)
+        .into()
+}
+
+struct Reply {
+    color: fn(&Theme) -> Color,
+}
+
+impl<M> canvas::Program<M> for Reply {
+    type State = ();
+
+    fn draw(
+        &self,
+        _state: &(),
+        renderer: &Renderer,
+        theme: &Theme,
+        bounds: Rectangle,
+        _cursor: mouse::Cursor,
+    ) -> Vec<Geometry> {
+        let mut frame = Frame::new(renderer, bounds.size());
+        let s = bounds.width;
+        let width = (s / 10.0).max(1.0);
+        let stroke = Stroke::default()
+            .with_color((self.color)(theme))
+            .with_width(width)
+            .with_line_cap(canvas::LineCap::Round)
+            .with_line_join(canvas::LineJoin::Round);
+        let p = |x: f32, y: f32| iced::Point::new(x * s, y * s);
+        // Head pointing left, shaft curving down to the right.
+        frame.stroke(
+            &Path::new(|path| {
+                path.move_to(p(0.42, 0.2));
+                path.line_to(p(0.15, 0.45));
+                path.line_to(p(0.42, 0.7));
+            }),
+            stroke,
+        );
+        frame.stroke(
+            &Path::new(|path| {
+                path.move_to(p(0.15, 0.45));
+                path.line_to(p(0.55, 0.45));
+                path.quadratic_curve_to(p(0.85, 0.45), p(0.85, 0.82));
+            }),
+            stroke,
+        );
+        vec![frame.into_geometry()]
+    }
+}
+
+/// A pencil: edit.
+pub fn pencil<'a, M: 'a>(size: f32, color: fn(&Theme) -> Color) -> Element<'a, M> {
+    canvas::Canvas::new(Pencil { color })
+        .width(size)
+        .height(size)
+        .into()
+}
+
+struct Pencil {
+    color: fn(&Theme) -> Color,
+}
+
+impl<M> canvas::Program<M> for Pencil {
+    type State = ();
+
+    fn draw(
+        &self,
+        _state: &(),
+        renderer: &Renderer,
+        theme: &Theme,
+        bounds: Rectangle,
+        _cursor: mouse::Cursor,
+    ) -> Vec<Geometry> {
+        let mut frame = Frame::new(renderer, bounds.size());
+        let s = bounds.width;
+        let width = (s / 10.0).max(1.0);
+        let stroke = Stroke::default()
+            .with_color((self.color)(theme))
+            .with_width(width)
+            .with_line_cap(canvas::LineCap::Round)
+            .with_line_join(canvas::LineJoin::Round);
+        let p = |x: f32, y: f32| iced::Point::new(x * s, y * s);
+        // A slanted body with a pointed tip at the bottom left.
+        frame.stroke(
+            &Path::new(|path| {
+                path.move_to(p(0.65, 0.15));
+                path.line_to(p(0.85, 0.35));
+                path.line_to(p(0.35, 0.85));
+                path.line_to(p(0.13, 0.87));
+                path.line_to(p(0.15, 0.65));
+                path.close();
+            }),
+            stroke,
+        );
+        frame.stroke(&Path::line(p(0.55, 0.25), p(0.75, 0.45)), stroke);
+        vec![frame.into_geometry()]
+    }
+}
+
+/// A bin: delete.
+pub fn trash<'a, M: 'a>(size: f32, color: fn(&Theme) -> Color) -> Element<'a, M> {
+    canvas::Canvas::new(Trash { color })
+        .width(size)
+        .height(size)
+        .into()
+}
+
+struct Trash {
+    color: fn(&Theme) -> Color,
+}
+
+impl<M> canvas::Program<M> for Trash {
+    type State = ();
+
+    fn draw(
+        &self,
+        _state: &(),
+        renderer: &Renderer,
+        theme: &Theme,
+        bounds: Rectangle,
+        _cursor: mouse::Cursor,
+    ) -> Vec<Geometry> {
+        let mut frame = Frame::new(renderer, bounds.size());
+        let s = bounds.width;
+        let width = (s / 10.0).max(1.0);
+        let stroke = Stroke::default()
+            .with_color((self.color)(theme))
+            .with_width(width)
+            .with_line_cap(canvas::LineCap::Round)
+            .with_line_join(canvas::LineJoin::Round);
+        let p = |x: f32, y: f32| iced::Point::new(x * s, y * s);
+        // Lid with a handle, then the tapering bin with two lines.
+        frame.stroke(&Path::line(p(0.15, 0.27), p(0.85, 0.27)), stroke);
+        frame.stroke(
+            &Path::new(|path| {
+                path.move_to(p(0.38, 0.27));
+                path.line_to(p(0.38, 0.14));
+                path.line_to(p(0.62, 0.14));
+                path.line_to(p(0.62, 0.27));
+            }),
+            stroke,
+        );
+        frame.stroke(
+            &Path::new(|path| {
+                path.move_to(p(0.24, 0.27));
+                path.line_to(p(0.3, 0.88));
+                path.line_to(p(0.7, 0.88));
+                path.line_to(p(0.76, 0.27));
+            }),
+            stroke,
+        );
+        frame.stroke(&Path::line(p(0.43, 0.42), p(0.44, 0.74)), stroke);
+        frame.stroke(&Path::line(p(0.57, 0.42), p(0.56, 0.74)), stroke);
+        vec![frame.into_geometry()]
+    }
+}
+
+/// An arrow pointing up (`true`) or down.
+pub fn arrow<'a, M: 'a>(size: f32, up: bool, color: fn(&Theme) -> Color) -> Element<'a, M> {
+    canvas::Canvas::new(Arrow { up, color })
+        .width(size)
+        .height(size)
+        .into()
+}
+
+struct Arrow {
+    up: bool,
+    color: fn(&Theme) -> Color,
+}
+
+impl<M> canvas::Program<M> for Arrow {
+    type State = ();
+
+    fn draw(
+        &self,
+        _state: &(),
+        renderer: &Renderer,
+        theme: &Theme,
+        bounds: Rectangle,
+        _cursor: mouse::Cursor,
+    ) -> Vec<Geometry> {
+        let mut frame = Frame::new(renderer, bounds.size());
+        let s = bounds.width;
+        let stroke = Stroke::default()
+            .with_color((self.color)(theme))
+            .with_width((s / 8.0).max(1.0))
+            .with_line_cap(canvas::LineCap::Round)
+            .with_line_join(canvas::LineJoin::Round);
+        // Drawn pointing down, flipped for up.
+        let p = |x: f32, y: f32| {
+            let y = if self.up { 1.0 - y } else { y };
+            iced::Point::new(x * s, y * s)
+        };
+        frame.stroke(&Path::line(p(0.5, 0.15), p(0.5, 0.85)), stroke);
+        frame.stroke(
+            &Path::new(|path| {
+                path.move_to(p(0.2, 0.55));
+                path.line_to(p(0.5, 0.85));
+                path.line_to(p(0.8, 0.55));
+            }),
+            stroke,
+        );
+        vec![frame.into_geometry()]
+    }
+}

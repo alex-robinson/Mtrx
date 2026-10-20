@@ -7,7 +7,13 @@ use iced::{
 };
 use mtrx_core::{CallService, OwnedRoomId, ServiceKind, Url, recognize_call_link};
 
-use crate::{app, ellipsis::ellipsis, fonts, icons, style};
+use crate::{
+    app,
+    ellipsis::ellipsis,
+    fonts,
+    hint::{Position, hint},
+    icons, style,
+};
 
 #[derive(Debug, Clone)]
 pub enum Message {
@@ -83,33 +89,45 @@ impl RoomCalls {
         if let Some(link) = &self.link {
             let label = recognize_call_link(link.as_str(), own)
                 .map_or_else(|| "Join call".to_owned(), |name| format!("Join {name}"));
-            controls = controls.push(
+            controls = controls.push(hint(
                 button(row![icons::camera(14.0, on_primary), text(label).size(13)].spacing(6))
                     .padding([5, 12])
                     .style(style::primary_button)
                     .on_press(app::Message::LinkClicked(link.to_string())),
-            );
+                "Open the room's call in the browser",
+                Position::Bottom,
+            ));
         }
         let start = self.default_service(own).filter(|_| !self.busy);
+        let start_tip = match self.default_service(own) {
+            Some(service) => format!("Start a {} call and post its link here", service.name),
+            None => "Add a call service in Settings to start calls".to_owned(),
+        };
         controls
-            .push(
+            .push(hint(
                 button(text("Start call").size(13))
                     .padding([5, 10])
                     .style(style::secondary_button)
                     .on_press_maybe(start.map(|s| self.message(Message::Start(s.clone())))),
-            )
-            .push(
+                start_tip,
+                Position::Bottom,
+            ))
+            .push(hint(
                 button(text("▾").size(13))
                     .padding([5, 8])
                     .style(style::secondary_button)
                     .on_press(self.message(Message::ToggleMenu)),
-            )
-            .push(
+                "Start a call with another service",
+                Position::Bottom,
+            ))
+            .push(hint(
                 button(text("Call link…").size(13))
                     .padding([5, 8])
                     .style(style::text_button)
                     .on_press(self.message(Message::EditLink)),
-            )
+                "Set the room's standing call link",
+                Position::Bottom,
+            ))
             .into()
     }
 
