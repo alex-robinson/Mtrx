@@ -759,3 +759,51 @@ impl<M> canvas::Program<M> for Notebook {
         vec![frame.into_geometry()]
     }
 }
+
+/// A paper plane flying right: send.
+pub fn send<'a, M: 'a>(size: f32, color: fn(&Theme) -> Color) -> Element<'a, M> {
+    canvas::Canvas::new(Send { color })
+        .width(size)
+        .height(size)
+        .into()
+}
+
+struct Send {
+    color: fn(&Theme) -> Color,
+}
+
+impl<M> canvas::Program<M> for Send {
+    type State = ();
+
+    fn draw(
+        &self,
+        _state: &(),
+        renderer: &Renderer,
+        theme: &Theme,
+        bounds: Rectangle,
+        _cursor: mouse::Cursor,
+    ) -> Vec<Geometry> {
+        let mut frame = Frame::new(renderer, bounds.size());
+        let s = bounds.width;
+        let p = |x: f32, y: f32| iced::Point::new(x * s, y * s);
+        let color = (self.color)(theme);
+        // The wings, notched at the back, and the fold along the middle.
+        frame.fill(
+            &Path::new(|path| {
+                path.move_to(p(0.1, 0.13));
+                path.line_to(p(0.92, 0.5));
+                path.line_to(p(0.1, 0.87));
+                path.line_to(p(0.24, 0.5));
+                path.close();
+            }),
+            color,
+        );
+        frame.stroke(
+            &Path::line(p(0.24, 0.5), p(0.55, 0.5)),
+            Stroke::default()
+                .with_color(Color::BLACK.scale_alpha(0.25))
+                .with_width((s / 14.0).max(1.0)),
+        );
+        vec![frame.into_geometry()]
+    }
+}

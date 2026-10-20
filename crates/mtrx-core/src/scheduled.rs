@@ -4,7 +4,8 @@
 //! messages live in the local (encrypted) store, and a scheduler task hands
 //! them to the send queue when due. That only happens while a scheduler runs
 //! (the app, `mtrx watch`); a message whose time passed while none ran is
-//! held as overdue until the user sends or cancels it.
+//! held as overdue until the user sends or cancels it. Attached files are
+//! kept in the store with the message, each under its own key.
 
 use std::{
     sync::Arc,
@@ -21,10 +22,14 @@ use tokio::sync::{Mutex, watch};
 use tokio_stream::wrappers::WatchStream;
 use tracing::warn;
 
-use crate::{Error, PendingSend, Result, Session, session::AbortOnDrop, timeline::send_markdown};
+use crate::{
+    Attachment, Error, PendingSend, Result, Session, session::AbortOnDrop, timeline::send_message,
+};
 
 /// Store key of the list of scheduled messages.
 const STORE_KEY: &[u8] = b"mtrx.scheduled_messages";
+/// Store key prefix of the contents of attached files.
+const FILE_KEY: &str = "mtrx.scheduled_file";
 /// A message found this late is held instead of sent: the app was probably
 /// closed or the computer asleep at its time.
 const GRACE: Duration = Duration::from_secs(5 * 60);
@@ -46,6 +51,22 @@ pub struct ScheduledMessage {
     /// Its time passed while no scheduler ran; it waits for the user to
     /// send, reschedule or cancel it.
     pub overdue: bool,
+    /// Sent after the text, each as a message of its own.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub files: Vec<ScheduledFile>,
+}
+
+/// A file sent with a scheduled message.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScheduledFile {
+    pub filename: String,
+    pub mimetype: String,
+    /// In bytes.
+    pub size: u64,
+}
+
+fn file_key(message_id: &str, index: usize) -> Vec<u8> {
+    format!("{FILE_KEY}.{message_id}.{index}").into_bytes()
 }
 
 /// The scheduled messages of a session, persisted on every change.
@@ -105,6 +126,8 @@ impl Schedule {
                     warn!("could not send scheduled message: {e}");
                     message.overdue = true;
                     kept.push(message);
+                } else {
+                    self.remove_files(&message).await;
                 }
             }
             *messages = kept;
@@ -118,18 +141,70 @@ impl Schedule {
     }
 
     /// Hand a message to the send queue, which persists it and sends it as
-    /// soon as the server is reachable.
+    /// soon as the server is reachable. Its files stay stored.
     async fn send(&self, message: &ScheduledMessage) -> Result<PendingSend> {
         let room = self
             .client
             .get_room(&message.room_id)
             .ok_or_else(|| Error::RoomNotFound(message.room_id.to_string()))?;
-        send_markdown(
+        send_message(
             &room,
             &self.send_lock,
             &message.text,
+            self.load_files(message).await?,
             message.in_reply_to.as_deref(),
         )
+        .await
+    }
+
+    async fn store_files(&self, message_id: &str, files: Vec<Attachment>) -> Result<()> {
+        for (index, file) in files.into_iter().enumerate() {
+            self.client
+                .state_store()
+                .set_custom_value(&file_key(message_id, index), file.bytes)
+                .await?;
+        }
+        Ok(())
+    }
+
+    async fn load_files(&self, message: &ScheduledMessage) -> Result<Vec<Attachment>> {
+        let mut files = Vec::with_capacity(message.files.len());
+        for (index, file) in message.files.iter().enumerate() {
+            let bytes = self
+                .client
+                .state_store()
+                .get_custom_value(&file_key(&message.id, index))
+                .await?
+                .ok_or_else(|| Error::Timeline(format!("{} is missing", file.filename)))?;
+            files.push(Attachment {
+                filename: file.filename.clone(),
+                mimetype: file.mimetype.clone(),
+                bytes,
+            });
+        }
+        Ok(files)
+    }
+
+    /// Forget the contents of a message's files, once sent or cancelled.
+    async fn remove_files(&self, message: &ScheduledMessage) {
+        for index in 0..message.files.len() {
+            if let Err(e) = self
+                .client
+                .state_store()
+                .remove_custom_value(&file_key(&message.id, index))
+                .await
+            {
+                warn!("could not remove a scheduled file: {e}");
+            }
+        }
+    }
+
+    /// Take a message off the list, keeping its files.
+    async fn take(&self, id: &str) -> Result<ScheduledMessage> {
+        self.modify(async |messages| {
+            let index = position(messages, id)?;
+            Ok(messages.remove(index))
+        })
         .await
     }
 }
@@ -152,16 +227,23 @@ impl Session {
         WatchStream::new(self.schedule.messages.subscribe())
     }
 
-    /// Schedule a Markdown message for `send_at`, which must be in the future.
+    /// Schedule a Markdown message and files for `send_at`, which must be
+    /// in the future; they are sent as by [`RoomTimeline::send`].
+    ///
+    /// [`RoomTimeline::send`]: crate::RoomTimeline::send
     pub async fn schedule(
         &self,
         room_id: &RoomId,
         text: &str,
+        files: Vec<Attachment>,
         send_at: SystemTime,
         in_reply_to: Option<&EventId>,
     ) -> Result<ScheduledMessage> {
         self.room(room_id)?;
         let send_at = future_time(send_at)?;
+        if text.trim().is_empty() && files.is_empty() {
+            return Err(Error::Timeline("nothing to send".into()));
+        }
         let message = ScheduledMessage {
             id: random_id(),
             room_id: room_id.to_owned(),
@@ -169,13 +251,31 @@ impl Session {
             send_at,
             in_reply_to: in_reply_to.map(ToOwned::to_owned),
             overdue: false,
+            files: files
+                .iter()
+                .map(|file| ScheduledFile {
+                    filename: file.filename.clone(),
+                    mimetype: file.mimetype.clone(),
+                    size: file.bytes.len() as u64,
+                })
+                .collect(),
         };
-        self.schedule
-            .modify(async |messages| {
-                messages.push(message.clone());
-                Ok(())
-            })
-            .await?;
+        // The files first: the scheduler may send the message once listed.
+        let listed = match self.schedule.store_files(&message.id, files).await {
+            Ok(()) => {
+                self.schedule
+                    .modify(async |messages| {
+                        messages.push(message.clone());
+                        Ok(())
+                    })
+                    .await
+            }
+            Err(e) => Err(e),
+        };
+        if let Err(e) = listed {
+            self.schedule.remove_files(&message).await;
+            return Err(e);
+        }
         Ok(message)
     }
 
@@ -207,19 +307,19 @@ impl Session {
 
     /// Remove a scheduled message without sending it.
     pub async fn unschedule(&self, id: &str) -> Result<ScheduledMessage> {
-        self.schedule
-            .modify(async |messages| {
-                let index = position(messages, id)?;
-                Ok(messages.remove(index))
-            })
-            .await
+        let message = self.schedule.take(id).await?;
+        self.schedule.remove_files(&message).await;
+        Ok(message)
     }
 
     /// Send a scheduled message now, e.g. an overdue one.
     pub async fn send_scheduled_now(&self, id: &str) -> Result<PendingSend> {
-        let message = self.unschedule(id).await?;
+        let message = self.schedule.take(id).await?;
         match self.schedule.send(&message).await {
-            Ok(pending) => Ok(pending),
+            Ok(pending) => {
+                self.schedule.remove_files(&message).await;
+                Ok(pending)
+            }
             Err(e) => {
                 // Keep it rather than lose it.
                 self.schedule

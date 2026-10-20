@@ -16,11 +16,18 @@ use matrix_sdk::ruma::{
         relation::Reply as ReplyRelation,
         room::{
             MediaSource,
-            message::{MessageType, Relation, RoomMessageEventContent},
+            message::{AddMentions, MessageType, Relation, RoomMessageEventContent},
         },
     },
 };
-use matrix_sdk::{Room, room::edit::EditedContent, send_queue::RoomSendQueueUpdate};
+use matrix_sdk::{
+    Room,
+    room::{
+        edit::EditedContent,
+        reply::{EnforceThread, Reply as SdkReply},
+    },
+    send_queue::RoomSendQueueUpdate,
+};
 use matrix_sdk_ui::timeline::{
     EventSendState, EventTimelineItem, InReplyToDetails, MembershipChange as SdkMembershipChange,
     MsgLikeKind, RoomExt, Timeline, TimelineDetails, TimelineEventItemId, TimelineItem,
@@ -256,48 +263,19 @@ impl RoomTimeline {
         text: &str,
         reply_to: Option<&EventId>,
     ) -> Result<PendingSend> {
-        send_markdown(self.timeline.room(), &self.send_lock, text, reply_to).await
+        self.send(text, Vec::new(), reply_to).await
     }
 
-    /// Queue the file at `path`, e.g. an image, to be uploaded and sent. Its
-    /// local echo shows as [`SendState::Sending`] until the server confirms.
-    /// The MIME type is guessed from the file name.
-    pub async fn send_file(&self, path: &Path) -> Result<()> {
-        let filename = path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .ok_or_else(|| Error::Timeline(format!("not a file: {}", path.display())))?;
-        let bytes = tokio::fs::read(path).await?;
-        let mimetype = media::guess_mimetype(filename);
-        self.send_file_bytes(filename, mimetype.as_ref(), bytes)
-            .await
-    }
-
-    /// Queue `bytes` to be sent as a file named `filename` of MIME type
-    /// `mimetype`, like [`RoomTimeline::send_file`].
-    pub async fn send_file_bytes(
+    /// Queue a message: its text (Markdown), then each file as a message of
+    /// its own, in that order. Either may be empty, not both. The reply goes
+    /// on the first. Returns the last, which is sent once all are.
+    pub async fn send(
         &self,
-        filename: &str,
-        mimetype: &str,
-        bytes: Vec<u8>,
-    ) -> Result<()> {
-        let mimetype: mime_guess::Mime = mimetype
-            .parse()
-            .map_err(|_| Error::InvalidMediaType(mimetype.to_owned()))?;
-        // Images are decoded for their size and thumbnail.
-        let (bytes, config, mimetype) = tokio::task::spawn_blocking(move || {
-            let config = media::attachment_config(&mimetype, &bytes);
-            (bytes, config, mimetype)
-        })
-        .await
-        .map_err(timeline_error)?;
-        self.timeline
-            .room()
-            .send_queue()
-            .send_attachment(filename, mimetype, bytes, config)
-            .await
-            .map_err(timeline_error)?;
-        Ok(())
+        text: &str,
+        files: Vec<Attachment>,
+        reply_to: Option<&EventId>,
+    ) -> Result<PendingSend> {
+        send_message(self.timeline.room(), &self.send_lock, text, files, reply_to).await
     }
 
     /// Replace the text of one of our messages.
@@ -371,41 +349,105 @@ impl RoomTimeline {
     }
 }
 
-/// Queue a Markdown message in `room`'s send queue, which persists it and
-/// sends it in the background; timelines show it as a local echo.
+/// A file to send.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Attachment {
+    pub filename: String,
+    pub mimetype: String,
+    pub bytes: Vec<u8>,
+}
+
+impl Attachment {
+    /// The file at `path`, its MIME type guessed from its name.
+    pub async fn read(path: &Path) -> Result<Self> {
+        let filename = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| Error::Timeline(format!("not a file: {}", path.display())))?;
+        Ok(Self {
+            filename: filename.to_owned(),
+            mimetype: media::guess_mimetype(filename).to_string(),
+            bytes: tokio::fs::read(path).await?,
+        })
+    }
+}
+
+/// Queue a message in `room`'s send queue, which persists it and sends it
+/// in the background; timelines show it as a local echo. The text goes
+/// first, then each file as a message of its own; see [`RoomTimeline::send`].
 ///
 /// The SDK's send handle does not expose the transaction ID, so we take it
-/// from the first new local echo after subscribing. `send_lock`, shared by
-/// all sends of a session, makes sure no other send enqueues in between.
-pub(crate) async fn send_markdown(
+/// from the new local echoes after subscribing. `send_lock`, shared by all
+/// sends of a session, makes sure no other send enqueues in between.
+pub(crate) async fn send_message(
     room: &Room,
     send_lock: &Mutex<()>,
     text: &str,
+    files: Vec<Attachment>,
     reply_to: Option<&EventId>,
 ) -> Result<PendingSend> {
-    let mut content = markdown_content(text);
-    if let Some(event_id) = reply_to {
-        // No reply fallback in the body: Matrix 1.13 dropped it.
-        content.relates_to = Some(Relation::Reply(ReplyRelation::with_event_id(
-            event_id.to_owned(),
-        )));
+    let text = (!text.trim().is_empty()).then_some(text);
+    if text.is_none() && files.is_empty() {
+        return Err(Error::Timeline("nothing to send".into()));
     }
+    // Images are decoded for their size and thumbnail, before queueing.
+    let mut prepared = Vec::with_capacity(files.len());
+    for file in files {
+        let mimetype: mime_guess::Mime = file
+            .mimetype
+            .parse()
+            .map_err(|_| Error::InvalidMediaType(file.mimetype.clone()))?;
+        prepared.push(
+            tokio::task::spawn_blocking(move || {
+                let config = media::attachment_config(&mimetype, &file.bytes);
+                (file.filename, mimetype, file.bytes, config)
+            })
+            .await
+            .map_err(timeline_error)?,
+        );
+    }
+    let mut reply_to = reply_to.map(ToOwned::to_owned);
+
     let _guard = send_lock.lock().await;
     let queue = room.send_queue();
     let (_, mut updates) = queue.subscribe().await.map_err(timeline_error)?;
-    queue.send(content.into()).await.map_err(timeline_error)?;
-    loop {
+    let mut queued = 0;
+    if let Some(text) = text {
+        let mut content = markdown_content(text);
+        if let Some(event_id) = reply_to.take() {
+            // No reply fallback in the body: Matrix 1.13 dropped it.
+            content.relates_to = Some(Relation::Reply(ReplyRelation::with_event_id(event_id)));
+        }
+        queue.send(content.into()).await.map_err(timeline_error)?;
+        queued += 1;
+    }
+    for (filename, mimetype, bytes, config) in prepared {
+        let reply = reply_to.take().map(|event_id| SdkReply {
+            event_id,
+            enforce_thread: EnforceThread::Unthreaded,
+            add_mentions: AddMentions::No,
+        });
+        queue
+            .send_attachment(filename, mimetype, bytes, config.reply(reply))
+            .await
+            .map_err(timeline_error)?;
+        queued += 1;
+    }
+    let mut last = None;
+    while queued > 0 {
         match updates.try_recv() {
             Ok(RoomSendQueueUpdate::NewLocalEvent(echo)) => {
-                return Ok(PendingSend {
-                    transaction_id: echo.transaction_id,
-                    updates,
-                });
+                last = Some(echo.transaction_id);
+                queued -= 1;
             }
             Ok(_) => {}
             Err(e) => return Err(Error::Timeline(format!("no local echo after send: {e}"))),
         }
     }
+    Ok(PendingSend {
+        transaction_id: last.expect("something was queued"),
+        updates,
+    })
 }
 
 fn markdown_content(text: &str) -> RoomMessageEventContent {

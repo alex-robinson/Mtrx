@@ -18,9 +18,9 @@ use std::{
 use anyhow::{Context, Result, bail};
 use futures_util::{Stream, StreamExt};
 use mtrx_core::{
-    Access, CallService, Connection, EventContent, MembershipChange, NewRoom, NotifyMode,
-    Permissions, Profile, RecoveryStatus, RoomKind, SecretStore, Session, TimelineEntry,
-    VerificationState,
+    Access, Attachment, CallService, Connection, EventContent, MembershipChange, NewRoom,
+    NotifyMode, Permissions, Profile, RecoveryStatus, RoomKind, SecretStore, Session,
+    TimelineEntry, VerificationState,
     test_support::{self, PASSWORD, homeserver, unique_name},
 };
 use mtrx_format::{Block, Inline, Style};
@@ -427,13 +427,21 @@ async fn scheduled_messages() -> Result<()> {
 
     assert!(matches!(
         session
-            .schedule(&room, "past", SystemTime::now(), None)
+            .schedule(&room, "past", Vec::new(), SystemTime::now(), None)
             .await,
         Err(mtrx_core::Error::SendTimeInPast)
     ));
-    let late = session.schedule(&room, "late", in_secs(1), None).await?;
+    // Files are kept with the message until it is sent.
+    let file = Attachment {
+        filename: "late.txt".into(),
+        mimetype: "text/plain".into(),
+        bytes: b"sent late".to_vec(),
+    };
+    let late = session
+        .schedule(&room, "late", vec![file], in_secs(1), None)
+        .await?;
     let cancelled = session
-        .schedule(&room, "cancelled", in_secs(3600), None)
+        .schedule(&room, "cancelled", Vec::new(), in_secs(3600), None)
         .await?;
     session.unschedule(&cancelled.id).await?;
     session.stop_sync().await;
@@ -445,7 +453,7 @@ async fn scheduled_messages() -> Result<()> {
     assert_eq!(session.scheduled(), vec![late.clone()], "persisted");
     session.start_sync().await;
     let on_time = session
-        .schedule(&room, "on **time**", in_secs(2), None)
+        .schedule(&room, "on **time**", Vec::new(), in_secs(2), None)
         .await?;
     session.start_scheduler_for_test(Duration::from_secs(1));
 
@@ -479,10 +487,12 @@ async fn scheduled_messages() -> Result<()> {
 
     let pending = session.send_scheduled_now(&late.id).await?;
     timeout("rescheduled one sent now", pending.sent()).await??;
-    wait_for("edited text sent", timeline.updates(), |e| {
-        has_message(e, "late, edited")
+    let entries = wait_for("edited text and file sent", timeline.updates(), |e| {
+        has_message(e, "late, edited") && find_media(e, "late.txt").is_some()
     })
     .await?;
+    let file = find_media(&entries, "late.txt").unwrap();
+    assert_eq!(session.media_content(&file.source).await?, b"sent late");
     assert!(session.scheduled().is_empty());
     Ok(())
 }
@@ -974,13 +984,24 @@ async fn images_and_files() -> Result<()> {
     let dir = TempDir::new()?;
     let notes_path = dir.path().join("notes.txt");
     std::fs::write(&notes_path, &notes)?;
-    alice_timeline
-        .send_file_bytes("small.png", "image/png", small.clone())
+    // The text, then each file as a message of its own, in order.
+    let png = |name: &str, bytes: &Vec<u8>| Attachment {
+        filename: name.into(),
+        mimetype: "image/png".into(),
+        bytes: bytes.clone(),
+    };
+    let pending = alice_timeline
+        .send(
+            "Results:",
+            vec![
+                png("small.png", &small),
+                png("big.png", &big),
+                Attachment::read(&notes_path).await?,
+            ],
+            None,
+        )
         .await?;
-    alice_timeline
-        .send_file_bytes("big.png", "image/png", big.clone())
-        .await?;
-    alice_timeline.send_file(&notes_path).await?;
+    timeout("all sent", pending.sent()).await??;
 
     let bob_timeline = bob.session.timeline(&room).await?;
     let entries = wait_for("bob sees the files", bob_timeline.updates(), |e| {
@@ -989,6 +1010,17 @@ async fn images_and_files() -> Result<()> {
             .all(|name| find_media(e, name).is_some())
     })
     .await?;
+    let order: Vec<&str> = entries
+        .iter()
+        .filter_map(|e| match e {
+            TimelineEntry::Event(ev) => match &ev.content {
+                EventContent::Message(m) => Some(m.body.as_str()),
+                _ => None,
+            },
+            _ => None,
+        })
+        .collect();
+    assert_eq!(order, ["Results:", "small.png", "big.png", "notes.txt"]);
     let image = find_media(&entries, "small.png").unwrap();
     assert_eq!(image.kind, mtrx_core::MediaKind::Image);
     assert_eq!((image.width, image.height), (Some(48), Some(48)));

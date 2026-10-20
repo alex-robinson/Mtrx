@@ -12,8 +12,8 @@ use futures_util::StreamExt;
 use iced::Size;
 use iced_test::simulator::Simulator;
 use mtrx_core::{
-    Connection, EventContent, NewRoom, OwnedEventId, Permissions, Profile, RoomKind, RoomOrAliasId,
-    RoomTag, SecretStore, Section, SendState, Session, TimelineEntry,
+    Attachment, Connection, EventContent, NewRoom, OwnedEventId, Permissions, Profile, RoomKind,
+    RoomOrAliasId, RoomTag, ScheduledFile, SecretStore, Section, SendState, Session, TimelineEntry,
     test_support::{PASSWORD, homeserver, register, unique_name},
 };
 use tempfile::TempDir;
@@ -559,6 +559,7 @@ fn composer_keeps_focus(app: &mut App) {
                 send_at: SystemTime::now() + Duration::from_secs(3600),
                 in_reply_to: None,
                 overdue: false,
+                files: Vec::new(),
             }];
         }),
         ("and sent", |app| main(app).scheduled.clear()),
@@ -659,6 +660,7 @@ async fn send_later_bar() {
         send_at,
         in_reply_to: None,
         overdue,
+        files: Vec::new(),
     };
     let mut main = Main::new(Arc::new(alice));
     main.rooms = rooms;
@@ -671,12 +673,19 @@ async fn send_later_bar() {
             now - Duration::from_secs(3 * 3600),
             true,
         ),
-        scheduled(
-            "b",
-            "Good morning! The draft is ready for review: $\\dot m$ is fixed.",
-            now + Duration::from_secs(2 * 3600 + 600),
-            false,
-        ),
+        ScheduledMessage {
+            files: vec![ScheduledFile {
+                filename: "draft-v3.pdf".into(),
+                mimetype: "application/pdf".into(),
+                size: 182_000,
+            }],
+            ..scheduled(
+                "b",
+                "Good morning! The draft is ready for review: $\\dot m$ is fixed.",
+                now + Duration::from_secs(2 * 3600 + 600),
+                false,
+            )
+        },
         ScheduledMessage {
             room_id: other.clone(),
             ..scheduled(
@@ -774,7 +783,7 @@ async fn send_later_bar() {
             .any(|m| matches!(m, Message::ComposerEmoji(emoji::Message::Close))),
         "{outside:?}"
     );
-    let on_crab = messages(iced::Point::new(720.0, 453.0));
+    let on_crab = messages(iced::Point::new(782.0, 447.0));
     assert!(
         on_crab
             .iter()
@@ -1130,21 +1139,24 @@ async fn media_messages() {
     .await
     .unwrap();
     let timeline = Arc::new(alice.timeline(&room).await.unwrap());
-    send(
-        &timeline,
-        "Melt-rate map from last night's run, and the draft:",
-    )
-    .await;
     let map = gradient(640, 400, [16, 52, 120], [110, 205, 225]);
+    let files = vec![
+        Attachment {
+            filename: "melt-rate-map.png".into(),
+            mimetype: "image/png".into(),
+            bytes: map,
+        },
+        Attachment {
+            filename: "ice-flux-draft.pdf".into(),
+            mimetype: "application/pdf".into(),
+            bytes: crate::pdf::sample(),
+        },
+    ];
     timeline
-        .send_file_bytes("melt-rate-map.png", "image/png", map)
-        .await
-        .unwrap();
-    timeline
-        .send_file_bytes(
-            "ice-flux-draft.pdf",
-            "application/pdf",
-            crate::pdf::sample(),
+        .send(
+            "Melt-rate map from last night's run, and the draft:",
+            files,
+            None,
         )
         .await
         .unwrap();
@@ -1206,6 +1218,28 @@ async fn media_messages() {
     for (mode, name) in [(Mode::Light, "media-light"), (Mode::Dark, "media-dark")] {
         snapshot(&app(Screen::Main(main_with(None, None).await), mode), name);
     }
+    // Files attached to a message being written sit in the composer.
+    let files = dir.path().join("attach");
+    std::fs::create_dir(&files).unwrap();
+    let paths = vec![files.join("terminus.png"), files.join("notes.pdf")];
+    std::fs::write(
+        &paths[0],
+        gradient(300, 200, [200, 90, 40], [250, 220, 120]),
+    )
+    .unwrap();
+    std::fs::write(&paths[1], crate::pdf::sample()).unwrap();
+    let mut main = main_with(None, None).await;
+    let open = main.room.as_mut().unwrap();
+    open.attachments = crate::media::read_attached(paths)
+        .await
+        .into_iter()
+        .map(Result::unwrap)
+        .collect();
+    open.composer = text_editor::Content::with_text("The calving front this morning:");
+    snapshot(
+        &app(Screen::Main(main), Mode::Light),
+        "composer-attachments",
+    );
     let mut viewer = Viewer::new(image);
     viewer.load_now(&session).await;
     snapshot(
@@ -1592,6 +1626,7 @@ async fn website_screenshots() {
             send_at: now + Duration::from_secs(14 * 3600),
             in_reply_to: None,
             overdue: false,
+            files: Vec::new(),
         }];
         let mut open = Room::new(room.clone(), timeline.clone());
         open.entries = entries.clone();

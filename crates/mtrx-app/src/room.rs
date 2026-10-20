@@ -35,7 +35,7 @@ use crate::{
     hint::{Position, hint},
     icons, info,
     math::{self, Math, Rendered},
-    media::{self, Previews},
+    media::{self, Attached, Previews},
     members::Members,
     message,
     message_menu::{self, MenuAt},
@@ -61,6 +61,8 @@ const FILL: usize = 40;
 
 /// The message field, focused again after inserting an emoji.
 pub const COMPOSER: &str = "composer";
+/// Right padding of the composer's text, clear of its paperclip and smiley.
+const COMPOSER_INSET: f32 = emoji::FIELD_INSET + 29.0;
 /// The timeline's scrollable.
 pub const TIMELINE: &str = "timeline";
 
@@ -75,6 +77,8 @@ pub struct Room {
     pub timeline: Arc<RoomTimeline>,
     pub entries: Vec<TimelineEntry>,
     pub composer: text_editor::Content,
+    /// Files sent after the composer's text.
+    pub attachments: Vec<Attached>,
     pub later: SendLater,
     pub calls: RoomCalls,
     pub compose: Compose,
@@ -133,6 +137,7 @@ impl Room {
             entries: timeline.current(),
             timeline,
             composer: text_editor::Content::new(),
+            attachments: Vec::new(),
             later: SendLater::default(),
             shown: WINDOW,
             paginating: false,
@@ -438,29 +443,64 @@ impl Room {
         );
 
         let cancellable = self.compose.cancellable();
-        let composer = text_editor(&self.composer)
-            .id(COMPOSER)
-            .highlight_with::<emoji::Highlighter>((), emoji::format)
-            .style(style::editor)
-            .placeholder("Message…  (Markdown, $…$ for math; Shift+Enter for a new line)")
-            .on_action(Message::Composer)
-            .key_binding(move |press| match press.key {
-                Key::Named(Named::Enter) if !press.modifiers.shift() => {
-                    Some(text_editor::Binding::Custom(Message::Send))
-                }
-                Key::Named(Named::Escape) if cancellable => Some(text_editor::Binding::Custom(
-                    Message::Act(actions::Message::CancelCompose),
-                )),
-                _ => text_editor::Binding::from_key_press(press),
-            })
-            .padding(Padding::new(10.0).right(emoji::FIELD_INSET))
-            .max_height(200);
-        let composer = emoji::in_field(
-            composer,
+        let composer =
+            text_editor(&self.composer)
+                .id(COMPOSER)
+                .highlight_with::<emoji::Highlighter>((), emoji::format)
+                .style(style::editor)
+                .placeholder("Message…  (Markdown, $…$ for math; Shift+Enter for a new line)")
+                .on_action(Message::Composer)
+                .key_binding(move |press| match press.key {
+                    Key::Named(Named::Enter) if !press.modifiers.shift() => {
+                        Some(text_editor::Binding::Custom(Message::Send))
+                    }
+                    Key::Named(Named::Escape) if cancellable => Some(text_editor::Binding::Custom(
+                        Message::Act(actions::Message::CancelCompose),
+                    )),
+                    _ => text_editor::Binding::from_key_press(press),
+                })
+                .padding(Padding::new(10.0).right(COMPOSER_INSET).top(
+                    if self.attachments.is_empty() {
+                        10.0
+                    } else {
+                        media::CHIP_HEIGHT + 18.0
+                    },
+                ))
+                .max_height(200);
+        let attach = hint(
+            button(icons::paperclip(19.0, |theme| {
+                theme
+                    .extended_palette()
+                    .background
+                    .base
+                    .text
+                    .scale_alpha(0.55)
+            }))
+            .padding(4)
+            .style(style::list_item(false))
+            .on_press(Message::Attach),
+            "Attach files (or drop them on the window)",
+            Position::Top,
+        );
+        let toggle = emoji::toggle(
             self.composer_emoji.is_some(),
             false,
             Message::ComposerEmoji(emoji::Message::Open),
         );
+        // The attached files sit inside the field, above the text.
+        let mut composer = stack![
+            composer,
+            container(row![attach, toggle].spacing(2))
+                .align_right(Length::Fill)
+                .align_bottom(Length::Fill)
+                .padding(Padding::new(6.0).top(0)),
+        ];
+        if !self.attachments.is_empty() {
+            composer = composer.push(
+                container(media::attached_view(&self.attachments, Message::Unattach))
+                    .padding(Padding::new(8.0).right(COMPOSER_INSET)),
+            );
+        }
         let panel = self.composer_emoji.as_ref().map(|panel| {
             panel.view(
                 look.frequent_emoji,
@@ -470,13 +510,15 @@ impl Room {
         });
         let composer = popover(composer, panel, Side::Above, Edge::Right)
             .on_dismiss(Message::ComposerEmoji(emoji::Message::Close));
-        let composer_empty = self.composer.text().trim().is_empty();
+        let composer_empty = self.composer.text().trim().is_empty() && self.attachments.is_empty();
         let send = hint(
-            button(text("Send").size(13))
-                .padding([10, 14])
-                .style(style::primary_button)
-                .on_press_maybe((!composer_empty).then_some(Message::Send)),
-            "Send now (Enter)",
+            button(icons::send(18.0, |theme| {
+                theme.extended_palette().primary.base.text
+            }))
+            .padding([9, 12])
+            .style(style::primary_button)
+            .on_press_maybe((!composer_empty).then_some(Message::Send)),
+            "Send (Enter)",
             Position::Top,
         );
         // While open, a click on it closes the picker as any outside click.
@@ -527,30 +569,13 @@ impl Room {
         if let Some(bar) = self.compose.bar() {
             above = above.push(bar);
         }
-        let attach = hint(
-            button(icons::paperclip(20.0, |theme| {
-                theme
-                    .extended_palette()
-                    .background
-                    .base
-                    .text
-                    .scale_alpha(0.75)
-            }))
-            .padding([8, 10])
-            .style(style::secondary_button)
-            .on_press(Message::Attach),
-            "Attach files (or drop them on the window)",
-            Position::Top,
-        );
         let mut below = column![];
         if let Some(error) = &self.error {
             below = below.push(text(error).size(12).style(text::danger));
         }
         let bottom = column![
             above,
-            row![composer, attach, send]
-                .spacing(8)
-                .align_y(Alignment::End),
+            row![composer, send].spacing(8).align_y(Alignment::End),
             below,
         ]
         .spacing(6)

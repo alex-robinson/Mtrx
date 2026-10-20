@@ -158,10 +158,15 @@ pub enum Message {
     /// Ask where to save a message's file, then save it.
     SaveMedia(Media),
     MediaSaved(Result<(), String>),
-    /// Ask for files to send to the open room.
+    /// Ask for files to attach to the message being written.
     Attach,
-    /// A file was dropped onto the window: send it to the open room.
+    /// A file was dropped onto the window: attach it to the message being
+    /// written.
     FileDropped(PathBuf),
+    /// Files were read to attach to the message in a room.
+    Attached(OwnedRoomId, Vec<Result<media::Attached, String>>),
+    /// Remove an attached file, by index.
+    Unattach(usize),
     Arrange(arrange::Message),
     ArrangeFailed(String),
     /// Show who someone is or what a room is.
@@ -798,11 +803,15 @@ impl App {
                     return Task::none();
                 };
                 let text = room.composer.text();
-                if text.trim().is_empty() {
+                if text.trim().is_empty() && room.attachments.is_empty() {
                     return Task::none();
                 }
                 let compose = std::mem::take(&mut room.compose);
                 room.composer = text_editor::Content::new();
+                let files = std::mem::take(&mut room.attachments)
+                    .into_iter()
+                    .map(|attached| attached.file)
+                    .collect();
                 room.error = None;
                 let (id, timeline) = (room.id.clone(), room.timeline.clone());
                 // Queue only: the local echo shows the send state. Queued
@@ -810,7 +819,7 @@ impl App {
                 Task::perform(
                     async move {
                         let sent = timeline
-                            .send_markdown(text.trim_end(), compose.reply_to().map(|id| &**id))
+                            .send(text.trim_end(), files, compose.reply_to().map(|id| &**id))
                             .await
                             .map(|_| ());
                         let _ = timeline.typing(false).await;
@@ -1540,9 +1549,7 @@ impl App {
                     return Task::none();
                 };
                 let id = room.id.clone();
-                Task::perform(media::attach(room.timeline.clone()), move |result| {
-                    Message::Sent(id.clone(), result)
-                })
+                Task::future(media::pick_files()).then(move |paths| attach(id.clone(), paths))
             }
             Message::FileDropped(path) => {
                 let Screen::Main(main) = &self.screen else {
@@ -1551,11 +1558,29 @@ impl App {
                 let Some(room) = &main.room else {
                     return Task::none();
                 };
-                let (id, timeline) = (room.id.clone(), room.timeline.clone());
-                Task::perform(
-                    async move { media::send(&timeline, &path).await },
-                    move |result| Message::Sent(id.clone(), result),
-                )
+                attach(room.id.clone(), vec![path])
+            }
+            Message::Attached(id, attached) => {
+                if let Screen::Main(main) = &mut self.screen
+                    && let Some(room) = main.room.as_mut().filter(|r| r.id == id)
+                {
+                    for attached in attached {
+                        match attached {
+                            Ok(attached) => room.attachments.push(attached),
+                            Err(e) => room.error = Some(e),
+                        }
+                    }
+                }
+                Task::none()
+            }
+            Message::Unattach(index) => {
+                if let Screen::Main(main) = &mut self.screen
+                    && let Some(room) = &mut main.room
+                    && index < room.attachments.len()
+                {
+                    room.attachments.remove(index);
+                }
+                Task::none()
             }
         }
     }
@@ -2219,16 +2244,17 @@ impl App {
                     );
                 }
                 let text = room.composer.text().trim_end().to_owned();
-                if text.trim().is_empty() {
+                if text.trim().is_empty() && room.attachments.is_empty() {
                     return Task::none();
                 }
                 let room_id = room.id.clone();
                 let reply_to = room.compose.reply_to().cloned();
+                let files = room.attachments.iter().map(|a| a.file.clone()).collect();
                 // The composer is cleared once saved, so nothing is lost on errors.
                 Task::perform(
                     async move {
                         session
-                            .schedule(&room_id, &text, send_at, reply_to.as_deref())
+                            .schedule(&room_id, &text, files, send_at, reply_to.as_deref())
                             .await
                             .map(|_| ())
                     },
@@ -2255,6 +2281,7 @@ impl App {
                 if room.later.rescheduling.is_none() {
                     room.compose = Compose::New;
                     room.composer = text_editor::Content::new();
+                    room.attachments.clear();
                 }
                 room.later = Default::default();
                 Task::none()
@@ -2933,6 +2960,16 @@ fn shortcuts(
         iced::Event::Window(window::Event::Unfocused) => Some(Message::WindowFocused(false)),
         _ => None,
     }
+}
+
+/// Read files to attach to the message being written in `room`.
+fn attach(room: OwnedRoomId, paths: Vec<PathBuf>) -> Task<Message> {
+    if paths.is_empty() {
+        return Task::none();
+    }
+    Task::perform(media::read_attached(paths), move |attached| {
+        Message::Attached(room.clone(), attached)
+    })
 }
 
 fn load_members(session: Arc<Session>, room: OwnedRoomId) -> Task<Message> {

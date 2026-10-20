@@ -18,7 +18,7 @@ use rand::distr::{Alphanumeric, SampleString};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use url::Url;
 
-use crate::{Error, Result, Session, timeline::send_markdown};
+use crate::{Error, Result, Session, timeline::send_message};
 
 /// A call service, for starting calls.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -229,10 +229,11 @@ impl Session {
     /// Post the room's call link as a message, for people whose clients
     /// do not show call links.
     pub async fn announce_call_link(&self, room_id: &RoomId, url: &Url) -> Result<()> {
-        send_markdown(
+        send_message(
             &self.room(room_id)?,
             &self.send_lock,
             &format!("Call link for this room: {url}"),
+            Vec::new(),
             None,
         )
         .await?;
@@ -272,10 +273,11 @@ impl Session {
     /// Post a call link as a message.
     pub async fn post_call(&self, room_id: &RoomId, service: &str, url: &Url) -> Result<()> {
         let room = self.room(room_id)?;
-        send_markdown(
+        send_message(
             &room,
             &self.send_lock,
             &format!("{service} call: {url}"),
+            Vec::new(),
             None,
         )
         .await?;

@@ -4,17 +4,19 @@
 
 use std::{
     collections::{HashMap, HashSet},
-    path::Path,
+    path::{Path, PathBuf},
     sync::Arc,
     time::{Duration, Instant},
 };
 
 use iced::{
-    Alignment, Element, Length, Size, Subscription, Task, Theme, event, mouse,
-    widget::{button, column, container, image, mouse_area, opaque, responsive, row, text},
+    Alignment, Element, Length, Padding, Size, Subscription, Task, Theme, event, mouse,
+    widget::{
+        button, column, container, image, mouse_area, opaque, responsive, row, scrollable, text,
+    },
     window,
 };
-use mtrx_core::{Media, MediaKind, MediaRef, RoomTimeline, Session};
+use mtrx_core::{Attachment, Media, MediaKind, MediaRef, Session};
 use tokio::sync::Semaphore;
 
 use crate::{
@@ -375,12 +377,26 @@ fn kind_label(media: &Media) -> String {
         MediaKind::Image => "Image".into(),
         MediaKind::Video => "Video".into(),
         MediaKind::Audio => "Audio".into(),
-        MediaKind::File => Path::new(&media.filename)
-            .extension()
-            .and_then(|e| e.to_str())
-            .filter(|e| !e.is_empty() && e.len() <= 5)
-            .map_or_else(|| "File".into(), str::to_uppercase),
+        MediaKind::File => extension_label(Path::new(&media.filename)),
     }
+}
+
+/// [`kind_label`] of a file not sent yet.
+fn file_label(name: &Path, mimetype: &str) -> String {
+    match mimetype.split('/').next() {
+        Some("image") => "Image".into(),
+        Some("video") => "Video".into(),
+        Some("audio") => "Audio".into(),
+        _ => extension_label(name),
+    }
+}
+
+/// The extension, e.g. "PDF", or "File".
+fn extension_label(name: &Path) -> String {
+    name.extension()
+        .and_then(|e| e.to_str())
+        .filter(|e| !e.is_empty() && e.len() <= 5)
+        .map_or_else(|| "File".into(), str::to_uppercase)
 }
 
 /// A file size in decimal units, e.g. "2.4 MB".
@@ -575,27 +591,118 @@ pub async fn save(session: Arc<Session>, media: Media) -> Result<(), String> {
         .map_err(|e| format!("Could not save {}: {e}", file.file_name()))
 }
 
-/// Ask for files and send them to the timeline's room.
-pub async fn attach(timeline: Arc<RoomTimeline>) -> Result<(), String> {
-    let Some(files) = rfd::AsyncFileDialog::new()
+/// A file attached to the message being written, sent after its text.
+#[derive(Clone, Debug)]
+pub struct Attached {
+    pub file: Attachment,
+    /// A small picture of an image.
+    preview: Option<image::Handle>,
+}
+
+/// Height of an attached file's chip in the composer.
+pub const CHIP_HEIGHT: f32 = 44.0;
+
+/// Ask for files to attach.
+pub async fn pick_files() -> Vec<PathBuf> {
+    rfd::AsyncFileDialog::new()
         .set_title("Attach files")
         .pick_files()
         .await
-    else {
-        return Ok(());
-    };
-    for file in files {
-        send(&timeline, file.path()).await?;
-    }
-    Ok(())
+        .unwrap_or_default()
+        .iter()
+        .map(|file| file.path().to_owned())
+        .collect()
 }
 
-/// Send the file at `path` to the timeline's room.
-pub async fn send(timeline: &RoomTimeline, path: &Path) -> Result<(), String> {
-    timeline
-        .send_file(path)
+/// Read files to attach, in order.
+pub async fn read_attached(paths: Vec<PathBuf>) -> Vec<Result<Attached, String>> {
+    let mut attached = Vec::with_capacity(paths.len());
+    for path in paths {
+        attached.push(read_one(&path).await);
+    }
+    attached
+}
+
+async fn read_one(path: &Path) -> Result<Attached, String> {
+    let file = Attachment::read(path)
         .await
-        .map_err(|e| format!("Could not send {}: {e}", path.display()))
+        .map_err(|e| format!("Could not attach {}: {e}", path.display()))?;
+    if !file.mimetype.starts_with("image/") {
+        return Ok(Attached {
+            file,
+            preview: None,
+        });
+    }
+    let side = (2.0 * CHIP_HEIGHT) as u32;
+    tokio::task::spawn_blocking(move || {
+        let preview = decode(&file.bytes, side, side).map(|picture| picture.handle);
+        Attached { file, preview }
+    })
+    .await
+    .map_err(|e| format!("Could not attach {}: {e}", path.display()))
+}
+
+/// The attached files in a row, each with an × sending `remove` with its
+/// index.
+pub fn attached_view<'a>(
+    attached: &'a [Attached],
+    remove: impl Fn(usize) -> Message,
+) -> Element<'a, Message> {
+    let chips = attached.iter().enumerate().map(|(index, attached)| {
+        let thumb = CHIP_HEIGHT - 12.0;
+        let picture: Element<'a, Message> = match &attached.preview {
+            Some(handle) => image(handle.clone())
+                .width(thumb)
+                .height(thumb)
+                .content_fit(iced::ContentFit::Cover)
+                .border_radius(4)
+                .into(),
+            None => container(icons::file(16.0, on_primary))
+                .center(thumb)
+                .style(style::call_icon)
+                .into(),
+        };
+        let name = Path::new(&attached.file.filename);
+        container(
+            row![
+                picture,
+                container(
+                    column![
+                        ellipsis(&attached.file.filename).size(13),
+                        text(format!(
+                            "{} · {}",
+                            human_size(attached.file.bytes.len() as u64),
+                            file_label(name, &attached.file.mimetype)
+                        ))
+                        .size(11)
+                        .style(text::secondary),
+                    ]
+                    .spacing(1),
+                )
+                .max_width(160),
+                hint(
+                    button(text("×").size(14))
+                        .padding([0, 6])
+                        .style(style::text_button)
+                        .on_press(remove(index)),
+                    "Remove",
+                    Position::Top,
+                ),
+            ]
+            .spacing(8)
+            .align_y(Alignment::Center),
+        )
+        .height(CHIP_HEIGHT)
+        .padding(Padding::new(6.0).right(4.0))
+        .align_y(Alignment::Center)
+        .style(style::card)
+        .into()
+    });
+    scrollable(row(chips).spacing(6))
+        .direction(scrollable::Direction::Horizontal(
+            scrollable::Scrollbar::new().width(3).scroller_width(3),
+        ))
+        .into()
 }
 
 /// Files dropped onto the window.
