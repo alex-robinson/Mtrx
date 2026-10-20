@@ -73,6 +73,8 @@ fn bundle(root: &Path) -> Result<()> {
         contents.join("MacOS/mtrx-app"),
     )?;
     std::fs::write(contents.join("Info.plist"), info_plist())?;
+    // The licence travels with the app.
+    std::fs::copy(root.join("LICENSE"), contents.join("Resources/LICENSE"))?;
 
     // The icon set macOS wants: 16–512 pt at 1× and 2×.
     let iconset = root.join("target/bundle/Mtrx.iconset");
