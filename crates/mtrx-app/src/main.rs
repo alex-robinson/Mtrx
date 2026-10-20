@@ -20,6 +20,7 @@ mod math;
 mod media;
 mod members;
 mod message;
+mod popover;
 mod room;
 mod send_later;
 mod settings;

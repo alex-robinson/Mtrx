@@ -719,10 +719,11 @@ impl App {
                     return Task::none();
                 };
                 match message {
-                    emoji::Message::ToggleAll => {
-                        if room.composer_emoji.take().is_some() {
-                            return iced::widget::operation::focus(room::COMPOSER);
-                        }
+                    emoji::Message::Close => {
+                        room.composer_emoji = None;
+                        Task::none()
+                    }
+                    emoji::Message::Open => {
                         room.composer_emoji = Some(emoji::Panel::default());
                         Task::batch([
                             iced::widget::operation::focus(emoji::SEARCH),
@@ -1579,10 +1580,11 @@ impl App {
                     return Task::none();
                 };
                 match message {
-                    emoji::Message::ToggleAll => {
-                        if edit.emoji.take().is_some() {
-                            return InlineEdit::focus();
-                        }
+                    emoji::Message::Close => {
+                        edit.emoji = None;
+                        Task::none()
+                    }
+                    emoji::Message::Open => {
                         edit.emoji = Some(emoji::Panel::default());
                         Task::batch([
                             iced::widget::operation::focus(emoji::SEARCH),
@@ -1611,12 +1613,18 @@ impl App {
                 }
                 load_frequent_emoji(&main.session)
             }
-            Act::Emoji(emoji::Message::ToggleAll) => {
-                if room.emoji.take().is_some() {
-                    return Task::none();
-                }
+            Act::ClosePicker => {
+                room.picker = None;
+                room.emoji = None;
+                Task::none()
+            }
+            Act::Emoji(emoji::Message::Open) => {
                 room.emoji = Some(emoji::Panel::default());
                 iced::widget::operation::focus(emoji::SEARCH)
+            }
+            Act::Emoji(emoji::Message::Close) => {
+                room.emoji = None;
+                Task::none()
             }
             Act::Emoji(message) => {
                 if let Some(panel) = &mut room.emoji {

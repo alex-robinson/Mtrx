@@ -33,6 +33,7 @@ use crate::{
     media::{self, Previews},
     members::Members,
     message,
+    popover::{Edge, Side, popover},
     send_later::{self, SendLater},
     style::{
         self, GUTTER_SPACING, HEADER_AVATAR, MESSAGE_PADDING, SENDER_AVATAR, TIMELINE_PADDING,
@@ -340,6 +341,7 @@ impl Room {
         let cancellable = self.compose.cancellable();
         let composer = text_editor(&self.composer)
             .id(COMPOSER)
+            .highlight_with::<emoji::Highlighter>((), emoji::format)
             .style(style::editor)
             .placeholder("Message…  (Markdown, $…$ for math; Shift+Enter for a new line)")
             .on_action(Message::Composer)
@@ -358,8 +360,17 @@ impl Room {
             composer,
             self.composer_emoji.is_some(),
             false,
-            Message::ComposerEmoji(emoji::Message::ToggleAll),
+            Message::ComposerEmoji(emoji::Message::Open),
         );
+        let panel = self.composer_emoji.as_ref().map(|panel| {
+            panel.view(
+                look.frequent_emoji,
+                Message::InsertEmoji,
+                Message::ComposerEmoji,
+            )
+        });
+        let composer = popover(composer, panel, Side::Above, Edge::Right)
+            .on_dismiss(Message::ComposerEmoji(emoji::Message::Close));
         let later = button(text("Send later…").size(13))
             .padding([10, 12])
             .style(style::secondary_button)
@@ -384,16 +395,6 @@ impl Room {
         }
         if let Some(bar) = self.compose.bar() {
             bottom = bottom.push(bar);
-        }
-        if let Some(panel) = &self.composer_emoji {
-            bottom = bottom.push(
-                container(panel.view(
-                    look.frequent_emoji,
-                    Message::InsertEmoji,
-                    Message::ComposerEmoji,
-                ))
-                .align_right(Length::Fill),
-            );
         }
         let attach = tooltip(
             button(icons::paperclip(20.0, |theme| {
@@ -675,16 +676,6 @@ fn event_view<'a>(
         EventContent::Message(m) => Some(m),
         _ => None,
     };
-    if let Some(m) = message
-        && context.picker == Some(event.id.as_str())
-    {
-        item = item.push(actions::picker(
-            event,
-            &m.reactions,
-            context.frequent_emoji,
-            context.emoji,
-        ));
-    }
     if context.confirm_delete == Some(event.id.as_str()) {
         item = item.push(actions::confirm_delete(event));
     }
@@ -698,6 +689,14 @@ fn event_view<'a>(
             item = item.push(text(format!("not sent: {e}")).size(11).style(text::danger))
         }
     }
+
+    // The reaction picker floats below the message.
+    let picking = context.picker == Some(event.id.as_str());
+    let picker = message
+        .filter(|_| picking)
+        .map(|m| actions::picker(event, &m.reactions, context.frequent_emoji, context.emoji));
+    let item = popover(item, picker, Side::Below, Edge::Left)
+        .on_dismiss(Message::Act(actions::Message::ClosePicker));
 
     // The avatar starts a group; follow-ups show their time there on hover.
     let hovered = context.hovered == Some(event.id.as_str());
@@ -727,7 +726,7 @@ fn event_view<'a>(
         .style(style::message_row(hovered));
     // Actions float over the top right of a hovered message.
     let row: Element<'a, Message> = match message {
-        Some(m) if hovered && event.event_id.is_some() && edit.is_none() => {
+        Some(m) if hovered && event.event_id.is_some() && edit.is_none() && !picking => {
             let preview = first_line(&m.document.to_plain_text());
             let target = Target::of(event, display_name(event), preview);
             let edit_text = Some(m.body.clone());

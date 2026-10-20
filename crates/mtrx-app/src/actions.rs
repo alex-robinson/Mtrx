@@ -12,7 +12,9 @@ use crate::{
     app,
     avatar::{Avatars, Shape},
     ellipsis::ellipsis,
-    emoji, fonts, style,
+    emoji, fonts,
+    popover::{Edge, Side, popover},
+    style,
 };
 
 /// Read markers shown per message before "+N".
@@ -24,6 +26,7 @@ pub enum Message {
     React(EventKey, String),
     /// Open or close the reaction picker of a timeline row.
     TogglePicker(String),
+    ClosePicker,
     Reply(Target),
     /// Edit one of our sent messages where it is shown, starting from its text.
     Edit(EventKey, String),
@@ -173,6 +176,7 @@ impl InlineEdit {
     pub fn view<'a>(&'a self, frequent: &[String]) -> Element<'a, app::Message> {
         let editor = text_editor(&self.content)
             .id(EDITOR)
+            .highlight_with::<emoji::Highlighter>((), emoji::format)
             .style(style::editor)
             .on_action(|action| act(Message::EditAction(action)))
             .key_binding(|press| match press.key {
@@ -187,10 +191,19 @@ impl InlineEdit {
             editor,
             self.emoji.is_some(),
             true,
-            act(Message::EditEmoji(emoji::Message::ToggleAll)),
+            act(Message::EditEmoji(emoji::Message::Open)),
         );
+        let panel = self.emoji.as_ref().map(|panel| {
+            panel.view(
+                frequent,
+                |emoji| act(Message::EditInsertEmoji(emoji)),
+                |message| act(Message::EditEmoji(message)),
+            )
+        });
+        let editor = popover(editor, panel, Side::Below, Edge::Right)
+            .on_dismiss(act(Message::EditEmoji(emoji::Message::Close)));
         let empty = self.content.text().trim().is_empty();
-        let mut view = column![
+        let view = column![
             editor,
             row![
                 text("Enter saves · Esc cancels")
@@ -210,13 +223,6 @@ impl InlineEdit {
             .align_y(Alignment::Center),
         ]
         .spacing(4);
-        if let Some(panel) = &self.emoji {
-            view = view.push(panel.view(
-                frequent,
-                |emoji| act(Message::EditInsertEmoji(emoji)),
-                |message| act(Message::EditEmoji(message)),
-            ));
-        }
         view.into()
     }
 }
@@ -270,7 +276,11 @@ pub fn picker<'a>(
     let more = button(text(if all.is_some() { "−" } else { "+" }).size(18))
         .padding([2, 8])
         .style(style::list_item(all.is_some()))
-        .on_press(act(Message::Emoji(emoji::Message::ToggleAll)));
+        .on_press(act(Message::Emoji(if all.is_some() {
+            emoji::Message::Close
+        } else {
+            emoji::Message::Open
+        })));
     let quick = container(row(quick).push(more).spacing(2).align_y(Alignment::Center))
         .padding(4)
         .style(style::toolbar);

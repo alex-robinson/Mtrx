@@ -504,7 +504,7 @@ async fn send_later_bar() {
     let mut open = Room::new(room.clone(), timeline.clone());
     open.entries = timeline.current();
     with_start(&mut open.entries);
-    open.composer = text_editor::Content::with_text("Who can take the Monday slot?");
+    open.composer = text_editor::Content::with_text("Who can take the Monday slot? ❤");
     open.later.picker = Some(send_later::Picker::new(
         now,
         mtrx_core::parse_send_time("tomorrow 8:00", now),
@@ -574,6 +574,27 @@ async fn send_later_bar() {
         open.composer_emoji = Some(emoji::Panel::default());
     }
     snapshot(&app, "composer-emoji");
+    // A click outside the panel closes it; one on an emoji inserts it.
+    let messages = |at: iced::Point| {
+        let mut ui = Simulator::with_size(fonts::settings(), Size::new(1200.0, 800.0), app.view());
+        ui.point_at(at);
+        ui.simulate(iced_test::simulator::click());
+        ui.into_messages().collect::<Vec<_>>()
+    };
+    let outside = messages(iced::Point::new(700.0, 150.0));
+    assert!(
+        outside
+            .iter()
+            .any(|m| matches!(m, Message::ComposerEmoji(emoji::Message::Close))),
+        "{outside:?}"
+    );
+    let on_crab = messages(iced::Point::new(720.0, 453.0));
+    assert!(
+        on_crab
+            .iter()
+            .any(|m| matches!(m, Message::InsertEmoji(e) if e == "🦀")),
+        "{on_crab:?}"
+    );
     if let Screen::Main(main) = &mut app.screen
         && let Some(open) = main.room.as_mut()
     {
