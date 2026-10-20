@@ -238,10 +238,25 @@ fn dimensions(media: &Media, picture: Option<&Picture>) -> Option<(u32, u32)> {
 /// A message's file: an image (a placeholder until loaded), else a card;
 /// a PDF's card opens the viewer once known to be readable. `body` shows
 /// below it if it is a caption rather than the filename.
-pub fn view<'a>(media: &'a Media, body: &'a str, previews: &Previews) -> Element<'a, Message> {
+/// A message's file; an image has a download button beside it while the
+/// message is `hovered`.
+pub fn view<'a>(
+    media: &'a Media,
+    body: &'a str,
+    previews: &Previews,
+    hovered: bool,
+) -> Element<'a, Message> {
     let content = match media.kind {
         MediaKind::Image if !previews.failed(&media.source) => {
-            inline_image(media, previews.ready(&media.source))
+            let picture = inline_image(media, previews.ready(&media.source));
+            if hovered {
+                row![picture, save_button(media)]
+                    .spacing(8)
+                    .align_y(Alignment::End)
+                    .into()
+            } else {
+                picture
+            }
         }
         _ if pdf::is_pdf(media) => {
             if !previewed(media) {
@@ -516,6 +531,29 @@ impl Viewer {
         self.full = decode(&bytes, MAX_FULL, MAX_FULL);
         assert!(self.full.is_some(), "decoding failed");
     }
+}
+
+/// Put a message's image on the clipboard.
+pub async fn copy_image(session: Arc<Session>, media: Media) -> Result<(), String> {
+    let bytes = session
+        .media_content(&media.source)
+        .await
+        .map_err(|e| format!("Could not download {}: {e}", media.filename))?;
+    tokio::task::spawn_blocking(move || {
+        let picture = ::image::load_from_memory(&bytes)
+            .map_err(|e| format!("Could not read {}: {e}", media.filename))?
+            .to_rgba8();
+        let image = arboard::ImageData {
+            width: picture.width() as usize,
+            height: picture.height() as usize,
+            bytes: picture.into_raw().into(),
+        };
+        arboard::Clipboard::new()
+            .and_then(|mut clipboard| clipboard.set_image(image))
+            .map_err(|e| format!("Could not copy the picture: {e}"))
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// Ask where to save a message's file, then download it there. Cancelling

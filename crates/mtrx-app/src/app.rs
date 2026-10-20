@@ -1952,6 +1952,16 @@ impl App {
                     Message::Act(Act::Done(result))
                 })
             }
+            Act::CopyMediaImage(file) => {
+                room.menu = None;
+                Task::perform(media::copy_image(main.session.clone(), file), |result| {
+                    Message::Act(Act::Done(result))
+                })
+            }
+            Act::SaveMedia(file) => {
+                room.menu = None;
+                Task::done(Message::SaveMedia(file))
+            }
             Act::SaveImage(document) => {
                 room.menu = None;
                 let png = self.math.png(&document);

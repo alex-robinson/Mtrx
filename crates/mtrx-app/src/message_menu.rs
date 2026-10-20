@@ -1,11 +1,11 @@
 //! A message's menu (right-click, or "⋯" in its toolbar): copying the
-//! selection or the message, and math as a picture.
+//! selection or the message, math as a picture, and a file or image.
 
 use iced::{
     Element, Length,
     widget::{button, column, container},
 };
-use mtrx_core::{Message, MessageKind};
+use mtrx_core::{MediaKind, Message, MessageKind};
 
 use crate::{
     actions::{self, act},
@@ -48,6 +48,19 @@ pub fn items(
     } else if is_text {
         let all = units_text(&message::text_map(document).units, Pos::default(), Pos::END);
         items.push(("Copy".to_owned(), actions::Message::Copy(all)));
+    }
+    if let Some(media) = &message.media {
+        if media.kind == MediaKind::Image {
+            items.push((
+                "Copy image".to_owned(),
+                actions::Message::CopyMediaImage(media.clone()),
+            ));
+        }
+        let save = match media.kind {
+            MediaKind::Image => "Save image…",
+            _ => "Save…",
+        };
+        items.push((save.to_owned(), actions::Message::SaveMedia(media.clone())));
     }
     if math_shown {
         items.push((
@@ -97,6 +110,18 @@ mod tests {
         }
     }
 
+    fn media(filename: &str, kind: MediaKind) -> mtrx_core::Media {
+        mtrx_core::Media {
+            kind,
+            filename: filename.into(),
+            size: None,
+            mimetype: None,
+            width: None,
+            height: None,
+            source: mtrx_core::MediaRef::plain("mxc://example.org/a"),
+        }
+    }
+
     fn labels(items: &[(String, actions::Message)]) -> Vec<&str> {
         items.iter().map(|(label, _)| label.as_str()).collect()
     }
@@ -118,7 +143,14 @@ mod tests {
             super::items(&text, false, true)[0].1,
             actions::Message::CopySelection
         ));
-        // A file has nothing to copy.
-        assert!(super::items(&message(MessageKind::File, "report.pdf"), false, false).is_empty());
+        // A file can be saved; an image also copied.
+        let mut file = message(MessageKind::File, "report.pdf");
+        file.media = Some(media("report.pdf", MediaKind::File));
+        assert_eq!(labels(&super::items(&file, false, false)), ["Save…"]);
+        file.media = Some(media("ice.png", MediaKind::Image));
+        assert_eq!(
+            labels(&super::items(&file, false, false)),
+            ["Copy image", "Save image…"]
+        );
     }
 }

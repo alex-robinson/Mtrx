@@ -760,7 +760,12 @@ fn event_view<'a>(
                     message::view(&m.document, theme, Message::LinkClicked, select())
                 }
                 (kind, _) => match &m.media {
-                    Some(file) => media::view(file, &m.body, context.previews),
+                    Some(file) => media::view(
+                        file,
+                        &m.body,
+                        context.previews,
+                        context.hovered == Some(event.id.as_str()),
+                    ),
                     None => text(format!("[{kind:?}] {}", m.body))
                         .style(text::secondary)
                         .into(),

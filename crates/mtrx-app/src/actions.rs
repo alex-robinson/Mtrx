@@ -7,7 +7,7 @@ use iced::{
     keyboard::{Key, key::Named},
     widget::{button, column, container, row, space, text, text_editor},
 };
-use mtrx_core::{Event, EventKey, MxcUri, OwnedEventId, Reaction, Reader, Reply};
+use mtrx_core::{Event, EventKey, Media, MxcUri, OwnedEventId, Reaction, Reader, Reply};
 use mtrx_format::Document;
 
 use crate::{
@@ -60,6 +60,10 @@ pub enum Message {
     CopyImage(Document),
     /// Save a message with math as a picture.
     SaveImage(Document),
+    /// Put a message's image on the clipboard.
+    CopyMediaImage(Media),
+    /// Save a message's file.
+    SaveMedia(Media),
     /// Show a timeline row's text in place of it, to select from.
     /// Stop replying.
     CancelCompose,
