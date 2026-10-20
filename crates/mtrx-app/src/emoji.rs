@@ -68,37 +68,47 @@ pub fn insert(content: &mut iced::widget::text_editor::Content, emoji: &str) {
     ))));
 }
 
-/// A button showing or hiding the emoji panel of a text field; `compact`
-/// beside small buttons.
-pub fn toggle<'a>(open: bool, compact: bool, message: app::Message) -> Element<'a, app::Message> {
-    let (size, padding) = if compact {
-        (14.0, [2, 6])
-    } else {
-        (20.0, [8, 10])
-    };
-    iced::widget::tooltip(
+/// A text field with a smiley at its right edge, showing or hiding its
+/// emoji panel: a helper for typing, inside the field. The field needs
+/// [`FIELD_INSET`] (or [`FIELD_INSET_COMPACT`]) of right padding so text
+/// stays clear of it.
+pub fn in_field<'a>(
+    field: impl Into<Element<'a, app::Message>>,
+    open: bool,
+    compact: bool,
+    message: app::Message,
+) -> Element<'a, app::Message> {
+    let (size, edge) = if compact { (15.0, 4.0) } else { (19.0, 6.0) };
+    let toggle = iced::widget::tooltip(
         button(crate::icons::smiley(size, |theme| {
             theme
                 .extended_palette()
                 .background
                 .base
                 .text
-                .scale_alpha(0.75)
+                .scale_alpha(0.55)
         }))
-        .padding(padding)
-        .style(match (open, compact) {
-            (true, _) => style::primary_button,
-            (false, true) => style::text_button,
-            (false, false) => style::secondary_button,
-        })
+        .padding(4)
+        .style(style::list_item(open))
         .on_press(message),
         container(text("Emoji").size(12))
             .padding(6)
             .style(container::rounded_box),
         iced::widget::tooltip::Position::Top,
-    )
+    );
+    iced::widget::stack![
+        field.into(),
+        container(toggle)
+            .align_right(Length::Fill)
+            .align_bottom(Length::Fill)
+            .padding(iced::Padding::new(edge).top(0)),
+    ]
     .into()
 }
+
+/// Right padding of a text field with [`in_field`]'s smiley.
+pub const FIELD_INSET: f32 = 38.0;
+pub const FIELD_INSET_COMPACT: f32 = 30.0;
 
 /// The quick row: the most used, filled up with common ones.
 pub fn quick(frequent: &[String]) -> Vec<&str> {

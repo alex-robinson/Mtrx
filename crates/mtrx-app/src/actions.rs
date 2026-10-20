@@ -181,8 +181,14 @@ impl InlineEdit {
                 }
                 _ => text_editor::Binding::from_key_press(press),
             })
-            .padding(6)
+            .padding(iced::Padding::new(6.0).right(emoji::FIELD_INSET_COMPACT))
             .max_height(240);
+        let editor = emoji::in_field(
+            editor,
+            self.emoji.is_some(),
+            true,
+            act(Message::EditEmoji(emoji::Message::ToggleAll)),
+        );
         let empty = self.content.text().trim().is_empty();
         let mut view = column![
             editor,
@@ -191,11 +197,6 @@ impl InlineEdit {
                     .size(11)
                     .style(text::secondary),
                 space::horizontal(),
-                emoji::toggle(
-                    self.emoji.is_some(),
-                    true,
-                    act(Message::EditEmoji(emoji::Message::ToggleAll))
-                ),
                 button(text("Cancel").size(12))
                     .padding([2, 8])
                     .style(style::text_button)

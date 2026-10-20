@@ -352,8 +352,14 @@ impl Room {
                 )),
                 _ => text_editor::Binding::from_key_press(press),
             })
-            .padding(10)
+            .padding(Padding::new(10.0).right(emoji::FIELD_INSET))
             .max_height(200);
+        let composer = emoji::in_field(
+            composer,
+            self.composer_emoji.is_some(),
+            false,
+            Message::ComposerEmoji(emoji::Message::ToggleAll),
+        );
         let later = button(text("Send later…").size(13))
             .padding([10, 12])
             .style(style::secondary_button)
@@ -406,13 +412,8 @@ impl Room {
                 .style(container::rounded_box),
             tooltip::Position::Top,
         );
-        let emoji = emoji::toggle(
-            self.composer_emoji.is_some(),
-            false,
-            Message::ComposerEmoji(emoji::Message::ToggleAll),
-        );
         bottom = bottom.push(
-            row![composer, emoji, attach, later]
+            row![composer, attach, later]
                 .spacing(8)
                 .align_y(Alignment::End),
         );
