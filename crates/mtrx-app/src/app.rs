@@ -1731,8 +1731,10 @@ impl App {
                 state.menu = false;
                 state.error = None;
                 state.editor = Some(state.link.as_ref().map(Url::to_string).unwrap_or_default());
+                state.announce = false;
             }
             Calls::LinkInput(input) => state.editor = Some(input),
+            Calls::Announce(on) => state.announce = on,
             Calls::NewLink(service) => {
                 state.editor = service.new_link().map(|link| link.to_string());
             }
@@ -1745,6 +1747,7 @@ impl App {
                     },
                     _ => None,
                 };
+                let announce = link.clone().filter(|_| state.announce);
                 state.busy = true;
                 state.error = None;
                 let room = room.id.clone();
@@ -1753,7 +1756,14 @@ impl App {
                         session
                             .set_call_link(&room, link.as_ref())
                             .await
-                            .map_err(|e| e.to_string())
+                            .map_err(|e| e.to_string())?;
+                        if let Some(link) = announce {
+                            session
+                                .announce_call_link(&room, &link)
+                                .await
+                                .map_err(|e| e.to_string())?;
+                        }
+                        Ok(())
                     },
                     move |result| reply(Calls::LinkSaved(result)),
                 );

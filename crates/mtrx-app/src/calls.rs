@@ -3,7 +3,7 @@
 
 use iced::{
     Alignment, Element, Length, Theme,
-    widget::{button, column, container, row, space, text, text_input},
+    widget::{button, checkbox, column, container, row, space, text, text_input},
 };
 use mtrx_core::{CallService, OwnedRoomId, ServiceKind, Url, recognize_call_link};
 
@@ -28,6 +28,8 @@ pub enum Message {
     Started(Result<(), String>),
     EditLink,
     LinkInput(String),
+    /// Whether saving the link also posts it in the room.
+    Announce(bool),
     /// Fill the link editor with a new link of this service.
     NewLink(CallService),
     SaveLink,
@@ -45,6 +47,8 @@ pub struct RoomCalls {
     pub menu: bool,
     /// The call link being edited.
     pub editor: Option<String>,
+    /// Post the saved link in the room too, for other clients.
+    pub announce: bool,
     /// A call is being started or the link saved.
     pub busy: bool,
     pub error: Option<String>,
@@ -59,6 +63,7 @@ impl RoomCalls {
             space_service: None,
             menu: false,
             editor: None,
+            announce: false,
             busy: false,
             error: None,
         }
@@ -239,7 +244,12 @@ impl RoomCalls {
                 ));
             }
         }
-        let mut editor = column![field, actions].spacing(6);
+        let announce = checkbox(self.announce)
+            .label("Also post the link in the room, for people using other apps")
+            .size(14)
+            .text_size(12)
+            .on_toggle_maybe((!self.busy).then_some(|on| self.message(Message::Announce(on))));
+        let mut editor = column![field, announce, actions].spacing(6);
         if !allowed {
             editor = editor.push(
                 text("Only moderators can change this room's call link.")

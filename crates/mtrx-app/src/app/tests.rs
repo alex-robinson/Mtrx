@@ -380,8 +380,13 @@ async fn main_screen_with_math() {
         open.calls.link = Some(Url::parse("https://meet.jit.si/ice-sheets-weekly").unwrap());
         open.calls.space_service =
             Some(CallService::jitsi("Lab Jitsi", "https://video.lab.example").unwrap());
-        // The start menu and reaction picker in one shot, a reply in the other.
+        // The start menu and reaction picker in one shot, the link editor
+        // and a reply in the other.
         open.calls.menu = mode == Mode::Dark;
+        if mode == Mode::Light {
+            open.calls.editor = Some("https://meet.jit.si/ice-sheets-weekly".into());
+            open.calls.announce = true;
+        }
         open.typing = vec!["bob".into()];
         if mode == Mode::Dark {
             // From the smiley after alice's reactions.

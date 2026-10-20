@@ -526,6 +526,7 @@ async fn call_links_and_space_services() -> Result<()> {
         Some(Some(url.clone()))
     );
     assert_eq!(s.call_link(&room).await?, Some(url.clone()));
+    s.announce_call_link(&room, &url).await?;
     let timeline = s.timeline(&room).await?;
     wait_for("link posted", timeline.updates(), |e| {
         has_message(e, &format!("Call link for this room: {url}"))

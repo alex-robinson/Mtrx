@@ -216,23 +216,26 @@ impl Session {
         Ok(stream::once(async { current }).chain(changes))
     }
 
-    /// Set or remove the room's call link. A new link is also posted as a
-    /// message, so clients without call link support see it.
+    /// Set or remove the room's call link.
     pub async fn set_call_link(&self, room_id: &RoomId, url: Option<&Url>) -> Result<()> {
-        let room = self.room(room_id)?;
-        room.send_state_event(CallLinkEventContent {
-            url: url.map(|u| u.to_string()),
-        })
-        .await?;
-        if let Some(url) = url {
-            send_markdown(
-                &room,
-                &self.send_lock,
-                &format!("Call link for this room: {url}"),
-                None,
-            )
+        self.room(room_id)?
+            .send_state_event(CallLinkEventContent {
+                url: url.map(|u| u.to_string()),
+            })
             .await?;
-        }
+        Ok(())
+    }
+
+    /// Post the room's call link as a message, for people whose clients
+    /// do not show call links.
+    pub async fn announce_call_link(&self, room_id: &RoomId, url: &Url) -> Result<()> {
+        send_markdown(
+            &self.room(room_id)?,
+            &self.send_lock,
+            &format!("Call link for this room: {url}"),
+            None,
+        )
+        .await?;
         Ok(())
     }
 
