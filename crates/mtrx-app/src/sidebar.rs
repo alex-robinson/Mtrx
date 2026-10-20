@@ -23,7 +23,7 @@ use crate::{
     fonts,
     hint::{Position, hint},
     icons, info,
-    style::{self, ROOM_AVATAR, ROOM_LIST_WIDTH, ROOM_ROW, SPACE_AVATAR, SPACE_BAR_WIDTH},
+    style::{self, ROOM_AVATAR, ROOM_ROW, SPACE_AVATAR, SPACE_BAR_WIDTH},
 };
 
 /// The room search field, focused by ⌘K / Ctrl+K.
@@ -275,6 +275,7 @@ pub struct RoomListView<'a> {
     pub arrange: &'a Arrange,
     pub grouping: Grouping,
     pub out_of_view: OutOfView,
+    pub width: f32,
 }
 
 pub fn room_list<'a>(view: RoomListView<'a>) -> Element<'a, Message> {
@@ -351,7 +352,7 @@ pub fn room_list<'a>(view: RoomListView<'a>) -> Element<'a, Message> {
         .on_scroll(|_| Message::RoomListScrolled)
         .height(Length::Fill);
     container(out_of_view_arrows(list.into(), view.out_of_view))
-        .width(ROOM_LIST_WIDTH)
+        .width(view.width)
         .height(Length::Fill)
         .style(style::panel)
         .into()

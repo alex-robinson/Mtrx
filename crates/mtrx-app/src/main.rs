@@ -15,6 +15,7 @@ mod fonts;
 mod hint;
 mod icons;
 mod info;
+mod last_view;
 mod login;
 mod logo;
 mod math;

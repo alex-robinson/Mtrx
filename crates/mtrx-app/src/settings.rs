@@ -31,6 +31,8 @@ pub struct Settings {
     pub call_services: Vec<CallService>,
     /// The room list's built-in sections.
     pub room_list: Grouping,
+    /// The room list's width, as dragged.
+    pub room_list_width: f32,
 }
 
 impl Default for Settings {
@@ -42,6 +44,7 @@ impl Default for Settings {
                 CallService::jitsi("Jitsi Meet", "https://meet.jit.si").expect("valid"),
             ],
             room_list: Grouping::default(),
+            room_list_width: style::ROOM_LIST_WIDTH,
         }
     }
 }
@@ -825,6 +828,7 @@ mod tests {
                 unread_first: true,
                 ..Grouping::default()
             },
+            room_list_width: 320.0,
         };
         settings.save(&path).unwrap();
         assert_eq!(Settings::load(&path), settings);

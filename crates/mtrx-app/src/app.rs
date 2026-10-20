@@ -32,6 +32,7 @@ use crate::{
     calls,
     dialog::{self, Dialog},
     emoji, info,
+    last_view::LastView,
     login::{self, Login},
     math::{self, Math, Rendered},
     media::{self, Previews, Viewer},
@@ -40,7 +41,7 @@ use crate::{
     send_later,
     settings::{self, Settings},
     sidebar,
-    style::{self, MESSAGE_INSET, ROOM_LIST_WIDTH, SPACE_BAR_WIDTH},
+    style::{self, MESSAGE_INSET, SPACE_BAR_WIDTH},
 };
 
 /// How often times shown relative to now are refreshed.
@@ -159,6 +160,8 @@ pub enum Message {
     OutOfView(sidebar::OutOfView),
     /// Scroll the room list to this offset.
     ScrollRoomList(f32),
+    /// Dragging the room list's edge.
+    Resize(Resize),
     /// Try the server now.
     Reconnect,
     Reloaded(OwnedRoomId, Result<Shared<RoomTimeline>, String>),
@@ -182,6 +185,10 @@ pub struct App {
     settings: Settings,
     /// Where settings are saved; `None` keeps them in memory (tests).
     settings_file: Option<PathBuf>,
+    /// Where the last space and room shown are saved; `None` in tests.
+    view_file: Option<PathBuf>,
+    /// The room list's edge is being dragged.
+    resizing: bool,
     /// The settings panel, while open.
     settings_panel: Option<settings::Panel>,
     screen: Screen,
@@ -245,6 +252,21 @@ struct Main {
     connection: Connection,
     /// Unread rooms scrolled out of the room list's view.
     out_of_view: sidebar::OutOfView,
+    /// The view to show again once its room is listed (after starting).
+    restore: Option<LastView>,
+}
+
+/// The room list's width limits, and its draggable edge's.
+const MIN_ROOM_LIST_WIDTH: f32 = 200.0;
+const MAX_ROOM_LIST_WIDTH: f32 = 520.0;
+const RESIZE_HANDLE: f32 = 5.0;
+
+#[derive(Debug, Clone, Copy)]
+pub enum Resize {
+    Start,
+    /// The cursor's x in the window.
+    Move(f32),
+    End,
 }
 
 struct Notice {
@@ -272,6 +294,7 @@ impl Main {
             frequent_emoji: Vec::new(),
             connection: session.connection(),
             out_of_view: Default::default(),
+            restore: None,
             now: SystemTime::now(),
             session,
             error: None,
@@ -294,7 +317,8 @@ impl Main {
     /// timeline senders, with their sizes.
     fn avatars_on_screen(&self, grouping: Grouping) -> Vec<(OwnedMxcUri, f32)> {
         let rooms = &self.rooms.rooms;
-        let mut wanted = sidebar::avatars(&self.room_list_view(grouping));
+        // The width does not change which pictures are listed.
+        let mut wanted = sidebar::avatars(&self.room_list_view(grouping, 0.0));
         wanted.extend(self.info.as_ref().and_then(|c| c.avatar(rooms)));
         if let Some(room) = &self.room {
             wanted.extend(room.avatars(rooms.iter().find(|r| r.id == room.id)));
@@ -305,7 +329,7 @@ impl Main {
             .collect()
     }
 
-    fn room_list_view(&self, grouping: Grouping) -> sidebar::RoomListView<'_> {
+    fn room_list_view(&self, grouping: Grouping, width: f32) -> sidebar::RoomListView<'_> {
         sidebar::RoomListView {
             rooms: &self.rooms.rooms,
             selected_space: self.space.as_ref(),
@@ -322,6 +346,7 @@ impl Main {
             arrange: &self.arrange,
             grouping,
             out_of_view: self.out_of_view,
+            width,
         }
     }
 }
@@ -352,6 +377,8 @@ impl App {
             google: Arc::new(Google::new(&data_root, secrets)),
             settings: Settings::load(&settings_file),
             settings_file: Some(settings_file),
+            view_file: Some(LastView::path(&profile)),
+            resizing: false,
             settings_panel: None,
             screen: Screen::Starting,
             mode: Mode::Light,
@@ -392,7 +419,11 @@ impl App {
                 | Message::OpenRoom(_)
                 | Message::WindowResized(_)
         );
+        let remember = matches!(message, Message::OpenRoom(_) | Message::SelectSpace(_));
         let task = self.handle(message);
+        if remember {
+            self.remember_view();
+        }
         match &self.screen {
             Screen::Main(main) if moved => Task::batch([
                 task,
@@ -412,8 +443,29 @@ impl App {
                 Task::none()
             }
             Message::ScrollRoomList(offset) => sidebar::scroll_to(offset),
+            Message::Resize(Resize::Start) => {
+                self.resizing = true;
+                Task::none()
+            }
+            Message::Resize(Resize::Move(x)) => {
+                self.settings.room_list_width =
+                    (x - SPACE_BAR_WIDTH).clamp(MIN_ROOM_LIST_WIDTH, MAX_ROOM_LIST_WIDTH);
+                Task::none()
+            }
+            Message::Resize(Resize::End) => {
+                self.resizing = false;
+                if let Some(file) = &self.settings_file
+                    && let Err(e) = self.settings.save(file)
+                {
+                    tracing::warn!("could not save settings: {e}");
+                }
+                // Math is laid out for the room's width.
+                self.render_math()
+            }
             Message::Restored(Ok(Shared(session))) | Message::LoggedIn(Ok(Shared(session))) => {
-                self.screen = Screen::Main(Box::new(Main::new(session.clone())));
+                let mut main = Main::new(session.clone());
+                main.restore = self.view_file.as_deref().map(LastView::load);
+                self.screen = Screen::Main(Box::new(main));
                 Task::perform(
                     async move {
                         session.start_sync().await;
@@ -485,14 +537,14 @@ impl App {
                     }
                     Err(e) => main.error = Some(e),
                 }
-                self.load_avatars()
+                Task::batch([self.load_avatars(), self.restore_view()])
             }
             Message::Rooms(state) => {
                 if let Screen::Main(main) = &mut self.screen {
                     main.rooms = state;
                     main.arrange.rooms_updated(&mut main.rooms.rooms);
                 }
-                self.load_avatars()
+                Task::batch([self.load_avatars(), self.restore_view()])
             }
             Message::SelectSpace(space) => {
                 let Screen::Main(main) = &mut self.screen else {
@@ -500,6 +552,7 @@ impl App {
                 };
                 main.space = space.clone();
                 main.info = None;
+                main.restore = None;
                 main.arrange.escape();
                 let members = match space {
                     Some(space) => main.arrange.space_selected(&main.session, space),
@@ -539,6 +592,8 @@ impl App {
                 };
                 main.add_menu = false;
                 main.info = None;
+                // Chosen now: last time's view is no longer wanted.
+                main.restore = None;
                 if main.room.as_ref().is_some_and(|r| r.id == id) && main.invite.is_none() {
                     return Task::none();
                 }
@@ -1942,10 +1997,55 @@ impl App {
         }
     }
 
+    /// Show the space and room of last time once the room is listed, until
+    /// the first sync shows it is gone.
+    fn restore_view(&mut self) -> Task<Message> {
+        let Screen::Main(main) = &mut self.screen else {
+            return Task::none();
+        };
+        let Some(view) = &main.restore else {
+            return Task::none();
+        };
+        match view.found(&main.rooms.rooms) {
+            Some((space, room)) => {
+                main.restore = None;
+                main.space = space;
+                self.update(Message::OpenRoom(room))
+            }
+            None => {
+                if main.rooms.loaded {
+                    main.restore = None;
+                }
+                Task::none()
+            }
+        }
+    }
+
+    /// Save the space and room shown, to show them again next time.
+    fn remember_view(&self) {
+        let (Screen::Main(main), Some(file)) = (&self.screen, &self.view_file) else {
+            return;
+        };
+        let room = main
+            .opening
+            .as_ref()
+            .or(main.room.as_ref().map(|r| &r.id))
+            .cloned();
+        LastView {
+            space: main.space.clone(),
+            room,
+        }
+        .save(file);
+    }
+
     fn math_params(&self) -> math::Params {
         let theme = self.theme();
         let palette = theme.extended_palette();
-        let max_width = self.window_width - SPACE_BAR_WIDTH - ROOM_LIST_WIDTH - MESSAGE_INSET;
+        let max_width = self.window_width
+            - SPACE_BAR_WIDTH
+            - self.settings.room_list_width
+            - RESIZE_HANDLE
+            - MESSAGE_INSET;
         math::Params {
             max_width: max_width.max(200.0),
             scale: self.scale,
@@ -2023,6 +2123,17 @@ impl App {
                 .map(Message::Notified),
             );
             subscriptions.push(iced::event::listen_with(shortcuts));
+            if self.resizing {
+                subscriptions.push(iced::event::listen_with(|event, _, _| match event {
+                    iced::Event::Mouse(mouse::Event::CursorMoved { position }) => {
+                        Some(Message::Resize(Resize::Move(position.x)))
+                    }
+                    iced::Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
+                        Some(Message::Resize(Resize::End))
+                    }
+                    _ => None,
+                }));
+            }
             subscriptions.push(
                 Subscription::run_with(Shared(main.session.clone()), |s| s.0.connection_updates())
                     .map(Message::Connection),
@@ -2124,7 +2235,9 @@ impl App {
         let theme = self.theme();
         let rooms = &main.rooms.rooms;
         let space_bar = sidebar::space_bar(rooms, main.space.as_ref(), &main.avatars);
-        let room_list = sidebar::room_list(main.room_list_view(self.settings.room_list));
+        let room_list = sidebar::room_list(
+            main.room_list_view(self.settings.room_list, self.settings.room_list_width),
+        );
 
         let mut content = column![];
         if main.verified == Some(false) {
@@ -2175,7 +2288,15 @@ impl App {
         };
         content = content.push(room_view);
 
-        let main_row = row![space_bar, room_list, content.width(Length::Fill)];
+        // The room list's edge, dragged to resize it.
+        let handle = mouse_area(
+            container(iced::widget::space())
+                .width(RESIZE_HANDLE)
+                .height(Length::Fill),
+        )
+        .interaction(mouse::Interaction::ResizingHorizontally)
+        .on_press(Message::Resize(Resize::Start));
+        let main_row = row![space_bar, room_list, handle, content.width(Length::Fill)];
         let window: Element<'a, Message> = match main.connection {
             Connection::Online => main_row.into(),
             Connection::Offline => column![main_row, offline_bar()].into(),

@@ -74,6 +74,8 @@ fn app(screen: Screen, mode: Mode) -> App {
         google: Arc::new(Google::new(&snapshot_dir(), SecretStore::File)),
         settings: Settings::default(),
         settings_file: None,
+        view_file: None,
+        resizing: false,
         settings_panel: None,
         screen,
         mode,
