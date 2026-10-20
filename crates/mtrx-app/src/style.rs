@@ -48,6 +48,16 @@ pub fn space_bar(theme: &Theme) -> container::Style {
     }
 }
 
+/// The bar along the bottom while offline.
+pub fn offline_bar(theme: &Theme) -> container::Style {
+    let palette = theme.extended_palette();
+    container::Style {
+        background: Some(Background::Color(palette.warning.weak.color)),
+        text_color: Some(palette.warning.weak.text),
+        ..Default::default()
+    }
+}
+
 pub fn banner(theme: &Theme) -> container::Style {
     let palette = theme.extended_palette();
     container::Style {
@@ -188,8 +198,44 @@ pub fn primary_button(theme: &Theme, status: button::Status) -> button::Style {
     rounded_button(button::primary)(theme, status)
 }
 
+/// Grey; in light mode a light grey, so the dark text on it stays readable
+/// (iced's is a mid grey there).
 pub fn secondary_button(theme: &Theme, status: button::Status) -> button::Style {
-    rounded_button(button::secondary)(theme, status)
+    let palette = theme.extended_palette();
+    if palette.is_dark {
+        return rounded_button(button::secondary)(theme, status);
+    }
+    let shade = |amount: f32| {
+        let (background, text) = (palette.background.base.color, palette.background.base.text);
+        let mix = |a: f32, b: f32| a + (b - a) * amount;
+        Color::from_rgb(
+            mix(background.r, text.r),
+            mix(background.g, text.g),
+            mix(background.b, text.b),
+        )
+    };
+    let base = button::Style {
+        background: Some(Background::Color(shade(0.1))),
+        text_color: palette.background.base.text,
+        border: Border::default().rounded(BUTTON_RADIUS),
+        ..Default::default()
+    };
+    match status {
+        button::Status::Active => base,
+        button::Status::Hovered => button::Style {
+            background: Some(Background::Color(shade(0.16))),
+            ..base
+        },
+        button::Status::Pressed => button::Style {
+            background: Some(Background::Color(shade(0.22))),
+            ..base
+        },
+        button::Status::Disabled => button::Style {
+            background: Some(Background::Color(shade(0.06))),
+            text_color: base.text_color.scale_alpha(0.4),
+            ..base
+        },
+    }
 }
 
 pub fn text_button(theme: &Theme, status: button::Status) -> button::Style {

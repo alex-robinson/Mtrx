@@ -41,6 +41,9 @@ pub enum Message {
     RoomMenu(Option<OwnedRoomId>),
     CategoryMenu(Option<String>),
     MoveTo(OwnedRoomId, Section),
+    /// Favourite (the star), low priority or neither, keeping the room's
+    /// category.
+    Tag(OwnedRoomId, RoomTag),
     /// Name a new category, then put the room in it if there is one.
     NewCategory(Option<OwnedRoomId>),
     Rename(String),
@@ -226,6 +229,13 @@ impl Arrange {
                 self.room_menu = None;
                 return self.move_to(room, section, context);
             }
+            Message::Tag(room, tag) => {
+                self.room_menu = None;
+                let Some(summary) = context.rooms.iter_mut().find(|r| r.id == room) else {
+                    return Task::none();
+                };
+                return self.set_tag(summary, tag, context.session);
+            }
             Message::NewCategory(room) => {
                 self.room_menu = None;
                 self.naming = Some(Naming {
@@ -346,31 +356,7 @@ impl Arrange {
                 tag => tag,
             },
         };
-        let mut tasks = Vec::new();
-        if tag != summary.tag {
-            self.pending_tags.insert(
-                room.clone(),
-                PendingTag {
-                    tag,
-                    previous: summary.tag,
-                    saved: None,
-                },
-            );
-            summary.tag = tag;
-            let (session, room) = (session.clone(), room.clone());
-            tasks.push(Task::perform(
-                {
-                    let room = room.clone();
-                    async move {
-                        session
-                            .set_room_tag(&room, tag)
-                            .await
-                            .map_err(|e| e.to_string())
-                    }
-                },
-                move |result| app::Message::Arrange(Message::TagSaved(room.clone(), result)),
-            ));
-        }
+        let mut tasks = vec![self.set_tag(summary, tag, session)];
         let layout = self.categories.layout(space.map(|s| s.as_ref()));
         if layout.category_of(&room).map(|c| &c.id) != category.as_ref() {
             let space = space.cloned();
@@ -380,6 +366,41 @@ impl Arrange {
             }));
         }
         Task::batch(tasks)
+    }
+
+    /// Tag a room here at once, and save it.
+    fn set_tag(
+        &mut self,
+        summary: &mut RoomSummary,
+        tag: RoomTag,
+        session: &Arc<Session>,
+    ) -> Task<app::Message> {
+        if tag == summary.tag {
+            return Task::none();
+        }
+        let room = summary.id.clone();
+        self.pending_tags.insert(
+            room.clone(),
+            PendingTag {
+                tag,
+                previous: summary.tag,
+                saved: None,
+            },
+        );
+        summary.tag = tag;
+        let session = session.clone();
+        Task::perform(
+            {
+                let room = room.clone();
+                async move {
+                    session
+                        .set_room_tag(&room, tag)
+                        .await
+                        .map_err(|e| e.to_string())
+                }
+            },
+            move |result| app::Message::Arrange(Message::TagSaved(room.clone(), result)),
+        )
     }
 
     /// Change the categories here at once, and save them.

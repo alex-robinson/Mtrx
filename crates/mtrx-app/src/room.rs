@@ -26,7 +26,6 @@ use crate::{
     app::Message,
     avatar::{self, Avatars, Shape},
     calls::{self, RoomCalls},
-    dialog::Kind,
     ellipsis::ellipsis,
     emoji, fonts, icons, info,
     math::{self, Math, Rendered},
@@ -66,8 +65,6 @@ pub struct Room {
     pub composer: text_editor::Content,
     pub later: SendLater,
     pub calls: RoomCalls,
-    /// The room menu (invite, edit, leave) is open.
-    pub menu: bool,
     pub compose: Compose,
     /// A sent or scheduled message being edited in place.
     pub editing: Option<InlineEdit>,
@@ -106,7 +103,6 @@ impl Room {
     pub fn new(id: OwnedRoomId, timeline: Arc<RoomTimeline>) -> Self {
         Self {
             calls: RoomCalls::new(id.clone()),
-            menu: false,
             compose: Compose::New,
             editing: None,
             picker: None,
@@ -332,7 +328,9 @@ impl Room {
         if !state.is_empty() {
             timeline = timeline.push(state_line(&state));
         }
-        let timeline = scrollable(timeline)
+        // Pegged to the bottom also when shorter than the view: new messages
+        // push older ones up, and loaded history appears above.
+        let timeline = scrollable(container(timeline).align_bottom(Length::Shrink))
             .anchor_bottom()
             .on_scroll(Message::Scrolled)
             .height(Length::Fill)
@@ -371,24 +369,53 @@ impl Room {
         });
         let composer = popover(composer, panel, Side::Above, Edge::Right)
             .on_dismiss(Message::ComposerEmoji(emoji::Message::Close));
-        let later = button(text("Send later…").size(13))
-            .padding([10, 12])
-            .style(style::secondary_button)
-            .on_press(Message::Later(send_later::Message::TogglePicker));
-
         let composer_empty = self.composer.text().trim().is_empty();
+        let send = button(text("Send").size(13))
+            .padding([10, 14])
+            .style(style::primary_button)
+            .on_press_maybe((!composer_empty).then_some(Message::Send));
+        // While open, a click on it closes the picker as any outside click.
+        let picking = self.later.picker.is_some() && self.later.rescheduling.is_none();
+        let later = tooltip(
+            button(icons::clock(18.0, |theme| {
+                theme
+                    .extended_palette()
+                    .background
+                    .base
+                    .text
+                    .scale_alpha(0.75)
+            }))
+            .padding([9, 9])
+            .style(style::secondary_button)
+            .on_press_maybe((!picking).then_some(Message::Later(send_later::Message::Open))),
+            container(text("Send later").size(12))
+                .padding(6)
+                .style(container::rounded_box),
+            tooltip::Position::Top,
+        );
+        let picker = if self.later.rescheduling.is_none() {
+            send_later::picker(&self.later, !composer_empty, scheduled.now)
+        } else {
+            None
+        };
+        let send = popover(
+            row![send, later].spacing(4),
+            picker,
+            Side::Above,
+            Edge::Right,
+        )
+        .on_dismiss(Message::Later(send_later::Message::Close));
+
         let mut bottom = column![]
             .spacing(6)
             .padding([8.0, TIMELINE_PADDING + MESSAGE_PADDING]);
         if !scheduled.messages.is_empty() {
             bottom = bottom.push(send_later::queue(
                 scheduled,
+                &self.later,
                 self.editing.as_ref(),
                 look.frequent_emoji,
             ));
-        }
-        if let Some(picker) = send_later::picker(&self.later, !composer_empty, scheduled.now) {
-            bottom = bottom.push(picker);
         }
         if let Some(typing) = actions::typing(&self.typing) {
             bottom = bottom.push(typing);
@@ -414,7 +441,7 @@ impl Room {
             tooltip::Position::Top,
         );
         bottom = bottom.push(
-            row![composer, attach, later]
+            row![composer, attach, send]
                 .spacing(8)
                 .align_y(Alignment::End),
         );
@@ -435,49 +462,6 @@ impl Room {
             None => main.into(),
         };
         column![header, body].into()
-    }
-
-    /// Invite, edit name and topic, leave.
-    fn menu_view<'a>(&self, summary: Option<&'a RoomSummary>) -> Element<'a, Message> {
-        let name = summary.map_or_else(String::new, |s| s.name.clone());
-        let item = |label, kind| {
-            button(text(label).size(13))
-                .padding([4, 10])
-                .style(style::secondary_button)
-                .on_press(Message::OpenDialog(kind))
-        };
-        container(
-            row![
-                item(
-                    "Invite people…",
-                    Kind::Invite {
-                        room: self.id.clone(),
-                        name: name.clone(),
-                    }
-                ),
-                item(
-                    "Name and topic…",
-                    Kind::Edit {
-                        room: self.id.clone(),
-                        name: name.clone(),
-                        topic: summary.and_then(|s| s.topic.clone()).unwrap_or_default(),
-                    }
-                ),
-                space::horizontal(),
-                item(
-                    "Leave room…",
-                    Kind::Leave {
-                        room: self.id.clone(),
-                        name,
-                    }
-                ),
-            ]
-            .spacing(6),
-        )
-        .padding([8, 12])
-        .width(Length::Fill)
-        .style(style::code_block)
-        .into()
     }
 
     /// Picture, name and topic, the call controls, and their panel when open.
@@ -527,21 +511,28 @@ impl Room {
                     .padding([5, 10])
                     .style(style::list_item(self.members.is_some()))
                     .on_press(Message::ToggleMembers),
-                button(text("⋯").size(16))
-                    .padding([2, 10])
-                    .style(style::list_item(self.menu))
-                    .on_press(Message::RoomMenu(!self.menu)),
+                tooltip(
+                    button(icons::gear(16.0, |theme| {
+                        theme
+                            .extended_palette()
+                            .background
+                            .base
+                            .text
+                            .scale_alpha(0.7)
+                    }))
+                    .padding([5, 8])
+                    .style(style::list_item(false))
+                    .on_press(Message::ShowInfo(info::Target::Room(self.id.clone()))),
+                    container(text("Settings").size(12))
+                        .padding(6)
+                        .style(container::rounded_box),
+                    tooltip::Position::Bottom,
+                ),
             ]
             .spacing(10)
             .align_y(Alignment::Center)
             .padding([8.0, TIMELINE_PADDING + MESSAGE_PADDING]),
         ];
-        if self.menu {
-            header = header.push(
-                container(self.menu_view(summary))
-                    .padding(Padding::from([0.0, TIMELINE_PADDING + MESSAGE_PADDING]).bottom(8.0)),
-            );
-        }
         if let Some(panel) = self.calls.panel(look.call_services) {
             header = header.push(
                 container(panel)
@@ -685,6 +676,13 @@ fn event_view<'a>(
     match &event.send_state {
         SendState::Sent => {}
         SendState::Sending => item = item.push(text("sending…").size(11).style(text::secondary)),
+        SendState::Waiting => {
+            item = item.push(
+                text("waiting for connection…")
+                    .size(11)
+                    .style(text::secondary),
+            )
+        }
         SendState::Failed(e) => {
             item = item.push(text(format!("not sent: {e}")).size(11).style(text::danger))
         }

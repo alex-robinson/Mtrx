@@ -12,8 +12,8 @@ use futures_util::StreamExt;
 use iced::Size;
 use iced_test::simulator::Simulator;
 use mtrx_core::{
-    EventContent, NewRoom, OwnedEventId, Permissions, Profile, RoomKind, RoomOrAliasId, RoomTag,
-    SecretStore, Section, SendState, Session, TimelineEntry,
+    Connection, EventContent, NewRoom, OwnedEventId, Permissions, Profile, RoomKind, RoomOrAliasId,
+    RoomTag, SecretStore, Section, SendState, Session, TimelineEntry,
     test_support::{PASSWORD, homeserver, register, unique_name},
 };
 use tempfile::TempDir;
@@ -810,9 +810,12 @@ async fn room_management_screens() {
     snapshot(
         &main_with(&|main| {
             main.add_menu = true;
-            main.room.as_mut().unwrap().menu = true;
         }),
         "menus",
+    );
+    snapshot(
+        &main_with(&|main| main.connection = Connection::Offline),
+        "offline",
     );
     snapshot(
         &main_with(&|main| {
@@ -852,7 +855,7 @@ async fn room_management_screens() {
     let contacts = session.contacts().await.unwrap();
     snapshot(
         &main_with(&|main| {
-            let mut card = info::Card::new(info::Target::User(bob_info.user.clone()));
+            let mut card = info::Card::new(info::Target::User(bob_info.user.clone()), &[]);
             card.update(info::Message::UserLoaded(
                 bob.user_id(),
                 Ok(bob_info.clone()),
@@ -862,11 +865,18 @@ async fn room_management_screens() {
         }),
         "info-user",
     );
+    let settings = session.room_settings(&room).await.unwrap();
     snapshot(
         &main_with(&|main| {
-            main.info = Some(info::Card::new(info::Target::Room(room.clone())));
+            let mut card = info::Card::new(info::Target::Room(room.clone()), &main.rooms.rooms);
+            card.update(info::Message::SettingsLoaded(
+                room.clone(),
+                Ok(settings.clone()),
+            ));
+            card.update(info::Message::Topic("Ice sheet runs, weekly".into()));
+            main.info = Some(card);
         }),
-        "info-room",
+        "room-settings",
     );
     snapshot(
         &main_with(&|main| {

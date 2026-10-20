@@ -174,3 +174,91 @@ where
         Element::new(ellipsis)
     }
 }
+
+/// `text` followed by `after` (a count, say), with `text` shortened to
+/// leave room for it: `after` stays right next to the text however long
+/// it is. Fills the width given.
+pub fn followed_by<'a, Message: 'a>(
+    text: Ellipsis<'a>,
+    after: impl Into<Element<'a, Message>>,
+    spacing: f32,
+) -> Element<'a, Message> {
+    Element::new(FollowedBy {
+        text: text.into(),
+        after: after.into(),
+        spacing,
+    })
+}
+
+struct FollowedBy<'a, Message> {
+    text: Element<'a, Message>,
+    after: Element<'a, Message>,
+    spacing: f32,
+}
+
+impl<Message> Widget<Message, Theme, iced::Renderer> for FollowedBy<'_, Message> {
+    fn children(&self) -> Vec<Tree> {
+        vec![Tree::new(&self.text), Tree::new(&self.after)]
+    }
+
+    fn diff(&self, tree: &mut Tree) {
+        tree.diff_children(&[self.text.as_widget(), self.after.as_widget()]);
+    }
+
+    fn size(&self) -> Size<Length> {
+        Size::new(Length::Fill, Length::Shrink)
+    }
+
+    fn layout(
+        &mut self,
+        tree: &mut Tree,
+        renderer: &iced::Renderer,
+        limits: &layout::Limits,
+    ) -> layout::Node {
+        let max = limits.max();
+        let after = self.after.as_widget_mut().layout(
+            &mut tree.children[1],
+            renderer,
+            &layout::Limits::new(Size::ZERO, max),
+        );
+        let room = (max.width - after.size().width - self.spacing).max(0.0);
+        let text = self.text.as_widget_mut().layout(
+            &mut tree.children[0],
+            renderer,
+            &layout::Limits::new(Size::ZERO, Size::new(room, max.height)),
+        );
+        let height = text.size().height.max(after.size().height);
+        let text_size = text.size();
+        let after_size = after.size();
+        let text = text.move_to((0.0, (height - text_size.height) / 2.0));
+        let after = after.move_to((
+            text_size.width + self.spacing,
+            (height - after_size.height) / 2.0,
+        ));
+        layout::Node::with_children(
+            limits.resolve(Length::Fill, Length::Shrink, Size::new(max.width, height)),
+            vec![text, after],
+        )
+    }
+
+    fn draw(
+        &self,
+        tree: &Tree,
+        renderer: &mut iced::Renderer,
+        theme: &Theme,
+        style: &renderer::Style,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+        viewport: &Rectangle,
+    ) {
+        for ((child, state), layout) in [&self.text, &self.after]
+            .into_iter()
+            .zip(&tree.children)
+            .zip(layout.children())
+        {
+            child
+                .as_widget()
+                .draw(state, renderer, theme, style, layout, cursor, viewport);
+        }
+    }
+}

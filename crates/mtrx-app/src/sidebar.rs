@@ -19,7 +19,7 @@ use crate::{
     arrange::{self, Arrange, NAME_INPUT},
     avatar::{Avatars, Shape},
     dialog::Kind,
-    ellipsis::ellipsis,
+    ellipsis::{ellipsis, followed_by},
     fonts, icons, info,
     style::{self, ROOM_AVATAR, ROOM_LIST_WIDTH, ROOM_ROW, SPACE_AVATAR, SPACE_BAR_WIDTH},
 };
@@ -518,16 +518,18 @@ fn menu<'a>(items: Vec<(String, Message)>) -> Element<'a, Message> {
         .into()
 }
 
-/// Favourite, low priority and categories for a room.
+/// Settings, low priority and categories for a room (the star next to the
+/// menu makes it a favourite).
 fn room_menu<'a>(room: &RoomSummary, layout: &Layout, grouping: &Grouping) -> Element<'a, Message> {
     let move_to = |section| arrange_message(arrange::Message::MoveTo(room.id.clone(), section));
-    let mut items = vec![("Info".to_owned(), Message::ShowInfo(info::target_of(room)))];
-    if grouping.favourites {
-        items.push(match room.tag {
-            RoomTag::Favourite => ("Remove from favourites".into(), move_to(Section::Rooms)),
-            _ => ("Favourite".into(), move_to(Section::Favourites)),
-        });
+    let mut items = Vec::new();
+    if room.kind == RoomKind::Direct {
+        items.push(("Info".to_owned(), Message::ShowInfo(info::target_of(room))));
     }
+    items.push((
+        "Settings".to_owned(),
+        Message::ShowInfo(info::Target::Room(room.id.clone())),
+    ));
     if grouping.low_priority {
         items.push(match room.tag {
             RoomTag::LowPriority => ("Remove from low priority".into(), move_to(Section::Rooms)),
@@ -663,6 +665,10 @@ fn add_menu_view<'a>(space: Option<(OwnedRoomId, String)>) -> Element<'a, Messag
                     name: name.clone(),
                 },
             ))
+            .push(item(
+                "Space settings…".into(),
+                Message::ShowInfo(info::Target::Room(id.clone())),
+            ))
             .push(dialog(
                 "Leave the space…".into(),
                 Kind::Leave { room: id, name },
@@ -737,29 +743,27 @@ impl<'a> RoomListView<'a> {
             ROOM_AVATAR,
             Shape::Circle,
         );
-        let name = ellipsis(&room.name).size(14).font(font).width(Length::Fill);
+        let name = ellipsis(&room.name).size(14).font(font);
+        // Right after the name, so nothing moves when the star and menu
+        // show on hover.
+        let name = match unread_count(room) {
+            Some(count) => followed_by(name, count, 6.0),
+            None => name.width(Length::Fill).into(),
+        };
         let mut line = row![avatar, name].spacing(8).align_y(Alignment::Center);
         if let Some(later) = Later::of(self.scheduled, &room.id) {
             line = line.push(later.view());
-        }
-        if room.unread_mentions > 0 || room.unread_messages > 0 {
-            let highlight = room.unread_mentions > 0;
-            let count = if highlight {
-                room.unread_mentions
-            } else {
-                room.unread_messages
-            };
-            line = line.push(
-                container(text(count.to_string()).size(11).font(fonts::SEMIBOLD))
-                    .padding([1, 6])
-                    .style(move |t| style::badge(t, highlight)),
-            );
         }
         let menu = arrange_message(arrange::Message::RoomMenu(
             (!menu_open).then(|| room.id.clone()),
         ));
         let dragging = self.arrange.dragging().is_some();
-        if (hovered || menu_open) && !room.invited && !dragging {
+        let actions = (hovered || menu_open) && !room.invited && !dragging;
+        let favourite = room.tag == RoomTag::Favourite;
+        if favourite || actions {
+            line = line.push(star_button(&room.id, favourite));
+        }
+        if actions {
             line = line.push(
                 button(text("⋯").size(13))
                     .padding([0, 4])
@@ -780,6 +784,58 @@ impl<'a> RoomListView<'a> {
         }
         area.into()
     }
+}
+
+/// Unread messages, in red when they mention the user.
+fn unread_count<'a>(room: &RoomSummary) -> Option<Element<'a, Message>> {
+    let highlight = room.unread_mentions > 0;
+    let count = if highlight {
+        room.unread_mentions
+    } else {
+        room.unread_messages
+    };
+    (count > 0).then(|| {
+        container(text(count.to_string()).size(11).font(fonts::SEMIBOLD))
+            .padding([1, 6])
+            .style(move |t| style::badge(t, highlight))
+            .into()
+    })
+}
+
+/// A gold star on favourites; an outline making a room one.
+pub fn star_button<'a>(room: &OwnedRoomId, favourite: bool) -> Element<'a, Message> {
+    let tag = if favourite {
+        RoomTag::None
+    } else {
+        RoomTag::Favourite
+    };
+    star_for(
+        arrange_message(arrange::Message::Tag(room.clone(), tag)),
+        favourite,
+    )
+}
+
+/// A star sending `message` when clicked.
+pub fn star_for<'a>(message: Message, favourite: bool) -> Element<'a, Message> {
+    let tip = if favourite {
+        "Remove from favourites"
+    } else {
+        "Favourite"
+    };
+    with_tooltip(
+        button(icons::star(14.0, favourite, |theme| {
+            theme
+                .extended_palette()
+                .background
+                .base
+                .text
+                .scale_alpha(0.55)
+        }))
+        .padding([2, 3])
+        .style(style::list_item(false))
+        .on_press(message),
+        tip.to_owned(),
+    )
 }
 
 fn with_tooltip<'a>(content: impl Into<Element<'a, Message>>, tip: String) -> Element<'a, Message> {

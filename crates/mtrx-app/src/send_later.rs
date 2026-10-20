@@ -1,6 +1,7 @@
 //! Send later: the bar of scheduled messages above the composer, and the
 //! picker for a message's send time: quick picks, a calendar and hour and
-//! minute wheels.
+//! minute wheels, floating above the clock next to Send (or above the
+//! scheduled message getting a new time).
 
 use std::time::{Duration, SystemTime};
 
@@ -15,7 +16,9 @@ use mtrx_core::{ScheduledMessage, describe_send_time, parse_send_time};
 
 use crate::{
     actions::{Editing, InlineEdit},
-    app, fonts, style,
+    app, fonts,
+    popover::{Edge, Side, popover},
+    style,
 };
 
 /// The wheels' scrollables, to bring the picked hour and minute into view.
@@ -29,7 +32,9 @@ const DAY_CELL: f32 = 32.0;
 
 #[derive(Debug, Clone)]
 pub enum Message {
-    TogglePicker,
+    /// Pick a time for the composer's text.
+    Open,
+    Close,
     /// Show the month this many months away.
     Month(i32),
     Day(NaiveDate),
@@ -250,13 +255,22 @@ pub struct Pending<'a> {
 /// editor.
 pub fn queue<'a>(
     pending: &Pending<'a>,
+    later: &'a SendLater,
     editing: Option<&'a InlineEdit>,
     frequent_emoji: &[String],
 ) -> Element<'a, app::Message> {
     let (messages, now) = (&pending.messages, pending.now);
     column(messages.iter().map(|message| {
         let edit = editing.filter(|e| e.target == Editing::Scheduled(message.id.clone()));
-        item(message, edit, frequent_emoji, now)
+        let item = item(message, edit, frequent_emoji, now);
+        let picking = later
+            .rescheduling
+            .as_ref()
+            .is_some_and(|m| m.id == message.id);
+        let picker = picking.then(|| picker(later, true, now)).flatten();
+        popover(item, picker, Side::Above, Edge::Right)
+            .on_dismiss(app::Message::Later(Message::Close))
+            .into()
     }))
     .spacing(4)
     .into()
@@ -340,7 +354,8 @@ fn item<'a>(
 }
 
 /// The time picker: quick picks on the left; the calendar and wheels on
-/// the right, with the picked time and Schedule below them.
+/// the right, with the picked time and Schedule below them. Only as wide
+/// as needed: it floats over the room.
 pub fn picker<'a>(
     state: &'a SendLater,
     can_schedule: bool,
@@ -431,7 +446,7 @@ pub fn picker<'a>(
             button(text("Close").size(13))
                 .padding([5, 12])
                 .style(style::text_button)
-                .on_press(app::Message::Later(Message::TogglePicker)),
+                .on_press(app::Message::Later(Message::Close)),
         ]
         .spacing(8)
         .align_y(Alignment::Center),
@@ -439,20 +454,10 @@ pub fn picker<'a>(
     .spacing(10)
     .width(Length::Shrink);
 
-    let content = row![
-        space::horizontal(),
-        container(quick_picks).center_y(Length::Fill),
-        chosen,
-    ]
-    .spacing(24)
-    .height(Length::Shrink);
-    Some(
-        container(content)
-            .padding(12)
-            .width(Length::Fill)
-            .style(|theme| item_style(theme, Kind::Picker))
-            .into(),
-    )
+    let content = row![container(quick_picks).center_y(Length::Shrink), chosen]
+        .spacing(24)
+        .align_y(Alignment::Center);
+    Some(container(content).padding(12).style(style::toolbar).into())
 }
 
 /// "in 5 min", "in 2 h 10 min", "in 3 days".
@@ -479,14 +484,13 @@ enum Kind {
     Waiting,
     Editing,
     Overdue,
-    Picker,
 }
 
 /// Colour hints: neutral while waiting, accent while edited, warning when overdue.
 fn item_style(theme: &Theme, kind: Kind) -> container::Style {
     let palette = theme.extended_palette();
     let (background, edge, text_color) = match kind {
-        Kind::Waiting | Kind::Picker => (
+        Kind::Waiting => (
             palette.background.weak.color,
             palette.background.strong.color,
             None,

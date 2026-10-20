@@ -323,3 +323,72 @@ impl<M> canvas::Program<M> for Smiley {
         vec![frame.into_geometry()]
     }
 }
+
+/// A five-pointed star: filled in gold, or an outline in `color`.
+pub fn star<'a, M: 'a>(size: f32, filled: bool, color: fn(&Theme) -> Color) -> Element<'a, M> {
+    canvas::Canvas::new(Star { filled, color })
+        .width(size)
+        .height(size)
+        .into()
+}
+
+/// The filled star's colour.
+pub const GOLD: Color = Color::from_rgb(0.96, 0.72, 0.05);
+
+struct Star {
+    filled: bool,
+    color: fn(&Theme) -> Color,
+}
+
+impl<M> canvas::Program<M> for Star {
+    type State = ();
+
+    fn draw(
+        &self,
+        _state: &(),
+        renderer: &Renderer,
+        theme: &Theme,
+        bounds: Rectangle,
+        _cursor: mouse::Cursor,
+    ) -> Vec<Geometry> {
+        let mut frame = Frame::new(renderer, bounds.size());
+        let width = (bounds.width / 12.0).max(1.0);
+        let outer = bounds.width / 2.0 - width;
+        let inner = outer * 0.45;
+        // A little below the middle: the star's points reach higher than
+        // its base.
+        let center = frame.center() + Vector::new(0.0, outer * 0.08);
+        let star = Path::new(|path| {
+            for i in 0..10 {
+                let radius = if i % 2 == 0 { outer } else { inner };
+                let angle = std::f32::consts::PI / 5.0 * i as f32 - FRAC_PI_2;
+                let point = center + Vector::new(angle.cos(), angle.sin()) * radius;
+                if i == 0 {
+                    path.move_to(point);
+                } else {
+                    path.line_to(point);
+                }
+            }
+            path.close();
+        });
+        if self.filled {
+            frame.fill(&star, GOLD);
+            frame.stroke(
+                &star,
+                Stroke::default()
+                    .with_color(GOLD)
+                    .with_width(width)
+                    .with_line_join(canvas::LineJoin::Round),
+            );
+        } else {
+            frame.stroke(
+                &star,
+                Stroke::default()
+                    .with_color((self.color)(theme))
+                    .with_width(width)
+                    .with_line_join(canvas::LineJoin::Round),
+            );
+        }
+        vec![frame.into_geometry()]
+    }
+}

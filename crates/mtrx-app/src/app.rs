@@ -19,9 +19,10 @@ use iced::{
     window,
 };
 use mtrx_core::{
-    CallService, Contact, Google, Grouping, Media, MediaRef, Member, Notification, OwnedMxcUri,
-    OwnedRoomId, OwnedUserId, Profile, RecoveryStep, RoomList, RoomListState, RoomOrAliasId,
-    RoomTimeline, ScheduledMessage, SecretStore, ServiceKind, Session, TimelineEntry, Url,
+    CallService, Connection, Contact, Google, Grouping, Media, MediaRef, Member, Notification,
+    OwnedMxcUri, OwnedRoomId, OwnedUserId, Profile, RecoveryStep, RoomList, RoomListState,
+    RoomOrAliasId, RoomTag, RoomTimeline, ScheduledMessage, SecretStore, ServiceKind, Session,
+    TimelineEntry, Url,
 };
 
 use crate::{
@@ -95,7 +96,6 @@ pub enum Message {
     ShowSettings(bool),
     Settings(settings::Message),
     AddMenu(bool),
-    RoomMenu(bool),
     OpenDialog(dialog::Kind),
     Dialog(dialog::Message),
     /// Accept (`true`) or decline an invite.
@@ -148,8 +148,15 @@ pub enum Message {
     /// Show who someone is or what a room is.
     ShowInfo(info::Target),
     Info(info::Message),
-    /// Reload the open room's timeline (⌘R / Ctrl+R).
+    /// Star the direct chat with someone, starting it if there is none.
+    FavouritePerson(OwnedUserId),
+    /// Reload the open room's timeline (⌘R / Ctrl+R); while offline, try
+    /// the server now.
     Reload,
+    /// The server became reachable or not.
+    Connection(Connection),
+    /// Try the server now.
+    Reconnect,
     Reloaded(OwnedRoomId, Result<Shared<RoomTimeline>, String>),
     /// People the user knows, for suggestions.
     ContactsLoaded(Vec<Contact>),
@@ -231,6 +238,7 @@ struct Main {
     /// The emoji the user reacts with, most used first; refreshed when a
     /// reaction picker opens.
     frequent_emoji: Vec<String>,
+    connection: Connection,
 }
 
 struct Notice {
@@ -256,6 +264,7 @@ impl Main {
             info: None,
             contacts: Vec::new(),
             frequent_emoji: Vec::new(),
+            connection: session.connection(),
             now: SystemTime::now(),
             session,
             error: None,
@@ -590,6 +599,8 @@ impl App {
                             room.show_more();
                             more = fill(room);
                         }
+                        // Loaded once the server is back.
+                        Err(_) if main.connection == Connection::Offline => {}
                         Err(e) => room.error = Some(e),
                     }
                 }
@@ -632,15 +643,16 @@ impl App {
                 room.composer = text_editor::Content::new();
                 room.error = None;
                 let (id, timeline) = (room.id.clone(), room.timeline.clone());
-                // Queue only: the local echo shows the send state.
+                // Queue only: the local echo shows the send state. Queued
+                // first, so it shows before the server hears of anything.
                 Task::perform(
                     async move {
-                        let text = text.trim_end();
-                        let _ = timeline.typing(false).await;
-                        timeline
-                            .send_markdown(text, compose.reply_to().map(|id| &**id))
+                        let sent = timeline
+                            .send_markdown(text.trim_end(), compose.reply_to().map(|id| &**id))
                             .await
-                            .map(|_| ())
+                            .map(|_| ());
+                        let _ = timeline.typing(false).await;
+                        sent
                     },
                     move |result| Message::Sent(id.clone(), result.map_err(|e| e.to_string())),
                 )
@@ -677,14 +689,6 @@ impl App {
                 }
                 Task::none()
             }
-            Message::RoomMenu(open) => {
-                if let Screen::Main(main) = &mut self.screen
-                    && let Some(room) = &mut main.room
-                {
-                    room.menu = open;
-                }
-                Task::none()
-            }
             Message::OpenDialog(kind) => {
                 self.settings_panel = None;
                 let Screen::Main(main) = &mut self.screen else {
@@ -692,9 +696,6 @@ impl App {
                 };
                 main.add_menu = false;
                 main.info = None;
-                if let Some(room) = &mut main.room {
-                    room.menu = false;
-                }
                 let near = near_spaces(&kind, &main.rooms.rooms, main.space.as_ref());
                 let mut dialog = Dialog::new(kind);
                 if !dialog.picks_people() {
@@ -772,10 +773,7 @@ impl App {
                 };
                 main.arrange.escape();
                 main.add_menu = false;
-                if let Some(room) = &mut main.room {
-                    room.menu = false;
-                }
-                let card = info::Card::new(target);
+                let card = info::Card::new(target, &main.rooms.rooms);
                 let load = match card.user() {
                     Some(user) => {
                         let (session, user) = (main.session.clone(), user.clone());
@@ -789,7 +787,9 @@ impl App {
                             },
                         )
                     }
-                    None => Task::none(),
+                    None => card
+                        .room()
+                        .map_or_else(Task::none, |room| load_settings(&main.session, room)),
                 };
                 main.info = Some(card);
                 Task::batch([load, self.load_avatars()])
@@ -798,23 +798,91 @@ impl App {
                 let Screen::Main(main) = &mut self.screen else {
                     return Task::none();
                 };
-                let copy = match &message {
-                    info::Message::Close => {
+                let Some(card) = &mut main.info else {
+                    return Task::none();
+                };
+                let session = main.session.clone();
+                let room = card.room().cloned();
+                let saved = |result: mtrx_core::Result<()>| {
+                    Message::Info(info::Message::Saved(result.map_err(|e| e.to_string())))
+                };
+                let task = match (&message, room) {
+                    (info::Message::Close, _) => {
                         main.info = None;
                         return Task::none();
                     }
-                    info::Message::Copy(text) => iced::clipboard::write(text.clone()),
-                    info::Message::UserLoaded(..) => Task::none(),
+                    (info::Message::Copy(text), _) => iced::clipboard::write(text.clone()),
+                    (info::Message::SaveDetails, Some(room)) => {
+                        let Some(summary) = main.rooms.rooms.iter().find(|r| r.id == room) else {
+                            return Task::none();
+                        };
+                        let (name, topic) = card.changed_details(summary);
+                        Task::perform(
+                            async move {
+                                if let Some(name) = name {
+                                    session.set_room_name(&room, &name).await?;
+                                }
+                                if let Some(topic) = topic {
+                                    session.set_room_topic(&room, &topic).await?;
+                                }
+                                Ok(())
+                            },
+                            saved,
+                        )
+                    }
+                    (info::Message::Notify(mode), Some(room)) => {
+                        let mode = *mode;
+                        Task::perform(
+                            async move { session.set_notify_mode(&room, mode).await },
+                            saved,
+                        )
+                    }
+                    (info::Message::ChangePicture, Some(room)) => Task::perform(
+                        async move {
+                            let Some(file) = rfd::AsyncFileDialog::new()
+                                .set_title("Room picture")
+                                .add_filter("Images", &["png", "jpg", "jpeg", "gif", "webp"])
+                                .pick_file()
+                                .await
+                            else {
+                                return Ok(());
+                            };
+                            session.set_room_picture(&room, file.path()).await
+                        },
+                        saved,
+                    ),
+                    (info::Message::RemovePicture, Some(room)) => Task::perform(
+                        async move { session.remove_room_picture(&room).await },
+                        saved,
+                    ),
+                    // What was saved, or the settings as they are after a failure.
+                    (info::Message::Saved(_), Some(room)) => load_settings(&session, &room),
+                    _ => Task::none(),
                 };
-                if let Some(card) = &mut main.info {
-                    card.update(message);
-                }
-                Task::batch([copy, self.load_avatars()])
+                card.update(message);
+                Task::batch([task, self.load_avatars()])
+            }
+            Message::FavouritePerson(user) => {
+                let Screen::Main(main) = &self.screen else {
+                    return Task::none();
+                };
+                let session = main.session.clone();
+                Task::future(async move {
+                    let room = session.direct_chat(&user).await?;
+                    session.set_room_tag(&room, RoomTag::Favourite).await
+                })
+                .then(|result| match result {
+                    Ok(()) => Task::none(),
+                    Err(e) => Task::done(Message::ArrangeFailed(e.to_string())),
+                })
             }
             Message::Reload => {
                 let Screen::Main(main) = &mut self.screen else {
                     return Task::none();
                 };
+                if main.connection == Connection::Offline {
+                    return self.update(Message::Reconnect);
+                }
                 let Some(room) = &mut main.room else {
                     return Task::none();
                 };
@@ -827,6 +895,26 @@ impl App {
                     },
                     |(id, result)| Message::Reloaded(id, result),
                 )
+            }
+            Message::Connection(connection) => {
+                let Screen::Main(main) = &mut self.screen else {
+                    return Task::none();
+                };
+                let back =
+                    main.connection == Connection::Offline && connection == Connection::Online;
+                main.connection = connection;
+                // History that could not load while offline.
+                match main.room.as_mut() {
+                    Some(room) if back => fill(room),
+                    _ => Task::none(),
+                }
+            }
+            Message::Reconnect => {
+                let Screen::Main(main) = &self.screen else {
+                    return Task::none();
+                };
+                let session = main.session.clone();
+                Task::future(async move { session.reconnect().await }).discard()
             }
             Message::Reloaded(id, result) => {
                 let Screen::Main(main) = &mut self.screen else {
@@ -945,6 +1033,10 @@ impl App {
                         edit.emoji = None;
                     } else if let Some(room) = main.room.as_mut().filter(|r| r.editing.is_some()) {
                         room.editing = None;
+                    } else if let Some(room) =
+                        main.room.as_mut().filter(|r| r.later.picker.is_some())
+                    {
+                        room.later = Default::default();
                     } else if let Some(room) = main.room.as_mut().filter(|r| r.picker.is_some()) {
                         room.picker = None;
                         room.emoji = None;
@@ -1715,12 +1807,12 @@ impl App {
             Message::Later(Later::Done(result.map_err(|e| e.to_string())))
         };
         match message {
-            Later::TogglePicker => {
-                let open = room.later.picker.is_some() && room.later.rescheduling.is_none();
+            Later::Close => {
                 room.later = Default::default();
-                if open {
-                    return Task::none();
-                }
+                Task::none()
+            }
+            Later::Open => {
+                room.composer_emoji = None;
                 let picker = send_later::Picker::new(SystemTime::now(), None);
                 let scroll = picker.scroll();
                 room.later.picker = Some(picker);
@@ -1892,6 +1984,10 @@ impl App {
             );
             subscriptions.push(iced::event::listen_with(shortcuts));
             subscriptions.push(
+                Subscription::run_with(Shared(main.session.clone()), |s| s.0.connection_updates())
+                    .map(Message::Connection),
+            );
+            subscriptions.push(
                 Subscription::run_with(Shared(main.session.clone()), |s| {
                     s.0.room_categories_updates()
                 })
@@ -2040,9 +2136,13 @@ impl App {
         content = content.push(room_view);
 
         let main_row = row![space_bar, room_list, content.width(Length::Fill)];
+        let window: Element<'a, Message> = match main.connection {
+            Connection::Online => main_row.into(),
+            Connection::Offline => column![main_row, offline_bar()].into(),
+        };
         match sidebar::drag_preview(rooms, &main.arrange, &main.avatars) {
-            Some(preview) => stack![main_row, preview].into(),
-            None => main_row.into(),
+            Some(preview) => stack![window, preview].into(),
+            None => window,
         }
     }
 }
@@ -2144,6 +2244,30 @@ fn overdue_banner(main: &Main) -> Option<Element<'_, Message>> {
 }
 
 /// Something finished in the background, or failed.
+/// Along the bottom, near the composer, while the server is unreachable.
+fn offline_bar<'a>() -> Element<'a, Message> {
+    container(
+        row![
+            text("Offline – reconnecting…")
+                .size(13)
+                .font(crate::fonts::SEMIBOLD),
+            text("Messages are sent once the server is back.")
+                .size(13)
+                .width(Length::Fill),
+            button(text("Retry now").size(13))
+                .padding([3, 10])
+                .style(style::secondary_button)
+                .on_press(Message::Reconnect),
+        ]
+        .spacing(10)
+        .align_y(iced::Alignment::Center),
+    )
+    .padding([6, 16])
+    .width(Length::Fill)
+    .style(style::offline_bar)
+    .into()
+}
+
 fn notice_bar(notice: &Notice) -> Element<'_, Message> {
     let mut bar = row![
         text(&notice.text)
@@ -2231,15 +2355,6 @@ async fn run_request(
             Request::Invite(room, people) => {
                 for person in &people {
                     session.invite(&room, person).await?;
-                }
-                Opened::Nothing
-            }
-            Request::Edit { room, name, topic } => {
-                if let Some(name) = name {
-                    session.set_room_name(&room, &name).await?;
-                }
-                if let Some(topic) = topic {
-                    session.set_room_topic(&room, &topic).await?;
                 }
                 Opened::Nothing
             }
@@ -2373,6 +2488,22 @@ fn paginate(room: &mut Room) -> Task<Message> {
     Task::perform(
         async move { timeline.paginate_back(30).await.map(|_| ()) },
         move |result| Message::Paginated(id.clone(), result.map_err(|e| e.to_string())),
+    )
+}
+
+fn load_settings(session: &Arc<Session>, room: &OwnedRoomId) -> Task<Message> {
+    let (session, room) = (session.clone(), room.clone());
+    Task::perform(
+        {
+            let room = room.clone();
+            async move {
+                session
+                    .room_settings(&room)
+                    .await
+                    .map_err(|e| e.to_string())
+            }
+        },
+        move |result| Message::Info(info::Message::SettingsLoaded(room.clone(), result)),
     )
 }
 

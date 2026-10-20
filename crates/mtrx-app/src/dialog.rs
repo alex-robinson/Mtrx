@@ -1,5 +1,5 @@
 //! Dialogs for managing rooms: create a room, space or direct chat, join,
-//! invite, edit name and topic, add rooms to a space, leave.
+//! invite, add rooms to a space, leave.
 
 use std::time::{Duration, Instant};
 
@@ -27,11 +27,6 @@ pub enum Kind {
     Invite {
         room: OwnedRoomId,
         name: String,
-    },
-    Edit {
-        room: OwnedRoomId,
-        name: String,
-        topic: String,
     },
     AddExisting {
         space: OwnedRoomId,
@@ -94,11 +89,6 @@ pub enum Request {
     DirectChat(OwnedUserId),
     Join(String),
     Invite(OwnedRoomId, Vec<OwnedUserId>),
-    Edit {
-        room: OwnedRoomId,
-        name: Option<String>,
-        topic: Option<String>,
-    },
     AddToSpace(OwnedRoomId, Vec<OwnedRoomId>),
     Leave(OwnedRoomId),
     SignOut,
@@ -136,14 +126,10 @@ const SLOW: Duration = Duration::from_secs(15);
 
 impl Dialog {
     pub fn new(kind: Kind) -> Self {
-        let (name, topic) = match &kind {
-            Kind::Edit { name, topic, .. } => (name.clone(), topic.clone()),
-            _ => Default::default(),
-        };
         Self {
             kind,
-            name,
-            topic,
+            name: String::new(),
+            topic: String::new(),
             encrypted: true,
             moderated: false,
             address: String::new(),
@@ -261,7 +247,6 @@ impl Dialog {
                 format!("Invites to {name} sent."),
                 format!("Could not invite everyone to {name}"),
             ),
-            Kind::Edit { .. } => ("Name and topic saved.".into(), "Could not save".into()),
             Kind::AddExisting { name, .. } => (
                 format!("Rooms added to {name}."),
                 format!("Could not add all rooms to {name}"),
@@ -282,7 +267,6 @@ impl Dialog {
             Kind::DirectChat => "Starting the chat…",
             Kind::Join => "Joining…",
             Kind::Invite { .. } => "Sending the invites…",
-            Kind::Edit { .. } => "Saving…",
             Kind::AddExisting { .. } => "Adding the rooms…",
             Kind::Leave { .. } => "Leaving…",
             Kind::SignOut => "Signing out…",
@@ -410,15 +394,6 @@ impl Dialog {
                 }
                 Request::Invite(room.clone(), people)
             }
-            Kind::Edit {
-                room,
-                name: old_name,
-                topic: old_topic,
-            } => Request::Edit {
-                room: room.clone(),
-                name: (name != old_name.trim() && !name.is_empty()).then(|| name.to_owned()),
-                topic: (topic != old_topic.trim()).then(|| topic.to_owned()),
-            },
             Kind::AddExisting { space, .. } if !self.rooms.is_empty() => {
                 Request::AddToSpace(space.clone(), self.rooms.clone())
             }
@@ -447,7 +422,6 @@ impl Dialog {
             Kind::DirectChat => ("New direct chat".into(), "Start chat"),
             Kind::Join => ("Join a room".into(), "Join"),
             Kind::Invite { name, .. } => (format!("Invite to {name}"), "Invite"),
-            Kind::Edit { .. } => ("Name and topic".into(), "Save"),
             Kind::AddExisting { name, .. } => (format!("Add rooms to {name}"), "Add"),
             Kind::Leave { name, .. } => (format!("Leave {name}?"), "Leave"),
             Kind::SignOut => ("Sign out?".into(), "Sign out"),
@@ -491,9 +465,6 @@ impl Dialog {
                 ]
                 .spacing(4),
             ),
-            Kind::Edit { .. } => body
-                .push(self.field("Name", &self.name, Message::Name))
-                .push(self.field("Topic", &self.topic, Message::Topic)),
             Kind::AddExisting { space, .. } => body.push(self.rooms_view(space, rooms)),
             Kind::Leave { .. } => body.push(
                 text("You can only come back if the room is public or someone invites you.")
