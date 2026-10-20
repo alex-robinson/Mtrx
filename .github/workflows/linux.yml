@@ -87,7 +87,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            pkg-config libxkbcommon-dev dpkg-dev file desktop-file-utils
+            pkg-config libxkbcommon-dev dpkg-dev file desktop-file-utils \
+            xvfb x11-utils imagemagick mesa-vulkan-drivers libvulkan1 libegl1 libgl1-mesa-dri
       - name: appimagetool
         run: |
           sudo curl -fsSL -o /usr/local/bin/appimagetool \
@@ -107,6 +108,24 @@ jobs:
           test -x /usr/bin/mtrx-app
           cd "$RUNNER_TEMP" && "$GITHUB_WORKSPACE"/target/bundle/Mtrx-linux-x86_64.AppImage --appimage-extract >/dev/null
           ls -la squashfs-root squashfs-root/usr/bin
+      - name: Start the AppImage (X11, no Secret Service)
+        # The window class is the app id, and the sign-in screen says that
+        # there is no keyring. Screenshot as an artifact.
+        env:
+          DBUS_SESSION_BUS_ADDRESS: unix:path=/nonexistent
+          DISPLAY: ":99"
+        run: |
+          export MTRX_DATA_DIR="$RUNNER_TEMP/mtrx-data"
+          Xvfb :99 -screen 0 1280x860x24 &
+          sleep 2
+          target/bundle/Mtrx-linux-x86_64.AppImage &
+          app=$!
+          for _ in $(seq 60); do xprop -name Mtrx WM_CLASS 2>/dev/null && break; sleep 1; done
+          xprop -name Mtrx WM_CLASS | grep -F '"org.mtrx.Mtrx", "org.mtrx.Mtrx"'
+          sleep 5
+          mkdir -p target/smoke
+          import -window root target/smoke/appimage-x11-no-keyring.png
+          kill "$app"
       - uses: actions/upload-artifact@v4
         with:
           name: linux-packages
@@ -114,3 +133,9 @@ jobs:
             target/bundle/*.AppImage
             target/bundle/*.deb
           if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: linux-smoke
+          path: target/smoke
+          if-no-files-found: ignore
