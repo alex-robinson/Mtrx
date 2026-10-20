@@ -33,6 +33,10 @@ pub enum Message {
     EditSaved(Result<(), String>),
     /// All emoji in the reaction picker.
     Emoji(emoji::Message),
+    /// The emoji panel of the message being edited.
+    EditEmoji(emoji::Message),
+    /// Put an emoji into the message being edited.
+    EditInsertEmoji(String),
     /// Ask before deleting a timeline row's message.
     AskDelete(String),
     Delete(EventKey),
@@ -126,6 +130,8 @@ const EDITOR: &str = "inline-edit";
 pub struct InlineEdit {
     pub target: Editing,
     content: text_editor::Content,
+    /// Its emoji panel, while shown.
+    pub emoji: Option<emoji::Panel>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -139,7 +145,15 @@ impl InlineEdit {
     pub fn new(target: Editing, text: &str) -> Self {
         let mut content = text_editor::Content::with_text(text);
         content.perform(text_editor::Action::Move(text_editor::Motion::DocumentEnd));
-        Self { target, content }
+        Self {
+            target,
+            content,
+            emoji: None,
+        }
+    }
+
+    pub fn insert_emoji(&mut self, emoji: &str) {
+        emoji::insert(&mut self.content, emoji);
     }
 
     /// Put the cursor into the editor.
@@ -155,8 +169,8 @@ impl InlineEdit {
         self.content.text().trim_end().to_owned()
     }
 
-    /// The editor, with Save and Cancel; Enter saves, Esc cancels.
-    pub fn view<'a>(&'a self) -> Element<'a, app::Message> {
+    /// The editor, with emoji, Save and Cancel; Enter saves, Esc cancels.
+    pub fn view<'a>(&'a self, frequent: &[String]) -> Element<'a, app::Message> {
         let editor = text_editor(&self.content)
             .id(EDITOR)
             .style(style::editor)
@@ -170,13 +184,18 @@ impl InlineEdit {
             .padding(6)
             .max_height(240);
         let empty = self.content.text().trim().is_empty();
-        column![
+        let mut view = column![
             editor,
             row![
                 text("Enter saves · Esc cancels")
                     .size(11)
                     .style(text::secondary),
                 space::horizontal(),
+                emoji::toggle(
+                    self.emoji.is_some(),
+                    true,
+                    act(Message::EditEmoji(emoji::Message::ToggleAll))
+                ),
                 button(text("Cancel").size(12))
                     .padding([2, 8])
                     .style(style::text_button)
@@ -189,8 +208,15 @@ impl InlineEdit {
             .spacing(6)
             .align_y(Alignment::Center),
         ]
-        .spacing(4)
-        .into()
+        .spacing(4);
+        if let Some(panel) = &self.emoji {
+            view = view.push(panel.view(
+                frequent,
+                |emoji| act(Message::EditInsertEmoji(emoji)),
+                |message| act(Message::EditEmoji(message)),
+            ));
+        }
+        view.into()
     }
 }
 
@@ -251,6 +277,7 @@ pub fn picker<'a>(
         Some(panel) => column![
             quick,
             panel.view(
+                &[],
                 move |emoji| act(Message::React(key.clone(), emoji)),
                 |message| act(Message::Emoji(message)),
             ),

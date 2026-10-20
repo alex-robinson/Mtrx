@@ -251,11 +251,12 @@ pub struct Pending<'a> {
 pub fn queue<'a>(
     pending: &Pending<'a>,
     editing: Option<&'a InlineEdit>,
+    frequent_emoji: &[String],
 ) -> Element<'a, app::Message> {
     let (messages, now) = (&pending.messages, pending.now);
     column(messages.iter().map(|message| {
         let edit = editing.filter(|e| e.target == Editing::Scheduled(message.id.clone()));
-        item(message, edit, now)
+        item(message, edit, frequent_emoji, now)
     }))
     .spacing(4)
     .into()
@@ -264,6 +265,7 @@ pub fn queue<'a>(
 fn item<'a>(
     message: &'a ScheduledMessage,
     edit: Option<&'a InlineEdit>,
+    frequent_emoji: &[String],
     now: SystemTime,
 ) -> Element<'a, app::Message> {
     let editing = edit.is_some();
@@ -293,7 +295,9 @@ fn item<'a>(
         "Change time"
     };
     let content: Element<'a, app::Message> = match edit {
-        Some(edit) => column![status.size(12), edit.view()].spacing(6).into(),
+        Some(edit) => column![status.size(12), edit.view(frequent_emoji)]
+            .spacing(6)
+            .into(),
         None => row![
             status.size(12).width(Length::Shrink),
             text(preview)

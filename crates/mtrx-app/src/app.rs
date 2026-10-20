@@ -35,7 +35,7 @@ use crate::{
     math::{self, Math, Rendered},
     media::{self, Previews, Viewer},
     members::Members,
-    room::{Look, Older, Room},
+    room::{self, Look, Older, Room},
     send_later,
     settings::{self, Settings},
     sidebar,
@@ -155,6 +155,10 @@ pub enum Message {
     ContactsLoaded(Vec<Contact>),
     /// The emoji the user reacts with, most used first.
     FrequentEmoji(Vec<String>),
+    /// The composer's emoji panel.
+    ComposerEmoji(emoji::Message),
+    /// Put an emoji into the composer.
+    InsertEmoji(String),
 }
 
 pub struct App {
@@ -707,6 +711,45 @@ impl App {
                     Message::ContactsLoaded,
                 )
             }
+            Message::ComposerEmoji(message) => {
+                let Screen::Main(main) = &mut self.screen else {
+                    return Task::none();
+                };
+                let Some(room) = main.room.as_mut() else {
+                    return Task::none();
+                };
+                match message {
+                    emoji::Message::ToggleAll => {
+                        if room.composer_emoji.take().is_some() {
+                            return iced::widget::operation::focus(room::COMPOSER);
+                        }
+                        room.composer_emoji = Some(emoji::Panel::default());
+                        Task::batch([
+                            iced::widget::operation::focus(emoji::SEARCH),
+                            load_frequent_emoji(&main.session),
+                        ])
+                    }
+                    message => {
+                        if let Some(panel) = &mut room.composer_emoji {
+                            panel.update(message);
+                        }
+                        Task::none()
+                    }
+                }
+            }
+            Message::InsertEmoji(emoji) => {
+                let Screen::Main(main) = &mut self.screen else {
+                    return Task::none();
+                };
+                let Some(room) = main.room.as_mut() else {
+                    return Task::none();
+                };
+                emoji::insert(&mut room.composer, &emoji);
+                Task::batch([
+                    iced::widget::operation::focus(room::COMPOSER),
+                    used_emoji(main, emoji),
+                ])
+            }
             Message::FrequentEmoji(emoji) => {
                 if let Screen::Main(main) = &mut self.screen {
                     main.frequent_emoji = emoji;
@@ -888,6 +931,17 @@ impl App {
                         main.viewer = None;
                     } else if main.info.is_some() {
                         main.info = None;
+                    } else if let Some(room) =
+                        main.room.as_mut().filter(|r| r.composer_emoji.is_some())
+                    {
+                        room.composer_emoji = None;
+                    } else if let Some(edit) = main
+                        .room
+                        .as_mut()
+                        .and_then(|r| r.editing.as_mut())
+                        .filter(|e| e.emoji.is_some())
+                    {
+                        edit.emoji = None;
                     } else if let Some(room) = main.room.as_mut().filter(|r| r.editing.is_some()) {
                         room.editing = None;
                     } else if let Some(room) = main.room.as_mut().filter(|r| r.picker.is_some()) {
@@ -1511,25 +1565,43 @@ impl App {
             Act::React(key, emoji) => {
                 room.picker = None;
                 room.emoji = None;
-                // Most used first: count this use here too, until reloaded.
-                main.frequent_emoji.retain(|e| *e != emoji);
-                main.frequent_emoji.insert(0, emoji.clone());
-                let session = main.session.clone();
-                Task::batch([
-                    Task::perform(
-                        {
-                            let emoji = emoji.clone();
-                            async move { timeline.toggle_reaction(&key, &emoji).await }
-                        },
-                        done,
-                    ),
-                    Task::future(async move {
-                        if let Err(e) = session.record_emoji(&emoji).await {
-                            tracing::warn!("could not record the emoji used: {e}");
+                let react = Task::perform(
+                    {
+                        let emoji = emoji.clone();
+                        async move { timeline.toggle_reaction(&key, &emoji).await }
+                    },
+                    done,
+                );
+                Task::batch([react, used_emoji(main, emoji)])
+            }
+            Act::EditEmoji(message) => {
+                let Some(edit) = &mut room.editing else {
+                    return Task::none();
+                };
+                match message {
+                    emoji::Message::ToggleAll => {
+                        if edit.emoji.take().is_some() {
+                            return InlineEdit::focus();
                         }
-                    })
-                    .discard(),
-                ])
+                        edit.emoji = Some(emoji::Panel::default());
+                        Task::batch([
+                            iced::widget::operation::focus(emoji::SEARCH),
+                            load_frequent_emoji(&main.session),
+                        ])
+                    }
+                    message => {
+                        if let Some(panel) = &mut edit.emoji {
+                            panel.update(message);
+                        }
+                        Task::none()
+                    }
+                }
+            }
+            Act::EditInsertEmoji(emoji) => {
+                if let Some(edit) = &mut room.editing {
+                    edit.insert_emoji(&emoji);
+                }
+                Task::batch([InlineEdit::focus(), used_emoji(main, emoji)])
             }
             Act::TogglePicker(id) => {
                 room.picker = (room.picker.as_ref() != Some(&id)).then_some(id);
@@ -1537,11 +1609,7 @@ impl App {
                 if room.picker.is_none() {
                     return Task::none();
                 }
-                let session = main.session.clone();
-                Task::perform(
-                    async move { session.frequent_emoji().await },
-                    Message::FrequentEmoji,
-                )
+                load_frequent_emoji(&main.session)
             }
             Act::Emoji(emoji::Message::ToggleAll) => {
                 if room.emoji.take().is_some() {
@@ -2298,6 +2366,29 @@ fn paginate(room: &mut Room) -> Task<Message> {
         async move { timeline.paginate_back(30).await.map(|_| ()) },
         move |result| Message::Paginated(id.clone(), result.map_err(|e| e.to_string())),
     )
+}
+
+/// The user's most used emoji, from account data.
+fn load_frequent_emoji(session: &Arc<Session>) -> Task<Message> {
+    let session = session.clone();
+    Task::perform(
+        async move { session.frequent_emoji().await },
+        Message::FrequentEmoji,
+    )
+}
+
+/// Count a use of `emoji`: first among the most used here at once, and in
+/// account data (shared with Element).
+fn used_emoji(main: &mut Main, emoji: String) -> Task<Message> {
+    main.frequent_emoji.retain(|e| *e != emoji);
+    main.frequent_emoji.insert(0, emoji.clone());
+    let session = main.session.clone();
+    Task::future(async move {
+        if let Err(e) = session.record_emoji(&emoji).await {
+            tracing::warn!("could not record the emoji used: {e}");
+        }
+    })
+    .discard()
 }
 
 /// Spaces whose members a dialog suggests first: the space a room is

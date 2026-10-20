@@ -208,3 +208,118 @@ impl<M> canvas::Program<M> for File {
         vec![frame.into_geometry()]
     }
 }
+
+/// A paper clip, tilted.
+pub fn paperclip<'a, M: 'a>(size: f32, color: fn(&Theme) -> Color) -> Element<'a, M> {
+    canvas::Canvas::new(Paperclip { color })
+        .width(size)
+        .height(size)
+        .into()
+}
+
+struct Paperclip {
+    color: fn(&Theme) -> Color,
+}
+
+impl<M> canvas::Program<M> for Paperclip {
+    type State = ();
+
+    fn draw(
+        &self,
+        _state: &(),
+        renderer: &Renderer,
+        theme: &Theme,
+        bounds: Rectangle,
+        _cursor: mouse::Cursor,
+    ) -> Vec<Geometry> {
+        use std::f32::consts::PI;
+        let mut frame = Frame::new(renderer, bounds.size());
+        let s = bounds.width;
+        let at = |x: f32, y: f32| iced::Point::new(x * s, y * s);
+        // Three straight sides joined by half circles, from the inner end
+        // outwards: down, round the bottom, up, round the top, down, round
+        // the bottom, up.
+        let half = |path: &mut canvas::path::Builder, x: f32, y: f32, r: f32, bottom: bool| {
+            let (start, end) = if bottom { (0.0, PI) } else { (PI, 2.0 * PI) };
+            path.arc(canvas::path::Arc {
+                center: at(x, y),
+                radius: r * s,
+                start_angle: iced::Radians(start),
+                end_angle: iced::Radians(end),
+            });
+        };
+        let clip = Path::new(|path| {
+            path.move_to(at(0.61, 0.32));
+            path.line_to(at(0.61, 0.66));
+            half(path, 0.5, 0.66, 0.11, true);
+            path.line_to(at(0.39, 0.24));
+            half(path, 0.535, 0.24, 0.145, false);
+            path.line_to(at(0.68, 0.74));
+            half(path, 0.5, 0.74, 0.18, true);
+            path.line_to(at(0.32, 0.36));
+        });
+        let center = frame.center();
+        frame.translate(Vector::new(center.x, center.y));
+        frame.rotate(iced::Radians(PI / 4.0));
+        frame.translate(Vector::new(-center.x, -center.y));
+        frame.stroke(
+            &clip,
+            Stroke::default()
+                .with_color((self.color)(theme))
+                .with_width((s / 12.0).max(1.0))
+                .with_line_cap(canvas::LineCap::Round),
+        );
+        vec![frame.into_geometry()]
+    }
+}
+
+/// A smiling face, for choosing emoji.
+pub fn smiley<'a, M: 'a>(size: f32, color: fn(&Theme) -> Color) -> Element<'a, M> {
+    canvas::Canvas::new(Smiley { color })
+        .width(size)
+        .height(size)
+        .into()
+}
+
+struct Smiley {
+    color: fn(&Theme) -> Color,
+}
+
+impl<M> canvas::Program<M> for Smiley {
+    type State = ();
+
+    fn draw(
+        &self,
+        _state: &(),
+        renderer: &Renderer,
+        theme: &Theme,
+        bounds: Rectangle,
+        _cursor: mouse::Cursor,
+    ) -> Vec<Geometry> {
+        use std::f32::consts::PI;
+        let mut frame = Frame::new(renderer, bounds.size());
+        let color = (self.color)(theme);
+        let width = (bounds.width / 12.0).max(1.0);
+        let center = frame.center();
+        let radius = bounds.width / 2.0 - width;
+        let stroke = Stroke::default()
+            .with_color(color)
+            .with_width(width)
+            .with_line_cap(canvas::LineCap::Round);
+        frame.stroke(&Path::circle(center, radius), stroke);
+        for side in [-1.0, 1.0] {
+            let eye = center + Vector::new(side * radius * 0.35, -radius * 0.25);
+            frame.fill(&Path::circle(eye, width * 0.9), color);
+        }
+        let smile = Path::new(|path| {
+            path.arc(canvas::path::Arc {
+                center,
+                radius: radius * 0.55,
+                start_angle: iced::Radians(PI * 0.2),
+                end_angle: iced::Radians(PI * 0.8),
+            });
+        });
+        frame.stroke(&smile, stroke);
+        vec![frame.into_geometry()]
+    }
+}

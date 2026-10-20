@@ -571,6 +571,37 @@ async fn send_later_bar() {
     if let Screen::Main(main) = &mut app.screen
         && let Some(open) = main.room.as_mut()
     {
+        open.composer_emoji = Some(emoji::Panel::default());
+    }
+    snapshot(&app, "composer-emoji");
+    if let Screen::Main(main) = &mut app.screen
+        && let Some(open) = main.room.as_mut()
+    {
+        open.composer_emoji = None;
+        let sent = open
+            .entries
+            .iter()
+            .find_map(|e| match e {
+                TimelineEntry::Event(ev) if ev.editable => Some(ev.key.clone()),
+                _ => None,
+            })
+            .unwrap();
+        let mut edit =
+            actions::InlineEdit::new(actions::Editing::Sent(sent), "Reviews are due Monday 🎉");
+        let mut panel = emoji::Panel::default();
+        panel.update(emoji::Message::Search("ice".into()));
+        edit.emoji = Some(panel);
+        open.editing = Some(edit);
+    }
+    snapshot(&app, "edit-emoji");
+    if let Screen::Main(main) = &mut app.screen
+        && let Some(open) = main.room.as_mut()
+    {
+        open.editing = None;
+    }
+    if let Screen::Main(main) = &mut app.screen
+        && let Some(open) = main.room.as_mut()
+    {
         open.editing = None;
     }
     let mut panel = settings::Panel::default();

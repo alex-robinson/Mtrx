@@ -12,7 +12,7 @@ use iced::{
     mouse,
     widget::{
         button, column, container, image, mouse_area, row, rule, scrollable, scrollable::Viewport,
-        space, stack, text, text_editor,
+        space, stack, text, text_editor, tooltip,
     },
 };
 use mtrx_core::{
@@ -28,7 +28,7 @@ use crate::{
     calls::{self, RoomCalls},
     dialog::Kind,
     ellipsis::ellipsis,
-    emoji, fonts, info,
+    emoji, fonts, icons, info,
     math::{self, Math, Rendered},
     media::{self, Previews},
     members::Members,
@@ -48,6 +48,9 @@ const WINDOW_STEP: usize = 50;
 /// has no more): fewer may not fill the view, and then there is nothing to
 /// scroll up for more.
 const FILL: usize = 40;
+
+/// The message field, focused again after inserting an emoji.
+pub const COMPOSER: &str = "composer";
 
 /// Consecutive messages of one sender within this gap share a header.
 const GROUP_GAP: Duration = Duration::from_secs(5 * 60);
@@ -71,6 +74,8 @@ pub struct Room {
     pub picker: Option<String>,
     /// All emoji in the reaction picker, while shown.
     pub emoji: Option<emoji::Panel>,
+    /// The composer's emoji panel, while shown.
+    pub composer_emoji: Option<emoji::Panel>,
     /// The timeline row whose deletion awaits confirmation.
     pub confirm_delete: Option<String>,
     /// Names of others typing.
@@ -105,6 +110,7 @@ impl Room {
             editing: None,
             picker: None,
             emoji: None,
+            composer_emoji: None,
             confirm_delete: None,
             typing: Vec::new(),
             members: None,
@@ -333,6 +339,7 @@ impl Room {
 
         let cancellable = self.compose.cancellable();
         let composer = text_editor(&self.composer)
+            .id(COMPOSER)
             .style(style::editor)
             .placeholder("Message…  (Markdown, $…$ for math; Shift+Enter for a new line)")
             .on_action(Message::Composer)
@@ -357,7 +364,11 @@ impl Room {
             .spacing(6)
             .padding([8.0, TIMELINE_PADDING + MESSAGE_PADDING]);
         if !scheduled.messages.is_empty() {
-            bottom = bottom.push(send_later::queue(scheduled, self.editing.as_ref()));
+            bottom = bottom.push(send_later::queue(
+                scheduled,
+                self.editing.as_ref(),
+                look.frequent_emoji,
+            ));
         }
         if let Some(picker) = send_later::picker(&self.later, !composer_empty, scheduled.now) {
             bottom = bottom.push(picker);
@@ -368,12 +379,40 @@ impl Room {
         if let Some(bar) = self.compose.bar() {
             bottom = bottom.push(bar);
         }
-        let attach = button(text("Attach…").size(13))
-            .padding([10, 12])
+        if let Some(panel) = &self.composer_emoji {
+            bottom = bottom.push(
+                container(panel.view(
+                    look.frequent_emoji,
+                    Message::InsertEmoji,
+                    Message::ComposerEmoji,
+                ))
+                .align_right(Length::Fill),
+            );
+        }
+        let attach = tooltip(
+            button(icons::paperclip(20.0, |theme| {
+                theme
+                    .extended_palette()
+                    .background
+                    .base
+                    .text
+                    .scale_alpha(0.75)
+            }))
+            .padding([8, 10])
             .style(style::secondary_button)
-            .on_press(Message::Attach);
+            .on_press(Message::Attach),
+            container(text("Attach files").size(12))
+                .padding(6)
+                .style(container::rounded_box),
+            tooltip::Position::Top,
+        );
+        let emoji = emoji::toggle(
+            self.composer_emoji.is_some(),
+            false,
+            Message::ComposerEmoji(emoji::Message::ToggleAll),
+        );
         bottom = bottom.push(
-            row![composer, attach, later]
+            row![composer, emoji, attach, later]
                 .spacing(8)
                 .align_y(Alignment::End),
         );
@@ -628,7 +667,7 @@ fn event_view<'a>(
         .editing
         .filter(|e| e.target == Editing::Sent(event.key.clone()));
     item = item.push(match edit {
-        Some(edit) => edit.view(),
+        Some(edit) => edit.view(context.frequent_emoji),
         None => body,
     });
     let message = match &event.content {

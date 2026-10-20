@@ -60,6 +60,46 @@ impl Default for Panel {
     }
 }
 
+/// Put `emoji` where the cursor is.
+pub fn insert(content: &mut iced::widget::text_editor::Content, emoji: &str) {
+    use iced::widget::text_editor::{Action, Edit};
+    content.perform(Action::Edit(Edit::Paste(std::sync::Arc::new(
+        emoji.to_owned(),
+    ))));
+}
+
+/// A button showing or hiding the emoji panel of a text field; `compact`
+/// beside small buttons.
+pub fn toggle<'a>(open: bool, compact: bool, message: app::Message) -> Element<'a, app::Message> {
+    let (size, padding) = if compact {
+        (14.0, [2, 6])
+    } else {
+        (20.0, [8, 10])
+    };
+    iced::widget::tooltip(
+        button(crate::icons::smiley(size, |theme| {
+            theme
+                .extended_palette()
+                .background
+                .base
+                .text
+                .scale_alpha(0.75)
+        }))
+        .padding(padding)
+        .style(match (open, compact) {
+            (true, _) => style::primary_button,
+            (false, true) => style::text_button,
+            (false, false) => style::secondary_button,
+        })
+        .on_press(message),
+        container(text("Emoji").size(12))
+            .padding(6)
+            .style(container::rounded_box),
+        iced::widget::tooltip::Position::Top,
+    )
+    .into()
+}
+
 /// The quick row: the most used, filled up with common ones.
 pub fn quick(frequent: &[String]) -> Vec<&str> {
     let mut quick: Vec<&str> = frequent.iter().map(String::as_str).take(QUICK).collect();
@@ -97,23 +137,43 @@ impl Panel {
                 .map(|e| e.as_str())
                 .collect();
         }
+        // At the start of a word: "ice" finds ice cream, not police.
+        let starts_word = |text: &str| {
+            text.starts_with(&query)
+                || text.contains(&format!(" {query}"))
+                || text.contains(&format!("_{query}"))
+        };
         emojis::iter()
             .filter(|e| drawable(e))
-            .filter(|e| {
-                e.name().contains(&query) || e.shortcodes().any(|code| code.contains(&query))
-            })
+            .filter(|e| starts_word(e.name()) || e.shortcodes().any(starts_word))
             .take(MAX_FOUND)
             .map(|e| e.as_str())
             .collect()
     }
 
-    /// Search, group tabs and a grid of emoji; `pick` makes the message
-    /// for a chosen one.
+    /// The most used (if given), search, group tabs and a grid of emoji;
+    /// `pick` makes the message for a chosen one.
     pub fn view<'a>(
         &'a self,
+        frequent: &[String],
         pick: impl Fn(String) -> app::Message,
         wrap: fn(Message) -> app::Message,
     ) -> Element<'a, app::Message> {
+        let cell = |emoji: &str| -> Element<'a, app::Message> {
+            button(
+                text(emoji.to_owned())
+                    .size(20)
+                    .font(fonts::EMOJI)
+                    .center()
+                    .width(Length::Fill),
+            )
+            .width(CELL)
+            .height(CELL)
+            .padding(0)
+            .style(style::list_item(false))
+            .on_press(pick(emoji.to_owned()))
+            .into()
+        };
         let search = text_input("Search emoji", &self.query)
             .id(Id::new(SEARCH))
             .on_input(move |query| wrap(Message::Search(query)))
@@ -142,35 +202,23 @@ impl Panel {
                 .style(text::secondary)
                 .into()
         } else {
-            column(shown.chunks(COLUMNS).map(|line| {
-                row(line.iter().map(|emoji| {
-                    button(
-                        text(*emoji)
-                            .size(20)
-                            .font(fonts::EMOJI)
-                            .center()
-                            .width(Length::Fill),
-                    )
-                    .width(CELL)
-                    .height(CELL)
-                    .padding(0)
-                    .style(style::list_item(false))
-                    .on_press(pick((*emoji).to_owned()))
-                    .into()
-                }))
-                .into()
-            }))
+            column(
+                shown
+                    .chunks(COLUMNS)
+                    .map(|line| row(line.iter().map(|emoji| cell(emoji))).into()),
+            )
             .into()
         };
         let width = CELL * COLUMNS as f32 + 12.0;
+        let mut panel = column![].spacing(6).align_x(Alignment::Start);
+        if !frequent.is_empty() {
+            panel = panel.push(row(quick(frequent).into_iter().map(cell)));
+        }
         container(
-            column![
-                search.width(width),
-                tabs,
-                scrollable(grid).height(CELL * 6.0).width(width),
-            ]
-            .spacing(6)
-            .align_x(Alignment::Start),
+            panel
+                .push(search.width(width))
+                .push(tabs)
+                .push(scrollable(grid).height(CELL * 6.0).width(width)),
         )
         .padding(6)
         .style(style::toolbar)
@@ -238,6 +286,10 @@ mod tests {
         assert!(panel.shown().contains(&"🦀"));
         panel.update(Message::Search("tada".into()));
         assert!(panel.shown().contains(&"🎉"));
+        panel.update(Message::Search("ice".into()));
+        let found = panel.shown();
+        assert!(found.contains(&"🧊") && found.contains(&"🍦"));
+        assert!(!found.contains(&"👮"), "police");
         // Too new for most fonts.
         panel.update(Message::Search("cracking face".into()));
         assert!(panel.shown().is_empty());
