@@ -14,8 +14,9 @@ use crate::{
     app, arrange,
     avatar::{Avatars, Shape},
     dialog::Kind,
-    ellipsis::ellipsis,
-    fonts, sidebar, style,
+    fonts,
+    selectable::selectable_text,
+    sidebar, style,
 };
 
 const AVATAR: f32 = 64.0;
@@ -291,17 +292,26 @@ impl Card {
             card = card.push(picture);
         }
 
+        // Editable where allowed, else text to select from.
         let field =
-            |label, value: &'a str, placeholder, can: bool, on_input: fn(String) -> Message| {
-                let mut input = text_input(placeholder, value)
+            |label, value: &'a str, missing: &str, can: bool, on_input: fn(String) -> Message| {
+                if !can {
+                    let shown: Element<'a, app::Message> = if value.trim().is_empty() {
+                        text(missing.to_owned())
+                            .size(13)
+                            .style(text::secondary)
+                            .into()
+                    } else {
+                        selectable_text(value).size(13).into()
+                    };
+                    return labelled(label, shown);
+                }
+                let input = text_input(missing, value)
                     .style(style::input)
                     .padding([5, 8])
-                    .size(13);
-                if can {
-                    input = input
-                        .on_input(move |value| app::Message::Info(on_input(value)))
-                        .on_submit(app::Message::Info(Message::SaveDetails));
-                }
+                    .size(13)
+                    .on_input(move |value| app::Message::Info(on_input(value)))
+                    .on_submit(app::Message::Info(Message::SaveDetails));
                 labelled(label, input)
             };
         card = card
@@ -436,7 +446,11 @@ impl Card {
             );
         }
         facts.extend([members, encryption.to_owned()]);
-        card = card.push(text(facts.join(" · ")).size(13).style(text::secondary));
+        card = card.push(
+            selectable_text(facts.join(" · "))
+                .size(13)
+                .style(text::secondary),
+        );
         let parents: Vec<&str> = room
             .parents
             .iter()
@@ -445,7 +459,7 @@ impl Card {
             .collect();
         if !parents.is_empty() {
             card = card.push(
-                text(format!("In {}", parents.join(", ")))
+                selectable_text(format!("In {}", parents.join(", ")))
                     .size(13)
                     .style(text::secondary),
             );
@@ -491,7 +505,7 @@ impl Card {
             label,
             row![
                 container(
-                    text(value.clone())
+                    selectable_text(value.clone())
                         .size(13)
                         .font(iced::Font::MONOSPACE)
                         .wrapping(text::Wrapping::Glyph)
@@ -534,10 +548,7 @@ fn heading<'a>(
 ) -> Element<'a, app::Message> {
     row![
         avatars.view(id, name, avatar, AVATAR, Shape::Circle),
-        ellipsis(name)
-            .size(18)
-            .font(fonts::SEMIBOLD)
-            .width(Length::Fill),
+        container(selectable_text(name).size(18).font(fonts::SEMIBOLD)).width(Length::Fill),
         star,
     ]
     .spacing(14)

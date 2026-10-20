@@ -1,15 +1,16 @@
 //! Rich text whose text can be selected, like iced's `rich_text` (whose
 //! layout and drawing it follows) plus hit-testing and highlighting through
-//! the paragraph's cosmic-text layout. The selection itself lives in the
-//! room ([`crate::selection`]); this widget reports gestures and draws the
-//! part it is given.
+//! the paragraph's cosmic-text layout. In the timeline the selection lives
+//! in the room ([`crate::selection`]): the widget reports gestures and draws
+//! the part it is given. Elsewhere ([`selectable_text`]) it keeps its own
+//! selection and copies it with ⌘C.
 
 use std::{ops::Range, rc::Rc};
 
 use iced::{
     Color, Element, Event, Font, Length, Pixels, Point, Rectangle, Renderer, Size, Theme, Vector,
     advanced::{
-        Clipboard, Layout, Shell, Widget, layout, mouse, renderer,
+        Clipboard, Layout, Shell, Widget, clipboard, layout, mouse, renderer,
         text::{self as core_text, Paragraph as _, Span},
         widget::{
             text as core_widget_text,
@@ -41,6 +42,18 @@ pub struct Selectable<'a, Message> {
     dragging: bool,
     on_link: Option<fn(String) -> Message>,
     on_gesture: Option<Rc<dyn Fn(Gesture) -> Message + 'a>>,
+    /// Keeps its own selection, not the room's.
+    own: bool,
+    wrapping: Wrapping,
+    style: Option<fn(&Theme) -> core_widget_text::Style>,
+}
+
+/// Text with its own selection, copied with ⌘C, e.g. in info cards.
+pub fn selectable_text<'a, Message>(content: impl Into<String>) -> Selectable<'a, Message> {
+    Selectable {
+        own: true,
+        ..selectable(vec![Span::new(content.into())], 0)
+    }
 }
 
 /// Unit `unit` of a message, showing `spans`.
@@ -56,12 +69,34 @@ pub fn selectable<'a, Message>(
         dragging: false,
         on_link: None,
         on_gesture: None,
+        own: false,
+        wrapping: Wrapping::default(),
+        style: None,
     }
 }
 
 impl<'a, Message> Selectable<'a, Message> {
-    pub fn size(mut self, size: Pixels) -> Self {
-        self.size = Some(size);
+    pub fn size(mut self, size: impl Into<Pixels>) -> Self {
+        self.size = Some(size.into());
+        self
+    }
+
+    /// The font of all its text.
+    pub fn font(mut self, font: Font) -> Self {
+        for span in &mut self.spans {
+            span.font = Some(font);
+        }
+        self
+    }
+
+    pub fn wrapping(mut self, wrapping: Wrapping) -> Self {
+        self.wrapping = wrapping;
+        self
+    }
+
+    /// The colour of text without its own.
+    pub fn style(mut self, style: fn(&Theme) -> core_widget_text::Style) -> Self {
+        self.style = Some(style);
         self
     }
 
@@ -100,6 +135,10 @@ struct State {
     /// The link span pressed, and where.
     link_pressed: Option<(usize, Point)>,
     hovered_link: Option<usize>,
+    /// With its own selection: where it starts and ends, and whether it is
+    /// being dragged.
+    own: Option<(usize, usize)>,
+    own_dragging: bool,
 }
 
 impl State {
@@ -126,6 +165,28 @@ impl State {
             None if point.y <= 0.0 => 0,
             None => self.text.len(),
         }
+    }
+
+    /// The range a press at `at` (`position` in the window) selects: a
+    /// point, or the word or all for a double or triple click.
+    fn press(&mut self, at: Point, position: Point, size: Size) -> (usize, usize) {
+        let click = mouse::Click::new(position, mouse::Button::Left, self.last_click);
+        self.last_click = Some(click);
+        let offset = self.offset_at(at, size);
+        match click.kind() {
+            mouse::click::Kind::Single => (offset, offset),
+            mouse::click::Kind::Double => {
+                let word = self.word_at(offset);
+                (word.start, word.end)
+            }
+            mouse::click::Kind::Triple => (0, self.text.len()),
+        }
+    }
+
+    /// Its own selection, if not empty.
+    fn own_range(&self) -> Option<Range<usize>> {
+        let (anchor, focus) = self.own?;
+        (anchor != focus).then(|| anchor.min(focus)..anchor.max(focus))
     }
 
     /// The word (or run of spaces or punctuation) around `offset`.
@@ -203,7 +264,7 @@ impl<Message> Widget<Message, Theme, Renderer> for Selectable<'_, Message> {
                 align_x: core_text::Alignment::Default,
                 align_y: alignment::Vertical::Top,
                 shaping: Shaping::Advanced,
-                wrapping: Wrapping::default(),
+                wrapping: self.wrapping,
             };
             if state.spans != self.spans {
                 state.paragraph = Paragraph::with_spans(text(self.spans.as_slice()));
@@ -240,7 +301,12 @@ impl<Message> Widget<Message, Theme, Renderer> for Selectable<'_, Message> {
         let translation = bounds.position() - Point::ORIGIN;
         let size = self.size.unwrap_or_else(|| renderer.default_size());
 
-        if let Some(range) = &self.selected {
+        let selected = if self.own {
+            state.own_range()
+        } else {
+            self.selected.clone()
+        };
+        if let Some(range) = &selected {
             for rect in state.highlight(range, size.0) {
                 renderer.fill_quad(
                     renderer::Quad {
@@ -303,7 +369,8 @@ impl<Message> Widget<Message, Theme, Renderer> for Selectable<'_, Message> {
             defaults,
             bounds,
             &state.paragraph,
-            core_widget_text::Style::default(),
+            self.style
+                .map_or_else(Default::default, |style| style(theme)),
             viewport,
         );
     }
@@ -315,12 +382,16 @@ impl<Message> Widget<Message, Theme, Renderer> for Selectable<'_, Message> {
         layout: Layout<'_>,
         cursor: mouse::Cursor,
         _renderer: &Renderer,
-        _clipboard: &mut dyn Clipboard,
+        clipboard: &mut dyn Clipboard,
         shell: &mut Shell<'_, Message>,
         _viewport: &Rectangle,
     ) {
         let state = tree.state.downcast_mut::<State>();
         let bounds = layout.bounds();
+        if self.own {
+            update_own(state, event, bounds, cursor, clipboard, shell);
+            return;
+        }
         let hovered_link = cursor
             .position_in(bounds)
             .and_then(|at| state.paragraph.hit_span(at))
@@ -347,17 +418,7 @@ impl<Message> Widget<Message, Theme, Renderer> for Selectable<'_, Message> {
                     }
                     return;
                 };
-                let click = mouse::Click::new(position, mouse::Button::Left, state.last_click);
-                state.last_click = Some(click);
-                let offset = state.offset_at(at, bounds.size());
-                let (from, to) = match click.kind() {
-                    mouse::click::Kind::Single => (offset, offset),
-                    mouse::click::Kind::Double => {
-                        let word = state.word_at(offset);
-                        (word.start, word.end)
-                    }
-                    mouse::click::Kind::Triple => (0, state.text.len()),
-                };
+                let (from, to) = state.press(at, position, bounds.size());
                 shell.publish(on_gesture(Gesture::Press {
                     unit: self.unit,
                     from,
@@ -414,11 +475,68 @@ impl<Message> Widget<Message, Theme, Renderer> for Selectable<'_, Message> {
         let state = tree.state.downcast_ref::<State>();
         if state.hovered_link.is_some() && self.on_link.is_some() {
             mouse::Interaction::Pointer
-        } else if self.on_gesture.is_some() && (self.dragging || cursor.is_over(layout.bounds())) {
+        } else if (self.on_gesture.is_some() || self.own)
+            && (self.dragging || state.own_dragging || cursor.is_over(layout.bounds()))
+        {
             mouse::Interaction::Text
         } else {
             mouse::Interaction::None
         }
+    }
+}
+
+/// Selecting by itself: pressing, dragging, and ⌘C; a press elsewhere
+/// clears the selection.
+fn update_own<Message>(
+    state: &mut State,
+    event: &Event,
+    bounds: Rectangle,
+    cursor: mouse::Cursor,
+    clipboard: &mut dyn Clipboard,
+    shell: &mut Shell<'_, Message>,
+) {
+    match event {
+        Event::Keyboard(keyboard::Event::ModifiersChanged(modifiers)) => {
+            state.modifiers = *modifiers;
+        }
+        Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
+            let Some(at) = cursor.position_in(bounds) else {
+                if state.own.take().is_some() {
+                    shell.request_redraw();
+                }
+                return;
+            };
+            let position = cursor.position().unwrap_or_default();
+            let (from, to) = state.press(at, position, bounds.size());
+            state.own = match state.own {
+                Some((anchor, _)) if state.modifiers.shift() => Some((anchor, to)),
+                _ => Some((from, to)),
+            };
+            state.own_dragging = true;
+            shell.request_redraw();
+            shell.capture_event();
+        }
+        Event::Mouse(mouse::Event::CursorMoved { .. }) if state.own_dragging => {
+            if let Some(position) = cursor.land().position()
+                && let Some((anchor, _)) = state.own
+            {
+                let focus = state.offset_at(position - translation(bounds), bounds.size());
+                state.own = Some((anchor, focus));
+                shell.request_redraw();
+            }
+        }
+        Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
+            state.own_dragging = false;
+        }
+        Event::Keyboard(keyboard::Event::KeyPressed { key, modifiers, .. })
+            if modifiers.command() && matches!(key.as_ref(), keyboard::Key::Character("c")) =>
+        {
+            if let Some(range) = state.own_range() {
+                clipboard.write(clipboard::Kind::Standard, state.text[range].to_owned());
+                shell.capture_event();
+            }
+        }
+        _ => {}
     }
 }
 
@@ -429,5 +547,61 @@ fn translation(bounds: Rectangle) -> Vector {
 impl<'a, Message: 'a> From<Selectable<'a, Message>> for Element<'a, Message> {
     fn from(selectable: Selectable<'a, Message>) -> Self {
         Element::new(selectable)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use iced::{event::Status, keyboard::Key};
+    use iced_test::simulator::{Simulator, press_key};
+
+    use super::*;
+    use crate::fonts;
+
+    /// ⌘C, as a key press.
+    fn command_c() -> Event {
+        let Event::Keyboard(keyboard::Event::KeyPressed {
+            key,
+            modified_key,
+            physical_key,
+            location,
+            text,
+            repeat,
+            ..
+        }) = press_key(Key::Character("c".into()), None)
+        else {
+            unreachable!()
+        };
+        Event::Keyboard(keyboard::Event::KeyPressed {
+            key,
+            modified_key,
+            physical_key,
+            location,
+            modifiers: keyboard::Modifiers::COMMAND,
+            text,
+            repeat,
+        })
+    }
+
+    #[test]
+    fn own_selection_is_dragged_and_copied() {
+        let view: Element<'_, ()> = selectable_text("Ice sheet").into();
+        let mut ui = Simulator::with_size(fonts::settings(), Size::new(400.0, 100.0), view);
+        // Nothing selected: ⌘C is left to others.
+        assert_eq!(ui.simulate([command_c()]), [Status::Ignored]);
+        ui.point_at((2.0, 8.0));
+        let _ = ui.simulate([Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left))]);
+        ui.point_at((300.0, 8.0));
+        let _ = ui.simulate([
+            Event::Mouse(mouse::Event::CursorMoved {
+                position: Point::new(300.0, 8.0),
+            }),
+            Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)),
+        ]);
+        assert_eq!(ui.simulate([command_c()]), [Status::Captured]);
+        // A click elsewhere clears it.
+        ui.point_at((350.0, 90.0));
+        let _ = ui.simulate([Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left))]);
+        assert_eq!(ui.simulate([command_c()]), [Status::Ignored]);
     }
 }

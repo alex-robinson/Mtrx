@@ -16,15 +16,14 @@ Right-click on a message, or "⋯" in its hover toolbar, opens a menu
 which records where the click was and floats the menu there through the
 popover's panel); "⋯" opens it below the toolbar.
 
-| Item                     | When                              | Does                                      |
-|--------------------------|-----------------------------------|-------------------------------------------|
-| Copy selection           | the message is in the selection   | as ⌘C                                     |
-| Copy text                | text messages                     | `Document::to_plain_text`: Markdown-like, math as `$…$` |
-| Copy LaTeX (per formula) | messages with math                | the formula's LaTeX (`Document::formulas`) |
-| Copy link (per link)     | messages with links               | the URL                                   |
-| Copy image               | math messages that rendered       | the picture, via `arboard` (iced's clipboard holds text only) |
-| Save image…              | math messages that rendered       | PNG, dark text on white, 3× scale          |
+| Item         | When                        | Does                                              |
+|--------------|-----------------------------|---------------------------------------------------|
+| Copy         | text messages               | the selection if the message is in it, else the whole message as a selection copies it (math as `$…$`) |
+| Copy image   | math messages that rendered | the picture, via `arboard` (iced's clipboard holds text only) |
+| Save image…  | math messages that rendered | PNG, dark text on white, 3× scale                  |
 
+Separate Copy text, Copy LaTeX and Copy link items were dropped: copying
+gives the same text, formulas included as `$…$`.
 The "Select text…" stopgap (the text in a read-only editor) was removed
 once the timeline itself became selectable.
 
@@ -101,7 +100,9 @@ copy as `$…$`.
   covers them.
 - Code inside math messages is selected whole.
 - Other text in the timeline is not selectable: sender names, reply
-  previews, notices and state lines.
+  previews, notices and state lines. Info cards are: names, IDs,
+  addresses, links, read-only name and topic, and the facts line use
+  `selectable_text`, which keeps its own selection and copies it with ⌘C.
 - ⌘A does not select the timeline.
 
 ## Tests
