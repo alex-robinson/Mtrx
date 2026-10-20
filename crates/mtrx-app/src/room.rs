@@ -17,11 +17,12 @@ use iced::{
 };
 use mtrx_core::{
     CallService, Event, EventContent, MediaKind, MediaRef, MembershipChange, MessageKind, MxcUri,
-    OwnedRoomId, OwnedUserId, RoomSummary, RoomTimeline, SendState, TimelineEntry,
+    OwnedRoomId, OwnedUserId, RoomSummary, RoomTimeline, ScheduledMessage, SendState,
+    TimelineEntry,
 };
 
 use crate::{
-    actions::{self, Compose, Target},
+    actions::{self, Compose, Editing, InlineEdit, Target},
     app::Message,
     avatar::{self, Avatars, Shape},
     calls::{self, RoomCalls},
@@ -64,6 +65,8 @@ pub struct Room {
     /// The room menu (invite, edit, leave) is open.
     pub menu: bool,
     pub compose: Compose,
+    /// A sent or scheduled message being edited in place.
+    pub editing: Option<InlineEdit>,
     /// The timeline row whose reaction picker is open.
     pub picker: Option<String>,
     /// The timeline row whose deletion awaits confirmation.
@@ -97,6 +100,7 @@ impl Room {
             calls: RoomCalls::new(id.clone()),
             menu: false,
             compose: Compose::New,
+            editing: None,
             picker: None,
             confirm_delete: None,
             typing: Vec::new(),
@@ -135,6 +139,39 @@ impl Room {
             Older::Paginate
         } else {
             Older::None
+        }
+    }
+
+    /// The scheduled messages changed: one being edited or given a new time
+    /// may have been sent (it became due) or cancelled elsewhere.
+    pub fn scheduled_changed(&mut self, scheduled: &[ScheduledMessage]) {
+        let gone = |id: &str| !scheduled.iter().any(|m| m.id == id);
+        if self
+            .later
+            .rescheduling
+            .as_ref()
+            .is_some_and(|m| gone(&m.id))
+        {
+            self.later = Default::default();
+        }
+        let Some(edit) = &self.editing else {
+            return;
+        };
+        if !matches!(&edit.target, Editing::Scheduled(id) if gone(id)) {
+            return;
+        }
+        // Keep the changes: in the composer if it is free.
+        if self.composer.text().trim().is_empty() {
+            self.composer = text_editor::Content::with_text(&edit.text());
+            self.editing = None;
+            self.error = Some(
+                "The scheduled message was sent before your changes were saved; \
+                 they are in the composer."
+                    .into(),
+            );
+        } else {
+            self.error =
+                Some("The scheduled message was sent before your changes were saved.".into());
         }
     }
 
@@ -233,7 +270,7 @@ impl Room {
             hovered: self.hovered.as_deref(),
             picker: self.picker.as_deref(),
             confirm_delete: self.confirm_delete.as_deref(),
-            composer_empty: self.composer.text().trim().is_empty(),
+            editing: self.editing.as_ref(),
         };
 
         let mut timeline = column![].padding([8.0, TIMELINE_PADDING]);
@@ -305,32 +342,19 @@ impl Room {
             })
             .padding(10)
             .max_height(200);
-        // An edit of a sent message cannot be scheduled.
-        let later = (!matches!(self.compose, Compose::Edit(_))).then(|| {
-            button(
-                text(if self.compose.scheduled().is_some() {
-                    "Change time…"
-                } else {
-                    "Send later…"
-                })
-                .size(13),
-            )
+        let later = button(text("Send later…").size(13))
             .padding([10, 12])
             .style(style::secondary_button)
-            .on_press(Message::Later(send_later::Message::TogglePicker))
-        });
+            .on_press(Message::Later(send_later::Message::TogglePicker));
 
         let composer_empty = self.composer.text().trim().is_empty();
         let mut bottom = column![]
             .spacing(6)
             .padding([8.0, TIMELINE_PADDING + MESSAGE_PADDING]);
         if !scheduled.messages.is_empty() {
-            let editing = self.compose.scheduled().map(|m| m.id.as_str());
-            bottom = bottom.push(send_later::queue(scheduled, editing, composer_empty));
+            bottom = bottom.push(send_later::queue(scheduled, self.editing.as_ref()));
         }
-        if later.is_some()
-            && let Some(picker) = send_later::picker(&self.later, !composer_empty, scheduled.now)
-        {
+        if let Some(picker) = send_later::picker(&self.later, !composer_empty, scheduled.now) {
             bottom = bottom.push(picker);
         }
         if let Some(typing) = actions::typing(&self.typing) {
@@ -343,11 +367,11 @@ impl Room {
             .padding([10, 12])
             .style(style::secondary_button)
             .on_press(Message::Attach);
-        let mut input = row![composer, attach].spacing(8).align_y(Alignment::End);
-        if let Some(later) = later {
-            input = input.push(later);
-        }
-        bottom = bottom.push(input);
+        bottom = bottom.push(
+            row![composer, attach, later]
+                .spacing(8)
+                .align_y(Alignment::End),
+        );
         if let Some(error) = &self.error {
             bottom = bottom.push(text(error).size(12).style(text::danger));
         }
@@ -510,7 +534,8 @@ struct Context<'a, 'b> {
     hovered: Option<&'b str>,
     picker: Option<&'b str>,
     confirm_delete: Option<&'b str>,
-    composer_empty: bool,
+    /// The message being edited in place, if any.
+    editing: Option<&'a InlineEdit>,
 }
 
 fn event_view<'a>(
@@ -589,7 +614,13 @@ fn event_view<'a>(
                 .on_press(sender_info(event)),
         );
     }
-    item = item.push(body);
+    let edit = context
+        .editing
+        .filter(|e| e.target == Editing::Sent(event.key.clone()));
+    item = item.push(match edit {
+        Some(edit) => edit.view(),
+        None => body,
+    });
     let message = match &event.content {
         EventContent::Message(m) => Some(m),
         _ => None,
@@ -641,11 +672,10 @@ fn event_view<'a>(
         .style(style::message_row(hovered));
     // Actions float over the top right of a hovered message.
     let row: Element<'a, Message> = match message {
-        Some(m) if hovered && event.event_id.is_some() => {
+        Some(m) if hovered && event.event_id.is_some() && edit.is_none() => {
             let preview = first_line(&m.document.to_plain_text());
             let target = Target::of(event, display_name(event), preview);
-            // Editing replaces the composer's text, so only from an empty one.
-            let edit_text = context.composer_empty.then(|| m.body.clone());
+            let edit_text = Some(m.body.clone());
             stack![
                 row,
                 container(actions::toolbar(event, target, edit_text))

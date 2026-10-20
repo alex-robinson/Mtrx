@@ -179,15 +179,25 @@ impl Session {
         Ok(message)
     }
 
-    /// Change a scheduled message's text and time; `send_at` must be in the
-    /// future. An overdue message waits again.
-    pub async fn reschedule(&self, id: &str, text: &str, send_at: SystemTime) -> Result<()> {
+    /// Change a scheduled message's text, keeping its time.
+    pub async fn edit_scheduled(&self, id: &str, text: &str) -> Result<()> {
+        self.schedule
+            .modify(async |messages| {
+                let index = position(messages, id)?;
+                messages[index].text = text.to_owned();
+                Ok(())
+            })
+            .await
+    }
+
+    /// Change a scheduled message's time; `send_at` must be in the future.
+    /// An overdue message waits again.
+    pub async fn reschedule(&self, id: &str, send_at: SystemTime) -> Result<()> {
         let send_at = future_time(send_at)?;
         self.schedule
             .modify(async |messages| {
                 let index = position(messages, id)?;
                 let message = &mut messages[index];
-                message.text = text.to_owned();
                 message.send_at = send_at;
                 message.overdue = false;
                 Ok(())

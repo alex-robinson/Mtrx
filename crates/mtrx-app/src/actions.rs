@@ -1,11 +1,12 @@
-//! Actions on messages (react, reply, edit, delete) and what the composer is
-//! doing: a new message, a reply, or an edit.
+//! Actions on messages (react, reply, edit, delete), what the composer is
+//! writing (a new message or a reply), and editing a message in place.
 
 use iced::{
     Alignment, Element, Length,
-    widget::{button, container, row, space, text, tooltip},
+    keyboard::{Key, key::Named},
+    widget::{button, column, container, row, space, text, text_editor, tooltip},
 };
-use mtrx_core::{Event, EventKey, MxcUri, OwnedEventId, Reaction, Reader, Reply, ScheduledMessage};
+use mtrx_core::{Event, EventKey, MxcUri, OwnedEventId, Reaction, Reader, Reply};
 
 use crate::{
     app,
@@ -26,13 +27,17 @@ pub enum Message {
     /// Open or close the reaction picker of a timeline row.
     TogglePicker(String),
     Reply(Target),
-    /// Load one of our messages into the composer to edit it.
-    Edit(Target, String),
+    /// Edit one of our sent messages where it is shown, starting from its text.
+    Edit(EventKey, String),
+    EditAction(text_editor::Action),
+    SaveEdit,
+    CancelEdit,
+    EditSaved(Result<(), String>),
     /// Ask before deleting a timeline row's message.
     AskDelete(String),
     Delete(EventKey),
     CancelDelete,
-    /// Back to writing a new message.
+    /// Stop replying.
     CancelCompose,
     Done(Result<(), String>),
 }
@@ -52,18 +57,9 @@ pub enum Compose {
     #[default]
     New,
     Reply(Target),
-    Edit(Target),
-    EditScheduled(ScheduledMessage),
 }
 
 impl Compose {
-    pub fn scheduled(&self) -> Option<&ScheduledMessage> {
-        match self {
-            Self::EditScheduled(message) => Some(message),
-            _ => None,
-        }
-    }
-
     pub fn reply_to(&self) -> Option<&OwnedEventId> {
         match self {
             Self::Reply(target) => Some(&target.event_id),
@@ -83,14 +79,6 @@ impl Compose {
             Self::Reply(target) => (
                 format!("Replying to {}", target.sender),
                 target.preview.clone(),
-            ),
-            Self::Edit(_) => (
-                "Editing your message".into(),
-                "Enter saves, Esc cancels".into(),
-            ),
-            Self::EditScheduled(_) => (
-                "Editing a scheduled message".into(),
-                "Enter saves, Esc cancels".into(),
             ),
         };
         Some(
@@ -130,6 +118,82 @@ impl Target {
     }
 }
 
+/// The field editing a message in place.
+const EDITOR: &str = "inline-edit";
+
+/// A message being edited where it is shown: a sent one in the timeline, or
+/// a scheduled one in its row. The composer keeps its draft meanwhile.
+pub struct InlineEdit {
+    pub target: Editing,
+    content: text_editor::Content,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum Editing {
+    Sent(EventKey),
+    /// By [`mtrx_core::ScheduledMessage::id`].
+    Scheduled(String),
+}
+
+impl InlineEdit {
+    pub fn new(target: Editing, text: &str) -> Self {
+        let mut content = text_editor::Content::with_text(text);
+        content.perform(text_editor::Action::Move(text_editor::Motion::DocumentEnd));
+        Self { target, content }
+    }
+
+    /// Put the cursor into the editor.
+    pub fn focus<T>() -> iced::Task<T> {
+        iced::widget::operation::focus(EDITOR)
+    }
+
+    pub fn perform(&mut self, action: text_editor::Action) {
+        self.content.perform(action);
+    }
+
+    pub fn text(&self) -> String {
+        self.content.text().trim_end().to_owned()
+    }
+
+    /// The editor, with Save and Cancel; Enter saves, Esc cancels.
+    pub fn view<'a>(&'a self) -> Element<'a, app::Message> {
+        let editor = text_editor(&self.content)
+            .id(EDITOR)
+            .style(style::editor)
+            .on_action(|action| act(Message::EditAction(action)))
+            .key_binding(|press| match press.key {
+                Key::Named(Named::Enter) if !press.modifiers.shift() => {
+                    Some(text_editor::Binding::Custom(act(Message::SaveEdit)))
+                }
+                _ => text_editor::Binding::from_key_press(press),
+            })
+            .padding(6)
+            .max_height(240);
+        let empty = self.content.text().trim().is_empty();
+        column![
+            editor,
+            row![
+                text("Enter saves · Esc cancels")
+                    .size(11)
+                    .style(text::secondary),
+                space::horizontal(),
+                button(text("Cancel").size(12))
+                    .padding([2, 8])
+                    .style(style::text_button)
+                    .on_press(act(Message::CancelEdit)),
+                button(text("Save").size(12))
+                    .padding([2, 10])
+                    .style(style::primary_button)
+                    .on_press_maybe((!empty).then(|| act(Message::SaveEdit))),
+            ]
+            .spacing(6)
+            .align_y(Alignment::Center),
+        ]
+        .spacing(4)
+        .into()
+    }
+}
+
 /// Buttons floating over a hovered message.
 pub fn toolbar<'a>(
     event: &Event,
@@ -150,10 +214,7 @@ pub fn toolbar<'a>(
     if event.editable {
         bar = bar.push(tool(
             "Edit",
-            target
-                .clone()
-                .zip(edit_text)
-                .map(|(t, text)| Message::Edit(t, text)),
+            edit_text.map(|text| Message::Edit(event.key.clone(), text)),
         ));
     }
     if event.own && event.event_id.is_some() {

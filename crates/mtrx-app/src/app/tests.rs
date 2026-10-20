@@ -512,6 +512,43 @@ async fn send_later_bar() {
     main.room = Some(open);
     let mut app = app(Screen::Main(Box::new(main)), Mode::Light);
     snapshot(&app, "send-later");
+
+    // Editing in place: a sent message, then a scheduled one, while the
+    // composer keeps its draft.
+    if let Screen::Main(main) = &mut app.screen
+        && let Some(open) = main.room.as_mut()
+    {
+        open.later = Default::default();
+        let sent = open
+            .entries
+            .iter()
+            .find_map(|e| match e {
+                TimelineEntry::Event(ev) if ev.editable && ev.event_id.is_some() => {
+                    Some(ev.key.clone())
+                }
+                _ => None,
+            })
+            .unwrap();
+        open.editing = Some(actions::InlineEdit::new(
+            actions::Editing::Sent(sent),
+            "Reviews are due **Monday**.",
+        ));
+    }
+    snapshot(&app, "edit-sent");
+    if let Screen::Main(main) = &mut app.screen
+        && let Some(open) = main.room.as_mut()
+    {
+        open.editing = Some(actions::InlineEdit::new(
+            actions::Editing::Scheduled("b".into()),
+            "Good morning! The draft is ready.",
+        ));
+    }
+    snapshot(&app, "edit-scheduled");
+    if let Screen::Main(main) = &mut app.screen
+        && let Some(open) = main.room.as_mut()
+    {
+        open.editing = None;
+    }
     let mut panel = settings::Panel::default();
     panel.room = Some(settings::Access::new(
         room.clone(),

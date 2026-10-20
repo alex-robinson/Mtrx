@@ -25,7 +25,7 @@ use mtrx_core::{
 };
 
 use crate::{
-    actions::{self, Compose},
+    actions::{self, Compose, Editing, InlineEdit},
     arrange::{self, Arrange},
     avatar::{self, Avatars},
     calls,
@@ -618,19 +618,6 @@ impl App {
                 if text.trim().is_empty() {
                     return Task::none();
                 }
-                if let Some(editing) = room.compose.scheduled() {
-                    // Saving keeps the time unless it has passed.
-                    return if editing.send_at > SystemTime::now() {
-                        let send_at = editing.send_at;
-                        self.later(send_later::Message::At(send_at))
-                    } else {
-                        room.later.picker.get_or_insert_with(|| {
-                            send_later::Picker::new(SystemTime::now(), None)
-                        });
-                        room.error = Some("Its time has passed: pick a new one.".into());
-                        Task::none()
-                    };
-                }
                 let compose = std::mem::take(&mut room.compose);
                 room.composer = text_editor::Content::new();
                 room.error = None;
@@ -640,15 +627,10 @@ impl App {
                     async move {
                         let text = text.trim_end();
                         let _ = timeline.typing(false).await;
-                        match &compose {
-                            Compose::Edit(target) => {
-                                timeline.edit_markdown(&target.key, text).await
-                            }
-                            _ => timeline
-                                .send_markdown(text, compose.reply_to().map(|id| &**id))
-                                .await
-                                .map(|_| ()),
-                        }
+                        timeline
+                            .send_markdown(text, compose.reply_to().map(|id| &**id))
+                            .await
+                            .map(|_| ())
                     },
                     move |result| Message::Sent(id.clone(), result.map_err(|e| e.to_string())),
                 )
@@ -893,6 +875,8 @@ impl App {
                         main.viewer = None;
                     } else if main.info.is_some() {
                         main.info = None;
+                    } else if let Some(room) = main.room.as_mut().filter(|r| r.editing.is_some()) {
+                        room.editing = None;
                     } else if !main.arrange.escape() {
                         main.filter.clear();
                     }
@@ -983,16 +967,8 @@ impl App {
             }
             Message::Scheduled(scheduled) => {
                 if let Screen::Main(main) = &mut self.screen {
-                    if let Some(room) = main.room.as_mut()
-                        && let Some(editing) = room.compose.scheduled()
-                        && !scheduled.iter().any(|m| m.id == editing.id)
-                    {
-                        // Sent (it became due) or cancelled elsewhere; the
-                        // edits stay in the composer and can be sent anew.
-                        room.compose = Compose::New;
-                        room.error = Some(
-                            "The scheduled message was sent before your changes were saved.".into(),
-                        );
+                    if let Some(room) = main.room.as_mut() {
+                        room.scheduled_changed(&scheduled);
                     }
                     main.scheduled = scheduled;
                     main.now = SystemTime::now();
@@ -1532,12 +1508,42 @@ impl App {
                 room.later.picker = None;
                 Task::none()
             }
-            Act::Edit(target, text) => {
-                room.composer = text_editor::Content::with_text(&text);
-                room.composer
-                    .perform(text_editor::Action::Move(text_editor::Motion::DocumentEnd));
-                room.compose = Compose::Edit(target);
-                room.later.picker = None;
+            Act::Edit(key, text) => {
+                room.editing = Some(InlineEdit::new(Editing::Sent(key), &text));
+                InlineEdit::focus()
+            }
+            Act::EditAction(action) => {
+                if let Some(edit) = &mut room.editing {
+                    edit.perform(action);
+                }
+                Task::none()
+            }
+            Act::SaveEdit => {
+                let Some(edit) = &room.editing else {
+                    return Task::none();
+                };
+                let text = edit.text();
+                if text.trim().is_empty() {
+                    return Task::none();
+                }
+                let session = main.session.clone();
+                let target = edit.target.clone();
+                Task::perform(
+                    async move {
+                        match target {
+                            Editing::Sent(key) => timeline.edit_markdown(&key, &text).await,
+                            Editing::Scheduled(id) => session.edit_scheduled(&id, &text).await,
+                        }
+                    },
+                    |result| Message::Act(Act::EditSaved(result.map_err(|e| e.to_string()))),
+                )
+            }
+            Act::EditSaved(Ok(())) | Act::CancelEdit => {
+                room.editing = None;
+                Task::none()
+            }
+            Act::EditSaved(Err(e)) => {
+                room.error = Some(e);
                 Task::none()
             }
             Act::AskDelete(id) => {
@@ -1553,12 +1559,8 @@ impl App {
                 Task::perform(async move { timeline.redact(&key).await }, done)
             }
             Act::CancelCompose => {
-                // A draft reply keeps its text; an edit's text is the old message.
-                if !matches!(room.compose, Compose::Reply(_)) {
-                    room.composer = text_editor::Content::new();
-                }
+                // The reply's text stays as a draft.
                 room.compose = Compose::New;
-                room.later = Default::default();
                 room.error = None;
                 Task::none()
             }
@@ -1585,14 +1587,22 @@ impl App {
         };
         match message {
             Later::TogglePicker => {
-                if room.later.picker.take().is_some() {
+                let open = room.later.picker.is_some() && room.later.rescheduling.is_none();
+                room.later = Default::default();
+                if open {
                     return Task::none();
                 }
-                // Changing a scheduled message's time starts from it.
-                let at = room.compose.scheduled().map(|m| m.send_at);
-                let picker = send_later::Picker::new(SystemTime::now(), at);
+                let picker = send_later::Picker::new(SystemTime::now(), None);
                 let scroll = picker.scroll();
                 room.later.picker = Some(picker);
+                scroll
+            }
+            Later::ChangeTime(message) => {
+                // From its time, unless that has passed.
+                let picker = send_later::Picker::new(SystemTime::now(), Some(message.send_at));
+                let scroll = picker.scroll();
+                room.later.picker = Some(picker);
+                room.later.rescheduling = Some(message);
                 scroll
             }
             Later::Month(_) | Later::Day(_) | Later::Hour(_) | Later::Minute(_) => {
@@ -1611,38 +1621,40 @@ impl App {
                 _ => Task::none(),
             },
             Later::At(send_at) => {
+                room.error = None;
+                let saved = |result: mtrx_core::Result<()>| {
+                    Message::Later(Later::Saved(result.map_err(|e| e.to_string())))
+                };
+                if let Some(message) = &room.later.rescheduling {
+                    let id = message.id.clone();
+                    return Task::perform(
+                        async move { session.reschedule(&id, send_at).await },
+                        saved,
+                    );
+                }
                 let text = room.composer.text().trim_end().to_owned();
                 if text.trim().is_empty() {
                     return Task::none();
                 }
-                room.error = None;
                 let room_id = room.id.clone();
-                let editing = room.compose.scheduled().map(|m| m.id.clone());
                 let reply_to = room.compose.reply_to().cloned();
                 // The composer is cleared once saved, so nothing is lost on errors.
                 Task::perform(
                     async move {
-                        match editing {
-                            Some(id) => session.reschedule(&id, &text, send_at).await,
-                            None => session
-                                .schedule(&room_id, &text, send_at, reply_to.as_deref())
-                                .await
-                                .map(|_| ()),
-                        }
+                        session
+                            .schedule(&room_id, &text, send_at, reply_to.as_deref())
+                            .await
+                            .map(|_| ())
                     },
-                    |result| Message::Later(Later::Saved(result.map_err(|e| e.to_string()))),
+                    saved,
                 )
             }
             Later::Edit(message) => {
-                room.composer = text_editor::Content::with_text(&message.text);
-                room.composer
-                    .perform(text_editor::Action::Move(text_editor::Motion::DocumentEnd));
-                // An overdue message needs a new time before it can be saved.
-                room.later.picker = message
-                    .overdue
-                    .then(|| send_later::Picker::new(SystemTime::now(), None));
-                room.compose = Compose::EditScheduled(message);
-                Task::none()
+                room.editing = Some(InlineEdit::new(
+                    Editing::Scheduled(message.id.clone()),
+                    &message.text,
+                ));
+                InlineEdit::focus()
             }
             Later::SendNow(id) => Task::perform(
                 async move { session.send_scheduled_now(&id).await.map(|_| ()) },
@@ -1653,9 +1665,12 @@ impl App {
                 done,
             ),
             Later::Saved(Ok(())) => {
+                // A new time leaves the composer alone; scheduling took its text.
+                if room.later.rescheduling.is_none() {
+                    room.compose = Compose::New;
+                    room.composer = text_editor::Content::new();
+                }
                 room.later = Default::default();
-                room.compose = Compose::New;
-                room.composer = text_editor::Content::new();
                 Task::none()
             }
             Later::Saved(Err(e)) | Later::Done(Err(e)) => {

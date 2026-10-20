@@ -13,7 +13,10 @@ use iced::{
 };
 use mtrx_core::{ScheduledMessage, describe_send_time, parse_send_time};
 
-use crate::{app, fonts, style};
+use crate::{
+    actions::{Editing, InlineEdit},
+    app, fonts, style,
+};
 
 /// The wheels' scrollables, to bring the picked hour and minute into view.
 const HOURS: &str = "send-later-hours";
@@ -34,9 +37,13 @@ pub enum Message {
     Minute(u32),
     /// Schedule for the picked time.
     Schedule,
-    /// Schedule the composer's text (or save the edited message) for this time.
+    /// Schedule the composer's text for this time, or move the message whose
+    /// time is being changed to it.
     At(SystemTime),
+    /// Edit a scheduled message's text in its row.
     Edit(ScheduledMessage),
+    /// Pick a new time for a scheduled message.
+    ChangeTime(ScheduledMessage),
     SendNow(String),
     Cancel(String),
     /// The composer's text was scheduled or the edit saved.
@@ -50,6 +57,9 @@ pub enum Message {
 pub struct SendLater {
     /// The time picker, while open.
     pub picker: Option<Picker>,
+    /// The scheduled message the picker picks a new time for; otherwise it
+    /// schedules the composer's text.
+    pub rescheduling: Option<ScheduledMessage>,
 }
 
 /// A send time being picked on the calendar and wheels.
@@ -236,17 +246,16 @@ pub struct Pending<'a> {
     pub now: SystemTime,
 }
 
-/// The bar of a room's scheduled messages.
+/// The bar of a room's scheduled messages; the one being edited shows its
+/// editor.
 pub fn queue<'a>(
     pending: &Pending<'a>,
-    editing: Option<&str>,
-    composer_empty: bool,
+    editing: Option<&'a InlineEdit>,
 ) -> Element<'a, app::Message> {
     let (messages, now) = (&pending.messages, pending.now);
     column(messages.iter().map(|message| {
-        // Editing replaces the composer's text, so only from an empty composer.
-        let can_edit = editing.is_none() && composer_empty;
-        item(message, editing == Some(message.id.as_str()), can_edit, now)
+        let edit = editing.filter(|e| e.target == Editing::Scheduled(message.id.clone()));
+        item(message, edit, now)
     }))
     .spacing(4)
     .into()
@@ -254,10 +263,10 @@ pub fn queue<'a>(
 
 fn item<'a>(
     message: &'a ScheduledMessage,
-    editing: bool,
-    can_edit: bool,
+    edit: Option<&'a InlineEdit>,
     now: SystemTime,
 ) -> Element<'a, app::Message> {
+    let editing = edit.is_some();
     let when = describe_send_time(message.send_at, now);
     let status = if message.overdue {
         text(format!("Overdue · was due {when}")).font(crate::fonts::SEMIBOLD)
@@ -278,41 +287,40 @@ fn item<'a>(
             })
             .on_press_maybe(on_press.map(app::Message::Later))
     };
-    let edit_label = if message.overdue {
+    let time_label = if message.overdue {
         "Reschedule"
     } else {
-        "Edit"
+        "Change time"
     };
-    let actions = row![
-        action(
-            edit_label,
-            can_edit.then(|| Message::Edit(message.clone())),
-            false
-        ),
-        action(
-            "Send now",
-            (!editing).then(|| Message::SendNow(message.id.clone())),
-            message.overdue,
-        ),
-        action(
-            "Cancel",
-            (!editing).then(|| Message::Cancel(message.id.clone())),
-            false
-        ),
-    ]
-    .spacing(2)
-    .align_y(Alignment::Center);
-
-    let content = row![
-        status.size(12).width(Length::Shrink),
-        text(preview)
-            .size(13)
-            .wrapping(Wrapping::None)
-            .width(Length::Fill),
-        actions,
-    ]
-    .spacing(12)
-    .align_y(Alignment::Center);
+    let content: Element<'a, app::Message> = match edit {
+        Some(edit) => column![status.size(12), edit.view()].spacing(6).into(),
+        None => row![
+            status.size(12).width(Length::Shrink),
+            text(preview)
+                .size(13)
+                .wrapping(Wrapping::None)
+                .width(Length::Fill),
+            row![
+                action("Edit", Some(Message::Edit(message.clone())), false),
+                action(
+                    time_label,
+                    Some(Message::ChangeTime(message.clone())),
+                    false
+                ),
+                action(
+                    "Send now",
+                    Some(Message::SendNow(message.id.clone())),
+                    message.overdue,
+                ),
+                action("Cancel", Some(Message::Cancel(message.id.clone())), false),
+            ]
+            .spacing(2)
+            .align_y(Alignment::Center),
+        ]
+        .spacing(12)
+        .align_y(Alignment::Center)
+        .into(),
+    };
 
     let kind = match (message.overdue, editing) {
         (true, _) => Kind::Overdue,
@@ -335,6 +343,7 @@ pub fn picker<'a>(
     now: SystemTime,
 ) -> Option<Element<'a, app::Message>> {
     let picker = state.picker.as_ref()?;
+    let can_schedule = can_schedule || state.rescheduling.is_some();
     let local = DateTime::<Local>::from(now);
     let today = local.date_naive();
     let quick = |label: &'a str, at: Option<SystemTime>| {
@@ -347,8 +356,19 @@ pub fn picker<'a>(
                     .map(|at| app::Message::Later(Message::At(at))),
             )
     };
+    let title = match &state.rescheduling {
+        Some(message) => format!(
+            "New time for “{}”",
+            message.text.lines().next().unwrap_or_default()
+        ),
+        None => "Send".into(),
+    };
     let quick_picks = column![
-        text("Send").size(12).font(fonts::SEMIBOLD),
+        text(title)
+            .size(12)
+            .font(fonts::SEMIBOLD)
+            .width(150)
+            .wrapping(Wrapping::WordOrGlyph),
         quick("In 1 hour", Some(now + Duration::from_secs(3600))),
         quick("In 3 hours", Some(now + Duration::from_secs(3 * 3600))),
         quick("Tomorrow 09:00", parse_send_time("tomorrow", now)),

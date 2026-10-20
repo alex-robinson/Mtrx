@@ -462,8 +462,26 @@ async fn scheduled_messages() -> Result<()> {
     assert_eq!(held[0].id, late.id);
     assert!(!has_message(&timeline.current(), "late"));
 
+    // Editing the text keeps it overdue; a new time makes it wait again.
+    session.edit_scheduled(&late.id, "late, edited").await?;
+    let edited = &session.scheduled()[0];
+    assert_eq!(
+        (edited.text.as_str(), edited.overdue),
+        ("late, edited", true)
+    );
+    session.reschedule(&late.id, in_secs(3600)).await?;
+    let waiting = &session.scheduled()[0];
+    assert_eq!(
+        (waiting.text.as_str(), waiting.overdue),
+        ("late, edited", false)
+    );
+
     let pending = session.send_scheduled_now(&late.id).await?;
-    timeout("overdue one sent", pending.sent()).await??;
+    timeout("rescheduled one sent now", pending.sent()).await??;
+    wait_for("edited text sent", timeline.updates(), |e| {
+        has_message(e, "late, edited")
+    })
+    .await?;
     assert!(session.scheduled().is_empty());
     Ok(())
 }
