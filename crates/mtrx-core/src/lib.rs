@@ -8,6 +8,7 @@
 
 mod calls;
 mod categories;
+mod connection;
 mod emoji;
 mod encryption;
 mod error;
@@ -19,6 +20,7 @@ mod notifications;
 mod people;
 mod permissions;
 mod profile;
+mod room_settings;
 mod rooms;
 mod scheduled;
 mod secrets;
@@ -31,6 +33,7 @@ pub mod test_support;
 
 pub use calls::{CallService, ServiceKind, recognize_call_link};
 pub use categories::{Category, Grouping, Layout, RoomCategories, RoomTag, Section, Sort};
+pub use connection::Connection;
 pub use encryption::{
     DeviceInfo, RecoveryStatus, RecoveryStep, Verification, VerificationEmoji, VerificationState,
 };
@@ -43,6 +46,7 @@ pub use notifications::Notification;
 pub use people::{Contact, UserInfo};
 pub use permissions::{Permissions, SpaceUpdate};
 pub use profile::Profile;
+pub use room_settings::{NotifyMode, RoomSettings};
 pub use rooms::{NewRoom, RoomKind, RoomList, RoomListState, RoomSummary, UserSummary};
 pub use scheduled::ScheduledMessage;
 pub use secrets::SecretStore;

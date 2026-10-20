@@ -73,6 +73,7 @@ pub fn event_line(event: &Event) -> String {
     let state = match &event.send_state {
         SendState::Sent => String::new(),
         SendState::Sending => " (sending)".to_owned(),
+        SendState::Waiting => " (waiting for the server)".to_owned(),
         SendState::Failed(e) => format!(" (failed: {e})"),
     };
     format!("[{time}] {text}{state}")

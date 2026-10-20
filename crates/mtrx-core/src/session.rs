@@ -49,8 +49,13 @@ pub struct Session {
     pub(crate) scheduler: std::sync::Mutex<Option<AbortOnDrop>>,
     pub(crate) notifications: broadcast::Sender<crate::Notification>,
     pub(crate) categories: crate::categories::Categories,
+    pub(crate) connection: tokio::sync::watch::Receiver<crate::Connection>,
+    /// Kept for the session: it follows push rule changes, so it knows a
+    /// room's mode right after setting it (sync echoes it later).
+    pub(crate) notification_settings: matrix_sdk::notification_settings::NotificationSettings,
     profile: Profile,
     _save_tokens: AbortOnDrop,
+    _connection: AbortOnDrop,
 }
 
 pub(crate) struct AbortOnDrop(pub(crate) JoinHandle<()>);
@@ -192,10 +197,14 @@ impl Session {
     }
 
     async fn new(client: Client, profile: Profile) -> Result<Self> {
-        let sync = SyncService::builder(client.clone())
-            .build()
-            .await
-            .map_err(|e| Error::Sync(e.to_string()))?;
+        let sync = Arc::new(
+            SyncService::builder(client.clone())
+                .with_offline_mode()
+                .build()
+                .await
+                .map_err(|e| Error::Sync(e.to_string()))?,
+        );
+        let (connection, watch_connection) = crate::connection::watch(client.clone(), sync.clone());
         let verification_tx = crate::encryption::register_handlers(&client);
         let notifications = crate::notifications::register(&client).await;
         let save_tokens = AbortOnDrop(tokio::spawn(save_refreshed_tokens(
@@ -205,9 +214,10 @@ impl Session {
         let send_lock = Arc::new(Mutex::new(()));
         let schedule = Arc::new(Schedule::load(client.clone(), send_lock.clone()).await?);
         let categories = crate::categories::Categories::load(client.clone()).await;
+        let notification_settings = client.notification_settings().await;
         Ok(Self {
             client,
-            sync: Arc::new(sync),
+            sync,
             verification_tx,
             room_keys: Default::default(),
             send_lock,
@@ -215,8 +225,11 @@ impl Session {
             scheduler: Default::default(),
             notifications,
             categories,
+            connection,
+            notification_settings,
             profile,
             _save_tokens: save_tokens,
+            _connection: watch_connection,
         })
     }
 

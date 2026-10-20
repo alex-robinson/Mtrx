@@ -170,7 +170,17 @@ impl Session {
     }
 }
 
-async fn power_levels(room: &Room) -> Result<RoomPowerLevels> {
+pub(crate) async fn power_levels(room: &Room) -> Result<RoomPowerLevels> {
+    // Synced after the room itself, e.g. just after creating it.
+    if room
+        .get_state_event_static::<RoomPowerLevelsEventContent>()
+        .await?
+        .is_none()
+    {
+        return Err(Error::Permissions(
+            "the room's permissions are not known yet".into(),
+        ));
+    }
     Ok(room.power_levels().await.map_err(matrix_sdk::Error::from)?)
 }
 

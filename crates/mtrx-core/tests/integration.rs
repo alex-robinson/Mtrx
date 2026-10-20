@@ -18,8 +18,8 @@ use std::{
 use anyhow::{Context, Result, bail};
 use futures_util::{Stream, StreamExt};
 use mtrx_core::{
-    CallService, EventContent, MembershipChange, NewRoom, Permissions, Profile, RecoveryStatus,
-    RoomKind, SecretStore, Session, TimelineEntry, VerificationState,
+    CallService, Connection, EventContent, MembershipChange, NewRoom, NotifyMode, Permissions,
+    Profile, RecoveryStatus, RoomKind, SecretStore, Session, TimelineEntry, VerificationState,
     test_support::{self, PASSWORD, homeserver, unique_name},
 };
 use mtrx_format::{Block, Inline, Style};
@@ -1198,5 +1198,38 @@ async fn notes_to_self() -> Result<()> {
     assert!(exported.ends_with("\n\n- check *ice* data\n"), "{exported}");
     let tomorrow = chrono::Local::now().date_naive().succ_opt().unwrap();
     assert_eq!(mtrx_core::notes_markdown(&entries, Some(tomorrow)), "");
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs local Synapse (testserver/run.sh)"]
+async fn room_settings() -> Result<()> {
+    let (_, alice) = new_user("settings").await?;
+    let s = &alice.session;
+    assert_eq!(s.connection(), Connection::Online);
+    let room = s
+        .create_room(NewRoom {
+            name: Some("settings".into()),
+            ..Default::default()
+        })
+        .await?;
+    let list = s.room_list().await?;
+    // Its state (name, permissions) comes with sync.
+    wait_for("room synced", list.updates(), |state| {
+        state
+            .rooms
+            .iter()
+            .any(|r| r.id == room && r.name == "settings")
+    })
+    .await?;
+    let settings = s.room_settings(&room).await?;
+    assert!(settings.can_rename && settings.can_change_topic && settings.can_change_picture);
+    assert!(settings.can_invite);
+    assert_eq!(settings.notify, NotifyMode::All);
+
+    for mode in [NotifyMode::Mute, NotifyMode::Mentions, NotifyMode::All] {
+        s.set_notify_mode(&room, mode).await?;
+        assert_eq!(s.room_settings(&room).await?.notify, mode);
+    }
     Ok(())
 }

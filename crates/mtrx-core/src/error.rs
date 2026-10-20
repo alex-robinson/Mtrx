@@ -38,6 +38,8 @@ pub enum Error {
     Permissions(String),
     #[error("invalid media type `{0}`")]
     InvalidMediaType(String),
+    #[error("notifications: {0}")]
+    Notifications(String),
 
     #[error(transparent)]
     Matrix(#[from] matrix_sdk::Error),

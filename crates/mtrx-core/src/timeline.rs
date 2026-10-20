@@ -91,6 +91,8 @@ pub struct EventKey(TimelineEventItemId);
 pub enum SendState {
     Sent,
     Sending,
+    /// Not sent because the server is unreachable; sent once it is back.
+    Waiting,
     Failed(String),
 }
 
@@ -421,7 +423,8 @@ pub struct PendingSend {
 }
 
 impl PendingSend {
-    /// Wait until the server accepted the message.
+    /// Wait until the server accepted the message, also through times the
+    /// server is unreachable.
     pub async fn sent(mut self) -> Result<OwnedEventId> {
         loop {
             match self.updates.recv().await {
@@ -434,7 +437,7 @@ impl PendingSend {
                 Ok(RoomSendQueueUpdate::SendError {
                     transaction_id,
                     error,
-                    ..
+                    is_recoverable: false,
                 }) if transaction_id == self.transaction_id => {
                     return Err(Error::Timeline(format!("sending failed: {error}")));
                 }
@@ -666,6 +669,10 @@ impl Converter {
         let send_state = match event.send_state() {
             None | Some(EventSendState::Sent { .. }) => SendState::Sent,
             Some(EventSendState::NotSentYet { .. }) => SendState::Sending,
+            Some(EventSendState::SendingFailed {
+                is_recoverable: true,
+                ..
+            }) => SendState::Waiting,
             Some(EventSendState::SendingFailed { error, .. }) => {
                 SendState::Failed(error.to_string())
             }
