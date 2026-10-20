@@ -4,7 +4,9 @@
 //! Both install the same tree: the binaries, a desktop file named after the
 //! app id (the window's application id, so docks show the logo) and the logo
 //! as icons. Needs `strip` (binutils); the AppImage needs `appimagetool` on
-//! the `PATH`, the package `dpkg-deb` and `dpkg-shlibdeps` (`dpkg-dev`).
+//! the `PATH` and the AppImage runtime (`runtime-<arch>` from
+//! github.com/AppImage/type2-runtime) at `$APPIMAGE_RUNTIME`; the package
+//! needs `dpkg-deb` and `dpkg-shlibdeps` (`dpkg-dev`).
 
 use std::{
     fs,
@@ -57,9 +59,14 @@ fn appimage(root: &Path, out: &Path) -> Result<PathBuf> {
 
     let arch = std::env::consts::ARCH;
     let appimage = out.join(format!("Mtrx-linux-{arch}.AppImage"));
+    // A given runtime, not the latest one appimagetool would download.
+    let runtime = std::env::var_os("APPIMAGE_RUNTIME")
+        .context("APPIMAGE_RUNTIME: path of the AppImage runtime (type2-runtime)")?;
     run(Command::new("appimagetool")
         .env("ARCH", arch)
         .arg("--no-appstream")
+        .arg("--runtime-file")
+        .arg(runtime)
         .arg(&appdir)
         .arg(&appimage))?;
     fs::remove_dir_all(&appdir)?;

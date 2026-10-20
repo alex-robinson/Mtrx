@@ -58,7 +58,8 @@ Status: macOS first. This is the plan for Windows and Linux builds.
       `Mtrx-linux-x86_64.AppImage` (appimagetool) and
       `mtrx_<version>_amd64.deb` (app, `mtrx` CLI, desktop file, icons,
       licence), built by the Linux workflow as artifacts. Built on Ubuntu
-      24.04, so they need glibc 2.39 or later.
+      22.04, the oldest we support (glibc 2.35). The AppImage runtime is
+      pinned (type2-runtime 20251108, checksum-verified in CI).
 - [ ] Release workflow: a version tag builds all three and attaches them to
       a GitHub release.
 
