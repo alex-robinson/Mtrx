@@ -4,8 +4,10 @@ name: Linux
 
 on:
   push:
-    branches: [linux]
+    branches: [main, core-cli]
   workflow_dispatch:
+  # From the release workflow, for the packages.
+  workflow_call:
 
 permissions:
   contents: read

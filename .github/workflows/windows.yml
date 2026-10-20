@@ -3,8 +3,10 @@ name: Windows
 
 on:
   push:
-    branches: [windows]
+    branches: [main, core-cli]
   workflow_dispatch:
+  # From the release workflow, for the packages.
+  workflow_call:
 
 concurrency:
   group: windows-${{ github.ref }}

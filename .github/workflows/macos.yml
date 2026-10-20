@@ -1,0 +1,46 @@
+# macOS: lint, test and package (Mtrx.app, zipped).
+name: macOS
+
+on:
+  push:
+    branches: [main, core-cli]
+  workflow_dispatch:
+  # From the release workflow, for the package.
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: macos-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  macos:
+    # Apple silicon.
+    runs-on: macos-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Format
+        run: cargo fmt --all --check
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Test
+        run: cargo test --workspace
+      - name: Package
+        run: |
+          cargo xtask bundle
+          ditto -c -k --sequesterRsrc --keepParent target/bundle/Mtrx.app target/bundle/Mtrx-macos-arm64.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Mtrx-macos-arm64
+          path: target/bundle/Mtrx-macos-arm64.zip
+          if-no-files-found: error

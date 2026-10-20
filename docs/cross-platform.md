@@ -13,11 +13,13 @@ Status: macOS first. This is the plan for Windows and Linux builds.
 
 ## 1. CI
 
-- [ ] Workflow: `cargo fmt --check`, `cargo clippy --workspace --all-targets`,
-      `cargo test --workspace` on macOS, Windows and Ubuntu.
+- [x] Workflow: `cargo fmt --check`, `cargo clippy --workspace --all-targets`,
+      `cargo test --workspace` on macOS, Windows and Ubuntu:
+      `.github/workflows/{macos,windows,linux}.yml`, on pushes to `main` and
+      `core-cli`, each also building its packages.
 - [x] Ubuntu job: start Synapse (`testserver/`) and run the ignored tests
       (`--ignored`, skipping `big_room`). Snapshots as artifacts.
-      `.github/workflows/linux.yml` (push to `linux`, or run by hand): fmt,
+      `.github/workflows/linux.yml`: fmt,
       clippy, tests, the Synapse tests; UI snapshots render on the CPU (Mesa
       lavapipe). Keyring tests run against GNOME Keyring in a D-Bus session,
       and once without a Secret Service. A second job builds the packages,
@@ -76,8 +78,12 @@ the packages are the run's artifact).
         Start menu shortcut with the AppUserModelID; uninstaller in
         Settings > Apps). Unsigned. The installer is built by CI but not yet
         run on a real machine.
-- [ ] Release workflow: a version tag builds all three and attaches them to
-      a GitHub release.
+- [x] Release workflow: a version tag builds all three and attaches them to
+      a GitHub release. `.github/workflows/release.yml` runs the three
+      platform workflows on the tag and makes a draft release with
+      `Mtrx-macos-arm64.zip`, `Mtrx-windows-x64-setup.exe`,
+      `Mtrx-windows-x64.zip`, `Mtrx-linux-x86_64.AppImage` and
+      `Mtrx-linux-amd64.deb`; it is described and published by hand.
 
 ## Later
 
