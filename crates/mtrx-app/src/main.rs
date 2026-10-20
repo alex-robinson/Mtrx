@@ -1,5 +1,7 @@
 //! Mtrx desktop app.
 
+// No console window next to the app on Windows.
+#![cfg_attr(windows, windows_subsystem = "windows")]
 // matrix-sdk futures are deeply nested.
 #![recursion_limit = "256"]
 
@@ -37,6 +39,8 @@ mod settings;
 mod sidebar;
 mod style;
 mod tint;
+#[cfg(windows)]
+mod windows;
 
 fn main() -> iced::Result {
     tracing_subscriber::fmt()
