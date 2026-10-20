@@ -6,6 +6,7 @@
 // matrix-sdk futures are deeply nested.
 #![recursion_limit = "256"]
 
+mod account_data;
 mod calls;
 mod categories;
 mod connection;
@@ -20,6 +21,7 @@ mod notifications;
 mod people;
 mod permissions;
 mod profile;
+mod room_colours;
 mod room_settings;
 mod rooms;
 mod scheduled;
@@ -46,6 +48,7 @@ pub use notifications::Notification;
 pub use people::{Contact, UserInfo};
 pub use permissions::{Permissions, SpaceUpdate};
 pub use profile::Profile;
+pub use room_colours::RoomListColours;
 pub use room_settings::{Access, NotifyMode, RoomSettings};
 pub use rooms::{NewRoom, RoomKind, RoomList, RoomListState, RoomSummary, UserSummary};
 pub use scheduled::ScheduledMessage;

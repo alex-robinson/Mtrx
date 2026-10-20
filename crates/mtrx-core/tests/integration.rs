@@ -1050,6 +1050,23 @@ async fn room_categories_and_tags() -> Result<()> {
     )
     .await?;
 
+    // So do room list colours.
+    s.change_room_list_colours(|c| {
+        c.home = Some("Teal".into());
+        c.spaces.insert(room.clone(), "Rose".into());
+    })
+    .await?;
+    assert_eq!(s.room_list_colours().home.as_deref(), Some("Teal"));
+    wait_for(
+        "the other device sees the colours",
+        second.session.room_list_colours_updates(),
+        |c| {
+            c.home.as_deref() == Some("Teal")
+                && c.spaces.get(&room).map(String::as_str) == Some("Rose")
+        },
+    )
+    .await?;
+
     // Tags show in the room list.
     let list = s.room_list().await?;
     list.wait_loaded().await;

@@ -2,6 +2,7 @@
 //! dark counterpart for dark mode.
 
 use iced::{Color, Theme};
+use mtrx_core::{OwnedRoomId, RoomListColours};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -40,6 +41,20 @@ impl Tint {
             Tint::Yellow => "Yellow",
             Tint::Grey => "Grey",
         }
+    }
+
+    pub fn from_name(name: &str) -> Option<Tint> {
+        Self::ALL.into_iter().find(|tint| tint.name() == name)
+    }
+
+    /// The room list's colour in `space` (or at home) from the account's
+    /// colours: the space's own, else Home's, else the default.
+    pub fn of(colours: &RoomListColours, space: Option<&OwnedRoomId>) -> Tint {
+        space
+            .and_then(|space| colours.spaces.get(space))
+            .or(colours.home.as_ref())
+            .and_then(|name| Self::from_name(name))
+            .unwrap_or_default()
     }
 
     /// The colour for `theme`: light, or dark in dark mode.

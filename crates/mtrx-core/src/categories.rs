@@ -2,36 +2,20 @@
 //! Home), plus built-in sections for favourites, direct chats and low
 //! priority rooms.
 //!
-//! Categories are personal. They are stored as account data, so they sync
-//! to the user's devices but nobody else sees them. Favourites and low
-//! priority are the standard Matrix room tags, shared with other clients.
-//!
-//! Changes show at once: [`Session::change_room_categories`] publishes the
-//! new arrangement before saving it on the server.
+//! Categories are personal. They are stored as account data
+//! ([`crate::account_data`]), so they sync to the user's devices but nobody
+//! else sees them. Favourites and low priority are the standard Matrix room
+//! tags, shared with other clients.
 
-use std::{
-    collections::BTreeMap,
-    sync::{
-        Arc,
-        atomic::{AtomicUsize, Ordering},
-    },
-};
+use std::collections::BTreeMap;
 
 use futures_util::Stream;
-use matrix_sdk::{
-    Client,
-    event_handler::EventHandlerHandle,
-    ruma::{
-        OwnedRoomId, RoomId,
-        events::{GlobalAccountDataEvent, macros::EventContent},
-    },
-};
+use matrix_sdk::ruma::{OwnedRoomId, RoomId, events::macros::EventContent};
 use serde::{Deserialize, Serialize};
-use tokio::sync::{Mutex, watch};
-use tokio_stream::wrappers::WatchStream;
-use tracing::warn;
 
-use crate::{Result, RoomKind, RoomSummary, Session, scheduled::random_id};
+use crate::{
+    Result, RoomKind, RoomSummary, Session, account_data::AccountData, scheduled::random_id,
+};
 
 /// The user's arrangement of the room list, for Home and each space.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -272,104 +256,31 @@ impl Layout {
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, EventContent)]
 #[ruma_event(type = "org.mtrx.room_categories", kind = GlobalAccountData)]
-struct RoomCategoriesEventContent {
+pub(crate) struct RoomCategoriesEventContent {
     #[serde(flatten)]
     categories: RoomCategories,
 }
 
-/// The session's room categories: published at once on change, saved in
-/// the background, and updated from other devices through sync.
-pub(crate) struct Categories {
-    client: Client,
-    value: Arc<watch::Sender<RoomCategories>>,
-    /// Changes not yet saved; synced values are stale meanwhile.
-    unsaved: Arc<AtomicUsize>,
-    /// Saves one at a time, so the last change is saved last.
-    save: Mutex<()>,
-    handler: EventHandlerHandle,
-}
+impl AccountData for RoomCategories {
+    type Content = RoomCategoriesEventContent;
 
-impl Categories {
-    pub(crate) async fn load(client: Client) -> Self {
-        let value = Arc::new(watch::Sender::new(stored(&client).await));
-        let unsaved = Arc::new(AtomicUsize::new(0));
-        let handler = client.add_event_handler({
-            let (value, unsaved) = (value.clone(), unsaved.clone());
-            move |event: GlobalAccountDataEvent<RoomCategoriesEventContent>| async move {
-                if unsaved.load(Ordering::SeqCst) == 0 {
-                    value.send_if_modified(|current| {
-                        let changed = *current != event.content.categories;
-                        *current = event.content.categories;
-                        changed
-                    });
-                }
-            }
-        });
-        Self {
-            client,
-            value,
-            unsaved,
-            save: Mutex::new(()),
-            handler,
-        }
+    fn from_content(content: Self::Content) -> Self {
+        content.categories
     }
 
-    async fn change(&self, change: impl FnOnce(&mut RoomCategories)) -> Result<()> {
-        self.unsaved.fetch_add(1, Ordering::SeqCst);
-        self.value.send_modify(change);
-        let saved = {
-            let _guard = self.save.lock().await;
-            let categories = self.value.borrow().clone();
-            self.client
-                .account()
-                .set_account_data(RoomCategoriesEventContent { categories })
-                .await
-        };
-        self.unsaved.fetch_sub(1, Ordering::SeqCst);
-        if let Err(e) = saved {
-            // Back to what the server has.
-            self.value.send_replace(stored(&self.client).await);
-            return Err(e.into());
-        }
-        Ok(())
-    }
-}
-
-impl Drop for Categories {
-    fn drop(&mut self) {
-        self.client.remove_event_handler(self.handler.clone());
-    }
-}
-
-async fn stored(client: &Client) -> RoomCategories {
-    let raw = match client
-        .account()
-        .account_data::<RoomCategoriesEventContent>()
-        .await
-    {
-        Ok(raw) => raw,
-        Err(e) => {
-            warn!("could not read room categories: {e}");
-            return RoomCategories::default();
-        }
-    };
-    match raw.map(|raw| raw.deserialize()).transpose() {
-        Ok(content) => content.map(|c| c.categories).unwrap_or_default(),
-        Err(e) => {
-            warn!("could not read room categories: {e}");
-            RoomCategories::default()
-        }
+    fn into_content(self) -> Self::Content {
+        RoomCategoriesEventContent { categories: self }
     }
 }
 
 impl Session {
     pub fn room_categories(&self) -> RoomCategories {
-        self.categories.value.borrow().clone()
+        self.categories.get()
     }
 
     /// The current categories, then every change, from this device or others.
     pub fn room_categories_updates(&self) -> impl Stream<Item = RoomCategories> + use<> {
-        WatchStream::new(self.categories.value.subscribe())
+        self.categories.updates()
     }
 
     /// Change the categories. The change is published at once and then saved

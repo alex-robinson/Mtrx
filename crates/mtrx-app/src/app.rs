@@ -20,8 +20,9 @@ use iced::{
 };
 use mtrx_core::{
     CallService, Connection, Contact, Google, Media, MediaRef, Member, Notification, OwnedMxcUri,
-    OwnedRoomId, OwnedUserId, Profile, RecoveryStep, RoomList, RoomListState, RoomOrAliasId,
-    RoomTag, RoomTimeline, ScheduledMessage, SecretStore, ServiceKind, Session, TimelineEntry, Url,
+    OwnedRoomId, OwnedUserId, Profile, RecoveryStep, RoomList, RoomListColours, RoomListState,
+    RoomOrAliasId, RoomTag, RoomTimeline, ScheduledMessage, SecretStore, ServiceKind, Session,
+    TimelineEntry, Url,
 };
 
 use crate::{
@@ -45,6 +46,7 @@ use crate::{
     settings::{self, Settings},
     sidebar,
     style::{self, MESSAGE_INSET, SPACE_BAR_WIDTH},
+    tint::Tint,
 };
 
 /// How often times shown relative to now are refreshed.
@@ -94,6 +96,10 @@ pub enum Message {
     Act(actions::Message),
     /// Selecting text in the timeline.
     Select(selection::Message),
+    /// The room list's colours changed, here or on another device.
+    Colours(RoomListColours),
+    /// Colours from the settings file were moved to the account, or not.
+    ColoursMoved(Result<(), String>),
     /// Scroll the timeline by this much, while dragging a selection.
     ScrollTimeline(f32),
     /// Names of others typing in a room.
@@ -268,6 +274,8 @@ struct Main {
     /// reaction picker opens.
     frequent_emoji: Vec<String>,
     connection: Connection,
+    /// The room list's colours, from the account.
+    colours: RoomListColours,
     /// Unread rooms scrolled out of the room list's view.
     out_of_view: sidebar::OutOfView,
     /// The view to show again once its room is listed (after starting).
@@ -311,6 +319,7 @@ impl Main {
             contacts: Vec::new(),
             frequent_emoji: Vec::new(),
             connection: session.connection(),
+            colours: session.room_list_colours(),
             out_of_view: Default::default(),
             restore: None,
             now: SystemTime::now(),
@@ -366,7 +375,7 @@ impl Main {
             grouping,
             out_of_view: self.out_of_view,
             width,
-            tint: settings.tint(self.space.as_ref()),
+            tint: Tint::of(&self.colours, self.space.as_ref()),
             room_pictures: settings.room_pictures,
             notes: self.pinned_notes(settings),
         }
@@ -501,7 +510,8 @@ impl App {
                 let mut main = Main::new(session.clone());
                 main.restore = self.view_file.as_deref().map(LastView::load);
                 self.screen = Screen::Main(Box::new(main));
-                Task::perform(
+                let migrate = self.move_colours_to_account(&session);
+                let start = Task::perform(
                     async move {
                         session.start_sync().await;
                         session.start_scheduler();
@@ -512,7 +522,29 @@ impl App {
                     |result: mtrx_core::Result<_>| {
                         Message::Ready(result.map_err(|e| e.to_string()))
                     },
-                )
+                );
+                Task::batch([start, migrate])
+            }
+            Message::Colours(colours) => {
+                if let Screen::Main(main) = &mut self.screen {
+                    main.colours = colours;
+                }
+                Task::none()
+            }
+            Message::ColoursMoved(result) => {
+                match result {
+                    Ok(()) => {
+                        self.settings.legacy_home_tint = None;
+                        self.settings.legacy_space_tints.clear();
+                        if let Some(file) = &self.settings_file
+                            && let Err(e) = self.settings.save(file)
+                        {
+                            tracing::warn!("could not save settings: {e}");
+                        }
+                    }
+                    Err(e) => tracing::warn!("could not move room list colours: {e}"),
+                }
+                Task::none()
             }
             Message::Restored(Err(_)) => {
                 self.screen = Screen::Login(Login::default());
@@ -1649,6 +1681,27 @@ impl App {
         Task::batch(tasks)
     }
 
+    /// Room list colours chosen before the account kept them, moved there
+    /// unless the account has colours already.
+    fn move_colours_to_account(&self, session: &Arc<Session>) -> Task<Message> {
+        let Some(legacy) = self.settings.legacy_colours() else {
+            return Task::none();
+        };
+        let session = session.clone();
+        Task::perform(
+            async move {
+                if session.room_list_colours() != RoomListColours::default() {
+                    return Ok(());
+                }
+                session
+                    .change_room_list_colours(|colours| *colours = legacy)
+                    .await
+                    .map_err(|e| e.to_string())
+            },
+            Message::ColoursMoved,
+        )
+    }
+
     fn settings_update(&mut self, message: settings::Message) -> Task<Message> {
         let Some(panel) = &mut self.settings_panel else {
             return Task::none();
@@ -1682,6 +1735,32 @@ impl App {
                 .abortable();
                 panel.google.signing_in = Some(handle);
                 task
+            }
+            settings::Action::Colour(space, tint) => {
+                let Screen::Main(main) = &self.screen else {
+                    return Task::none();
+                };
+                let session = main.session.clone();
+                Task::perform(
+                    async move {
+                        session
+                            .change_room_list_colours(|colours| {
+                                let name = tint.name().to_owned();
+                                match space {
+                                    Some(space) => {
+                                        colours.spaces.insert(space, name);
+                                    }
+                                    None => colours.home = Some(name),
+                                }
+                            })
+                            .await
+                    },
+                    |result| {
+                        Message::Settings(settings::Message::ColourSaved(
+                            result.map_err(|e| e.to_string()),
+                        ))
+                    },
+                )
             }
             settings::Action::GoogleSignOut => {
                 let google = self.google.clone();
@@ -2361,6 +2440,12 @@ impl App {
                 .map(|c| Message::Arrange(arrange::Message::Categories(c))),
             );
             subscriptions.extend(main.arrange.subscription());
+            subscriptions.push(
+                Subscription::run_with(Shared(main.session.clone()), |s| {
+                    s.0.room_list_colours_updates()
+                })
+                .map(Message::Colours),
+            );
             if !main.scheduled.is_empty() {
                 subscriptions.push(iced::time::every(TICK).map(|_| Message::Tick));
             }
@@ -2423,7 +2508,7 @@ impl App {
                         .map(|s| (s.id.clone(), s.name.clone()))
                         .collect();
                     (
-                        panel.view(&self.settings, spaces),
+                        panel.view(&self.settings, spaces, &main.colours),
                         Message::ShowSettings(false),
                     )
                 } else if let Some(dialog) = &main.dialog {

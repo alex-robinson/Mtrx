@@ -14,7 +14,9 @@ use iced::{
         button, column, container, pick_list, row, scrollable, space, text, text_input, toggler,
     },
 };
-use mtrx_core::{CallService, GoogleClient, Grouping, OwnedRoomId, Permissions, ServiceKind};
+use mtrx_core::{
+    CallService, GoogleClient, Grouping, OwnedRoomId, Permissions, RoomListColours, ServiceKind,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -46,9 +48,12 @@ pub struct Settings {
     pub room_pictures: bool,
     /// The Notes to self at the top of the room list, in every space.
     pub pinned_notes: bool,
-    /// The room list's colour at home, and in spaces without their own.
-    pub home_tint: Tint,
-    pub space_tints: BTreeMap<OwnedRoomId, Tint>,
+    /// Room list colours chosen before they were kept in the account
+    /// ([`mtrx_core::RoomListColours`]): moved there once, then dropped.
+    #[serde(rename = "home_tint", skip_serializing)]
+    pub legacy_home_tint: Option<Tint>,
+    #[serde(rename = "space_tints", skip_serializing)]
+    pub legacy_space_tints: BTreeMap<OwnedRoomId, Tint>,
 }
 
 impl Default for Settings {
@@ -63,19 +68,25 @@ impl Default for Settings {
             room_list_width: style::ROOM_LIST_WIDTH,
             room_pictures: false,
             pinned_notes: true,
-            home_tint: Tint::default(),
-            space_tints: BTreeMap::new(),
+            legacy_home_tint: None,
+            legacy_space_tints: BTreeMap::new(),
         }
     }
 }
 
 impl Settings {
-    /// The room list's colour in `space`, or at home.
-    pub fn tint(&self, space: Option<&OwnedRoomId>) -> Tint {
-        space
-            .and_then(|space| self.space_tints.get(space))
-            .copied()
-            .unwrap_or(self.home_tint)
+    /// Colours from before they were kept in the account, to move there.
+    pub fn legacy_colours(&self) -> Option<RoomListColours> {
+        (self.legacy_home_tint.is_some() || !self.legacy_space_tints.is_empty()).then(|| {
+            RoomListColours {
+                home: self.legacy_home_tint.map(|t| t.name().to_owned()),
+                spaces: self
+                    .legacy_space_tints
+                    .iter()
+                    .map(|(space, tint)| (space.clone(), tint.name().to_owned()))
+                    .collect(),
+            }
+        })
     }
 
     pub fn path(data_root: &Path) -> PathBuf {
@@ -117,6 +128,8 @@ pub enum Message {
     SpaceLoaded(OwnedRoomId, Option<CallService>, Option<bool>),
     SetSpaceService(SpaceChoice),
     SpaceSaved(Result<(), String>),
+    /// A room list colour was saved in the account, or not.
+    ColourSaved(Result<(), String>),
     /// Who may edit a room or space, and whether we may change that.
     AccessLoaded(OwnedRoomId, Option<Permissions>, Option<bool>),
     LetEveryoneEdit(OwnedRoomId),
@@ -145,6 +158,8 @@ pub enum Action {
     },
     GoogleSignIn(GoogleClient),
     GoogleSignOut,
+    /// Set the room list's colour in a space, or at home, in the account.
+    Colour(Option<OwnedRoomId>, Tint),
 }
 
 /// State of the open settings panel.
@@ -355,14 +370,7 @@ impl Panel {
                 settings.pinned_notes = on;
                 return Action::Save;
             }
-            Message::Tint(None, tint) => {
-                settings.home_tint = tint;
-                return Action::Save;
-            }
-            Message::Tint(Some(space), tint) => {
-                settings.space_tints.insert(space, tint);
-                return Action::Save;
-            }
+            Message::Tint(space, tint) => return Action::Colour(space, tint),
             Message::FormKind(kind) => self.form.kind = kind,
             Message::FormName(name) => self.form.name = name,
             Message::FormUrl(url) => self.form.url = url,
@@ -397,6 +405,7 @@ impl Panel {
                     return Action::SetSpaceService(space.id.clone(), service);
                 }
             }
+            Message::ColourSaved(result) => self.error = result.err(),
             Message::SpaceSaved(result) => {
                 if let Some(space) = &mut self.space {
                     space.error = result.err();
@@ -478,6 +487,7 @@ impl Panel {
         &'a self,
         settings: &'a Settings,
         spaces: Vec<(OwnedRoomId, String)>,
+        colours: &RoomListColours,
     ) -> Element<'a, app::Message> {
         let mut panel = column![
             row![
@@ -521,7 +531,7 @@ impl Panel {
                     .on_toggle(|on| message(Message::PinnedNotes(on)))
                     .into(),
             ),
-            tints(settings, spaces),
+            tints(colours, spaces),
             heading("Calls"),
             text(
                 "Start call uses the space's call service if it has one, \
@@ -813,7 +823,10 @@ fn heading<'a>(label: &str) -> Element<'a, app::Message> {
 }
 
 /// The room list's colour at home and in each space.
-fn tints<'a>(settings: &Settings, spaces: Vec<(OwnedRoomId, String)>) -> Element<'a, app::Message> {
+fn tints<'a>(
+    colours: &RoomListColours,
+    spaces: Vec<(OwnedRoomId, String)>,
+) -> Element<'a, app::Message> {
     let line = |label: String, space: Option<OwnedRoomId>, chosen: Tint| {
         let swatches = Tint::ALL.map(|tint| {
             let selected = tint == chosen;
@@ -840,15 +853,15 @@ fn tints<'a>(settings: &Settings, spaces: Vec<(OwnedRoomId, String)>) -> Element
         .align_y(Alignment::Center)
         .into()
     };
-    let mut lines = vec![line("Home".into(), None, settings.home_tint)];
+    let mut lines = vec![line("Home".into(), None, Tint::of(colours, None))];
     for (space, name) in spaces {
-        let chosen = settings.tint(Some(&space));
+        let chosen = Tint::of(colours, Some(&space));
         lines.push(line(name, Some(space), chosen));
     }
     column![
         column![
             text("Colour"),
-            text("The room list's colour; spaces without their own use Home's.")
+            text("The room list's colour; spaces without their own use Home's. Synced to your other devices.")
                 .size(12)
                 .style(text::secondary),
         ]
@@ -947,13 +960,30 @@ mod tests {
             room_list_width: 320.0,
             room_pictures: true,
             pinned_notes: false,
-            home_tint: Tint::Blue,
-            space_tints: BTreeMap::from([("!s:example.org".try_into().unwrap(), Tint::Rose)]),
+            legacy_home_tint: None,
+            legacy_space_tints: BTreeMap::new(),
         };
         settings.save(&path).unwrap();
         assert_eq!(Settings::load(&path), settings);
         std::fs::write(&path, "{}").unwrap();
         assert_eq!(Settings::load(&path), Settings::default(), "older file");
+
+        // Colours from before the account kept them: read, to move there,
+        // and not written again.
+        std::fs::write(
+            &path,
+            r#"{"home_tint": "Blue", "space_tints": {"!s:example.org": "Rose"}}"#,
+        )
+        .unwrap();
+        let old = Settings::load(&path);
+        let colours = old.legacy_colours().unwrap();
+        assert_eq!(colours.home.as_deref(), Some("Blue"));
+        assert_eq!(
+            colours.spaces.values().next().map(String::as_str),
+            Some("Rose")
+        );
+        old.save(&path).unwrap();
+        assert_eq!(Settings::load(&path).legacy_colours(), None);
     }
 
     #[test]
