@@ -1,0 +1,66 @@
+# Linux (Ubuntu): checks, tests against a local Synapse, and the packages.
+name: Linux
+
+on:
+  push:
+    branches: [linux]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: linux-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - name: System packages
+        # Mesa's lavapipe (Vulkan) and llvmpipe (GL): wgpu renders the UI
+        # snapshots on the CPU. GNOME Keyring: a Secret Service for the
+        # keyring tests. Noto Color Emoji: the app's emoji font on Linux.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config libxkbcommon-dev \
+            mesa-vulkan-drivers libvulkan1 libegl1 libgl1-mesa-dri \
+            dbus dbus-x11 gnome-keyring \
+            fonts-noto-color-emoji
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Format
+        run: cargo fmt --all --check
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: File dialogs use the XDG portal
+        run: cargo tree -p mtrx-app -e features -i rfd | grep -q 'rfd feature "xdg-portal"'
+      - name: Tests
+        run: cargo test --workspace
+      - name: Synapse
+        run: |
+          # The container runs Synapse as uid 991; it writes to data/.
+          mkdir -p testserver/data
+          chmod 777 testserver/data
+          testserver/run.sh
+      - name: Integration tests (mtrx-core)
+        run: cargo test -p mtrx-core --test integration -- --ignored
+      - name: UI tests (mtrx-app)
+        run: cargo test -p mtrx-app -- --ignored --skip big_room
+      - name: Synapse log
+        if: failure()
+        run: docker logs mtrx-synapse 2>&1 | tail -100
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ui-snapshots
+          path: target/ui-snapshots
+          if-no-files-found: warn
