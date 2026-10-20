@@ -1,6 +1,8 @@
 //! An open room: timeline and composer.
 
 use std::{
+    collections::HashMap,
+    rc::Rc,
     sync::Arc,
     time::{Duration, SystemTime},
 };
@@ -26,6 +28,7 @@ use crate::{
     avatar::{self, Avatars, Shape},
     calls::{self, RoomCalls},
     context_menu::context_menu,
+    drag_scroll::drag_scroll,
     ellipsis::ellipsis,
     emoji, fonts,
     hint::{Position, hint},
@@ -36,6 +39,7 @@ use crate::{
     message,
     message_menu::{self, MenuAt, Selecting},
     popover::{Edge, Side, popover},
+    selection::{self, Bounds, Pos, Selection, units_text},
     send_later::{self, SendLater},
     style::{
         self, GUTTER_SPACING, HEADER_AVATAR, MESSAGE_PADDING, SENDER_AVATAR, TEXT_MARGIN,
@@ -55,6 +59,8 @@ const FILL: usize = 40;
 
 /// The message field, focused again after inserting an emoji.
 pub const COMPOSER: &str = "composer";
+/// The timeline's scrollable.
+pub const TIMELINE: &str = "timeline";
 
 /// Consecutive messages of one sender within this gap share a header.
 const GROUP_GAP: Duration = Duration::from_secs(5 * 60);
@@ -78,6 +84,8 @@ pub struct Room {
     pub menu: Option<(String, MenuAt)>,
     /// A message's text shown in place of it, to select from.
     pub selecting: Option<Selecting>,
+    /// Text selected in the timeline.
+    pub selection: Option<Selection>,
     /// All emoji in the reaction picker, while shown.
     pub emoji: Option<emoji::Panel>,
     /// The composer's emoji panel, while shown.
@@ -116,6 +124,7 @@ impl Room {
             picker: None,
             menu: None,
             selecting: None,
+            selection: None,
             emoji: None,
             composer_emoji: None,
             confirm_delete: None,
@@ -265,6 +274,60 @@ impl Room {
         })
     }
 
+    /// Each message's index in the timeline, for ordering a selection.
+    fn order(&self) -> HashMap<&str, usize> {
+        self.entries
+            .iter()
+            .enumerate()
+            .filter_map(|(i, entry)| match entry {
+                TimelineEntry::Event(event) => Some((event.id.as_str(), i)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The selected text, as shown; with several messages, each sender's
+    /// name and time before their messages.
+    pub fn selected_text(&self) -> Option<String> {
+        let bounds = self.selection.as_ref()?.ordered(&self.order())?;
+        let messages: Vec<_> = (bounds.start.0..=bounds.end.0)
+            .filter_map(|i| match self.entries.get(i)? {
+                TimelineEntry::Event(event) => match &event.content {
+                    EventContent::Message(m) => Some((event, m, bounds.in_message(i)?)),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .collect();
+        let several = messages.len() > 1;
+        let mut out = String::new();
+        let mut sender = None;
+        for (event, m, (from, to)) in messages {
+            let text = if m.document.has_math() {
+                // Typeset, so not selectable inside: all of it or nothing.
+                let whole = from == Pos::default() && to == Pos::END;
+                if !whole {
+                    continue;
+                }
+                m.document.to_plain_text()
+            } else {
+                units_text(&message::units(&m.document), from, to)
+            };
+            if text.is_empty() {
+                continue;
+            }
+            if !out.is_empty() {
+                out.push_str("\n\n");
+            }
+            if several && sender != Some(&event.sender) {
+                out.push_str(&format!("{}, {}\n", display_name(event), time(event)));
+                sender = Some(&event.sender);
+            }
+            out.push_str(&text);
+        }
+        (!out.is_empty()).then_some(out)
+    }
+
     pub fn view<'a>(
         &'a self,
         summary: Option<&'a RoomSummary>,
@@ -272,6 +335,12 @@ impl Room {
         scheduled: &send_later::Pending<'a>,
     ) -> Element<'a, Message> {
         let header = self.header(summary, look);
+        let order = self.selection.as_ref().map(|_| self.order());
+        let selected = self
+            .selection
+            .as_ref()
+            .zip(order.as_ref())
+            .and_then(|(selection, order)| Some((selection.ordered(order)?, order)));
         let context = Context {
             theme: &look.theme,
             math: look.math,
@@ -284,6 +353,8 @@ impl Room {
             picker: self.picker.as_ref().map(|(id, at)| (id.as_str(), *at)),
             menu: self.menu.as_ref().map(|(id, at)| (id.as_str(), *at)),
             selecting: self.selecting.as_ref(),
+            selected,
+            dragging: self.selection.as_ref().is_some_and(|s| s.dragging),
             emoji: self.emoji.as_ref(),
             frequent_emoji: look.frequent_emoji,
             confirm_delete: self.confirm_delete.as_deref(),
@@ -340,10 +411,19 @@ impl Room {
         // Pegged to the bottom also when shorter than the view: new messages
         // push older ones up, and loaded history appears above.
         let timeline = scrollable(container(timeline).align_bottom(Length::Shrink))
+            .id(TIMELINE)
             .anchor_bottom()
             .on_scroll(Message::Scrolled)
             .height(Length::Fill)
             .width(Length::Fill);
+        // A click beside the text clears the selection; dragging one past
+        // the top or bottom scrolls.
+        let dragging = self.selection.as_ref().is_some_and(|s| s.dragging);
+        let timeline = drag_scroll(
+            mouse_area(timeline).on_press(Message::Select(selection::Message::Clear)),
+            dragging,
+            Message::ScrollTimeline,
+        );
 
         let cancellable = self.compose.cancellable();
         let composer = text_editor(&self.composer)
@@ -594,6 +674,9 @@ struct Context<'a, 'b> {
     picker: Option<(&'b str, PickerAt)>,
     menu: Option<(&'b str, MenuAt)>,
     selecting: Option<&'a Selecting>,
+    /// The selection, with each message's index in the timeline.
+    selected: Option<(Bounds, &'b HashMap<&'b str, usize>)>,
+    dragging: bool,
     emoji: Option<&'a emoji::Panel>,
     /// The user's most used emoji.
     frequent_emoji: &'b [String],
@@ -625,6 +708,18 @@ fn event_view<'a>(
         .map(|(_, at)| at);
     // Its math is shown typeset, so it can be saved as a picture.
     let mut math_shown = false;
+    let select = || {
+        let id = event.id.clone();
+        message::Select {
+            range: context
+                .selected
+                .and_then(|(bounds, order)| bounds.in_message(*order.get(event.id.as_str())?)),
+            dragging: context.dragging,
+            on_gesture: Rc::new(move |gesture| {
+                Message::Select(selection::Message::Gesture(id.clone(), gesture))
+            }),
+        }
+    };
     let body: Element<'a, Message> = match &event.content {
         EventContent::Message(m) => {
             let content: Element<'a, Message> = match (m.kind, m.document.has_math()) {
@@ -638,11 +733,11 @@ fn event_view<'a>(
                             math_shown = true;
                             image(handle.clone()).width(*width).height(*height).into()
                         }
-                        _ => message::view(&m.document, theme, Message::LinkClicked),
+                        _ => message::view(&m.document, theme, Message::LinkClicked, select()),
                     }
                 }
                 (MessageKind::Text | MessageKind::Notice | MessageKind::Emote, false) => {
-                    message::view(&m.document, theme, Message::LinkClicked)
+                    message::view(&m.document, theme, Message::LinkClicked, select())
                 }
                 (kind, _) => match &m.media {
                     Some(file) => media::view(file, &m.body, context.previews),
@@ -712,8 +807,13 @@ fn event_view<'a>(
         EventContent::Message(m) => Some(m),
         _ => None,
     };
+    let in_selection = context.selected.is_some_and(|(bounds, order)| {
+        order
+            .get(event.id.as_str())
+            .is_some_and(|&i| bounds.in_message(i).is_some())
+    });
     let menu_items = message
-        .map(|m| message_menu::items(m, &event.id, math_shown))
+        .map(|m| message_menu::items(m, &event.id, math_shown, in_selection))
         .filter(|items| !items.is_empty());
     let menu_view = |at| {
         (menu_at == Some(at))

@@ -37,6 +37,16 @@ pub const TOOLBAR_HEIGHT: f32 = TOOL_ICON + 2.0 * (TOOL_PADDING + TOOLBAR_PADDIN
 pub const MESSAGE_INSET: f32 =
     2.0 * (TIMELINE_PADDING + MESSAGE_PADDING) + SENDER_AVATAR + GUTTER_SPACING + TEXT_MARGIN;
 
+/// Behind selected text.
+pub fn selection(theme: &Theme) -> Color {
+    theme
+        .extended_palette()
+        .primary
+        .weak
+        .color
+        .scale_alpha(0.55)
+}
+
 pub fn muted(theme: &Theme) -> Color {
     theme.extended_palette().background.strong.color
 }

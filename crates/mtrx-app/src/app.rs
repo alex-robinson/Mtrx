@@ -41,6 +41,7 @@ use crate::{
     message_menu::Selecting,
     pdf_viewer,
     room::{self, Look, Older, Room},
+    selection::{self, Selection},
     send_later,
     settings::{self, Settings},
     sidebar,
@@ -92,6 +93,10 @@ pub enum Message {
     Sent(OwnedRoomId, Result<(), String>),
     Later(send_later::Message),
     Act(actions::Message),
+    /// Selecting text in the timeline.
+    Select(selection::Message),
+    /// Scroll the timeline by this much, while dragging a selection.
+    ScrollTimeline(f32),
     /// Names of others typing in a room.
     Typing(OwnedRoomId, Vec<String>),
     Scheduled(Vec<ScheduledMessage>),
@@ -794,6 +799,25 @@ impl App {
             }
             Message::Later(message) => self.later(message),
             Message::Act(message) => self.act(message),
+            Message::ScrollTimeline(dy) => iced::widget::operation::scroll_by(
+                room::TIMELINE,
+                iced::widget::scrollable::AbsoluteOffset { x: 0.0, y: dy },
+            ),
+            Message::Select(message) => {
+                let Screen::Main(main) = &mut self.screen else {
+                    return Task::none();
+                };
+                let Some(room) = main.room.as_mut() else {
+                    return Task::none();
+                };
+                if let selection::Message::Copy = message {
+                    return room
+                        .selected_text()
+                        .map_or_else(Task::none, iced::clipboard::write);
+                }
+                Selection::update(&mut room.selection, message);
+                Task::none()
+            }
             Message::Typing(room_id, names) => {
                 if let Screen::Main(main) = &mut self.screen
                     && let Some(room) = main.room.as_mut().filter(|r| r.id == room_id)
@@ -1184,6 +1208,9 @@ impl App {
                     } else if let Some(room) = main.room.as_mut().filter(|r| r.selecting.is_some())
                     {
                         room.selecting = None;
+                    } else if let Some(room) = main.room.as_mut().filter(|r| r.selection.is_some())
+                    {
+                        room.selection = None;
                     } else if let Some(room) =
                         main.room.as_mut().filter(|r| r.composer_emoji.is_some())
                     {
@@ -1910,6 +1937,11 @@ impl App {
                 room.menu = None;
                 iced::clipboard::write(text)
             }
+            Act::CopySelection => {
+                room.menu = None;
+                room.selected_text()
+                    .map_or_else(Task::none, iced::clipboard::write)
+            }
             Act::CopyImage(document) => {
                 room.menu = None;
                 Task::perform(self.math.copy_image(&document), |result| {
@@ -2294,6 +2326,20 @@ impl App {
                 .map(Message::Notified),
             );
             subscriptions.push(iced::event::listen_with(shortcuts));
+            // A selection being dragged ends wherever the button is released.
+            if main
+                .room
+                .as_ref()
+                .and_then(|r| r.selection.as_ref())
+                .is_some_and(|s| s.dragging)
+            {
+                subscriptions.push(iced::event::listen_with(|event, _, _| match event {
+                    iced::Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
+                        Some(Message::Select(selection::Message::End))
+                    }
+                    _ => None,
+                }));
+            }
             if self.resizing {
                 subscriptions.push(iced::event::listen_with(|event, _, _| match event {
                     iced::Event::Mouse(mouse::Event::CursorMoved { position }) => {
@@ -2750,12 +2796,18 @@ async fn run_request(
 /// search; window focus.
 fn shortcuts(
     event: iced::Event,
-    _status: iced::event::Status,
+    status: iced::event::Status,
     _window: window::Id,
 ) -> Option<Message> {
     use iced::keyboard::{self, Key, key::Named};
     match event {
         iced::Event::Keyboard(keyboard::Event::KeyPressed { key, modifiers, .. }) => match key {
+            // Unless a text field copies its own selection.
+            Key::Character(c)
+                if c == "c" && modifiers.command() && status == iced::event::Status::Ignored =>
+            {
+                Some(Message::Select(selection::Message::Copy))
+            }
             Key::Character(c) if c == "k" && modifiers.command() => Some(Message::FocusSearch),
             Key::Character(c) if c == "r" && modifiers.command() => Some(Message::Reload),
             Key::Named(Named::Escape) => Some(Message::Escape),

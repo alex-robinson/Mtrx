@@ -54,6 +54,8 @@ pub enum Message {
     CloseMenu,
     /// Put text on the clipboard.
     Copy(String),
+    /// Put the text selected in the timeline on the clipboard.
+    CopySelection,
     /// Put a message with math on the clipboard as a picture.
     CopyImage(Document),
     /// Save a message with math as a picture.

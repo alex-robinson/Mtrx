@@ -33,10 +33,12 @@ const WIDTH: f32 = 280.0;
 const SELECT: &str = "select-text";
 
 /// What the menu offers for a message: label and action, in order.
+/// `in_selection`: the message is (partly) in the timeline's selection.
 pub fn items(
     message: &Message,
     event_id: &str,
     math_shown: bool,
+    in_selection: bool,
 ) -> Vec<(String, actions::Message)> {
     let document = &message.document;
     let is_text = matches!(
@@ -44,6 +46,9 @@ pub fn items(
         MessageKind::Text | MessageKind::Notice | MessageKind::Emote
     );
     let mut items = Vec::new();
+    if in_selection {
+        items.push(("Copy selection".to_owned(), actions::Message::CopySelection));
+    }
     if is_text {
         items.push((
             "Copy text".to_owned(),
@@ -193,7 +198,7 @@ mod tests {
     fn offers_text_formulas_links_and_the_picture() {
         let html = r#"Flux <span data-mx-maths="q=-k\nabla T"><code>q</code></span>, see <a href="https://example.org/a">data</a>"#;
         let text = message(MessageKind::Text, html);
-        let items = items(&text, "$1", true);
+        let items = items(&text, "$1", true, false);
         assert_eq!(
             labels(&items),
             [
@@ -210,19 +215,27 @@ mod tests {
             "the formula without dollars"
         );
         // Until the math is typeset, there is no picture to save.
-        assert!(!labels(&super::items(&text, "$1", false)).contains(&"Save image…"));
+        assert!(!labels(&super::items(&text, "$1", false, false)).contains(&"Save image…"));
 
         let two = message(
             MessageKind::Text,
             r#"<span data-mx-maths="a"><code>a</code></span> and <span data-mx-maths="b"><code>b</code></span>"#,
         );
         assert_eq!(
-            labels(&super::items(&two, "$2", true))[1..3],
+            labels(&super::items(&two, "$2", true, false))[1..3],
             ["Copy LaTeX: a", "Copy LaTeX: b"]
         );
 
         // A file has nothing to copy.
-        assert!(super::items(&message(MessageKind::File, "report.pdf"), "$3", false).is_empty());
+        assert!(
+            super::items(
+                &message(MessageKind::File, "report.pdf"),
+                "$3",
+                false,
+                false
+            )
+            .is_empty()
+        );
     }
 
     #[test]

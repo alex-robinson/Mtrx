@@ -22,6 +22,7 @@ use super::*;
 use crate::{
     fonts,
     message_menu::{MenuAt, Selecting},
+    selection::{Point, Pos, Selection},
 };
 
 const TIMEOUT: Duration = Duration::from_secs(30);
@@ -402,6 +403,41 @@ async fn main_screen_with_math() {
             open.calls.announce = true;
             // The hovered message's menu, from its toolbar.
             open.menu = Some((hovered.clone(), MenuAt::Toolbar));
+            // Text selected from the first message into bob's reply.
+            let id_of = |start: &str| {
+                entries
+                    .iter()
+                    .find_map(|e| match e {
+                        TimelineEntry::Event(ev) => match &ev.content {
+                            EventContent::Message(m) if m.body.starts_with(start) => {
+                                Some(ev.id.clone())
+                            }
+                            _ => None,
+                        },
+                        _ => None,
+                    })
+                    .unwrap()
+            };
+            open.selection = Some(Selection {
+                anchor: Point {
+                    event: id_of("Morning!"),
+                    pos: Pos { unit: 0, offset: 9 },
+                },
+                focus: Point {
+                    event: id_of("I can run"),
+                    pos: Pos { unit: 0, offset: 9 },
+                },
+                dragging: false,
+            });
+            // Math messages count whole; each sender's name and time first.
+            let copied = open.selected_text().unwrap();
+            let name = |user: &mtrx_core::OwnedUserId| user.localpart().to_owned();
+            assert!(copied.starts_with(&format!("{}, ", name(&alice.user_id()))));
+            assert!(copied.contains("\nDraft of the ice flux section is up.\n\nThe basal melt"));
+            assert!(copied.contains(&format!("\n\n{}, ", name(&bob.user_id()))));
+            assert!(copied.contains("\nWhich geothermal flux dataset is it?\n\n"));
+            assert!(copied.ends_with("\nI can run"));
+            assert!(copied.contains(&format!("\n\n{}, ", name(&carol.user_id()))));
         } else {
             // A message's text, to select from.
             let (id, text) = entries
