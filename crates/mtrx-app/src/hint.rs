@@ -22,3 +22,13 @@ pub fn hint<'a, M: 'a>(
     )
     .into()
 }
+
+/// A keyboard shortcut as the platform writes it: "⌘K" on macOS, "Ctrl+K"
+/// elsewhere (iced's command modifier is Ctrl there).
+pub fn shortcut(key: &str) -> String {
+    if cfg!(target_os = "macos") {
+        format!("⌘{key}")
+    } else {
+        format!("Ctrl+{key}")
+    }
+}

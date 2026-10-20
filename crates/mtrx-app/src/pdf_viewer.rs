@@ -20,7 +20,7 @@ use crate::{
     app,
     ellipsis::ellipsis,
     fonts,
-    hint::{Position, hint},
+    hint::{Position, hint, shortcut},
     media::save_button,
     pdf::Document,
     style,
@@ -349,7 +349,7 @@ impl Viewer {
         .spacing(8)
         .align_y(Alignment::Center);
         if self.document.is_some() {
-            let tool = |label: &'static str, tip: &'static str, zoom: Zoom| {
+            let tool = |label: &'static str, tip: String, zoom: Zoom| {
                 hint(
                     button(text(label).size(15).center())
                         .width(30)
@@ -369,7 +369,7 @@ impl Viewer {
                         style::secondary_button
                     })
                     .on_press(message(Message::Zoom(Zoom::Fit))),
-                "Fit the page width to the window (⌘0)",
+                format!("Fit the page width to the window ({})", shortcut("0")),
                 Position::Bottom,
             );
             bar = bar
@@ -383,9 +383,13 @@ impl Viewer {
                     .style(text::secondary),
                 )
                 .push(space().width(8))
-                .push(tool("−", "Zoom out (⌘−)", Zoom::Out))
+                .push(tool(
+                    "−",
+                    format!("Zoom out ({})", shortcut("−")),
+                    Zoom::Out,
+                ))
                 .push(text(format!("{}%", self.key())).size(13).width(44).center())
-                .push(tool("+", "Zoom in (⌘+)", Zoom::In))
+                .push(tool("+", format!("Zoom in ({})", shortcut("+")), Zoom::In))
                 .push(fit);
         }
         container(
