@@ -361,12 +361,29 @@ impl Session {
     }
 
     /// The direct chat with `user`: the existing one, or a new encrypted one.
+    /// The direct chat with `user`, created if there is none. With
+    /// ourselves it is a "Notes" room only we are in.
     pub async fn direct_chat(&self, user: &UserId) -> Result<OwnedRoomId> {
-        let room = match self.client.get_dm_room(user) {
-            Some(room) => room,
-            None => self.client.create_dm(user).await?,
-        };
-        Ok(room.room_id().to_owned())
+        if let Some(room) = self.client.get_dm_room(user) {
+            return Ok(room.room_id().to_owned());
+        }
+        if user != self.user_id() {
+            return Ok(self.client.create_dm(user).await?.room_id().to_owned());
+        }
+        let notes = self
+            .create_room(NewRoom {
+                name: Some("Notes".into()),
+                topic: Some("Notes to self".into()),
+                encrypted: true,
+                direct: true,
+                ..Default::default()
+            })
+            .await?;
+        self.client
+            .account()
+            .mark_as_dm(&notes, &[user.to_owned()])
+            .await?;
+        Ok(notes)
     }
 
     pub async fn set_room_name(&self, room: &RoomId, name: &str) -> Result<()> {

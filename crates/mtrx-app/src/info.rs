@@ -142,14 +142,18 @@ impl Card {
         if let Some(error) = &self.error {
             card = card.push(text(error).size(12).style(text::danger));
         }
-        let mut actions = row![space::horizontal()].spacing(8);
-        if user.id != *own_user {
-            actions = actions.push(
-                button(text("Message"))
-                    .style(style::primary_button)
-                    .on_press(app::Message::ChatWith(user.id.clone())),
-            );
-        }
+        let message = if user.id == *own_user {
+            "Notes to self"
+        } else {
+            "Message"
+        };
+        let actions = row![
+            space::horizontal(),
+            button(text(message))
+                .style(style::primary_button)
+                .on_press(app::Message::ChatWith(user.id.clone())),
+        ]
+        .spacing(8);
         card.push(actions.push(close())).into()
     }
 

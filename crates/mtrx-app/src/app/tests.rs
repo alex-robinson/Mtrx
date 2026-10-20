@@ -803,6 +803,15 @@ async fn room_management_screens() {
         }),
         "new-room-people",
     );
+    snapshot(
+        &main_with(&|main| {
+            let mut dialog = Dialog::new(dialog::Kind::DirectChat);
+            dialog.offer_self(main.own_user.clone());
+            dialog.update(dialog::Message::Contacts(contacts.clone()));
+            main.dialog = Some(dialog);
+        }),
+        "direct-chat-people",
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

@@ -116,6 +116,8 @@ pub struct Dialog {
     contacts: Vec<Contact>,
     /// Spaces whose members are suggested first.
     near: Vec<OwnedRoomId>,
+    /// Ourselves, offered first for a direct chat: notes to self.
+    own: Option<UserSummary>,
     /// The server's user directory's results for the query.
     directory: Vec<UserSummary>,
     people: Vec<UserSummary>,
@@ -148,6 +150,7 @@ impl Dialog {
             query: String::new(),
             contacts: Vec::new(),
             near: Vec::new(),
+            own: None,
             directory: Vec::new(),
             people: Vec::new(),
             rooms: Vec::new(),
@@ -164,6 +167,17 @@ impl Dialog {
             self.kind,
             Kind::NewRoom { .. } | Kind::NewSpace | Kind::DirectChat | Kind::Invite { .. }
         )
+    }
+
+    /// Offer a chat with ourselves (notes to self) in a direct chat dialog.
+    pub fn offer_self(&mut self, own: OwnedUserId) {
+        if matches!(self.kind, Kind::DirectChat) {
+            self.own = Some(UserSummary {
+                id: own,
+                name: Some("Notes to self".into()),
+                avatar: None,
+            });
+        }
     }
 
     /// Suggest members of these spaces first.
@@ -196,10 +210,14 @@ impl Dialog {
             .collect();
         // Stable: within equal keys, the closest first.
         known.sort_by_key(|(later, far, _)| (*later, *far));
-        let known: Vec<&UserSummary> = known
+        let own = self.own.as_ref().filter(|own| {
+            !picked(own)
+                && ("notes to self".contains(&query)
+                    || own.id.as_str()[1..].to_lowercase().contains(&query))
+        });
+        let known: Vec<&UserSummary> = own
             .into_iter()
-            .take(KNOWN)
-            .map(|(_, _, c)| &c.user)
+            .chain(known.into_iter().take(KNOWN).map(|(_, _, c)| &c.user))
             .collect();
         let others = self
             .directory
@@ -582,6 +600,7 @@ impl Dialog {
             self.people.iter().any(|p| p.id == id)
                 || self.contacts.iter().any(|c| c.user.id == id)
                 || self.directory.iter().any(|u| u.id == id)
+                || self.own.as_ref().is_some_and(|o| o.id == id)
         };
         if let Ok(id) = UserId::parse(query)
             && !listed(&id)

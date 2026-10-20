@@ -692,6 +692,7 @@ impl App {
                     return Task::none();
                 }
                 dialog.prefer_spaces(near);
+                dialog.offer_self(main.own_user.clone());
                 dialog.update(dialog::Message::Contacts(main.contacts.clone()));
                 main.dialog = Some(dialog);
                 let session = main.session.clone();

@@ -1145,3 +1145,37 @@ async fn contacts_and_user_info() -> Result<()> {
     assert!(info.shared.contains(&space) && info.shared.contains(&room));
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs local Synapse (testserver/run.sh)"]
+async fn notes_to_self() -> Result<()> {
+    let (_, alice) = new_user("notes").await?;
+    let s = &alice.session;
+    let notes = s.direct_chat(&s.user_id()).await?;
+    let list = s.room_list().await?;
+    let state = wait_for("notes listed as a direct chat", list.updates(), |state| {
+        state.rooms.iter().any(|r| {
+            r.id == notes && r.kind == RoomKind::Direct && r.direct_user == Some(s.user_id())
+        })
+    })
+    .await?;
+    assert_eq!(
+        state
+            .rooms
+            .iter()
+            .find(|r| r.id == notes)
+            .map(|r| r.name.as_str()),
+        Some("Notes")
+    );
+    // Found again rather than created twice.
+    assert_eq!(s.direct_chat(&s.user_id()).await?, notes);
+
+    let timeline = s.timeline(&notes).await?;
+    timeout(
+        "send",
+        timeline.send_markdown("buy milk", None).await?.sent(),
+    )
+    .await??;
+    wait_for("note", timeline.updates(), |e| has_message(e, "buy milk")).await?;
+    Ok(())
+}
