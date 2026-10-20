@@ -78,7 +78,8 @@ impl<T> Hash for Shared<T> {
 
 #[derive(Debug, Clone)]
 pub enum Message {
-    Restored(Result<Shared<Session>, String>),
+    /// The saved session, or why there is none to open.
+    Restored(Result<Shared<Session>, Shared<mtrx_core::Error>>),
     Login(login::Message),
     LoggedIn(Result<Shared<Session>, String>),
     Ready(Result<(Shared<RoomList>, bool), String>),
@@ -437,7 +438,7 @@ impl App {
         };
         let restore = Task::perform(
             async move { Session::restore(profile).await.map(|s| Shared(Arc::new(s))) },
-            |result| Message::Restored(result.map_err(|e| e.to_string())),
+            |result| Message::Restored(result.map_err(|e| Shared(Arc::new(e)))),
         );
         let scale = window::oldest().then(|id| match id {
             Some(id) => window::scale_factor(id).map(Message::ScaleFactor),
@@ -551,8 +552,14 @@ impl App {
                 }
                 Task::none()
             }
-            Message::Restored(Err(_)) => {
-                self.screen = Screen::Login(Login::default());
+            Message::Restored(Err(Shared(error))) => {
+                let mut login = Login::default();
+                // Usually nobody is signed in yet. Without a keyring signing
+                // in would fail too, so say so before the user tries.
+                if let mtrx_core::Error::NoSecretStore(_) = *error {
+                    login.error = Some(error.to_string());
+                }
+                self.screen = Screen::Login(login);
                 Task::none()
             }
             Message::Login(message) => {

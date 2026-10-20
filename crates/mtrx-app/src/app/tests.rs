@@ -99,6 +99,19 @@ fn login_screen() {
     snapshot(&app(Screen::Login(Login::default()), Mode::Light), "login");
 }
 
+/// Without a keyring (Linux: no Secret Service) the sign-in screen says so.
+#[test]
+fn login_without_keyring() {
+    let mut app = app(Screen::Starting, Mode::Light);
+    let error = mtrx_core::Error::NoSecretStore("no secrets service".into());
+    let _ = app.update(Message::Restored(Err(Shared(Arc::new(error)))));
+    let Screen::Login(login) = &app.screen else {
+        panic!("not the sign-in screen");
+    };
+    assert!(login.error.is_some());
+    snapshot(&app, "login-no-keyring");
+}
+
 /// A diagonal gradient as PNG, for avatars.
 fn picture(from: [u8; 3], to: [u8; 3]) -> Vec<u8> {
     gradient(96, 96, from, to)

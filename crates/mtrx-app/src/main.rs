@@ -18,6 +18,8 @@ mod hint;
 mod icons;
 mod info;
 mod last_view;
+#[cfg(target_os = "linux")]
+mod linux;
 mod login;
 mod logo;
 mod math;
@@ -59,6 +61,8 @@ fn main() -> iced::Result {
         .window(iced::window::Settings {
             size: iced::Size::new(1200.0, 800.0),
             icon: logo::window_icon(),
+            #[cfg(target_os = "linux")]
+            platform_specific: linux::window_settings(),
             ..Default::default()
         })
         .run()

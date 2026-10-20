@@ -1,7 +1,11 @@
 //! Build tasks, run with `cargo xtask <task>`:
 //!
 //! - `render SVG PNG SIZE`: render an SVG to a square PNG.
-//! - `bundle`: build the app and wrap it as `target/bundle/Mtrx.app` (macOS).
+//! - `bundle`: build the app and wrap it as `target/bundle/Mtrx.app` (macOS),
+//!   or as an AppImage and a `.deb` (Linux, see [`linux`]).
+
+#[cfg(target_os = "linux")]
+mod linux;
 
 use std::{
     path::{Path, PathBuf},
@@ -13,6 +17,7 @@ use resvg::{tiny_skia, usvg};
 
 /// The app's logo, also its icon.
 const LOGO: &str = "crates/mtrx-app/assets/logo.svg";
+/// Also the Linux desktop file's name and the window's application id.
 const BUNDLE_ID: &str = "org.mtrx.Mtrx";
 
 fn main() -> Result<()> {
@@ -25,6 +30,9 @@ fn main() -> Result<()> {
         .as_slice()
     {
         ["render", svg, png, size] => render(Path::new(svg), Path::new(png), size.parse()?),
+        #[cfg(target_os = "linux")]
+        ["bundle"] => linux::bundle(&root),
+        #[cfg(not(target_os = "linux"))]
         ["bundle"] => bundle(&root),
         _ => bail!("usage: cargo xtask render SVG PNG SIZE | cargo xtask bundle"),
     }
@@ -50,6 +58,7 @@ fn render(svg: &Path, png: &Path, size: u32) -> Result<()> {
 }
 
 /// Build the release app and wrap it with its icon and Info.plist.
+#[cfg(not(target_os = "linux"))]
 fn bundle(root: &Path) -> Result<()> {
     if !cfg!(target_os = "macos") {
         bail!("the app bundle is for macOS");
@@ -111,6 +120,7 @@ fn bundle(root: &Path) -> Result<()> {
     Ok(())
 }
 
+#[cfg(not(target_os = "linux"))]
 fn info_plist() -> String {
     let version = env!("CARGO_PKG_VERSION");
     format!(

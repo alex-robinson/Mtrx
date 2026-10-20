@@ -5,7 +5,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use crate::Result;
+use crate::{Error, Result};
 
 const KEYRING_SERVICE: &str = "mtrx";
 
@@ -71,9 +71,25 @@ impl Secret {
     }
 
     fn keyring_entry(&self) -> Result<keyring::Entry> {
-        Ok(keyring::Entry::new(KEYRING_SERVICE, &self.name)?)
+        keyring::Entry::new(KEYRING_SERVICE, &self.name).map_err(|e| match e {
+            // The store failed to open; the reason is kept separately.
+            keyring::Error::NoDefaultStore => {
+                Error::NoSecretStore(match keyring::Entry::store_status() {
+                    Err(cause) => cause.to_string(),
+                    Ok(()) => e.to_string(),
+                })
+            }
+            e => e.into(),
+        })
     }
 }
+
+/// What [`Error::NoSecretStore`] tells the user.
+#[cfg(all(unix, not(target_os = "macos")))]
+pub(crate) const NO_SECRET_STORE: &str = "Mtrx keeps your sign-in in the system keyring, \
+    but no Secret Service is running. Install GNOME Keyring or KWallet and restart Mtrx";
+#[cfg(not(all(unix, not(target_os = "macos"))))]
+pub(crate) const NO_SECRET_STORE: &str = "the system keyring is not available";
 
 fn write_private(path: &Path, contents: &str) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
@@ -86,4 +102,34 @@ fn write_private(path: &Path, contents: &str) -> std::io::Result<()> {
         fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn keyring_secret() -> Secret {
+        let name = format!("mtrx-test-{}", std::process::id());
+        Secret::new(SecretStore::Keyring, name, PathBuf::new())
+    }
+
+    #[test]
+    #[ignore = "uses the OS keyring"]
+    fn keyring_round_trip() {
+        let secret = keyring_secret();
+        secret.save("value").unwrap();
+        assert_eq!(secret.load().unwrap().as_deref(), Some("value"));
+        secret.delete().unwrap();
+        assert_eq!(secret.load().unwrap(), None);
+    }
+
+    /// Run with no Secret Service, e.g. `DBUS_SESSION_BUS_ADDRESS=unix:path=/none`.
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[ignore = "needs a session without a Secret Service"]
+    fn keyring_missing() {
+        let error = keyring_secret().load().unwrap_err();
+        assert!(matches!(error, Error::NoSecretStore(_)), "{error}");
+        assert!(error.to_string().starts_with(NO_SECRET_STORE), "{error}");
+    }
 }
