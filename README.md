@@ -1,6 +1,8 @@
 # Mtrx
 Matrix-protocol communication app
 
+Website and download: <https://alex-robinson.github.io/Mtrx/>
+
 Native Rust Matrix client for macOS, Windows and Linux, built on
 [matrix-rust-sdk](https://github.com/matrix-org/matrix-rust-sdk).
 
