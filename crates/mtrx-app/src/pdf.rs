@@ -1,4 +1,4 @@
-//! Pages of PDF files drawn as pictures, for previews and the viewer
+//! PDF documents: reading them and drawing their pages, for the viewer
 //! (hayro: pure Rust, so nothing to ship alongside the app).
 
 use std::sync::Arc;
@@ -7,10 +7,14 @@ use hayro::{
     RenderCache, RenderSettings, hayro_interpret::InterpreterSettings, hayro_syntax::Pdf,
     vello_cpu::color::palette::css::WHITE,
 };
+use iced::Size;
 use mtrx_core::{Media, MediaKind};
 
-/// PDFs larger than this are not downloaded for a preview.
-pub const MAX_PREVIEW_BYTES: u64 = 30_000_000;
+/// PDFs larger than this are not opened in the viewer (they would be
+/// downloaded just to check them).
+pub const MAX_BYTES: u64 = 30_000_000;
+/// Pages are drawn at most this many pixels wide or high.
+const MAX_PIXELS: f32 = 4096.0;
 
 pub fn is_pdf(media: &Media) -> bool {
     media.kind == MediaKind::File
@@ -18,52 +22,70 @@ pub fn is_pdf(media: &Media) -> bool {
             || media.filename.to_lowercase().ends_with(".pdf"))
 }
 
-/// A rendered page: RGBA pixels and their size.
+/// A PDF that can be read, with its pages' sizes in points.
+pub struct Document {
+    pdf: Pdf,
+    pub pages: Vec<Size>,
+}
+
+impl std::fmt::Debug for Document {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Document({} pages)", self.pages.len())
+    }
+}
+
+/// A drawn page: RGBA pixels and their size.
 pub struct Page {
     pub rgba: Vec<u8>,
     pub width: u32,
     pub height: u32,
 }
 
-/// The number of pages, and page `index` drawn to fit `max_width`×
-/// `max_height` pixels on white; `None` if it is not a PDF we can read.
-pub fn render(
-    bytes: Arc<Vec<u8>>,
-    index: usize,
-    max_width: u32,
-    max_height: u32,
-) -> Option<(usize, Page)> {
-    let pdf = Pdf::new(bytes).ok()?;
-    let pages = pdf.pages();
-    let page = pages.get(index)?;
-    let (width, height) = page.render_dimensions();
-    if width <= 0.0 || height <= 0.0 {
-        return None;
+impl Document {
+    /// `None` if it is not a PDF we can read, or has no pages.
+    pub fn open(bytes: Vec<u8>) -> Option<Self> {
+        let pdf = Pdf::new(Arc::new(bytes)).ok()?;
+        let pages: Vec<Size> = pdf
+            .pages()
+            .iter()
+            .map(|page| {
+                let (width, height) = page.render_dimensions();
+                Size::new(width, height)
+            })
+            .collect();
+        if pages.is_empty() || pages.iter().any(|p| p.width <= 0.0 || p.height <= 0.0) {
+            return None;
+        }
+        Some(Self { pdf, pages })
     }
-    let scale = (max_width as f32 / width).min(max_height as f32 / height);
-    let settings = RenderSettings {
-        x_scale: scale,
-        y_scale: scale,
-        bg_color: WHITE,
-        ..Default::default()
-    };
-    let pixmap = hayro::render(
-        page,
-        &RenderCache::new(),
-        &InterpreterSettings::default(),
-        &settings,
-    );
-    let (width, height) = (u32::from(pixmap.width()), u32::from(pixmap.height()));
-    // Opaque on white, so premultiplied and plain RGBA are the same.
-    let rgba = pixmap.data_as_u8_slice().to_vec();
-    Some((
-        pages.len(),
-        Page {
+
+    /// Page `index` drawn on white at `scale` pixels per point (less if
+    /// that would be too large).
+    pub fn render(&self, index: usize, scale: f32) -> Option<Page> {
+        let page = self.pdf.pages().get(index)?;
+        let size = self.pages[index];
+        let scale = scale.min(MAX_PIXELS / size.width.max(size.height));
+        let settings = RenderSettings {
+            x_scale: scale,
+            y_scale: scale,
+            bg_color: WHITE,
+            ..Default::default()
+        };
+        let pixmap = hayro::render(
+            page,
+            &RenderCache::new(),
+            &InterpreterSettings::default(),
+            &settings,
+        );
+        let (width, height) = (u32::from(pixmap.width()), u32::from(pixmap.height()));
+        // Opaque on white, so premultiplied and plain RGBA are the same.
+        let rgba = pixmap.data_as_u8_slice().to_vec();
+        Some(Page {
             rgba,
             width,
             height,
-        },
-    ))
+        })
+    }
 }
 
 /// A two-page PDF with a title and a blue box, 300×400 points (tests).
@@ -119,19 +141,28 @@ mod tests {
     use super::*;
 
     #[test]
-    fn renders_a_page_to_fit() {
-        let (pages, page) = render(Arc::new(sample()), 1, 300, 600).unwrap();
-        assert_eq!(pages, 2);
-        assert_eq!((page.width, page.height), (300, 400));
-        assert_eq!(page.rgba.len(), 300 * 400 * 4);
+    fn document_is_shareable() {
+        fn check<T: Send + Sync>() {}
+        check::<Document>();
+    }
+
+    #[test]
+    fn reads_and_draws_pages() {
+        let document = Document::open(sample()).unwrap();
+        assert_eq!(document.pages, [Size::new(300.0, 400.0); 2]);
+        let page = document.render(1, 2.0).unwrap();
+        assert_eq!((page.width, page.height), (600, 800));
+        assert_eq!(page.rgba.len(), 600 * 800 * 4);
         // White margin, the blue box in the middle.
         let pixel = |x: u32, y: u32| {
             let i = ((y * page.width + x) * 4) as usize;
             &page.rgba[i..i + 4]
         };
-        assert_eq!(pixel(2, 2), [255, 255, 255, 255]);
-        assert_eq!(pixel(150, 160), [51, 102, 204, 255]);
-        assert!(render(Arc::new(sample()), 2, 300, 600).is_none());
-        assert!(render(Arc::new(b"not a pdf".to_vec()), 0, 300, 600).is_none());
+        assert_eq!(pixel(4, 4), [255, 255, 255, 255]);
+        assert_eq!(pixel(300, 320), [51, 102, 204, 255]);
+        // Huge scales are capped.
+        assert_eq!(document.render(0, 100.0).unwrap().height, 4096);
+        assert!(document.render(2, 1.0).is_none());
+        assert!(Document::open(b"not a pdf".to_vec()).is_none());
     }
 }

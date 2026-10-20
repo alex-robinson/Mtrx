@@ -37,6 +37,12 @@ impl MediaRef {
         }
     }
 
+    /// A plain file at `uri`, for tests of frontends.
+    #[cfg(feature = "test-support")]
+    pub fn plain(uri: &str) -> Self {
+        Self::new(&MediaSource::Plain(uri.into()), None)
+    }
+
     fn uri(&self) -> &MxcUri {
         match &self.file {
             MediaSource::Plain(uri) => uri,

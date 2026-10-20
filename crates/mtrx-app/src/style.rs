@@ -364,6 +364,22 @@ pub fn reaction(own: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
 }
 
 /// A call card in the timeline.
+/// A card that opens something: a [`card`], darker on hover.
+pub fn card_button(theme: &Theme, status: button::Status) -> button::Style {
+    let palette = theme.extended_palette();
+    let card = card(theme);
+    let background = match status {
+        button::Status::Hovered | button::Status::Pressed => palette.background.strong.color,
+        _ => palette.background.weak.color,
+    };
+    button::Style {
+        background: Some(Background::Color(background)),
+        text_color: palette.background.base.text,
+        border: card.border,
+        ..Default::default()
+    }
+}
+
 pub fn card(theme: &Theme) -> container::Style {
     let palette = theme.extended_palette();
     container::Style {

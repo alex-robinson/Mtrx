@@ -37,6 +37,7 @@ use crate::{
     math::{self, Math, Rendered},
     media::{self, Previews, Viewer},
     members::Members,
+    pdf_viewer,
     room::{self, Look, Older, Room},
     send_later,
     settings::{self, Settings},
@@ -131,17 +132,15 @@ pub enum Message {
     AvatarLoaded(avatar::Key, Option<image::Handle>),
     /// The cursor entered (`true`) or left a timeline event.
     Hover(String, bool),
-    PreviewLoaded(MediaRef, Option<media::Picture>),
+    PreviewLoaded(MediaRef, Option<media::Preview>),
     /// Show an image large.
     OpenImage(Media),
     CloseImage,
     /// The whole image for the viewer.
     ImageLoaded(MediaRef, Result<media::Picture, String>),
     /// A PDF in the viewer was loaded, with its first page drawn.
-    PdfLoaded(MediaRef, Result<(media::Document, media::Picture), String>),
-    /// Show the PDF page this many pages on in the viewer.
-    TurnPage(isize),
-    PageDrawn(MediaRef, usize, Result<media::Picture, String>),
+    OpenPdf(Media),
+    Pdf(pdf_viewer::Message),
     /// Ask where to save a message's file, then save it.
     SaveMedia(Media),
     MediaSaved(Result<(), String>),
@@ -198,7 +197,7 @@ pub struct App {
     settings_panel: Option<settings::Panel>,
     screen: Screen,
     mode: Mode,
-    window_width: f32,
+    window: Size,
     scale: f32,
     math: Math,
 }
@@ -244,6 +243,8 @@ struct Main {
     previews: Previews,
     /// An image shown large.
     viewer: Option<Viewer>,
+    /// A PDF shown over the window.
+    pdf: Option<pdf_viewer::Viewer>,
     /// Categories, tags and dragging in the room list.
     arrange: Arrange,
     /// The info card shown.
@@ -313,6 +314,7 @@ impl Main {
             filter: String::new(),
             previews: Previews::new(),
             viewer: None,
+            pdf: None,
         }
     }
 }
@@ -387,7 +389,7 @@ impl App {
             settings_panel: None,
             screen: Screen::Starting,
             mode: Mode::Light,
-            window_width: 1200.0,
+            window: Size::new(1200.0, 800.0),
             scale: 1.0,
             math: Math::new(),
         };
@@ -1116,8 +1118,9 @@ impl App {
             // category name, else the search.
             Message::Escape => {
                 if let Screen::Main(main) = &mut self.screen {
-                    if main.viewer.is_some() {
+                    if main.viewer.is_some() || main.pdf.is_some() {
                         main.viewer = None;
+                        main.pdf = None;
                     } else if main.info.is_some() {
                         main.info = None;
                     } else if let Some(room) =
@@ -1307,12 +1310,12 @@ impl App {
                 Task::none()
             }
             Message::WindowResized(size) => {
-                self.window_width = size.width;
-                self.render_math()
+                self.window = size;
+                Task::batch([self.render_math(), self.pdf_resized()])
             }
             Message::ScaleFactor(scale) => {
                 self.scale = scale;
-                self.render_math()
+                Task::batch([self.render_math(), self.pdf_resized()])
             }
             Message::ThemeMode(mode) => {
                 self.mode = mode;
@@ -1350,34 +1353,31 @@ impl App {
             Message::CloseImage => {
                 if let Screen::Main(main) = &mut self.screen {
                     main.viewer = None;
+                    main.pdf = None;
                 }
                 Task::none()
             }
+            Message::OpenPdf(media) => {
+                let Screen::Main(main) = &mut self.screen else {
+                    return Task::none();
+                };
+                let viewer = pdf_viewer::Viewer::new(media, self.window, self.scale);
+                let open = viewer.open(main.session.clone());
+                main.pdf = Some(viewer);
+                open
+            }
+            Message::Pdf(message) => match &mut self.screen {
+                Screen::Main(main) => main
+                    .pdf
+                    .as_mut()
+                    .map_or_else(Task::none, |viewer| viewer.update(message)),
+                _ => Task::none(),
+            },
             Message::ImageLoaded(media, result) => {
                 if let Screen::Main(main) = &mut self.screen
                     && let Some(viewer) = &mut main.viewer
                 {
                     viewer.loaded(&media, result);
-                }
-                Task::none()
-            }
-            Message::PdfLoaded(media, result) => {
-                if let Screen::Main(main) = &mut self.screen
-                    && let Some(viewer) = &mut main.viewer
-                {
-                    viewer.pdf_loaded(&media, result);
-                }
-                Task::none()
-            }
-            Message::TurnPage(by) => match &mut self.screen {
-                Screen::Main(main) => main.viewer.as_mut().map_or_else(Task::none, |v| v.turn(by)),
-                _ => Task::none(),
-            },
-            Message::PageDrawn(media, page, result) => {
-                if let Screen::Main(main) = &mut self.screen
-                    && let Some(viewer) = &mut main.viewer
-                {
-                    viewer.page_drawn(&media, page, result);
                 }
                 Task::none()
             }
@@ -1392,10 +1392,11 @@ impl App {
                     && let Err(e) = result
                 {
                     // Shown where it was saved from.
-                    match (&mut main.viewer, &mut main.room) {
-                        (Some(viewer), _) => viewer.error = Some(e),
-                        (None, Some(room)) => room.error = Some(e),
-                        (None, None) => {}
+                    match (&mut main.viewer, &mut main.pdf, &mut main.room) {
+                        (Some(viewer), _, _) => viewer.error = Some(e),
+                        (None, Some(pdf), _) => pdf.error = Some(e),
+                        (None, None, Some(room)) => room.error = Some(e),
+                        (None, None, None) => {}
                     }
                 }
                 Task::none()
@@ -2022,6 +2023,17 @@ impl App {
         }
     }
 
+    /// The PDF viewer follows the window's size and scale.
+    fn pdf_resized(&mut self) -> Task<Message> {
+        match &mut self.screen {
+            Screen::Main(main) => main
+                .pdf
+                .as_mut()
+                .map_or_else(Task::none, |pdf| pdf.resized(self.window, self.scale)),
+            _ => Task::none(),
+        }
+    }
+
     /// Show the space and room of last time once the room is listed, until
     /// the first sync shows it is gone.
     fn restore_view(&mut self) -> Task<Message> {
@@ -2066,7 +2078,7 @@ impl App {
     fn math_params(&self) -> math::Params {
         let theme = self.theme();
         let palette = theme.extended_palette();
-        let max_width = self.window_width
+        let max_width = self.window.width
             - SPACE_BAR_WIDTH
             - self.settings.room_list_width
             - RESIZE_HANDLE
@@ -2242,6 +2254,8 @@ impl App {
                     // Fills the window, with its own backdrop.
                     return stack![self.main_view(main), opaque(viewer.view(&main.previews))]
                         .into();
+                } else if let Some(pdf) = &main.pdf {
+                    return stack![self.main_view(main), opaque(pdf.view())].into();
                 } else {
                     return self.main_view(main);
                 };
@@ -2568,19 +2582,25 @@ async fn run_request(
 /// search; window focus.
 fn shortcuts(
     event: iced::Event,
-    status: iced::event::Status,
+    _status: iced::event::Status,
     _window: window::Id,
 ) -> Option<Message> {
     use iced::keyboard::{self, Key, key::Named};
-    // Arrows not used by a text field turn a PDF's pages in the viewer.
-    let free = status == iced::event::Status::Ignored;
     match event {
         iced::Event::Keyboard(keyboard::Event::KeyPressed { key, modifiers, .. }) => match key {
             Key::Character(c) if c == "k" && modifiers.command() => Some(Message::FocusSearch),
             Key::Character(c) if c == "r" && modifiers.command() => Some(Message::Reload),
             Key::Named(Named::Escape) => Some(Message::Escape),
-            Key::Named(Named::ArrowLeft) if free => Some(Message::TurnPage(-1)),
-            Key::Named(Named::ArrowRight) if free => Some(Message::TurnPage(1)),
+            // Zoom in the PDF viewer.
+            Key::Character(c) if (c == "=" || c == "+") && modifiers.command() => Some(
+                Message::Pdf(pdf_viewer::Message::Zoom(pdf_viewer::Zoom::In)),
+            ),
+            Key::Character(c) if c == "-" && modifiers.command() => Some(Message::Pdf(
+                pdf_viewer::Message::Zoom(pdf_viewer::Zoom::Out),
+            )),
+            Key::Character(c) if c == "0" && modifiers.command() => Some(Message::Pdf(
+                pdf_viewer::Message::Zoom(pdf_viewer::Zoom::Fit),
+            )),
             _ => None,
         },
         iced::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {

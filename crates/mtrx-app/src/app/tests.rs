@@ -63,9 +63,11 @@ fn snapshot(app: &App, name: &str) {
         }
     }
     let mut ui = Simulator::with_size(fonts::settings(), Size::new(1200.0, 800.0), app.view());
-    // Images too large for the renderer's first texture atlas only show
-    // from the second frame on (as in the app, which draws many).
-    let _ = ui.snapshot(&app.theme()).unwrap();
+    // Images too large for the renderer's texture atlas only show after a
+    // few frames, as the atlas grows (the app draws many).
+    for _ in 0..2 {
+        let _ = ui.snapshot(&app.theme()).unwrap();
+    }
     let snapshot = ui.snapshot(&app.theme()).unwrap();
     assert!(snapshot.matches_image(&path).unwrap());
 }
@@ -82,7 +84,7 @@ fn app(screen: Screen, mode: Mode) -> App {
         settings_panel: None,
         screen,
         mode,
-        window_width: 1200.0,
+        window: Size::new(1200.0, 800.0),
         scale: 2.0,
         math: Math::new(),
     }
@@ -1002,7 +1004,7 @@ async fn media_messages() {
     let (image, pdf) = (file(".png"), file(".pdf"));
 
     let session = Arc::new(alice);
-    let main_with = async |viewer: Option<Viewer>| {
+    let main_with = async |viewer: Option<Viewer>, pdf: Option<pdf_viewer::Viewer>| {
         let mut main = Main::new(session.clone());
         main.rooms = rooms.clone();
         main.verified = Some(true);
@@ -1015,22 +1017,39 @@ async fn media_messages() {
         }
         main.room = Some(open);
         main.viewer = viewer;
+        main.pdf = pdf;
         Box::new(main)
     };
     for (mode, name) in [(Mode::Light, "media-light"), (Mode::Dark, "media-dark")] {
-        snapshot(&app(Screen::Main(main_with(None).await), mode), name);
+        snapshot(&app(Screen::Main(main_with(None, None).await), mode), name);
     }
     let mut viewer = Viewer::new(image);
-    viewer.load_now(&session, 0).await;
+    viewer.load_now(&session).await;
     snapshot(
-        &app(Screen::Main(main_with(Some(viewer)).await), Mode::Light),
+        &app(
+            Screen::Main(main_with(Some(viewer), None).await),
+            Mode::Light,
+        ),
         "image-viewer",
     );
-    let mut viewer = Viewer::new(pdf);
-    viewer.load_now(&session, 1).await;
+    let mut viewer = pdf_viewer::Viewer::new(pdf.clone(), Size::new(1200.0, 800.0), 2.0);
+    viewer.open_now(&session).await;
     snapshot(
-        &app(Screen::Main(main_with(Some(viewer)).await), Mode::Light),
+        &app(
+            Screen::Main(main_with(None, Some(viewer)).await),
+            Mode::Light,
+        ),
         "pdf-viewer",
+    );
+    let mut viewer = pdf_viewer::Viewer::new(pdf, Size::new(1200.0, 800.0), 2.0);
+    viewer.set_zoom(0.5);
+    viewer.open_now(&session).await;
+    snapshot(
+        &app(
+            Screen::Main(main_with(None, Some(viewer)).await),
+            Mode::Dark,
+        ),
+        "pdf-viewer-zoomed-out",
     );
 }
 

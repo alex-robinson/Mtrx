@@ -23,6 +23,7 @@ mod media;
 mod members;
 mod message;
 mod pdf;
+mod pdf_viewer;
 mod popover;
 mod room;
 mod send_later;
