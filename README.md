@@ -90,3 +90,19 @@ testserver/add_user.sh alice alicepw
 cargo test -p mtrx-core --test integration -- --ignored
 cargo test -p mtrx-app -- --ignored   # UI snapshots in target/ui-snapshots/
 ```
+
+## License
+
+Copyright (C) 2026 Alexander Robinson
+
+Mtrx is free software: you can redistribute it and/or modify it under the
+terms of the GNU Affero General Public License as published by the Free
+Software Foundation, either version 3 of the License, or (at your option) any
+later version. See [LICENSE](LICENSE).
+
+In short: if you distribute Mtrx or a program built on it, or run a modified
+version for others over a network (a bot, bridge or hosted client), you must
+make its source code available under the same licence.
+
+The code up to and including commit 35a7290 (20 October 2026) was published
+under the MIT licence.

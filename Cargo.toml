@@ -5,7 +5,7 @@ members = ["crates/mtrx-core", "crates/mtrx-format", "crates/mtrx-cli", "crates/
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
-license = "MIT"
+license = "AGPL-3.0-or-later"
 
 [workspace.dependencies]
 mtrx-core = { path = "crates/mtrx-core" }
