@@ -725,15 +725,22 @@ fn event_view<'a>(
     } else if hovered {
         container(text(time(event)).size(10).style(text::secondary))
             .center_x(SENDER_AVATAR)
-            .height(TOOLBAR_HEIGHT)
+            .height(Length::Fill)
             .padding(Padding::ZERO.top(5))
             .into()
     } else {
-        // At least as tall as the toolbar, also for a short line of math.
-        space().width(SENDER_AVATAR).height(TOOLBAR_HEIGHT).into()
+        space().width(SENDER_AVATAR).into()
+    };
+    let line = if with_header {
+        row![gutter, item].spacing(GUTTER_SPACING)
+    } else {
+        // At least as tall as the toolbar, with a short line (e.g. of math)
+        // centred; the time stays at the top of longer messages.
+        let strut = space().width(GUTTER_SPACING).height(TOOLBAR_HEIGHT);
+        row![gutter, strut, item].align_y(Alignment::Center)
     };
     let top = if with_header { 4.0 } else { 1.0 };
-    let row = container(row![gutter, item].spacing(GUTTER_SPACING))
+    let row = container(line)
         .padding(Padding::new(MESSAGE_PADDING).top(top).bottom(1))
         .width(Length::Fill)
         .style(style::message_row(hovered));
