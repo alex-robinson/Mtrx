@@ -1151,6 +1151,7 @@ async fn contacts_and_user_info() -> Result<()> {
 async fn notes_to_self() -> Result<()> {
     let (_, alice) = new_user("notes").await?;
     let s = &alice.session;
+    assert_eq!(s.notes_room(), None);
     let notes = s.direct_chat(&s.user_id()).await?;
     let list = s.room_list().await?;
     let state = wait_for("notes listed as a direct chat", list.updates(), |state| {
@@ -1169,6 +1170,7 @@ async fn notes_to_self() -> Result<()> {
     );
     // Found again rather than created twice.
     assert_eq!(s.direct_chat(&s.user_id()).await?, notes);
+    assert_eq!(s.notes_room(), Some(notes.clone()));
 
     let timeline = s.timeline(&notes).await?;
     timeout(
@@ -1177,5 +1179,24 @@ async fn notes_to_self() -> Result<()> {
     )
     .await??;
     wait_for("note", timeline.updates(), |e| has_message(e, "buy milk")).await?;
+    timeout(
+        "second note",
+        timeline
+            .send_markdown("- check *ice* data", None)
+            .await?
+            .sent(),
+    )
+    .await??;
+    let entries = wait_for("both notes", timeline.updates(), |e| {
+        has_message(e, "- check *ice* data")
+    })
+    .await?;
+    let exported = mtrx_core::notes_markdown(&entries, None);
+    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+    assert!(exported.starts_with(&format!("## {today} ")), "{exported}");
+    assert!(exported.contains("\n\nbuy milk\n\n## "), "{exported}");
+    assert!(exported.ends_with("\n\n- check *ice* data\n"), "{exported}");
+    let tomorrow = chrono::Local::now().date_naive().succ_opt().unwrap();
+    assert_eq!(mtrx_core::notes_markdown(&entries, Some(tomorrow)), "");
     Ok(())
 }

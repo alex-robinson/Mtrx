@@ -35,6 +35,8 @@ cargo run -p mtrx-cli -- send "Room name" "Hello **world**"
 cargo run -p mtrx-cli -- watch "Room name"
 cargo run -p mtrx-cli -- schedule "Room name" "tomorrow 9:00" "Good morning"
 cargo run -p mtrx-cli -- scheduled       # list; then unschedule ID / send-now ID
+cargo run -p mtrx-cli -- note "Idea: compare basal melt"   # a note to self
+cargo run -p mtrx-cli -- notes --since 2026-10-01 -o notes.md  # notes as Markdown
 cargo run -p mtrx-cli -- verify          # emoji verification with another device
 cargo run -p mtrx-cli -- recovery recover
 ```

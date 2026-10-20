@@ -361,6 +361,13 @@ impl Session {
     }
 
     /// The direct chat with `user`: the existing one, or a new encrypted one.
+    /// The Notes chat (notes to self), if there is one.
+    pub fn notes_room(&self) -> Option<OwnedRoomId> {
+        self.client
+            .get_dm_room(&self.user_id())
+            .map(|room| room.room_id().to_owned())
+    }
+
     /// The direct chat with `user`, created if there is none. With
     /// ourselves it is a "Notes" room only we are in.
     pub async fn direct_chat(&self, user: &UserId) -> Result<OwnedRoomId> {

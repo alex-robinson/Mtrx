@@ -141,6 +141,18 @@ enum Command {
     /// Follow a room's messages, or unread counts of all rooms, until Ctrl-C.
     /// Sends scheduled messages when due.
     Watch { room: Option<String> },
+    /// Add a note to self (Markdown, from the argument or stdin if omitted).
+    Note { text: Option<String> },
+    /// Print your notes to self (the Notes chat) as Markdown, oldest first,
+    /// each under a heading with its time.
+    Notes {
+        /// Only notes from this day on (YYYY-MM-DD).
+        #[arg(long)]
+        since: Option<chrono::NaiveDate>,
+        /// Write to this file instead of printing.
+        #[arg(long, short)]
+        output: Option<PathBuf>,
+    },
     /// Show our devices, verification and recovery status.
     Devices,
     /// Manage recovery (encrypted key backup).
@@ -320,6 +332,32 @@ async fn main() -> Result<()> {
                 println!("{}", timeline::entry_line(entry));
             }
             session.stop_sync().await;
+        }
+        Command::Note { text } => {
+            let text = read_text(text)?;
+            let (session, _list) = synced(profile).await?;
+            let notes = session.direct_chat(&session.user_id()).await?;
+            let timeline = session.timeline(&notes).await?;
+            let pending = timeline.send_markdown(text.trim_end(), None).await?;
+            let sent = tokio::time::timeout(SYNC_TIMEOUT, pending.sent()).await;
+            session.stop_sync().await;
+            sent.context("timed out sending")??;
+        }
+        Command::Notes { since, output } => {
+            let (session, _list) = synced(profile).await?;
+            let room = session
+                .notes_room()
+                .context("No notes yet: start them in Mtrx with “Notes to self”")?;
+            let timeline = session.timeline(&room).await?;
+            while !timeline.paginate_back(100).await? {}
+            settle_decryption(&timeline).await;
+            let notes = mtrx_core::notes_markdown(&timeline.current(), since);
+            session.stop_sync().await;
+            match output {
+                Some(path) => std::fs::write(&path, notes)
+                    .with_context(|| format!("writing {}", path.display()))?,
+                None => print!("{notes}"),
+            }
         }
         Command::Send { room, text } => {
             let text = read_text(text)?;
