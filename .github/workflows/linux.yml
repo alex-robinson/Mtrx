@@ -105,6 +105,9 @@ jobs:
           echo "APPIMAGE_RUNTIME=$RUNNER_TEMP/runtime-x86_64" >> "$GITHUB_ENV"
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+        with:
+          # Not the 24.04 cache: C objects built against a newer glibc.
+          key: ubuntu-22.04
       - name: Bundle
         run: cargo xtask bundle
       - name: Check the packages
