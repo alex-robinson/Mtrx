@@ -366,9 +366,14 @@ impl<Message> Widget<Message, Theme, Renderer> for Selectable<'_, Message> {
                 }));
                 shell.capture_event();
             }
-            Event::Mouse(mouse::Event::CursorMoved { position }) => {
+            Event::Mouse(mouse::Event::CursorMoved { .. }) => {
+                // The cursor, not the event: inside a scrollable, only the
+                // cursor is moved into the content's coordinates.
+                let Some(position) = cursor.land().position() else {
+                    return;
+                };
                 if let Some((_, pressed)) = state.link_pressed
-                    && pressed.distance(*position) > CLICK_SLOP
+                    && pressed.distance(position) > CLICK_SLOP
                 {
                     state.link_pressed = None;
                 }
@@ -378,7 +383,7 @@ impl<Message> Widget<Message, Theme, Renderer> for Selectable<'_, Message> {
                     && beside
                     && let Some(on_gesture) = &self.on_gesture
                 {
-                    let offset = state.offset_at(*position - translation(bounds), bounds.size());
+                    let offset = state.offset_at(position - translation(bounds), bounds.size());
                     shell.publish(on_gesture(Gesture::Drag {
                         unit: self.unit,
                         offset,

@@ -286,9 +286,14 @@ mod tests {
     use super::*;
     use crate::selection::{Message, Selection, units_text};
 
-    /// Drives `document`'s view with mouse `steps` (a position and an
-    /// event there) and returns the selected text.
-    fn select(document: &Document, dragging: bool, steps: &[((f32, f32), mouse::Event)]) -> String {
+    /// Drives `document`'s view, in a scrollable `height` high, with mouse
+    /// `steps` (a position and an event there); returns the selected text.
+    fn select_in(
+        document: &Document,
+        height: f32,
+        dragging: bool,
+        steps: &[((f32, f32), mouse::Event)],
+    ) -> String {
         let view = view(
             document,
             &Theme::Light,
@@ -302,6 +307,7 @@ mod tests {
                 on_gesture: Rc::new(|gesture| gesture),
             },
         );
+        let view = iced::widget::scrollable(view).height(height);
         let mut ui = Simulator::with_size(fonts::settings(), Size::new(800.0, 400.0), view);
         for (at, event) in steps {
             ui.point_at(*at);
@@ -317,6 +323,44 @@ mod tests {
         };
         let (from, to) = bounds.in_message(0).unwrap();
         units_text(&units(document), from, to)
+    }
+
+    fn select(document: &Document, dragging: bool, steps: &[((f32, f32), mouse::Event)]) -> String {
+        select_in(document, 400.0, dragging, steps)
+    }
+
+    #[test]
+    fn selects_where_the_cursor_is_when_scrolled() {
+        use mouse::{Button::Left, Event::*};
+        let html: String = (0..30).map(|i| format!("<p>Line {i}</p>")).collect();
+        let document = Document::from_html(&html);
+        let selected = select_in(
+            &document,
+            100.0,
+            true,
+            &[
+                (
+                    (2.0, 50.0),
+                    WheelScrolled {
+                        delta: mouse::ScrollDelta::Pixels { x: 0.0, y: -300.0 },
+                    },
+                ),
+                ((2.0, 8.0), ButtonPressed(Left)),
+                (
+                    (700.0, 35.0),
+                    CursorMoved {
+                        position: iced::Point::new(700.0, 35.0),
+                    },
+                ),
+            ],
+        );
+        // Two neighbouring lines well below the first.
+        let lines: Vec<u32> = selected
+            .split("\n\n")
+            .map(|line| line.trim_start_matches("Line ").parse().unwrap())
+            .collect();
+        assert_eq!(lines.len(), 2, "{selected:?}");
+        assert!(lines[0] > 5 && lines[1] == lines[0] + 1, "{selected:?}");
     }
 
     #[test]
