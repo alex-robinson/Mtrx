@@ -173,8 +173,9 @@ fn desktop_file() -> String {
 }
 
 /// The package's dependencies: the shared libraries the binaries link,
-/// from `dpkg-shlibdeps`, and those the app loads at run time (keyboard
-/// layouts; Vulkan or OpenGL for drawing).
+/// from `dpkg-shlibdeps`, and those the app loads at run time: keyboard
+/// layouts (also under X11), Vulkan or OpenGL for drawing. The X11 and
+/// Wayland client libraries come with any desktop.
 fn depends(out: &Path, binaries: &[PathBuf]) -> Result<String> {
     // dpkg-shlibdeps reads a debian/control from its working directory.
     let dir = fresh_dir(&out.join("shlibdeps"))?;
@@ -203,7 +204,9 @@ fn depends(out: &Path, binaries: &[PathBuf]) -> Result<String> {
         .lines()
         .find_map(|line| line.strip_prefix("shlibs:Depends="))
         .context("no shlibs:Depends from dpkg-shlibdeps")?;
-    Ok(format!("{linked}, libxkbcommon0, libvulkan1 | libegl1"))
+    Ok(format!(
+        "{linked}, libxkbcommon0, libxkbcommon-x11-0, libvulkan1 | libegl1"
+    ))
 }
 
 fn deb_arch() -> Result<&'static str> {
