@@ -17,7 +17,13 @@ use iced::{
 use mtrx_core::{Media, MediaKind, MediaRef, RoomTimeline, Session};
 use tokio::sync::Semaphore;
 
-use crate::{app::Message, ellipsis::ellipsis, fonts, icons, style};
+use crate::{
+    app::Message,
+    ellipsis::ellipsis,
+    fonts,
+    hint::{Position, hint},
+    icons, style,
+};
 
 /// Largest size of an image in the timeline, in logical pixels.
 const MAX_INLINE: Size = Size::new(360.0, 300.0);
@@ -219,7 +225,7 @@ fn placeholder<'a>(size: Size) -> Element<'a, Message> {
         .into()
 }
 
-/// A file: icon, name, size and type, and a Save button.
+/// A file: icon, name, size and type, and a download button.
 fn card<'a>(media: &'a Media) -> Element<'a, Message> {
     let details = match media.size {
         Some(size) => format!("{} · {}", human_size(size), kind_label(media)),
@@ -248,11 +254,21 @@ fn card<'a>(media: &'a Media) -> Element<'a, Message> {
 }
 
 fn save_button<'a>(media: &Media) -> Element<'a, Message> {
-    button(text("Save…").size(13))
-        .padding([5, 12])
+    hint(
+        button(icons::download(18.0, |theme| {
+            theme
+                .extended_palette()
+                .background
+                .base
+                .text
+                .scale_alpha(0.75)
+        }))
+        .padding([6, 8])
         .style(style::secondary_button)
-        .on_press(Message::SaveMedia(media.clone()))
-        .into()
+        .on_press(Message::SaveMedia(media.clone())),
+        "Save to your computer",
+        Position::Top,
+    )
 }
 
 /// "Video", "Audio", or for other files their extension, e.g. "PDF".

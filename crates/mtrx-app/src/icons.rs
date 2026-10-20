@@ -601,3 +601,56 @@ impl<M> canvas::Program<M> for Arrow {
         vec![frame.into_geometry()]
     }
 }
+
+/// An arrow down into a tray: download, save.
+pub fn download<'a, M: 'a>(size: f32, color: fn(&Theme) -> Color) -> Element<'a, M> {
+    canvas::Canvas::new(Download { color })
+        .width(size)
+        .height(size)
+        .into()
+}
+
+struct Download {
+    color: fn(&Theme) -> Color,
+}
+
+impl<M> canvas::Program<M> for Download {
+    type State = ();
+
+    fn draw(
+        &self,
+        _state: &(),
+        renderer: &Renderer,
+        theme: &Theme,
+        bounds: Rectangle,
+        _cursor: mouse::Cursor,
+    ) -> Vec<Geometry> {
+        let mut frame = Frame::new(renderer, bounds.size());
+        let s = bounds.width;
+        let stroke = Stroke::default()
+            .with_color((self.color)(theme))
+            .with_width((s / 10.0).max(1.0))
+            .with_line_cap(canvas::LineCap::Round)
+            .with_line_join(canvas::LineJoin::Round);
+        let p = |x: f32, y: f32| iced::Point::new(x * s, y * s);
+        frame.stroke(&Path::line(p(0.5, 0.12), p(0.5, 0.62)), stroke);
+        frame.stroke(
+            &Path::new(|path| {
+                path.move_to(p(0.28, 0.42));
+                path.line_to(p(0.5, 0.64));
+                path.line_to(p(0.72, 0.42));
+            }),
+            stroke,
+        );
+        frame.stroke(
+            &Path::new(|path| {
+                path.move_to(p(0.15, 0.66));
+                path.line_to(p(0.15, 0.86));
+                path.line_to(p(0.85, 0.86));
+                path.line_to(p(0.85, 0.66));
+            }),
+            stroke,
+        );
+        vec![frame.into_geometry()]
+    }
+}
