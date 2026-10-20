@@ -104,6 +104,12 @@ impl Session {
             .await?)
     }
 
+    /// Set our display name, shown instead of the user ID.
+    pub async fn set_display_name(&self, name: &str) -> Result<()> {
+        self.client.account().set_display_name(Some(name)).await?;
+        Ok(())
+    }
+
     /// Upload `data` (of MIME type `content_type`, e.g. `image/png`) and make
     /// it our avatar.
     pub async fn set_avatar(&self, content_type: &str, data: Vec<u8>) -> Result<OwnedMxcUri> {

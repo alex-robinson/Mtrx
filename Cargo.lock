@@ -4983,6 +4983,7 @@ dependencies = [
  "hayro",
  "iced",
  "iced_graphics",
+ "iced_runtime",
  "iced_test",
  "image",
  "mtrx-core",

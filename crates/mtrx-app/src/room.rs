@@ -509,11 +509,12 @@ impl Room {
         )
         .on_dismiss(Message::Later(send_later::Message::Close));
 
-        let mut bottom = column![]
-            .spacing(6)
-            .padding([8.0, TIMELINE_PADDING + MESSAGE_PADDING]);
+        // Bars above and below the composer come and go inside columns that
+        // are always there: widgets keep their state by position, so the
+        // composer must stay where it is to keep its focus.
+        let mut above = column![].spacing(6);
         if !scheduled.messages.is_empty() {
-            bottom = bottom.push(send_later::queue(
+            above = above.push(send_later::queue(
                 scheduled,
                 &self.later,
                 self.editing.as_ref(),
@@ -521,10 +522,10 @@ impl Room {
             ));
         }
         if let Some(typing) = actions::typing(&self.typing) {
-            bottom = bottom.push(typing);
+            above = above.push(typing);
         }
         if let Some(bar) = self.compose.bar() {
-            bottom = bottom.push(bar);
+            above = above.push(bar);
         }
         let attach = hint(
             button(icons::paperclip(20.0, |theme| {
@@ -541,27 +542,27 @@ impl Room {
             "Attach files (or drop them on the window)",
             Position::Top,
         );
-        bottom = bottom.push(
+        let mut below = column![];
+        if let Some(error) = &self.error {
+            below = below.push(text(error).size(12).style(text::danger));
+        }
+        let bottom = column![
+            above,
             row![composer, attach, send]
                 .spacing(8)
                 .align_y(Alignment::End),
-        );
-        if let Some(error) = &self.error {
-            bottom = bottom.push(text(error).size(12).style(text::danger));
-        }
+            below,
+        ]
+        .spacing(6)
+        .padding([8.0, TIMELINE_PADDING + MESSAGE_PADDING]);
 
         let main = column![timeline, bottom].width(Length::Fill);
-        let body: Element<'a, Message> = match &self.members {
-            Some(members) => {
-                let name = summary.map_or("", |s| s.name.as_str());
-                row![
-                    main,
-                    members.view(&self.id, name, look.own_user, look.avatars)
-                ]
-                .into()
-            }
-            None => main.into(),
-        };
+        // The member list comes after, so it does not move the composer.
+        let mut body = row![main];
+        if let Some(members) = &self.members {
+            let name = summary.map_or("", |s| s.name.as_str());
+            body = body.push(members.view(&self.id, name, look.own_user, look.avatars));
+        }
         column![header, body].into()
     }
 

@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mtrx</title>
+<meta name="description" content="A fast, native Matrix client: send later, LaTeX math, notes to self, PDFs and more.">
+<link rel="icon" href="images/logo.svg" type="image/svg+xml">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="top">
+  <a class="brand" href="#"><img src="images/logo.svg" alt="" width="28" height="28">Mtrx</a>
+  <nav>
+    <a href="#features">Features</a>
+    <a href="#download">Download</a>
+    <a href="https://github.com/alex-robinson/Mtrx">Source</a>
+  </nav>
+</header>
+
+<main>
+<section class="hero">
+  <h1>Matrix chat, native and quick</h1>
+  <p class="lead">Mtrx is a desktop client for <a href="https://matrix.org">Matrix</a>, written in Rust. It is a
+    real app, not a web page in a wrapper, with what research groups need: messages sent later, LaTeX math, notes to
+    self, PDFs and call links.</p>
+  <p class="actions">
+    <a class="button primary" href="#download">Download for Mac</a>
+    <a class="button" href="https://github.com/alex-robinson/Mtrx">View source</a>
+  </p>
+  <picture class="shot">
+    <source srcset="images/main-dark.png" media="(prefers-color-scheme: dark)">
+    <img src="images/main-light.png" alt="Mtrx showing a room with typeset math, a reply, reactions and a call link" width="1600" height="1067">
+  </picture>
+</section>
+
+<section id="features" class="features">
+  <article class="feature wide">
+    <div>
+      <h2>Send later</h2>
+      <p>Write now, send tomorrow at nine. Pick a time in one click, see what is queued above the message box, and edit,
+        reschedule or send it now.</p>
+      <p class="note">Matrix servers cannot schedule messages yet, so Mtrx keeps scheduled messages on your device
+        (encrypted) and sends them while Mtrx, or <code>mtrx watch</code>, is running. If the time passes while
+        neither runs, the message waits as overdue until you send or cancel it.</p>
+    </div>
+    <img src="images/send-later.png" alt="The send later picker with quick choices, a calendar and a time" loading="lazy" width="1600" height="1067">
+  </article>
+
+  <article class="feature wide reverse">
+    <div>
+      <h2>Math, typeset</h2>
+      <p>Write <code>$\dot m = \frac{G}{\rho L}$</code> and everyone sees the formula, typeset with Typst. Select text
+        across messages and formulas, and copy it with the LaTeX intact, or copy a message as a picture.</p>
+    </div>
+    <img src="images/copy.png" alt="A selection running through a typeset formula, with Copy, Copy image and Save image" loading="lazy" width="1600" height="1067">
+  </article>
+
+  <div class="grid">
+    <article class="feature">
+      <h3>Notes to self</h3>
+      <p>Your notes stay at the top of the room list in every space. Export them as Markdown with
+        <code>mtrx notes</code>.</p>
+    </article>
+    <article class="feature">
+      <h3>Your room list, your way</h3>
+      <p>Categories per space, favourites, low priority, unread first, and a colour for each space. They sync to your
+        other devices.</p>
+    </article>
+    <article class="feature">
+      <h3>PDFs and pictures</h3>
+      <p>Open PDFs in a zoomable viewer, view pictures large, copy or save them.</p>
+    </article>
+    <article class="feature">
+      <h3>Calls by link</h3>
+      <p>Jitsi, Google Meet and Zoom links become a Join button. Give a room a standing call link, or start a new call
+        with your space's service.</p>
+    </article>
+    <article class="feature">
+      <h3>Keeps working offline</h3>
+      <p>Messages show the moment you send them and go out when you are back online.</p>
+    </article>
+    <article class="feature">
+      <h3>A command line too</h3>
+      <p><code>mtrx</code> reads, sends, schedules and watches rooms from the terminal, with the same account.</p>
+    </article>
+    <article class="feature">
+      <h3>Encrypted</h3>
+      <p>End-to-end encryption, device verification with emoji and key backup, from the
+        <a href="https://github.com/matrix-org/matrix-rust-sdk">matrix-rust-sdk</a>.</p>
+    </article>
+    <article class="feature">
+      <h3>Open source</h3>
+      <p>MIT licensed. Works with any Matrix server, including matrix.org and your institute's.</p>
+    </article>
+  </div>
+</section>
+
+<section id="download" class="download">
+  <h2>Download</h2>
+  <div class="platforms">
+    <article class="platform">
+      <h3>macOS</h3>
+      <p>For Macs with Apple silicon.</p>
+      <a class="button primary" href="https://github.com/alex-robinson/Mtrx/releases/latest/download/Mtrx-macos-arm64.zip">Download Mtrx for Mac</a>
+      <details>
+        <summary>First start</summary>
+        <p>Mtrx is not signed by Apple yet, so macOS blocks it the first time. Unzip it, drag Mtrx to Applications and
+          open it; then open System Settings → Privacy &amp; Security and click Open Anyway. Or, in Terminal:</p>
+        <pre><code>xattr -dr com.apple.quarantine /Applications/Mtrx.app</code></pre>
+      </details>
+    </article>
+    <article class="platform soon">
+      <h3>Windows</h3>
+      <p>Planned.</p>
+    </article>
+    <article class="platform soon">
+      <h3>Linux</h3>
+      <p>Planned.</p>
+    </article>
+  </div>
+  <p class="more">All versions are on the <a href="https://github.com/alex-robinson/Mtrx/releases">releases page</a>.
+    To build it yourself, see the <a href="https://github.com/alex-robinson/Mtrx#readme">README</a>.</p>
+</section>
+</main>
+
+<footer>
+  <p>Mtrx is open source under the MIT licence. Matrix is an open standard for secure, decentralised communication.</p>
+</footer>
+</body>
+</html>

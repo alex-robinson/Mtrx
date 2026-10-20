@@ -36,6 +36,7 @@ arboard = { version = "3.7.0", default-features = false, features = ["image-data
 iced_graphics = "0.14.0"
 
 [dev-dependencies]
+iced_runtime = "0.14.0"
 iced_test = "0.14.0"
 mtrx-core = { workspace = true, features = ["test-support"] }
 tempfile.workspace = true
