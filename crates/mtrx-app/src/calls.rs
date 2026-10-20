@@ -101,22 +101,31 @@ impl RoomCalls {
     /// Buttons at the right of the room header: Join or Start call, and
     /// the menu, which also holds the link editor.
     pub fn header_controls<'a>(&'a self, own: &'a [CallService]) -> Element<'a, app::Message> {
+        let open = self.menu || self.editor.is_some();
+        // Hints would cover the open menu.
+        let tip = |control: Element<'a, app::Message>, label: String| {
+            if open {
+                control
+            } else {
+                hint(control, label, Position::Bottom)
+            }
+        };
         let main = match &self.link {
             Some(link) => {
                 let label = recognize_call_link(link.as_str(), own)
                     .map_or_else(|| "Join call".to_owned(), |name| format!("Join {name}"));
-                hint(
+                tip(
                     button(row![icons::camera(14.0, on_primary), text(label).size(13)].spacing(6))
                         .padding([5, 12])
                         .style(style::primary_button)
-                        .on_press(app::Message::LinkClicked(link.to_string())),
-                    "Open the room's call in the browser",
-                    Position::Bottom,
+                        .on_press(app::Message::LinkClicked(link.to_string()))
+                        .into(),
+                    "Open the room's call in the browser".to_owned(),
                 )
             }
             None => {
                 let service = self.default_service(own);
-                let tip = match service {
+                let label = match service {
                     Some(service) => {
                         format!(
                             "Start a {} call now: posts a new link in the chat",
@@ -125,7 +134,7 @@ impl RoomCalls {
                     }
                     None => "Add a call service in Settings to start calls".to_owned(),
                 };
-                hint(
+                tip(
                     button(text("Start call").size(13))
                         .padding([5, 10])
                         .style(style::secondary_button)
@@ -133,25 +142,24 @@ impl RoomCalls {
                             service
                                 .filter(|_| !self.busy)
                                 .map(|s| self.message(Message::Start(s.clone()))),
-                        ),
-                    tip,
-                    Position::Bottom,
+                        )
+                        .into(),
+                    label,
                 )
             }
         };
-        let open = self.menu || self.editor.is_some();
         let panel = match &self.editor {
             Some(input) => Some(self.editor_view(input, own)),
             None => self.menu.then(|| self.menu_view(own)),
         };
         // While open, a click on it closes the panel as any outside click.
-        let toggle = hint(
+        let toggle = tip(
             button(text("▾").size(13))
                 .padding([5, 8])
                 .style(style::secondary_button)
-                .on_press_maybe((!open).then(|| self.message(Message::OpenMenu))),
-            "Other call services, and the room's call link",
-            Position::Bottom,
+                .on_press_maybe((!open).then(|| self.message(Message::OpenMenu)))
+                .into(),
+            "Other call services, and the room's call link".to_owned(),
         );
         row![
             main,
