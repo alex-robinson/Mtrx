@@ -455,7 +455,7 @@ async fn send_later_bar() {
     tokio::time::timeout(
         TIMEOUT,
         timeline
-            .send_markdown("Reviews are due **Friday**.", None)
+            .send_markdown("Reviews are due **Friday** ❤ 👍🏽 ☀️", None)
             .await
             .unwrap()
             .sent(),

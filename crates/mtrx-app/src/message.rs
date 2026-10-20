@@ -8,7 +8,7 @@ use iced::{
 };
 use mtrx_format::{Block, Document, Inline, Style};
 
-use crate::{fonts, style};
+use crate::{emoji, fonts, style};
 
 #[derive(Clone, Copy, Default)]
 struct Flags {
@@ -109,7 +109,16 @@ fn spans(
 ) {
     for inline in content {
         match inline {
-            Inline::Text(t) => out.push(styled(span(t.clone()), flags, link, theme)),
+            Inline::Text(t) => {
+                for (is_emoji, run) in emoji::runs(t) {
+                    let run = styled(span(run), flags, link, theme);
+                    out.push(if is_emoji {
+                        run.font(fonts::EMOJI)
+                    } else {
+                        run
+                    });
+                }
+            }
             Inline::Styled { style, content } => {
                 let mut f = flags;
                 match style {

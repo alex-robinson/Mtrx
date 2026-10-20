@@ -7,6 +7,8 @@ use iced::{
     widget::{Id, button, column, container, row, scrollable, text, text_input},
 };
 
+use unicode_segmentation::UnicodeSegmentation;
+
 use crate::{app, fonts, style};
 
 /// Offered before any have been used, and to fill up the most used.
@@ -176,6 +178,26 @@ impl Panel {
     }
 }
 
+/// `text` split into runs of emoji and of other text, in order, so emoji
+/// can be drawn with the emoji font. Symbols from U+2600 on (❤, ☀) count
+/// even without the emoji variation selector; earlier ones (©, ↔) only
+/// with it.
+pub fn runs(text: &str) -> Vec<(bool, String)> {
+    let mut runs: Vec<(bool, String)> = Vec::new();
+    for grapheme in text.graphemes(true) {
+        let pictographic = grapheme.contains('\u{fe0f}')
+            || grapheme.chars().next().is_some_and(|c| c >= '\u{2600}');
+        let emoji = pictographic
+            && (emojis::get(grapheme).is_some()
+                || emojis::get(&format!("{grapheme}\u{fe0f}")).is_some());
+        match runs.last_mut() {
+            Some((kind, run)) if *kind == emoji => run.push_str(grapheme),
+            _ => runs.push((emoji, grapheme.to_owned())),
+        }
+    }
+    runs
+}
+
 fn drawable(emoji: &emojis::Emoji) -> bool {
     let version = emoji.unicode_version();
     (version.major(), version.minor()) <= MAX_VERSION
@@ -184,6 +206,20 @@ fn drawable(emoji: &emojis::Emoji) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn splits_emoji_from_text() {
+        let runs = |text| {
+            runs(text)
+                .into_iter()
+                .map(|(emoji, run)| format!("{}{run}", if emoji { "E:" } else { "" }))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(runs("Love it ❤ 👍🏽!"), ["Love it ", "E:❤", " ", "E:👍🏽", "!"]);
+        assert_eq!(runs("© 2026 → done ✅"), ["© 2026 → done ", "E:✅"]);
+        assert_eq!(runs("👩‍🔬🧊"), ["E:👩‍🔬🧊"]);
+        assert!(runs("").is_empty());
+    }
 
     #[test]
     fn most_used_then_common() {
