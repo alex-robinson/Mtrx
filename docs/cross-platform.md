@@ -15,8 +15,14 @@ Status: macOS first. This is the plan for Windows and Linux builds.
 
 - [ ] Workflow: `cargo fmt --check`, `cargo clippy --workspace --all-targets`,
       `cargo test --workspace` on macOS, Windows and Ubuntu.
-- [ ] Ubuntu job: start Synapse (`testserver/`) and run the ignored tests
+- [x] Ubuntu job: start Synapse (`testserver/`) and run the ignored tests
       (`--ignored`, skipping `big_room`). Snapshots as artifacts.
+      `.github/workflows/linux.yml` (push to `linux`, or run by hand): fmt,
+      clippy, tests, the Synapse tests; UI snapshots render on the CPU (Mesa
+      lavapipe). Keyring tests run against GNOME Keyring in a D-Bus session,
+      and once without a Secret Service. A second job builds the packages,
+      installs the `.deb` and starts the AppImage under Xvfb (window class,
+      sign-in screen without a keyring; screenshot as an artifact).
 
 ## 2. Windows
 
@@ -33,17 +39,26 @@ Status: macOS first. This is the plan for Windows and Linux builds.
 
 ## 3. Linux
 
-- [ ] Secret Service (GNOME Keyring, KWallet) may be missing: show a clear
-      error instead of failing to sign in.
-- [ ] `.desktop` file with the icon; set the window's application id to
-      match it (Wayland), so docks show the logo.
-- [ ] File dialogs (`rfd`) use the XDG portal: check on Ubuntu.
+- [x] Secret Service (GNOME Keyring, KWallet) may be missing: show a clear
+      error instead of failing to sign in. `Error::NoSecretStore`, shown on
+      the sign-in screen at start.
+- [x] `.desktop` file with the icon; set the window's application id to
+      match it (Wayland), so docks show the logo. Both `org.mtrx.Mtrx`;
+      icons from `logo.svg` in the hicolor theme. Not yet seen in a real
+      GNOME dock.
+- [x] File dialogs (`rfd`) use the XDG portal (its default features; CI
+      checks). Not yet tried on a desktop: CI has no portal. Without one,
+      rfd falls back to zenity.
 
 ## 4. Packages
 
 - [ ] `cargo xtask bundle` per platform: Windows installer (Start menu
       shortcut with the AppUserModelID, uninstall), Linux AppImage and
-      `.deb`.
+      `.deb`. Linux done (`crates/xtask/src/linux.rs`):
+      `Mtrx-linux-x86_64.AppImage` (appimagetool) and
+      `mtrx_<version>_amd64.deb` (app, `mtrx` CLI, desktop file, icons,
+      licence), built by the Linux workflow as artifacts. Built on Ubuntu
+      24.04, so they need glibc 2.39 or later.
 - [ ] Release workflow: a version tag builds all three and attaches them to
       a GitHub release.
 
