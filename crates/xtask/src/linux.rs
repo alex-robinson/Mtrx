@@ -3,8 +3,8 @@
 //!
 //! Both install the same tree: the binaries, a desktop file named after the
 //! app id (the window's application id, so docks show the logo) and the logo
-//! as icons. The AppImage needs `appimagetool` on the `PATH`; the package
-//! needs `dpkg-deb` and `dpkg-shlibdeps` (package `dpkg-dev`).
+//! as icons. Needs `strip` (binutils); the AppImage needs `appimagetool` on
+//! the `PATH`, the package `dpkg-deb` and `dpkg-shlibdeps` (`dpkg-dev`).
 
 use std::{
     fs,
@@ -120,7 +120,10 @@ fn install(root: &Path, prefix: &Path, binaries: &[&str]) -> Result<()> {
     for binary in binaries {
         let built = root.join("target/release").join(binary);
         let data = fs::read(&built).with_context(|| format!("reading {}", built.display()))?;
-        write_file(&bin.join(binary), &data, 0o755)?;
+        let installed = bin.join(binary);
+        write_file(&installed, &data, 0o755)?;
+        // Symbols make up most of a release binary.
+        run(Command::new("strip").arg(&installed))?;
     }
 
     let applications = prefix.join("share/applications");
