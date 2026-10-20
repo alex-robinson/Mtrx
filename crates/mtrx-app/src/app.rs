@@ -1595,14 +1595,12 @@ impl App {
                 room.later.picker = Some(picker);
                 scroll
             }
-            Later::Typed(_)
-            | Later::Month(_)
-            | Later::Day(_)
-            | Later::Hour(_)
-            | Later::Minute(_) => match &mut room.later.picker {
-                Some(picker) => picker.update(&message, SystemTime::now()),
-                None => Task::none(),
-            },
+            Later::Month(_) | Later::Day(_) | Later::Hour(_) | Later::Minute(_) => {
+                if let Some(picker) = &mut room.later.picker {
+                    picker.update(&message, SystemTime::now());
+                }
+                Task::none()
+            }
             Later::Schedule => match room
                 .later
                 .picker

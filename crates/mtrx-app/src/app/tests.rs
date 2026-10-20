@@ -505,9 +505,10 @@ async fn send_later_bar() {
     open.entries = timeline.current();
     with_start(&mut open.entries);
     open.composer = text_editor::Content::with_text("Who can take the Monday slot?");
-    let mut picker = send_later::Picker::new(now, None);
-    let _ = picker.update(&send_later::Message::Typed("tomorrow 8:00".into()), now);
-    open.later.picker = Some(picker);
+    open.later.picker = Some(send_later::Picker::new(
+        now,
+        mtrx_core::parse_send_time("tomorrow 8:00", now),
+    ));
     main.room = Some(open);
     let mut app = app(Screen::Main(Box::new(main)), Mode::Light);
     snapshot(&app, "send-later");

@@ -1,6 +1,6 @@
 //! Send later: the bar of scheduled messages above the composer, and the
-//! picker for a message's send time: a calendar, hour and minute wheels,
-//! quick picks, and a typed time, all kept in step.
+//! picker for a message's send time: quick picks, a calendar and hour and
+//! minute wheels.
 
 use std::time::{Duration, SystemTime};
 
@@ -9,7 +9,6 @@ use iced::{
     Alignment, Background, Border, Element, Length, Task, Theme,
     widget::{
         Id, button, column, container, operation, row, scrollable, space, text, text::Wrapping,
-        text_input,
     },
 };
 use mtrx_core::{ScheduledMessage, describe_send_time, parse_send_time};
@@ -28,8 +27,6 @@ const DAY_CELL: f32 = 32.0;
 #[derive(Debug, Clone)]
 pub enum Message {
     TogglePicker,
-    /// The typed time changed.
-    Typed(String),
     /// Show the month this many months away.
     Month(i32),
     Day(NaiveDate),
@@ -55,10 +52,8 @@ pub struct SendLater {
     pub picker: Option<Picker>,
 }
 
-/// A send time being picked. The typed text is what gets scheduled; the
-/// calendar and wheels write it, and typing a valid time moves them.
+/// A send time being picked on the calendar and wheels.
 pub struct Picker {
-    pub typed: String,
     /// The month shown, as its first day.
     month: NaiveDate,
     date: NaiveDate,
@@ -73,51 +68,32 @@ impl Picker {
             .filter(|at| *at > now)
             .map(DateTime::<Local>::from)
             .unwrap_or_else(|| next_hour(DateTime::from(now)));
-        let mut picker = Self {
-            typed: String::new(),
+        Self {
             month: first_of_month(start.date_naive()),
             date: start.date_naive(),
             hour: start.hour(),
             minute: start.minute(),
-        };
-        picker.typed = picker.formatted();
-        picker
-    }
-
-    fn formatted(&self) -> String {
-        format!(
-            "{} {:02}:{:02}",
-            self.date.format("%Y-%m-%d"),
-            self.hour,
-            self.minute
-        )
-    }
-
-    /// The time to schedule, or why there is none.
-    pub fn time(&self, now: SystemTime) -> Result<SystemTime, &'static str> {
-        match parse_send_time(&self.typed, now) {
-            _ if self.typed.trim().is_empty() => Err("Pick or type a time"),
-            None => Err("Not a time"),
-            Some(at) if at <= now => Err("That time has passed"),
-            Some(at) => Ok(at),
         }
     }
 
-    pub fn update(&mut self, message: &Message, now: SystemTime) -> Task<app::Message> {
+    /// The picked time, unless it has passed.
+    pub fn time(&self, now: SystemTime) -> Result<SystemTime, &'static str> {
+        let time = NaiveTime::from_hms_opt(self.hour, self.minute, 0).ok_or("Not a time")?;
+        let at: SystemTime = Local
+            .from_local_datetime(&self.date.and_time(time))
+            .earliest()
+            .ok_or("Not a time here (clock change)")?
+            .into();
+        if at <= now {
+            Err("That time has passed")
+        } else {
+            Ok(at)
+        }
+    }
+
+    pub fn update(&mut self, message: &Message, now: SystemTime) {
         let today = DateTime::<Local>::from(now).date_naive();
         match message {
-            Message::Typed(typed) => {
-                self.typed = typed.clone();
-                if let Some(at) = parse_send_time(typed, now) {
-                    let at = DateTime::<Local>::from(at);
-                    self.date = at.date_naive();
-                    self.month = first_of_month(self.date);
-                    self.hour = at.hour();
-                    self.minute = at.minute();
-                    return self.scroll();
-                }
-                return Task::none();
-            }
             Message::Month(by) => {
                 let month = if *by < 0 {
                     self.month
@@ -128,15 +104,12 @@ impl Picker {
                 if let Some(month) = month.filter(|m| *m >= first_of_month(today)) {
                     self.month = month;
                 }
-                return Task::none();
             }
             Message::Day(date) => self.date = *date,
             Message::Hour(hour) => self.hour = *hour,
             Message::Minute(minute) => self.minute = *minute,
-            _ => return Task::none(),
+            _ => {}
         }
-        self.typed = self.formatted();
-        Task::none()
     }
 
     /// Bring the picked hour and minute into view.
@@ -354,8 +327,8 @@ fn item<'a>(
         .into()
 }
 
-/// The time picker: calendar, hour and minute wheels, quick picks and a
-/// typed time.
+/// The time picker: quick picks on the left; the calendar and wheels on
+/// the right, with the picked time and Schedule below them.
 pub fn picker<'a>(
     state: &'a SendLater,
     can_schedule: bool,
@@ -365,21 +338,23 @@ pub fn picker<'a>(
     let local = DateTime::<Local>::from(now);
     let today = local.date_naive();
     let quick = |label: &'a str, at: Option<SystemTime>| {
-        button(text(label).size(12))
-            .padding([3, 8])
+        button(text(label).size(13).width(Length::Fill).center())
+            .width(150)
+            .padding([5, 10])
             .style(style::secondary_button)
             .on_press_maybe(
                 at.filter(|_| can_schedule)
                     .map(|at| app::Message::Later(Message::At(at))),
             )
     };
-    let quick_picks = row![
+    let quick_picks = column![
+        text("Send").size(12).font(fonts::SEMIBOLD),
         quick("In 1 hour", Some(now + Duration::from_secs(3600))),
+        quick("In 3 hours", Some(now + Duration::from_secs(3 * 3600))),
         quick("Tomorrow 09:00", parse_send_time("tomorrow", now)),
         quick("Monday 09:00", parse_send_time("mon", now)),
     ]
-    .spacing(6)
-    .wrap();
+    .spacing(6);
 
     // Past hours and minutes of today are not offered.
     let on_today = picker.date == today;
@@ -398,9 +373,14 @@ pub fn picker<'a>(
         move |minute| !this_hour || minute > local.minute(),
         Message::Minute,
     );
+    let wheel = |label, wheel| {
+        column![text(label).size(11).style(text::secondary), wheel]
+            .spacing(4)
+            .align_x(Alignment::Center)
+    };
 
     let time = picker.time(now);
-    let status = match time {
+    let summary = match time {
         Ok(at) => text(format!(
             "{} · {}",
             describe_send_time(at, now),
@@ -410,19 +390,16 @@ pub fn picker<'a>(
         Err(problem) => text(problem).size(13).style(text::danger),
     };
     let schedule = (can_schedule && time.is_ok()).then_some(app::Message::Later(Message::Schedule));
-    let input = text_input("17:30, tomorrow 8:00, fri 14:00, in 2h", &picker.typed)
-        .on_input(|v| app::Message::Later(Message::Typed(v)))
-        .on_submit_maybe(schedule.clone())
-        .size(13)
-        .padding(6)
-        .style(style::input);
-    let side = column![
-        text("Send at").size(12).font(fonts::SEMIBOLD),
-        quick_picks,
-        input,
-        status,
-        space::vertical(),
+    let chosen = column![
         row![
+            picker.calendar(today),
+            wheel("Hour", hours),
+            wheel("Min", minutes)
+        ]
+        .spacing(16),
+        row![
+            summary,
+            space::horizontal(),
             button(text("Schedule").size(13))
                 .padding([5, 12])
                 .style(style::primary_button)
@@ -432,23 +409,19 @@ pub fn picker<'a>(
                 .style(style::text_button)
                 .on_press(app::Message::Later(Message::TogglePicker)),
         ]
-        .spacing(8),
+        .spacing(8)
+        .align_y(Alignment::Center),
     ]
-    .spacing(8)
-    .width(Length::Fill)
-    .height(WHEEL_ROW * WHEEL_ROWS + 50.0);
+    .spacing(10)
+    .width(Length::Shrink);
 
     let content = row![
-        picker.calendar(today),
-        column![text("Hour").size(11).style(text::secondary), hours,]
-            .spacing(4)
-            .align_x(Alignment::Center),
-        column![text("Min").size(11).style(text::secondary), minutes,]
-            .spacing(4)
-            .align_x(Alignment::Center),
-        side,
+        space::horizontal(),
+        container(quick_picks).center_y(Length::Fill),
+        chosen,
     ]
-    .spacing(16);
+    .spacing(24)
+    .height(Length::Shrink);
     Some(
         container(content)
             .padding(12)
@@ -525,36 +498,40 @@ mod tests {
     }
 
     #[test]
-    fn calendar_wheels_and_typing_agree() {
+    fn calendar_and_wheels_pick_a_time() {
         let now = local((2026, 10, 20), 14, 23);
         let mut picker = Picker::new(now, None);
         // The next full hour.
-        assert_eq!(picker.typed, "2026-10-20 15:00");
         assert_eq!(picker.time(now), Ok(local((2026, 10, 20), 15, 0)));
 
-        let _ = picker.update(
+        picker.update(
             &Message::Day(NaiveDate::from_ymd_opt(2026, 11, 2).unwrap()),
             now,
         );
-        let _ = picker.update(&Message::Hour(9), now);
-        let _ = picker.update(&Message::Minute(30), now);
-        assert_eq!(picker.typed, "2026-11-02 09:30");
+        picker.update(&Message::Hour(9), now);
+        picker.update(&Message::Minute(30), now);
         assert_eq!(picker.time(now), Ok(local((2026, 11, 2), 9, 30)));
 
-        let _ = picker.update(&Message::Typed("tomorrow 8:15".into()), now);
-        assert_eq!((picker.date.day(), picker.hour, picker.minute), (21, 8, 15));
-        assert_eq!(picker.month, NaiveDate::from_ymd_opt(2026, 10, 1).unwrap());
+        picker.update(
+            &Message::Day(NaiveDate::from_ymd_opt(2026, 10, 20).unwrap()),
+            now,
+        );
+        picker.update(&Message::Hour(10), now);
+        assert_eq!(picker.time(now), Err("That time has passed"));
 
-        let _ = picker.update(&Message::Typed("yesterday".into()), now);
-        assert_eq!(picker.time(now), Err("Not a time"));
-        let _ = picker.update(&Message::Typed("10:00".into()), now);
-        // 10:00 has passed today, so it means tomorrow.
-        assert_eq!(picker.time(now), Ok(local((2026, 10, 21), 10, 0)));
+        // Starts from a scheduled message's time.
+        let later = local((2026, 12, 24), 18, 5);
+        let picker_at = Picker::new(now, Some(later));
+        assert_eq!(picker_at.time(now), Ok(later));
+        assert_eq!(
+            picker_at.month,
+            NaiveDate::from_ymd_opt(2026, 12, 1).unwrap()
+        );
 
         // No months before this one.
-        let _ = picker.update(&Message::Month(-1), now);
+        picker.update(&Message::Month(-1), now);
         assert_eq!(picker.month, NaiveDate::from_ymd_opt(2026, 10, 1).unwrap());
-        let _ = picker.update(&Message::Month(3), now);
+        picker.update(&Message::Month(3), now);
         assert_eq!(picker.month, NaiveDate::from_ymd_opt(2027, 1, 1).unwrap());
     }
 
