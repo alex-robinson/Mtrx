@@ -2501,7 +2501,10 @@ impl App {
         match &self.screen {
             Screen::Starting => container(text("Starting…")).center(Length::Fill).into(),
             Screen::Login(login) => login.view().map(Message::Login),
+            // The main view is always the stack's first layer, so opening
+            // and closing what floats over it keeps its widgets' state.
             Screen::Main(main) => {
+                let mut layers = stack![self.main_view(main)];
                 let (panel, close) = if let Some(panel) = &self.settings_panel {
                     let spaces = sidebar::top_level_spaces(&main.rooms.rooms)
                         .into_iter()
@@ -2523,12 +2526,11 @@ impl App {
                     )
                 } else if let Some(viewer) = &main.viewer {
                     // Fills the window, with its own backdrop.
-                    return stack![self.main_view(main), opaque(viewer.view(&main.previews))]
-                        .into();
+                    return layers.push(opaque(viewer.view(&main.previews))).into();
                 } else if let Some(pdf) = &main.pdf {
-                    return stack![self.main_view(main), opaque(pdf.view())].into();
+                    return layers.push(opaque(pdf.view())).into();
                 } else {
-                    return self.main_view(main);
+                    return layers.into();
                 };
                 let backdrop = mouse_area(
                     container(opaque(panel))
@@ -2536,7 +2538,8 @@ impl App {
                         .style(style::backdrop),
                 )
                 .on_press(close);
-                stack![self.main_view(main), opaque(backdrop)].into()
+                layers = layers.push(opaque(backdrop));
+                layers.into()
             }
         }
     }
@@ -2547,19 +2550,23 @@ impl App {
         let space_bar = sidebar::space_bar(rooms, main.space.as_ref(), &main.avatars);
         let room_list = sidebar::room_list(main.room_list_view(&self.settings));
 
-        let mut content = column![];
+        // Banners come and go inside a column that is always there, so the
+        // room view keeps its place and its widgets their state (the
+        // composer its focus).
+        let mut banners = column![];
         if main.verified == Some(false) {
-            content = content.push(recovery_banner(main));
+            banners = banners.push(recovery_banner(main));
         }
         if let Some(banner) = overdue_banner(main) {
-            content = content.push(banner);
+            banners = banners.push(banner);
         }
         if let Some(notice) = &main.notice {
-            content = content.push(notice_bar(notice));
+            banners = banners.push(notice_bar(notice));
         }
         if let Some(error) = &main.error {
-            content = content.push(container(text(error).style(text::danger)).padding(12));
+            banners = banners.push(container(text(error).style(text::danger)).padding(12));
         }
+        let mut content = column![banners];
         let room_view: Element<'a, Message> = match (&main.invite, &main.opening, &main.room) {
             (Some((id, answering)), _, _) => {
                 invite_view(rooms.iter().find(|r| &r.id == id), id, *answering)
@@ -2605,15 +2612,19 @@ impl App {
         .interaction(mouse::Interaction::ResizingHorizontally)
         .on_press(Message::Resize(Resize::Start));
         let main_row = row![space_bar, room_list, handle, content.width(Length::Fill)];
-        let window: Element<'a, Message> = match main.connection {
-            Connection::Online => main_row.into(),
-            Connection::Offline => column![main_row, offline_bar()].into(),
-            Connection::SignedOut => column![main_row, signed_out_bar()].into(),
-        };
-        match sidebar::drag_preview(rooms, &main.arrange, &main.avatars) {
-            Some(preview) => stack![window, preview].into(),
-            None => window,
+        // Bars and the drag preview come after the rooms, keeping them in
+        // place.
+        let mut window = column![main_row];
+        match main.connection {
+            Connection::Online => {}
+            Connection::Offline => window = window.push(offline_bar()),
+            Connection::SignedOut => window = window.push(signed_out_bar()),
         }
+        let mut layers = stack![window];
+        if let Some(preview) = sidebar::drag_preview(rooms, &main.arrange, &main.avatars) {
+            layers = layers.push(preview);
+        }
+        layers.into()
     }
 }
 

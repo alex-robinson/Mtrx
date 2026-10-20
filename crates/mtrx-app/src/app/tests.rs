@@ -490,6 +490,114 @@ async fn main_screen_with_math() {
             "main-light"
         };
         snapshot(&app, name);
+        if mode == Mode::Light {
+            composer_keeps_focus(&mut app);
+        }
+    }
+}
+
+/// The composer keeps its focus, so typing goes on, while what is around
+/// it comes and goes: someone typing, bars, banners, the member list,
+/// panels over the window.
+fn composer_keeps_focus(app: &mut App) {
+    use iced::advanced::{renderer::Headless, widget::operation::focusable};
+    use iced_runtime::user_interface::{Cache, UserInterface};
+
+    fn main(app: &mut App) -> &mut Main {
+        let Screen::Main(main) = &mut app.screen else {
+            unreachable!()
+        };
+        main
+    }
+    fn room(app: &mut App) -> &mut Room {
+        main(app).room.as_mut().unwrap()
+    }
+    // Nothing else open that could take the focus.
+    room(app).menu = None;
+    room(app).calls.editor = None;
+    room(app).typing.clear();
+
+    let mut renderer = iced::futures::executor::block_on(iced::Renderer::new(
+        fonts::INTER,
+        iced::Pixels(style::TEXT_SIZE),
+        None,
+    ))
+    .unwrap();
+    let size = Size::new(1200.0, 800.0);
+    let mut ui = UserInterface::build(app.view(), size, Cache::default(), &mut renderer);
+    ui.operate(&renderer, &mut focusable::focus(room::COMPOSER.into()));
+    let mut cache = ui.into_cache();
+
+    type Change = (&'static str, fn(&mut App));
+    let changes: [Change; 14] = [
+        ("someone types", |app| room(app).typing = vec!["bob".into()]),
+        ("they stop", |app| room(app).typing.clear()),
+        ("an error below", |app| {
+            room(app).error = Some("Not sent".into())
+        }),
+        ("it goes", |app| room(app).error = None),
+        ("members open", |app| {
+            room(app).members = Some(Default::default())
+        }),
+        ("members close", |app| room(app).members = None),
+        ("offline", |app| main(app).connection = Connection::Offline),
+        ("online", |app| main(app).connection = Connection::Online),
+        ("a banner", |app| {
+            main(app).error = Some("Something failed".into())
+        }),
+        ("it goes", |app| main(app).error = None),
+        ("settings open", |app| {
+            app.settings_panel = Some(settings::Panel::default());
+        }),
+        ("settings close", |app| app.settings_panel = None),
+        ("a message is queued", |app| {
+            let room_id = room(app).id.clone();
+            main(app).scheduled = vec![ScheduledMessage {
+                id: "q".into(),
+                room_id,
+                text: "Later".into(),
+                send_at: SystemTime::now() + Duration::from_secs(3600),
+                in_reply_to: None,
+                overdue: false,
+            }];
+        }),
+        ("and sent", |app| main(app).scheduled.clear()),
+    ];
+    for (what, change) in changes {
+        change(app);
+        let mut ui = UserInterface::build(app.view(), size, cache, &mut renderer);
+        let mut focused = ComposerFocused(None);
+        ui.operate(&renderer, &mut focused);
+        cache = ui.into_cache();
+        // Panels over the window hide it; it is focused again once they close.
+        if what == "settings open" {
+            continue;
+        }
+        assert_eq!(
+            focused.0,
+            Some(true),
+            "the composer lost its focus when {what}"
+        );
+    }
+}
+
+/// Whether the composer is focused, once operated.
+struct ComposerFocused(Option<bool>);
+
+impl iced::advanced::widget::Operation for ComposerFocused {
+    fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn iced::advanced::widget::Operation)) {
+        operate(self);
+    }
+
+    fn focusable(
+        &mut self,
+        id: Option<&iced::advanced::widget::Id>,
+        _bounds: iced::Rectangle,
+        state: &mut dyn iced::advanced::widget::operation::Focusable,
+    ) {
+        if id == Some(&iced::advanced::widget::Id::new(room::COMPOSER)) {
+            self.0 = Some(state.is_focused());
+        }
     }
 }
 
@@ -1261,4 +1369,296 @@ async fn room_categories() {
     let seminar = main.rooms.rooms.iter().find(|r| r.id == ids["seminar"]);
     assert_eq!(seminar.map(|r| r.tag), Some(RoomTag::Favourite));
     assert!(main.arrange.drag.is_none());
+}
+
+/// Screenshots for the website (`site/images/`): a lab's room with math, a
+/// reply, reactions and a call; then sending later, and copying a selection.
+/// `cargo test -p mtrx-app website -- --ignored`, then copy the `site-*`
+/// snapshots from `target/ui-snapshots/`.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs local Synapse (testserver/run.sh)"]
+async fn website_screenshots() {
+    let dir = TempDir::new().unwrap();
+    let (_, ana) = user("ana", &dir).await;
+    let (_, ben) = user("ben", &dir).await;
+    let (_, chloe) = user("chloe", &dir).await;
+    for (session, name) in [
+        (&ana, "Ana Sousa"),
+        (&ben, "Ben Okafor"),
+        (&chloe, "Chloé Martin"),
+    ] {
+        session.set_display_name(name).await.unwrap();
+    }
+    ben.set_avatar("image/png", picture([40, 90, 200], [120, 220, 255]))
+        .await
+        .unwrap();
+    chloe
+        .set_avatar("image/png", picture([230, 120, 40], [250, 210, 90]))
+        .await
+        .unwrap();
+
+    let space = ana
+        .create_room(NewRoom {
+            name: Some("Glaciology Lab".into()),
+            space: true,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let mut rooms_in_space = Vec::new();
+    for (name, topic) in [
+        (
+            "ice-sheets",
+            "Basal melt and ice flux: drafts, figures and model runs",
+        ),
+        ("field-campaign", "Greenland 2027 logistics"),
+        ("seminars", "Talks and reading group"),
+    ] {
+        let room = ana
+            .create_room(NewRoom {
+                name: Some(name.into()),
+                topic: Some(topic.into()),
+                encrypted: true,
+                invite: vec![ben.user_id(), chloe.user_id()],
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        ana.add_to_space(&space, &room).await.unwrap();
+        accept_invite(&ben, &room).await;
+        accept_invite(&chloe, &room).await;
+        rooms_in_space.push(room);
+    }
+    let room = rooms_in_space[0].clone();
+    let dm = ana
+        .create_room(NewRoom {
+            invite: vec![chloe.user_id()],
+            direct: true,
+            encrypted: true,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    accept_invite(&chloe, &dm).await;
+    ana.direct_chat(&ana.user_id()).await.unwrap();
+
+    let ana_timeline = ana.timeline(&room).await.unwrap();
+    let mut entries = std::pin::pin!(ana_timeline.updates());
+    tokio::time::timeout(TIMEOUT, async {
+        while let Some(entries) = entries.next().await {
+            let joined = |user: &Session| {
+                entries
+                    .iter()
+                    .any(|e| matches!(e, TimelineEntry::Event(ev) if ev.sender == user.user_id()))
+            };
+            if joined(&ben) && joined(&chloe) {
+                break;
+            }
+        }
+    })
+    .await
+    .unwrap();
+    let first = send(
+        &ana_timeline,
+        "Morning! The draft of the **ice flux** section is up.",
+    )
+    .await;
+    send(
+        &ana_timeline,
+        r"The basal melt rate follows $\dot m = \frac{G + \tau_b u_b}{\rho_i L}$ where $G$ is the geothermal flux.",
+    )
+    .await;
+    let ben_timeline = ben.timeline(&room).await.unwrap();
+    send(
+        &ben_timeline,
+        "Looks good, but check the sign of $\\dot m$ in the mass balance 🙂",
+    )
+    .await;
+    send_reply(
+        &ben_timeline,
+        "Which geothermal flux dataset is it?",
+        Some(&first),
+    )
+    .await;
+    let chloe_timeline = chloe.timeline(&room).await.unwrap();
+    send(
+        &chloe_timeline,
+        "I can run the sensitivity tests tonight. Quick call first? https://meet.jit.si/glaciology-lab",
+    )
+    .await;
+    send(
+        &chloe.timeline(&dm).await.unwrap(),
+        "Coffee before the seminar?",
+    )
+    .await;
+    for timeline in [&ben_timeline, &chloe_timeline] {
+        timeline
+            .toggle_reaction(
+                &key_of(
+                    timeline,
+                    "Morning! The draft of the **ice flux** section is up.",
+                )
+                .await,
+                "🎉",
+            )
+            .await
+            .unwrap();
+    }
+    ana_timeline
+        .toggle_reaction(
+            &key_of(&ana_timeline, "Which geothermal flux dataset is it?").await,
+            "👍",
+        )
+        .await
+        .unwrap();
+    ben_timeline.mark_read().await.unwrap();
+    chloe_timeline.mark_read().await.unwrap();
+
+    let list = Arc::new(ana.room_list().await.unwrap());
+    let rooms = tokio::time::timeout(TIMEOUT, async {
+        let mut updates = std::pin::pin!(list.updates());
+        while let Some(state) = updates.next().await {
+            let in_space = rooms_in_space.iter().all(|id| {
+                state
+                    .rooms
+                    .iter()
+                    .any(|r| &r.id == id && r.parents.contains(&space))
+            });
+            let dm_avatar = state.rooms.iter().any(|r| r.id == dm && r.avatar.is_some());
+            if state.loaded && in_space && dm_avatar {
+                return state;
+            }
+        }
+        unreachable!()
+    })
+    .await
+    .unwrap();
+    let timeline = Arc::new(ana.timeline(&room).await.unwrap());
+    while !timeline.paginate_back(50).await.unwrap() {}
+    let entries = tokio::time::timeout(TIMEOUT, async {
+        let mut updates = std::pin::pin!(timeline.updates());
+        while let Some(entries) = updates.next().await {
+            let messages = || {
+                entries.iter().filter_map(|e| match e {
+                    TimelineEntry::Event(ev) => match &ev.content {
+                        EventContent::Message(m) => Some((ev, m)),
+                        _ => None,
+                    },
+                    _ => None,
+                })
+            };
+            let named = messages().all(|(ev, _)| ev.sender_name.is_some());
+            let reply = messages()
+                .any(|(_, m)| m.in_reply_to.as_ref().is_some_and(|r| r.preview.is_some()));
+            let reactions = messages().filter(|(_, m)| !m.reactions.is_empty()).count() == 2;
+            let read = messages().any(|(ev, _)| ev.read_by.len() == 2);
+            if messages().count() == 5 && named && reply && reactions && read {
+                return entries;
+            }
+        }
+        unreachable!()
+    })
+    .await
+    .unwrap();
+    let id_of = |start: &str| {
+        entries
+            .iter()
+            .find_map(|e| match e {
+                TimelineEntry::Event(ev) => match &ev.content {
+                    EventContent::Message(m) if m.body.starts_with(start) => Some(ev.id.clone()),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .unwrap()
+    };
+
+    let ana = Arc::new(ana);
+    let now = SystemTime::now();
+    let screen = |mode: Mode| {
+        let mut main = Main::new(ana.clone());
+        main.rooms = rooms.clone();
+        main.space = Some(space.clone());
+        main.verified = Some(true);
+        main.now = now;
+        main.colours = RoomListColours {
+            home: None,
+            spaces: [(space.clone(), "Teal".to_owned())].into(),
+        };
+        main.scheduled = vec![ScheduledMessage {
+            id: "a".into(),
+            room_id: room.clone(),
+            text: "Reminder: figures for Thursday's meeting, please!".into(),
+            send_at: now + Duration::from_secs(14 * 3600),
+            in_reply_to: None,
+            overdue: false,
+        }];
+        let mut open = Room::new(room.clone(), timeline.clone());
+        open.entries = entries.clone();
+        with_start(&mut open.entries);
+        main.room = Some(open);
+        let mut app = app(Screen::Main(Box::new(main)), mode);
+        app.settings.colored_names = mode == Mode::Dark;
+        app
+    };
+    async fn finish(app: &mut App, ana: &Session) {
+        let params = app.math_params();
+        if let Screen::Main(main) = &mut app.screen {
+            for document in main.room.as_ref().unwrap().math_documents() {
+                app.math.render_now(document, &params);
+            }
+            for (mxc, size) in main.avatars_on_screen(&Default::default()) {
+                main.avatars.load_now(ana, &mxc, size).await;
+            }
+        }
+    }
+
+    for (mode, name) in [
+        (Mode::Light, "site-main-light"),
+        (Mode::Dark, "site-main-dark"),
+    ] {
+        let mut app = screen(mode);
+        finish(&mut app, &ana).await;
+        snapshot(&app, name);
+    }
+
+    // Sending later: the picker, with a draft.
+    let mut app = screen(Mode::Light);
+    if let Screen::Main(main) = &mut app.screen
+        && let Some(open) = main.room.as_mut()
+    {
+        open.composer = text_editor::Content::with_text("Results are in the shared folder 📈");
+        open.later.picker = Some(send_later::Picker::new(
+            now,
+            mtrx_core::parse_send_time("tomorrow 8:00", now),
+        ));
+    }
+    finish(&mut app, &ana).await;
+    snapshot(&app, "site-send-later");
+
+    // Copying: a selection through typeset math into the next message.
+    let mut app = screen(Mode::Light);
+    if let Screen::Main(main) = &mut app.screen
+        && let Some(open) = main.room.as_mut()
+    {
+        let math = id_of("The basal melt");
+        open.selection = Some(Selection {
+            anchor: Point {
+                event: math.clone(),
+                pos: Pos { unit: 0, offset: 4 },
+            },
+            focus: Point {
+                event: id_of("Looks good"),
+                pos: Pos {
+                    unit: 0,
+                    offset: 10,
+                },
+            },
+            dragging: false,
+        });
+        open.hover(math.clone(), true);
+        open.menu = Some((math, MenuAt::Toolbar));
+    }
+    finish(&mut app, &ana).await;
+    snapshot(&app, "site-copy");
 }
