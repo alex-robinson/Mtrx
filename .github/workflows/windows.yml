@@ -1,0 +1,40 @@
+# Windows: lint, test and package (portable zip and installer).
+name: Windows
+
+on:
+  push:
+    branches: [windows]
+  workflow_dispatch:
+
+concurrency:
+  group: windows-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Test
+        run: cargo test --workspace
+      - name: Inno Setup
+        run: |
+          if (-not (Get-Command iscc -ErrorAction SilentlyContinue) -and
+              -not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) {
+            choco install innosetup --no-progress -y
+          }
+      - name: Package
+        run: cargo xtask bundle
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Mtrx-windows-x64
+          path: |
+            target/bundle/Mtrx-windows-x64.zip
+            target/bundle/Mtrx-windows-x64-setup.exe
+          if-no-files-found: error
