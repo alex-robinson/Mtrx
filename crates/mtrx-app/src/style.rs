@@ -27,6 +27,12 @@ pub const GUTTER_SPACING: f32 = 10.0;
 /// Kept free right of message text, so lines stay shorter and easier to
 /// read.
 pub const TEXT_MARGIN: f32 = 72.0;
+/// A message's hover toolbar: its icons, the padding of each, and around
+/// them all. Messages are at least as tall, so it always fits.
+pub const TOOL_ICON: f32 = 16.0;
+pub const TOOL_PADDING: f32 = 3.0;
+pub const TOOLBAR_PADDING: f32 = 1.0;
+pub const TOOLBAR_HEIGHT: f32 = TOOL_ICON + 2.0 * (TOOL_PADDING + TOOLBAR_PADDING);
 /// Width of the timeline that message text cannot use.
 pub const MESSAGE_INSET: f32 =
     2.0 * (TIMELINE_PADDING + MESSAGE_PADDING) + SENDER_AVATAR + GUTTER_SPACING + TEXT_MARGIN;

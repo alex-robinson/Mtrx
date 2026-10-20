@@ -262,7 +262,7 @@ pub fn toolbar<'a>(
     let tool = |icon: Element<'a, app::Message>, tip: &'static str, message: Option<Message>| {
         hint(
             button(icon)
-                .padding([4, 6])
+                .padding([style::TOOL_PADDING, 6.0])
                 .style(style::text_button)
                 .on_press_maybe(message.map(act)),
             tip,
@@ -271,7 +271,7 @@ pub fn toolbar<'a>(
     };
     // While open, a click on it closes the window as any outside click.
     let react = tool(
-        icons::smiley(16.0, tool_color),
+        icons::smiley(style::TOOL_ICON, tool_color),
         "React",
         picker
             .is_none()
@@ -282,7 +282,7 @@ pub fn toolbar<'a>(
     let mut bar = row![
         react,
         tool(
-            icons::reply(16.0, tool_color),
+            icons::reply(style::TOOL_ICON, tool_color),
             "Reply",
             target.clone().map(Message::Reply)
         ),
@@ -290,19 +290,22 @@ pub fn toolbar<'a>(
     .spacing(2);
     if event.editable {
         bar = bar.push(tool(
-            icons::pencil(16.0, tool_color),
+            icons::pencil(style::TOOL_ICON, tool_color),
             "Edit",
             edit_text.map(|text| Message::Edit(event.key.clone(), text)),
         ));
     }
     if event.own && event.event_id.is_some() {
         bar = bar.push(tool(
-            icons::trash(16.0, tool_color),
+            icons::trash(style::TOOL_ICON, tool_color),
             "Delete",
             Some(Message::AskDelete(event.id.clone())),
         ));
     }
-    container(bar).padding(2).style(style::toolbar).into()
+    container(bar)
+        .padding(style::TOOLBAR_PADDING)
+        .style(style::toolbar)
+        .into()
 }
 
 /// The reaction window: the most used emoji, and below them all emoji

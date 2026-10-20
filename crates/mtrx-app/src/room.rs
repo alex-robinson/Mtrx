@@ -37,7 +37,7 @@ use crate::{
     send_later::{self, SendLater},
     style::{
         self, GUTTER_SPACING, HEADER_AVATAR, MESSAGE_PADDING, SENDER_AVATAR, TEXT_MARGIN,
-        TIMELINE_PADDING,
+        TIMELINE_PADDING, TOOLBAR_HEIGHT,
     },
 };
 
@@ -725,10 +725,12 @@ fn event_view<'a>(
     } else if hovered {
         container(text(time(event)).size(10).style(text::secondary))
             .center_x(SENDER_AVATAR)
+            .height(TOOLBAR_HEIGHT)
             .padding(Padding::ZERO.top(5))
             .into()
     } else {
-        space().width(SENDER_AVATAR).into()
+        // At least as tall as the toolbar, also for a short line of math.
+        space().width(SENDER_AVATAR).height(TOOLBAR_HEIGHT).into()
     };
     let top = if with_header { 4.0 } else { 1.0 };
     let row = container(row![gutter, item].spacing(GUTTER_SPACING))
@@ -753,7 +755,7 @@ fn event_view<'a>(
                 row,
                 container(actions::toolbar(event, target, edit_text, picker))
                     .align_right(Length::Fill)
-                    .padding(Padding::ZERO.top(2.0).right(8.0)),
+                    .padding(Padding::ZERO.top(1.0).right(8.0)),
             ]
             .into()
         }
