@@ -98,20 +98,23 @@ impl RoomCalls {
                 Position::Bottom,
             ));
         }
-        let start = self.default_service(own).filter(|_| !self.busy);
-        let start_tip = match self.default_service(own) {
-            Some(service) => format!("Start a {} call and post its link here", service.name),
-            None => "Add a call service in Settings to start calls".to_owned(),
-        };
-        controls
-            .push(hint(
+        // The room's link replaces Start call; the menu still offers others.
+        if self.link.is_none() {
+            let start = self.default_service(own).filter(|_| !self.busy);
+            let start_tip = match self.default_service(own) {
+                Some(service) => format!("Start a {} call and post its link here", service.name),
+                None => "Add a call service in Settings to start calls".to_owned(),
+            };
+            controls = controls.push(hint(
                 button(text("Start call").size(13))
                     .padding([5, 10])
                     .style(style::secondary_button)
                     .on_press_maybe(start.map(|s| self.message(Message::Start(s.clone())))),
                 start_tip,
                 Position::Bottom,
-            ))
+            ));
+        }
+        controls
             .push(hint(
                 button(text("▾").size(13))
                     .padding([5, 8])
