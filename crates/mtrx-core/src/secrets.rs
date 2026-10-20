@@ -7,13 +7,17 @@ use std::{
 
 use crate::{Error, Result};
 
+#[cfg(windows)]
+mod windows;
+
 const KEYRING_SERVICE: &str = "mtrx";
 
 /// Where secrets (access tokens, store passphrases) are kept.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SecretStore {
     /// OS credential store: macOS Keychain, Windows Credential Manager, or
-    /// Secret Service on Linux.
+    /// Secret Service on Linux. On Windows the credential is a key and the
+    /// secret an encrypted file next to it (see `secrets/windows.rs`).
     Keyring,
     /// Plain-text file in the data directory. For tests and development only.
     File,
@@ -34,11 +38,7 @@ impl Secret {
 
     pub(crate) fn load(&self) -> Result<Option<String>> {
         match self.store {
-            SecretStore::Keyring => match self.keyring_entry()?.get_password() {
-                Ok(value) => Ok(Some(value)),
-                Err(keyring::Error::NoEntry) => Ok(None),
-                Err(e) => Err(e.into()),
-            },
+            SecretStore::Keyring => self.keyring_load(),
             SecretStore::File => match fs::read_to_string(&self.file) {
                 Ok(value) => Ok(Some(value)),
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
@@ -49,19 +49,15 @@ impl Secret {
 
     pub(crate) fn save(&self, value: &str) -> Result<()> {
         match self.store {
-            SecretStore::Keyring => self.keyring_entry()?.set_password(value)?,
-            SecretStore::File => write_private(&self.file, value)?,
+            SecretStore::Keyring => self.keyring_save(value),
+            SecretStore::File => Ok(write_private(&self.file, value)?),
         }
-        Ok(())
     }
 
     /// Remove the secret; succeeds if there is none.
     pub(crate) fn delete(&self) -> Result<()> {
         match self.store {
-            SecretStore::Keyring => match self.keyring_entry()?.delete_credential() {
-                Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
-                Err(e) => Err(e.into()),
-            },
+            SecretStore::Keyring => self.keyring_delete(),
             SecretStore::File => match fs::remove_file(&self.file) {
                 Ok(()) => Ok(()),
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -69,19 +65,55 @@ impl Secret {
             },
         }
     }
+}
 
-    fn keyring_entry(&self) -> Result<keyring::Entry> {
-        keyring::Entry::new(KEYRING_SERVICE, &self.name).map_err(|e| match e {
-            // The store failed to open; the reason is kept separately.
-            keyring::Error::NoDefaultStore => {
-                Error::NoSecretStore(match keyring::Entry::store_status() {
-                    Err(cause) => cause.to_string(),
-                    Ok(()) => e.to_string(),
-                })
-            }
-            e => e.into(),
-        })
+/// The secret itself is the credential.
+#[cfg(not(windows))]
+impl Secret {
+    fn keyring_load(&self) -> Result<Option<String>> {
+        get_credential(&self.name)
     }
+
+    fn keyring_save(&self, value: &str) -> Result<()> {
+        set_credential(&self.name, value)
+    }
+
+    fn keyring_delete(&self) -> Result<()> {
+        delete_credential(&self.name)
+    }
+}
+
+fn get_credential(name: &str) -> Result<Option<String>> {
+    match credential(name)?.get_password() {
+        Ok(value) => Ok(Some(value)),
+        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(e) => Err(e.into()),
+    }
+}
+
+fn set_credential(name: &str, value: &str) -> Result<()> {
+    Ok(credential(name)?.set_password(value)?)
+}
+
+/// Succeeds if there is none.
+fn delete_credential(name: &str) -> Result<()> {
+    match credential(name)?.delete_credential() {
+        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+        Err(e) => Err(e.into()),
+    }
+}
+
+fn credential(name: &str) -> Result<keyring::Entry> {
+    keyring::Entry::new(KEYRING_SERVICE, name).map_err(|e| match e {
+        // The store failed to open; the reason is kept separately.
+        keyring::Error::NoDefaultStore => {
+            Error::NoSecretStore(match keyring::Entry::store_status() {
+                Err(cause) => cause.to_string(),
+                Ok(()) => e.to_string(),
+            })
+        }
+        e => e.into(),
+    })
 }
 
 /// What [`Error::NoSecretStore`] tells the user.

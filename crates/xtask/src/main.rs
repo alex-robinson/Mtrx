@@ -2,7 +2,8 @@
 //!
 //! - `render SVG PNG SIZE`: render an SVG to a square PNG.
 //! - `bundle`: build the app and wrap it as `target/bundle/Mtrx.app` (macOS),
-//!   or as an AppImage and a `.deb` (Linux, see [`linux`]).
+//!   an AppImage and a `.deb` (Linux, see [`linux`]), or a portable zip and
+//!   an installer (Windows, see `windows.rs`).
 
 #[cfg(target_os = "linux")]
 mod linux;
@@ -14,6 +15,9 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 use resvg::{tiny_skia, usvg};
+
+#[cfg(windows)]
+mod windows;
 
 /// The app's logo, also its icon.
 const LOGO: &str = "crates/mtrx-app/assets/logo.svg";
@@ -32,7 +36,9 @@ fn main() -> Result<()> {
         ["render", svg, png, size] => render(Path::new(svg), Path::new(png), size.parse()?),
         #[cfg(target_os = "linux")]
         ["bundle"] => linux::bundle(&root),
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(windows)]
+        ["bundle"] => windows::bundle(&root),
+        #[cfg(not(any(target_os = "linux", windows)))]
         ["bundle"] => bundle(&root),
         _ => bail!("usage: cargo xtask render SVG PNG SIZE | cargo xtask bundle"),
     }
@@ -44,6 +50,12 @@ fn workspace_root() -> PathBuf {
 
 /// Render `svg` to a `size`×`size` PNG.
 fn render(svg: &Path, png: &Path, size: u32) -> Result<()> {
+    rasterize(svg, size)?.save_png(png)?;
+    Ok(())
+}
+
+/// Render `svg` to `size`×`size` pixels.
+fn rasterize(svg: &Path, size: u32) -> Result<tiny_skia::Pixmap> {
     let data = std::fs::read(svg).with_context(|| format!("reading {}", svg.display()))?;
     let tree = usvg::Tree::from_data(&data, &usvg::Options::default())?;
     let mut pixmap = tiny_skia::Pixmap::new(size, size).context("empty size")?;
@@ -53,12 +65,11 @@ fn render(svg: &Path, png: &Path, size: u32) -> Result<()> {
         tiny_skia::Transform::from_scale(scale, scale),
         &mut pixmap.as_mut(),
     );
-    pixmap.save_png(png)?;
-    Ok(())
+    Ok(pixmap)
 }
 
 /// Build the release app and wrap it with its icon and Info.plist.
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", windows)))]
 fn bundle(root: &Path) -> Result<()> {
     if !cfg!(target_os = "macos") {
         bail!("the app bundle is for macOS");
@@ -120,7 +131,7 @@ fn bundle(root: &Path) -> Result<()> {
     Ok(())
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", windows)))]
 fn info_plist() -> String {
     let version = env!("CARGO_PKG_VERSION");
     format!(

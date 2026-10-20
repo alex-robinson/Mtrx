@@ -3013,6 +3013,8 @@ async fn notify(notification: Notification) -> bool {
     let shown = tokio::task::spawn_blocking(move || {
         let mut desktop = notify_rust::Notification::new();
         desktop.appname("Mtrx").summary(&title).body(&body);
+        #[cfg(windows)]
+        crate::windows::notification_sender(&mut desktop);
         // Freedesktop servers report clicks only for a "default" action.
         #[cfg(all(unix, not(target_os = "macos")))]
         desktop.action("default", "Open");
