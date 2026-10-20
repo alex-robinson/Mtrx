@@ -12,6 +12,7 @@ Native Rust Matrix client for macOS, Windows and Linux, built on
   model, math typesetting with Typst.
 - `crates/mtrx-cli`: the `mtrx` command-line client on top of core.
 - `crates/mtrx-app`: the desktop app (iced).
+- `crates/xtask`: build tasks (`cargo xtask bundle`).
 - `testserver/`: local Synapse for development and tests.
 
 ## Desktop app
@@ -19,6 +20,9 @@ Native Rust Matrix client for macOS, Windows and Linux, built on
 ```sh
 cargo run --release -p mtrx-app
 ```
+
+On macOS, `cargo xtask bundle` builds `target/bundle/Mtrx.app` with its icon
+(`crates/mtrx-app/assets/logo.svg`); drag it to Applications.
 
 ## CLI
 

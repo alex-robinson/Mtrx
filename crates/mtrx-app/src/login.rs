@@ -6,7 +6,7 @@ use iced::{
     widget::{button, column, container, rule, text, text_input},
 };
 
-use crate::style;
+use crate::{fonts, logo, style};
 
 #[derive(Debug, Clone)]
 pub enum Message {
@@ -112,7 +112,8 @@ impl Login {
         };
 
         let mut form = column![
-            text("Mtrx").size(32),
+            logo::view(96.0),
+            text("Mtrx").size(32).font(fonts::SEMIBOLD),
             text("Sign in to your Matrix account").size(14),
             input(
                 "Homeserver, e.g. matrix.org",

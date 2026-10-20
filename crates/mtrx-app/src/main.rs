@@ -13,6 +13,7 @@ mod ellipsis;
 mod fonts;
 mod icons;
 mod login;
+mod logo;
 mod math;
 mod media;
 mod members;
@@ -33,12 +34,18 @@ fn main() -> iced::Result {
             }),
         )
         .init();
+    #[cfg(target_os = "macos")]
+    logo::notifications_from_bundle();
 
     iced::application(app::App::boot, app::App::update, app::App::view)
         .title("Mtrx")
         .subscription(app::App::subscription)
         .theme(app::App::theme)
         .settings(fonts::settings())
-        .window_size((1200.0, 800.0))
+        .window(iced::window::Settings {
+            size: iced::Size::new(1200.0, 800.0),
+            icon: logo::window_icon(),
+            ..Default::default()
+        })
         .run()
 }
