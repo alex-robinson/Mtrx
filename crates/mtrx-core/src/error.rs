@@ -55,6 +55,9 @@ pub enum Error {
     ClientBuild(#[from] matrix_sdk::ClientBuildError),
     #[error("secret storage: {0}")]
     Keyring(#[from] keyring::Error),
+    /// The OS credential store cannot be opened (Linux: no Secret Service).
+    #[error("{advice} ({0})", advice = crate::secrets::NO_SECRET_STORE)]
+    NoSecretStore(String),
     #[error(transparent)]
     Io(#[from] std::io::Error),
     #[error(transparent)]
