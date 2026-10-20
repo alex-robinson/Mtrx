@@ -8,6 +8,7 @@
 
 mod calls;
 mod categories;
+mod emoji;
 mod encryption;
 mod error;
 mod google;

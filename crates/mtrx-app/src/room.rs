@@ -28,7 +28,7 @@ use crate::{
     calls::{self, RoomCalls},
     dialog::Kind,
     ellipsis::ellipsis,
-    fonts, info,
+    emoji, fonts, info,
     math::{self, Math, Rendered},
     media::{self, Previews},
     members::Members,
@@ -69,6 +69,8 @@ pub struct Room {
     pub editing: Option<InlineEdit>,
     /// The timeline row whose reaction picker is open.
     pub picker: Option<String>,
+    /// All emoji in the reaction picker, while shown.
+    pub emoji: Option<emoji::Panel>,
     /// The timeline row whose deletion awaits confirmation.
     pub confirm_delete: Option<String>,
     /// Names of others typing.
@@ -102,6 +104,7 @@ impl Room {
             compose: Compose::New,
             editing: None,
             picker: None,
+            emoji: None,
             confirm_delete: None,
             typing: Vec::new(),
             members: None,
@@ -269,6 +272,8 @@ impl Room {
             call_services: look.call_services,
             hovered: self.hovered.as_deref(),
             picker: self.picker.as_deref(),
+            emoji: self.emoji.as_ref(),
+            frequent_emoji: look.frequent_emoji,
             confirm_delete: self.confirm_delete.as_deref(),
             editing: self.editing.as_ref(),
         };
@@ -520,6 +525,8 @@ pub struct Look<'a> {
     pub call_services: &'a [CallService],
     pub own_user: &'a OwnedUserId,
     pub previews: &'a Previews,
+    /// The user's most used emoji, for reactions.
+    pub frequent_emoji: &'a [String],
 }
 
 /// What rendering an event needs besides the event.
@@ -533,6 +540,9 @@ struct Context<'a, 'b> {
     call_services: &'b [CallService],
     hovered: Option<&'b str>,
     picker: Option<&'b str>,
+    emoji: Option<&'a emoji::Panel>,
+    /// The user's most used emoji.
+    frequent_emoji: &'b [String],
     confirm_delete: Option<&'b str>,
     /// The message being edited in place, if any.
     editing: Option<&'a InlineEdit>,
@@ -628,7 +638,12 @@ fn event_view<'a>(
     if let Some(m) = message
         && context.picker == Some(event.id.as_str())
     {
-        item = item.push(actions::picker(event, &m.reactions));
+        item = item.push(actions::picker(
+            event,
+            &m.reactions,
+            context.frequent_emoji,
+            context.emoji,
+        ));
     }
     if context.confirm_delete == Some(event.id.as_str()) {
         item = item.push(actions::confirm_delete(event));

@@ -30,7 +30,7 @@ use crate::{
     avatar::{self, Avatars},
     calls,
     dialog::{self, Dialog},
-    info,
+    emoji, info,
     login::{self, Login},
     math::{self, Math, Rendered},
     media::{self, Previews, Viewer},
@@ -153,6 +153,8 @@ pub enum Message {
     Reloaded(OwnedRoomId, Result<Shared<RoomTimeline>, String>),
     /// People the user knows, for suggestions.
     ContactsLoaded(Vec<Contact>),
+    /// The emoji the user reacts with, most used first.
+    FrequentEmoji(Vec<String>),
 }
 
 pub struct App {
@@ -222,6 +224,9 @@ struct Main {
     /// People the user knows, closest first; refreshed when a dialog
     /// picking people opens.
     contacts: Vec<Contact>,
+    /// The emoji the user reacts with, most used first; refreshed when a
+    /// reaction picker opens.
+    frequent_emoji: Vec<String>,
 }
 
 struct Notice {
@@ -246,6 +251,7 @@ impl Main {
             arrange: Arrange::new(&session),
             info: None,
             contacts: Vec::new(),
+            frequent_emoji: Vec::new(),
             now: SystemTime::now(),
             session,
             error: None,
@@ -701,6 +707,12 @@ impl App {
                     Message::ContactsLoaded,
                 )
             }
+            Message::FrequentEmoji(emoji) => {
+                if let Screen::Main(main) = &mut self.screen {
+                    main.frequent_emoji = emoji;
+                }
+                Task::none()
+            }
             Message::ContactsLoaded(contacts) => {
                 if let Screen::Main(main) = &mut self.screen {
                     if let Some(dialog) = &mut main.dialog {
@@ -878,6 +890,9 @@ impl App {
                         main.info = None;
                     } else if let Some(room) = main.room.as_mut().filter(|r| r.editing.is_some()) {
                         room.editing = None;
+                    } else if let Some(room) = main.room.as_mut().filter(|r| r.picker.is_some()) {
+                        room.picker = None;
+                        room.emoji = None;
                     } else if !main.arrange.escape() {
                         main.filter.clear();
                     }
@@ -1495,13 +1510,50 @@ impl App {
         match message {
             Act::React(key, emoji) => {
                 room.picker = None;
-                Task::perform(
-                    async move { timeline.toggle_reaction(&key, &emoji).await },
-                    done,
-                )
+                room.emoji = None;
+                // Most used first: count this use here too, until reloaded.
+                main.frequent_emoji.retain(|e| *e != emoji);
+                main.frequent_emoji.insert(0, emoji.clone());
+                let session = main.session.clone();
+                Task::batch([
+                    Task::perform(
+                        {
+                            let emoji = emoji.clone();
+                            async move { timeline.toggle_reaction(&key, &emoji).await }
+                        },
+                        done,
+                    ),
+                    Task::future(async move {
+                        if let Err(e) = session.record_emoji(&emoji).await {
+                            tracing::warn!("could not record the emoji used: {e}");
+                        }
+                    })
+                    .discard(),
+                ])
             }
             Act::TogglePicker(id) => {
                 room.picker = (room.picker.as_ref() != Some(&id)).then_some(id);
+                room.emoji = None;
+                if room.picker.is_none() {
+                    return Task::none();
+                }
+                let session = main.session.clone();
+                Task::perform(
+                    async move { session.frequent_emoji().await },
+                    Message::FrequentEmoji,
+                )
+            }
+            Act::Emoji(emoji::Message::ToggleAll) => {
+                if room.emoji.take().is_some() {
+                    return Task::none();
+                }
+                room.emoji = Some(emoji::Panel::default());
+                iced::widget::operation::focus(emoji::SEARCH)
+            }
+            Act::Emoji(message) => {
+                if let Some(panel) = &mut room.emoji {
+                    panel.update(message);
+                }
                 Task::none()
             }
             Act::Reply(target) => {
@@ -1901,6 +1953,7 @@ impl App {
                     colored_names: self.settings.colored_names,
                     call_services: &self.settings.call_services,
                     previews: &main.previews,
+                    frequent_emoji: &main.frequent_emoji,
                 };
                 room.view(summary, &look, &scheduled)
             }

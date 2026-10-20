@@ -23,6 +23,16 @@ pub const SEMIBOLD: Font = Font {
     ..INTER
 };
 
+/// The system's colour emoji font, for text that is only emoji. Inter has
+/// plain glyphs for some (❤, ✈), which would otherwise win.
+pub const EMOJI: Font = Font::with_name(if cfg!(target_os = "macos") {
+    "Apple Color Emoji"
+} else if cfg!(target_os = "windows") {
+    "Segoe UI Emoji"
+} else {
+    "Noto Color Emoji"
+});
+
 pub fn styled(bold: bool, italic: bool) -> Font {
     Font {
         weight: if bold { Weight::Bold } else { Weight::Normal },

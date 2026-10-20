@@ -12,11 +12,9 @@ use crate::{
     app,
     avatar::{Avatars, Shape},
     ellipsis::ellipsis,
-    fonts, style,
+    emoji, fonts, style,
 };
 
-/// Offered in the reaction picker.
-const QUICK_REACTIONS: [&str; 8] = ["👍", "❤️", "😂", "🎉", "😮", "😢", "🙏", "👀"];
 /// Read markers shown per message before "+N".
 const MAX_READERS: usize = 3;
 const READER_AVATAR: f32 = 16.0;
@@ -33,6 +31,8 @@ pub enum Message {
     SaveEdit,
     CancelEdit,
     EditSaved(Result<(), String>),
+    /// All emoji in the reaction picker.
+    Emoji(emoji::Message),
     /// Ask before deleting a timeline row's message.
     AskDelete(String),
     Delete(EventKey),
@@ -223,30 +223,59 @@ pub fn toolbar<'a>(
     container(bar).padding(2).style(style::toolbar).into()
 }
 
-/// The quick reactions for a message.
-pub fn picker<'a>(event: &Event, reactions: &[Reaction]) -> Element<'a, app::Message> {
-    let emojis = QUICK_REACTIONS.iter().map(|emoji| {
-        let own = reactions.iter().any(|r| r.key == *emoji && r.own);
-        button(text(*emoji).size(18))
+/// The reactions for a message: the most used, and all emoji below if
+/// opened.
+pub fn picker<'a>(
+    event: &Event,
+    reactions: &[Reaction],
+    frequent: &[String],
+    all: Option<&'a emoji::Panel>,
+) -> Element<'a, app::Message> {
+    let key = event.key.clone();
+    let quick = emoji::quick(frequent).into_iter().map(|emoji| {
+        let own = reactions.iter().any(|r| r.key == emoji && r.own);
+        button(text(emoji.to_owned()).size(18).font(fonts::EMOJI))
             .padding([2, 6])
             .style(style::list_item(own))
-            .on_press(act(Message::React(event.key.clone(), (*emoji).to_owned())))
+            .on_press(act(Message::React(key.clone(), emoji.to_owned())))
             .into()
     });
-    container(row(emojis).spacing(2))
+    let more = button(text(if all.is_some() { "−" } else { "+" }).size(18))
+        .padding([2, 8])
+        .style(style::list_item(all.is_some()))
+        .on_press(act(Message::Emoji(emoji::Message::ToggleAll)));
+    let quick = container(row(quick).push(more).spacing(2).align_y(Alignment::Center))
         .padding(4)
-        .style(style::toolbar)
-        .into()
+        .style(style::toolbar);
+    match all {
+        Some(panel) => column![
+            quick,
+            panel.view(
+                move |emoji| act(Message::React(key.clone(), emoji)),
+                |message| act(Message::Emoji(message)),
+            ),
+        ]
+        .spacing(4)
+        .into(),
+        None => quick.into(),
+    }
 }
 
 /// Reaction pills; clicking one adds or removes ours.
 pub fn reactions<'a>(event: &Event, reactions: &[Reaction]) -> Element<'a, app::Message> {
     let pills = reactions.iter().map(|reaction| {
-        button(text(format!("{} {}", reaction.key, reaction.count)).size(12))
-            .padding([1, 7])
-            .style(style::reaction(reaction.own))
-            .on_press(act(Message::React(event.key.clone(), reaction.key.clone())))
-            .into()
+        button(
+            row![
+                text(reaction.key.clone()).size(12).font(fonts::EMOJI),
+                text(reaction.count.to_string()).size(12),
+            ]
+            .spacing(4)
+            .align_y(Alignment::Center),
+        )
+        .padding([1, 7])
+        .style(style::reaction(reaction.own))
+        .on_press(act(Message::React(event.key.clone(), reaction.key.clone())))
+        .into()
     });
     row(pills).spacing(4).wrap().into()
 }

@@ -548,6 +548,30 @@ async fn send_later_bar() {
         && let Some(open) = main.room.as_mut()
     {
         open.editing = None;
+        open.later = Default::default();
+        let message = open
+            .entries
+            .iter()
+            .find_map(|e| match e {
+                TimelineEntry::Event(ev) if ev.editable => Some(ev.id.clone()),
+                _ => None,
+            })
+            .unwrap();
+        open.picker = Some(message);
+        open.emoji = Some(emoji::Panel::default());
+        main.frequent_emoji = vec!["🦀".into(), "🧊".into()];
+    }
+    snapshot(&app, "emoji");
+    if let Screen::Main(main) = &mut app.screen
+        && let Some(open) = main.room.as_mut()
+    {
+        open.picker = None;
+        open.emoji = None;
+    }
+    if let Screen::Main(main) = &mut app.screen
+        && let Some(open) = main.room.as_mut()
+    {
+        open.editing = None;
     }
     let mut panel = settings::Panel::default();
     panel.room = Some(settings::Access::new(

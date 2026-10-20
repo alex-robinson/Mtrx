@@ -10,6 +10,7 @@ mod avatar;
 mod calls;
 mod dialog;
 mod ellipsis;
+mod emoji;
 mod fonts;
 mod icons;
 mod info;

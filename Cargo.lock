@@ -4920,6 +4920,7 @@ name = "mtrx-app"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "emojis",
  "futures-util",
  "iced",
  "iced_test",
