@@ -939,6 +939,13 @@ impl App {
                             saved,
                         )
                     }
+                    (info::Message::Access(access), Some(room)) => {
+                        let access = *access;
+                        Task::perform(
+                            async move { session.set_room_access(&room, access).await },
+                            saved,
+                        )
+                    }
                     (info::Message::Notify(mode), Some(room)) => {
                         let mode = *mode;
                         Task::perform(
@@ -1850,8 +1857,9 @@ impl App {
                 }
                 Task::batch([InlineEdit::focus(), used_emoji(main, emoji)])
             }
-            Act::TogglePicker(id) => {
-                room.picker = (room.picker.as_ref() != Some(&id)).then_some(id);
+            Act::TogglePicker(id, at) => {
+                let picker = (id, at);
+                room.picker = (room.picker.as_ref() != Some(&picker)).then_some(picker);
                 room.emoji = None;
                 if room.picker.is_none() {
                     return Task::none();

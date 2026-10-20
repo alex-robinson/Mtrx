@@ -46,7 +46,7 @@ pub use notifications::Notification;
 pub use people::{Contact, UserInfo};
 pub use permissions::{Permissions, SpaceUpdate};
 pub use profile::Profile;
-pub use room_settings::{NotifyMode, RoomSettings};
+pub use room_settings::{Access, NotifyMode, RoomSettings};
 pub use rooms::{NewRoom, RoomKind, RoomList, RoomListState, RoomSummary, UserSummary};
 pub use scheduled::ScheduledMessage;
 pub use secrets::SecretStore;

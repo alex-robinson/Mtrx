@@ -8,13 +8,19 @@ use matrix_sdk::{
     Room,
     notification_settings::{IsEncrypted, IsOneToOne, RoomNotificationMode},
     ruma::{
-        RoomId,
-        events::{StateEventType, push_rules::PushRulesEvent},
+        OwnedRoomId, RoomId,
+        events::{
+            StateEventType,
+            push_rules::PushRulesEvent,
+            room::join_rules::{AllowRule, JoinRule, RoomJoinRulesEventContent},
+        },
         push::{Action, Ruleset},
     },
 };
 
-use crate::{Error, Result, Session, media::guess_mimetype, permissions::power_levels};
+use crate::{
+    Error, Result, Session, media::guess_mimetype, permissions::power_levels, rooms::space_children,
+};
 
 /// When a room notifies (push rules, so on all the user's devices).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -45,6 +51,27 @@ impl From<NotifyMode> for RoomNotificationMode {
     }
 }
 
+/// Who may join a room.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Access {
+    /// Only invited people.
+    Invite,
+    /// Members of the spaces the room is in (and invited people).
+    SpaceMembers,
+    /// Anyone.
+    Public,
+}
+
+impl From<Option<JoinRule>> for Access {
+    fn from(rule: Option<JoinRule>) -> Self {
+        match rule {
+            Some(JoinRule::Public) => Self::Public,
+            Some(JoinRule::Restricted(_) | JoinRule::KnockRestricted(_)) => Self::SpaceMembers,
+            _ => Self::Invite,
+        }
+    }
+}
+
 /// How long a changed mode may take to come back through sync.
 const CONFIRM: Duration = Duration::from_secs(10);
 
@@ -55,6 +82,8 @@ pub struct RoomSettings {
     pub can_change_picture: bool,
     pub can_invite: bool,
     pub notify: NotifyMode,
+    pub access: Access,
+    pub can_change_access: bool,
 }
 
 /// Whether `rules` give `room` the `mode` the SDK sets: an override rule
@@ -87,6 +116,8 @@ impl Session {
             can_change_topic: can(StateEventType::RoomTopic),
             can_change_picture: can(StateEventType::RoomAvatar),
             can_invite: levels.user_can_invite(&own),
+            access: room.join_rule().into(),
+            can_change_access: can(StateEventType::RoomJoinRules),
             notify: self.notify_mode(&room).await.into(),
         })
     }
@@ -131,6 +162,49 @@ impl Session {
         // The server took the change either way.
         let _ = tokio::time::timeout(CONFIRM, confirmed).await;
         Ok(())
+    }
+
+    /// Change who may join; [`Access::SpaceMembers`] lets in members of the
+    /// joined spaces the room is in.
+    pub async fn set_room_access(&self, room_id: &RoomId, access: Access) -> Result<()> {
+        let room = self.room(room_id)?;
+        let rule = match access {
+            Access::Invite => JoinRule::Invite,
+            Access::Public => JoinRule::Public,
+            Access::SpaceMembers => {
+                let spaces = self.parent_spaces(room_id).await;
+                if spaces.is_empty() {
+                    return Err(Error::Permissions("the room is in no space".into()));
+                }
+                RoomJoinRulesEventContent::restricted(
+                    spaces.into_iter().map(AllowRule::room_membership).collect(),
+                )
+                .join_rule
+            }
+        };
+        room.send_state_event(RoomJoinRulesEventContent::new(rule))
+            .await?;
+        Ok(())
+    }
+
+    /// Joined spaces listing `room_id` as a child.
+    async fn parent_spaces(&self, room_id: &RoomId) -> Vec<OwnedRoomId> {
+        let mut parents = Vec::new();
+        for space in self
+            .client
+            .joined_rooms()
+            .into_iter()
+            .filter(|r| r.is_space())
+        {
+            if space_children(&space)
+                .await
+                .iter()
+                .any(|child| child == room_id)
+            {
+                parents.push(space.room_id().to_owned());
+            }
+        }
+        parents
     }
 
     /// Make the image at `path` the room's picture.

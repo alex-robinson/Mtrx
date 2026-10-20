@@ -18,8 +18,9 @@ use std::{
 use anyhow::{Context, Result, bail};
 use futures_util::{Stream, StreamExt};
 use mtrx_core::{
-    CallService, Connection, EventContent, MembershipChange, NewRoom, NotifyMode, Permissions,
-    Profile, RecoveryStatus, RoomKind, SecretStore, Session, TimelineEntry, VerificationState,
+    Access, CallService, Connection, EventContent, MembershipChange, NewRoom, NotifyMode,
+    Permissions, Profile, RecoveryStatus, RoomKind, SecretStore, Session, TimelineEntry,
+    VerificationState,
     test_support::{self, PASSWORD, homeserver, unique_name},
 };
 use mtrx_format::{Block, Inline, Style};
@@ -1234,6 +1235,46 @@ async fn room_settings() -> Result<()> {
         assert!(started.elapsed() < Duration::from_secs(5), "not confirmed");
         assert_eq!(s.room_settings(&room).await?.notify, mode);
     }
+
+    // Who can join: anyone, the space's members, invited people.
+    assert!(settings.can_change_access);
+    assert_eq!(settings.access, Access::Invite);
+    s.set_room_access(&room, Access::Public).await?;
+    wait_for("public", list.updates(), |state| {
+        state.rooms.iter().any(|r| r.id == room && r.public)
+    })
+    .await?;
+    let space = s
+        .create_room(NewRoom {
+            name: Some("settings space".into()),
+            space: true,
+            ..Default::default()
+        })
+        .await?;
+    s.add_to_space(&space, &room).await?;
+    wait_for("in the space", list.updates(), |state| {
+        state
+            .rooms
+            .iter()
+            .any(|r| r.id == room && r.parents.contains(&space))
+    })
+    .await?;
+    s.set_room_access(&room, Access::SpaceMembers).await?;
+    wait_for("space members", list.updates(), |state| {
+        state.rooms.iter().any(|r| r.id == room && !r.public)
+    })
+    .await?;
+    assert_eq!(s.room_settings(&room).await?.access, Access::SpaceMembers);
+    s.set_room_access(&room, Access::Invite).await?;
+    // Not told apart in the room list: check after each update.
+    let mut updates = std::pin::pin!(list.updates());
+    timeout("invite only", async {
+        while s.room_settings(&room).await?.access != Access::Invite {
+            updates.next().await;
+        }
+        Ok::<_, anyhow::Error>(())
+    })
+    .await??;
     Ok(())
 }
 

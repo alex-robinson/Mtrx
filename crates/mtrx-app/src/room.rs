@@ -21,7 +21,7 @@ use mtrx_core::{
 };
 
 use crate::{
-    actions::{self, Compose, Editing, InlineEdit, Target},
+    actions::{self, Compose, Editing, InlineEdit, PickerAt, Target},
     app::Message,
     avatar::{self, Avatars, Shape},
     calls::{self, RoomCalls},
@@ -70,8 +70,8 @@ pub struct Room {
     pub compose: Compose,
     /// A sent or scheduled message being edited in place.
     pub editing: Option<InlineEdit>,
-    /// The timeline row whose reaction picker is open.
-    pub picker: Option<String>,
+    /// The timeline row whose reaction window is open, and where.
+    pub picker: Option<(String, PickerAt)>,
     /// All emoji in the reaction picker, while shown.
     pub emoji: Option<emoji::Panel>,
     /// The composer's emoji panel, while shown.
@@ -273,7 +273,7 @@ impl Room {
             colored_names: look.colored_names,
             call_services: look.call_services,
             hovered: self.hovered.as_deref(),
-            picker: self.picker.as_deref(),
+            picker: self.picker.as_ref().map(|(id, at)| (id.as_str(), *at)),
             emoji: self.emoji.as_ref(),
             frequent_emoji: look.frequent_emoji,
             confirm_delete: self.confirm_delete.as_deref(),
@@ -581,7 +581,7 @@ struct Context<'a, 'b> {
     colored_names: bool,
     call_services: &'b [CallService],
     hovered: Option<&'b str>,
-    picker: Option<&'b str>,
+    picker: Option<(&'b str, PickerAt)>,
     emoji: Option<&'a emoji::Panel>,
     /// The user's most used emoji.
     frequent_emoji: &'b [String],
@@ -601,6 +601,11 @@ fn event_view<'a>(
         params,
         ..
     } = *context;
+    // Where this message's reaction window is open, if it is.
+    let picking = context
+        .picker
+        .filter(|(id, _)| *id == event.id)
+        .map(|(_, at)| at);
     let body: Element<'a, Message> = match &event.content {
         EventContent::Message(m) => {
             let content: Element<'a, Message> = match (m.kind, m.document.has_math()) {
@@ -636,7 +641,10 @@ fn event_view<'a>(
                 parts = parts.push(text("(edited)").size(11).style(text::secondary));
             }
             if !m.reactions.is_empty() {
-                parts = parts.push(actions::reactions(event, &m.reactions));
+                let picker = (picking == Some(PickerAt::Reactions)).then(|| {
+                    actions::picker(event, &m.reactions, context.frequent_emoji, context.emoji)
+                });
+                parts = parts.push(actions::reactions(event, &m.reactions, picker));
             }
             parts.into()
         }
@@ -680,16 +688,6 @@ fn event_view<'a>(
         EventContent::Message(m) => Some(m),
         _ => None,
     };
-    // Reacting happens under the message, where its reactions show.
-    let picking = context.picker == Some(event.id.as_str());
-    if let Some(m) = message.filter(|_| picking) {
-        item = item.push(actions::picker(
-            event,
-            &m.reactions,
-            context.frequent_emoji,
-            context.emoji,
-        ));
-    }
     if context.confirm_delete == Some(event.id.as_str()) {
         item = item.push(actions::confirm_delete(event));
     }
@@ -739,13 +737,21 @@ fn event_view<'a>(
         .style(style::message_row(hovered));
     // Actions float over the top right of a hovered message.
     let row: Element<'a, Message> = match message {
-        Some(m) if hovered && event.event_id.is_some() && edit.is_none() && !picking => {
+        // Also while its reaction window is open.
+        Some(m)
+            if (hovered || picking == Some(PickerAt::Toolbar))
+                && event.event_id.is_some()
+                && edit.is_none() =>
+        {
             let preview = first_line(&m.document.to_plain_text());
             let target = Target::of(event, display_name(event), preview);
             let edit_text = Some(m.body.clone());
+            let picker = (picking == Some(PickerAt::Toolbar)).then(|| {
+                actions::picker(event, &m.reactions, context.frequent_emoji, context.emoji)
+            });
             stack![
                 row,
-                container(actions::toolbar(event, target, edit_text))
+                container(actions::toolbar(event, target, edit_text, picker))
                     .align_right(Length::Fill)
                     .padding(Padding::ZERO.top(2.0).right(8.0)),
             ]

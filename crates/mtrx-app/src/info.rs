@@ -6,8 +6,8 @@ use iced::{
     widget::{button, checkbox, column, container, row, scrollable, space, text, text_input},
 };
 use mtrx_core::{
-    MxcUri, NotifyMode, OwnedMxcUri, OwnedRoomId, OwnedUserId, RoomKind, RoomSettings, RoomSummary,
-    RoomTag, UserInfo, UserSummary,
+    Access, MxcUri, NotifyMode, OwnedMxcUri, OwnedRoomId, OwnedUserId, RoomKind, RoomSettings,
+    RoomSummary, RoomTag, UserInfo, UserSummary,
 };
 
 use crate::{
@@ -41,6 +41,7 @@ pub enum Message {
     /// Save the changed name and topic.
     SaveDetails,
     Notify(NotifyMode),
+    Access(Access),
     ChangePicture,
     RemovePicture,
     /// A change was saved on the server, or not.
@@ -147,6 +148,13 @@ impl Card {
                 self.saving = true;
                 self.error = None;
             }
+            Message::Access(access) => {
+                if let Some(settings) = &mut self.settings {
+                    settings.access = access;
+                }
+                self.saving = true;
+                self.error = None;
+            }
             Message::SaveDetails | Message::ChangePicture | Message::RemovePicture => {
                 self.saving = true;
                 self.error = None;
@@ -172,9 +180,13 @@ impl Card {
                 None => text("This room is not in your list.").into(),
             },
         };
-        container(scrollable(body))
+        // The scrollbar beside the content, not over it.
+        let body = scrollable(body).direction(scrollable::Direction::Vertical(
+            scrollable::Scrollbar::new().spacing(8),
+        ));
+        container(body)
             .padding(20)
-            .width(420)
+            .width(440)
             .max_height(640)
             .style(style::dialog)
             .into()
@@ -321,8 +333,8 @@ impl Card {
         }
 
         if let Some(settings) = settings {
-            let choice = |label, mode| {
-                let chosen = settings.notify == mode;
+            // The chosen one stays enabled to look chosen, not greyed.
+            let choice = |label, chosen: bool, message: Message| {
                 button(text(label).size(13).center().width(Length::Fill))
                     .width(Length::Fill)
                     .padding([4, 8])
@@ -333,20 +345,33 @@ impl Card {
                             style::secondary_button(theme, status)
                         }
                     })
-                    // The chosen one stays enabled to look chosen, not greyed.
-                    .on_press_maybe(
-                        (!self.saving).then_some(app::Message::Info(Message::Notify(mode))),
-                    )
+                    .on_press_maybe((!self.saving).then_some(app::Message::Info(message)))
             };
+            let notify =
+                |label, mode| choice(label, settings.notify == mode, Message::Notify(mode));
             card = card.push(labelled(
                 "Notifications",
                 row![
-                    choice("All messages", NotifyMode::All),
-                    choice("Mentions", NotifyMode::Mentions),
-                    choice("Mute", NotifyMode::Mute),
+                    notify("All messages", NotifyMode::All),
+                    notify("Mentions", NotifyMode::Mentions),
+                    notify("Mute", NotifyMode::Mute),
                 ]
                 .spacing(4),
             ));
+            if settings.can_change_access && room.kind != RoomKind::Direct {
+                let access = |label, access| {
+                    choice(label, settings.access == access, Message::Access(access))
+                };
+                let mut choices = row![access("Invited people", Access::Invite)].spacing(4);
+                // Space members only for a room in a space.
+                if !room.parents.is_empty() || settings.access == Access::SpaceMembers {
+                    choices = choices.push(access("Space members", Access::SpaceMembers));
+                }
+                card = card.push(labelled(
+                    "Who can join",
+                    choices.push(access("Anyone", Access::Public)),
+                ));
+            }
         }
         let low_priority = room.tag == RoomTag::LowPriority;
         card = card.push(
@@ -393,11 +418,19 @@ impl Card {
         };
         let mut facts = vec![kind.to_owned()];
         if room.kind != RoomKind::Direct {
-            facts.push(
+            let access = settings.map_or(
                 if room.public {
-                    "Public: anyone can join"
+                    Access::Public
                 } else {
-                    "Private: by invitation"
+                    Access::Invite
+                },
+                |s| s.access,
+            );
+            facts.push(
+                match access {
+                    Access::Public => "Public: anyone can join",
+                    Access::SpaceMembers => "Private: space members can join",
+                    Access::Invite => "Private: by invitation",
                 }
                 .to_owned(),
             );

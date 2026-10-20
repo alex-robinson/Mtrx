@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Tint {
     #[default]
+    Grey,
     Green,
     Teal,
     Blue,
@@ -14,11 +15,11 @@ pub enum Tint {
     Rose,
     Peach,
     Yellow,
-    Grey,
 }
 
 impl Tint {
     pub const ALL: [Tint; 8] = [
+        Tint::Grey,
         Tint::Green,
         Tint::Teal,
         Tint::Blue,
@@ -26,7 +27,6 @@ impl Tint {
         Tint::Rose,
         Tint::Peach,
         Tint::Yellow,
-        Tint::Grey,
     ];
 
     pub fn name(self) -> &'static str {
@@ -52,9 +52,7 @@ impl Tint {
             Tint::Rose => (0xf6e1e6, 0x2e1f24),
             Tint::Peach => (0xf8e7da, 0x2e241d),
             Tint::Yellow => (0xf5f0d6, 0x2b291b),
-            Tint::Grey => {
-                return theme.extended_palette().background.weak.color;
-            }
+            Tint::Grey => (0xf5f5f4, 0x252628),
         };
         let rgb = if theme.extended_palette().is_dark {
             dark

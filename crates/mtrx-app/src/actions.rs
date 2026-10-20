@@ -15,7 +15,7 @@ use crate::{
     emoji, fonts,
     hint::{Position, hint},
     icons,
-    popover::{Edge, Side, on_click_outside, popover},
+    popover::{Edge, Side, popover},
     style,
 };
 
@@ -26,8 +26,8 @@ const READER_AVATAR: f32 = 16.0;
 #[derive(Debug, Clone)]
 pub enum Message {
     React(EventKey, String),
-    /// Open or close the reaction picker of a timeline row.
-    TogglePicker(String),
+    /// Open or close the reaction window of a timeline row, there.
+    TogglePicker(String, PickerAt),
     ClosePicker,
     Reply(Target),
     /// Edit one of our sent messages where it is shown, starting from its text.
@@ -49,6 +49,15 @@ pub enum Message {
     /// Stop replying.
     CancelCompose,
     Done(Result<(), String>),
+}
+
+/// Where a message's reaction window floats from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PickerAt {
+    /// The smiley of the hover toolbar.
+    Toolbar,
+    /// The smiley after the message's reactions.
+    Reactions,
 }
 
 /// A message being replied to or edited.
@@ -242,11 +251,13 @@ fn tool_color(theme: &Theme) -> iced::Color {
         .scale_alpha(0.7)
 }
 
-/// Symbols floating over a hovered message, each named on hover.
+/// Symbols floating over a hovered message, each named on hover; the
+/// reaction window floats from the smiley while `picker` is given.
 pub fn toolbar<'a>(
     event: &Event,
     target: Option<Target>,
     edit_text: Option<String>,
+    picker: Option<Element<'a, app::Message>>,
 ) -> Element<'a, app::Message> {
     let tool = |icon: Element<'a, app::Message>, tip: &'static str, message: Option<Message>| {
         hint(
@@ -258,12 +269,18 @@ pub fn toolbar<'a>(
             Position::Top,
         )
     };
+    // While open, a click on it closes the window as any outside click.
+    let react = tool(
+        icons::smiley(16.0, tool_color),
+        "React",
+        picker
+            .is_none()
+            .then(|| Message::TogglePicker(event.id.clone(), PickerAt::Toolbar)),
+    );
+    let react =
+        popover(react, picker, Side::Below, Edge::Right).on_dismiss(act(Message::ClosePicker));
     let mut bar = row![
-        tool(
-            icons::smiley(16.0, tool_color),
-            "React",
-            Some(Message::TogglePicker(event.id.clone()))
-        ),
+        react,
         tool(
             icons::reply(16.0, tool_color),
             "Reply",
@@ -288,8 +305,8 @@ pub fn toolbar<'a>(
     container(bar).padding(2).style(style::toolbar).into()
 }
 
-/// Reacting to a message, under it where its reactions show: the most used
-/// emoji, and all of them floating from "+". A click elsewhere closes it.
+/// The reaction window: the most used emoji, and below them all emoji
+/// once "+" is clicked.
 pub fn picker<'a>(
     event: &Event,
     reactions: &[Reaction],
@@ -301,42 +318,48 @@ pub fn picker<'a>(
         .into_iter()
         .map(|emoji| {
             let own = reactions.iter().any(|r| r.key == emoji && r.own);
-            button(text(emoji.to_owned()).size(16).font(fonts::EMOJI))
-                .padding([1, 7])
-                .style(style::reaction(own))
+            button(text(emoji.to_owned()).size(18).font(fonts::EMOJI))
+                .padding([2, 6])
+                .style(style::list_item(own))
                 .on_press(act(Message::React(key.clone(), emoji.to_owned())))
                 .into()
         })
         .collect();
-    // While open, a click on it closes the panel as any outside click.
     let more = hint(
-        button(text("+").size(14).font(fonts::SEMIBOLD))
-            .padding([1, 9])
-            .style(style::reaction(all.is_some()))
-            .on_press_maybe(
-                all.is_none()
-                    .then(|| act(Message::Emoji(emoji::Message::Open))),
-            ),
-        "All emoji",
+        button(text(if all.is_some() { "−" } else { "+" }).size(18))
+            .padding([2, 8])
+            .style(style::list_item(all.is_some()))
+            .on_press(act(Message::Emoji(if all.is_some() {
+                emoji::Message::Close
+            } else {
+                emoji::Message::Open
+            }))),
+        if all.is_some() {
+            "Fewer emoji"
+        } else {
+            "All emoji"
+        },
         Position::Top,
     );
-    let panel = all.map(|panel| {
-        panel.view(
+    let mut window =
+        column![row(quick).push(more).spacing(2).align_y(Alignment::Center)].spacing(4);
+    if let Some(panel) = all {
+        window = window.push(panel.view(
             &[],
             move |emoji| act(Message::React(key.clone(), emoji)),
             |message| act(Message::Emoji(message)),
-        )
-    });
-    let more = popover(more, panel, Side::Below, Edge::Left)
-        .on_dismiss(act(Message::Emoji(emoji::Message::Close)));
-    on_click_outside(
-        row(quick).push(more).spacing(4).align_y(Alignment::Center),
-        act(Message::ClosePicker),
-    )
+        ));
+    }
+    container(window).padding(4).style(style::toolbar).into()
 }
 
-/// Reaction pills; clicking one adds or removes ours.
-pub fn reactions<'a>(event: &Event, reactions: &[Reaction]) -> Element<'a, app::Message> {
+/// A message's reactions; clicking one adds or takes back ours. A smiley
+/// after them opens the reaction window there (`picker`, while given).
+pub fn reactions<'a>(
+    event: &Event,
+    reactions: &[Reaction],
+    picker: Option<Element<'a, app::Message>>,
+) -> Element<'a, app::Message> {
     let pills = reactions.iter().map(|reaction| {
         button(
             row![
@@ -351,7 +374,26 @@ pub fn reactions<'a>(event: &Event, reactions: &[Reaction]) -> Element<'a, app::
         .on_press(act(Message::React(event.key.clone(), reaction.key.clone())))
         .into()
     });
-    row(pills).spacing(4).wrap().into()
+    // While open, a click on it closes the window as any outside click.
+    let open = picker.is_none();
+    let react = hint(
+        button(icons::smiley(14.0, tool_color))
+            .padding([2, 6])
+            .style(style::reaction(false))
+            .on_press_maybe(
+                open.then(|| act(Message::TogglePicker(event.id.clone(), PickerAt::Reactions))),
+            ),
+        "React",
+        Position::Top,
+    );
+    let react =
+        popover(react, picker, Side::Below, Edge::Left).on_dismiss(act(Message::ClosePicker));
+    row(pills)
+        .push(react)
+        .spacing(4)
+        .align_y(Alignment::Center)
+        .wrap()
+        .into()
 }
 
 /// The start of the message a reply answers.

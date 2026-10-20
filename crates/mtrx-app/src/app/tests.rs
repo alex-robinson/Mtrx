@@ -384,7 +384,18 @@ async fn main_screen_with_math() {
         open.calls.menu = mode == Mode::Dark;
         open.typing = vec!["bob".into()];
         if mode == Mode::Dark {
-            open.picker = Some(hovered.clone());
+            // From the smiley after alice's reactions.
+            let reacted = entries
+                .iter()
+                .find_map(|e| match e {
+                    TimelineEntry::Event(ev) => match &ev.content {
+                        EventContent::Message(m) if !m.reactions.is_empty() => Some(ev.id.clone()),
+                        _ => None,
+                    },
+                    _ => None,
+                })
+                .unwrap();
+            open.picker = Some((reacted, actions::PickerAt::Reactions));
         } else {
             let carol_message = entries.iter().rev().find_map(|e| match e {
                 TimelineEntry::Event(ev) if ev.sender == carol.user_id() => Some(ev),
@@ -564,7 +575,7 @@ async fn send_later_bar() {
                 _ => None,
             })
             .unwrap();
-        open.picker = Some(message);
+        open.picker = Some((message, actions::PickerAt::Toolbar));
         open.emoji = Some(emoji::Panel::default());
         main.frequent_emoji = vec!["🦀".into(), "🧊".into()];
     }
