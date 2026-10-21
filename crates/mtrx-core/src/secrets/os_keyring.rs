@@ -1,6 +1,5 @@
 //! The OS credential store, through the keyring crate (desktop only).
 
-use super::Secret;
 use crate::{Error, Result};
 
 const KEYRING_SERVICE: &str = "mtrx";
@@ -14,7 +13,7 @@ pub(crate) const NO_SECRET_STORE: &str = "the system keyring is not available";
 
 /// The secret itself is the credential.
 #[cfg(not(windows))]
-impl Secret {
+impl super::Secret {
     pub(super) fn keyring_load(&self) -> Result<Option<String>> {
         get_credential(&self.name)
     }
@@ -65,8 +64,7 @@ fn credential(name: &str) -> Result<keyring::Entry> {
 mod tests {
     use std::path::PathBuf;
 
-    use super::*;
-    use crate::SecretStore;
+    use crate::{SecretStore, secrets::Secret};
 
     fn keyring_secret() -> Secret {
         let name = format!("mtrx-test-{}", std::process::id());
@@ -88,6 +86,9 @@ mod tests {
     #[test]
     #[ignore = "needs a session without a Secret Service"]
     fn keyring_missing() {
+        use super::NO_SECRET_STORE;
+        use crate::Error;
+
         let error = keyring_secret().load().unwrap_err();
         assert!(matches!(error, Error::NoSecretStore(_)), "{error}");
         assert!(error.to_string().starts_with(NO_SECRET_STORE), "{error}");
