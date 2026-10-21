@@ -20,8 +20,8 @@ use iced::{
 };
 use mtrx_core::{
     CallService, Event, EventContent, Media, Member, MembershipChange, MessageKind, MxcUri,
-    OwnedRoomId, OwnedUserId, RoomKind, RoomSummary, RoomTimeline, ScheduledMessage, SendState,
-    TimelineEntry, UserId,
+    OwnedRoomId, OwnedUserId, RoomKind, RoomSummary, RoomTimeline, ScheduledMessage, TimelineEntry,
+    UserId,
 };
 
 use crate::{
@@ -999,20 +999,6 @@ fn event_view<'a>(
     if context.confirm_delete == Some(event.id.as_str()) {
         item = item.push(actions::confirm_delete(event));
     }
-    match &event.send_state {
-        SendState::Sent => {}
-        SendState::Sending => item = item.push(text("sending…").size(11).style(text::secondary)),
-        SendState::Waiting => {
-            item = item.push(
-                text("waiting for connection…")
-                    .size(11)
-                    .style(text::secondary),
-            )
-        }
-        SendState::Failed(e) => {
-            item = item.push(text(format!("not sent: {e}")).size(11).style(text::danger))
-        }
-    }
 
     // The avatar starts a group; follow-ups show their time there on hover.
     let hovered = context.hovered == Some(event.id.as_str());
@@ -1049,10 +1035,13 @@ fn event_view<'a>(
         .padding(Padding::new(MESSAGE_PADDING).top(top).bottom(1))
         .width(Length::Fill)
         .style(style::message_row(hovered));
-    // Read markers sit in the free margin at the bottom right, so receipts
-    // never change the row's height.
+    // Read markers, or while nobody read our message whether it is sent,
+    // sit in the free margin at the bottom right, so neither ever changes
+    // the row's height.
     let listed = context.readers == Some(event.id.as_str());
-    let markers = actions::read_markers(event, context.avatars, listed).map(|markers| {
+    let markers = actions::read_markers(event, context.avatars, listed)
+        .or_else(|| actions::send_status(event));
+    let markers = markers.map(|markers| {
         container(markers)
             .align_right(Length::Fill)
             .align_bottom(Length::Fill)

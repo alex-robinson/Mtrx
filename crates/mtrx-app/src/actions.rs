@@ -7,7 +7,7 @@ use iced::{
     keyboard::{Key, key::Named},
     widget::{button, column, container, row, scrollable, space, text, text_editor},
 };
-use mtrx_core::{Event, EventKey, Media, MxcUri, OwnedEventId, Reaction, Reader, Reply};
+use mtrx_core::{Event, EventKey, Media, MxcUri, OwnedEventId, Reaction, Reader, Reply, SendState};
 use mtrx_format::Document;
 
 use crate::{
@@ -541,6 +541,29 @@ pub fn read_markers<'a>(
     let names: Vec<_> = event.read_by.iter().map(reader_name).collect();
     // The names show over the pictures.
     Some(hint(markers, read_by(&names), Position::Top))
+}
+
+/// Whether our message is sent, while nobody read it (once someone did, it
+/// was): a clock while it is being sent, a tick once it is, a red cross if
+/// it could not be. The same size as a read marker.
+pub fn send_status<'a>(event: &Event) -> Option<Element<'a, app::Message>> {
+    if !event.own || !event.read_by.is_empty() {
+        return None;
+    }
+    let grey = |theme: &Theme| theme.extended_palette().secondary.base.color;
+    let (icon, label) = match &event.send_state {
+        SendState::Sending => (icons::clock(READER_AVATAR, grey), "Sending…".to_owned()),
+        SendState::Waiting => (
+            icons::clock(READER_AVATAR, grey),
+            "Waiting for connection…".to_owned(),
+        ),
+        SendState::Sent => (icons::check_circle(READER_AVATAR, grey), "Sent".to_owned()),
+        SendState::Failed(e) => (
+            icons::x_circle(READER_AVATAR, |theme| theme.palette().danger),
+            format!("Not sent: {e}"),
+        ),
+    };
+    Some(hint(icon, label, Position::Top))
 }
 
 /// Everyone who read up to this message; a click on one opens their card.
