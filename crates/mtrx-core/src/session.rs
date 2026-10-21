@@ -6,6 +6,7 @@ use matrix_sdk::{
     Client,
     authentication::oauth::{
         ClientId, OAuthSession,
+        error::{OAuthAuthorizationCodeError, OAuthError},
         registration::{ApplicationType, ClientMetadata, Localized, OAuthGrantType},
     },
     encryption::{BackupDownloadStrategy, EncryptionSettings, verification::VerificationRequest},
@@ -302,8 +303,18 @@ impl OAuthLogin {
         let (login, ()) = self
             .login
             .step(async move |login| {
-                login.client.oauth().finish_login(redirect).await?;
-                Ok(())
+                match login.client.oauth().finish_login(redirect).await {
+                    // The user declined on the server's page.
+                    Err(matrix_sdk::Error::OAuth(error))
+                        if matches!(
+                            *error,
+                            OAuthError::AuthorizationCode(OAuthAuthorizationCodeError::Cancelled)
+                        ) =>
+                    {
+                        Err(Error::LoginCancelled)
+                    }
+                    result => Ok(result?),
+                }
             })
             .await?;
         login.finish().await
