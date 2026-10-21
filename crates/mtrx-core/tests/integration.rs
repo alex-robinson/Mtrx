@@ -941,6 +941,31 @@ async fn members_and_notifications() -> Result<()> {
     let notification = wait_for("notified", notifications, |n| n.room_id == room).await?;
     assert_eq!(notification.body, "Results are in");
     assert_eq!(notification.room_name, "lab");
+    assert!(!notification.highlight);
+
+    // A mention (`m.mentions`) highlights it; a mention of someone else
+    // does not, even with alice's name in the text.
+    let alice_id = alice.session.user_id();
+    for (text, highlight) in [
+        (format!("Thanks {alice_id}!"), true),
+        (
+            format!(
+                "{} has it, says {}",
+                carol.session.user_id(),
+                alice_id.localpart()
+            ),
+            false,
+        ),
+    ] {
+        let notifications = alice.session.notifications();
+        timeout(
+            "send",
+            bob_timeline.send_markdown(&text, None).await?.sent(),
+        )
+        .await??;
+        let notification = wait_for("notified", notifications, |n| n.body == text).await?;
+        assert_eq!(notification.highlight, highlight, "{text}");
+    }
     Ok(())
 }
 

@@ -10,9 +10,10 @@ use std::{
 use eyeball_im::Vector;
 use futures_util::{Stream, StreamExt, stream};
 use matrix_sdk::ruma::{
-    EventId, OwnedEventId, OwnedMxcUri, OwnedRoomId, OwnedTransactionId, OwnedUserId, UInt,
+    EventId, OwnedEventId, OwnedMxcUri, OwnedRoomId, OwnedTransactionId, OwnedUserId, UInt, UserId,
     api::client::receipt::create_receipt::v3::ReceiptType,
     events::{
+        Mentions,
         relation::Reply as ReplyRelation,
         room::{
             MediaSource,
@@ -21,7 +22,7 @@ use matrix_sdk::ruma::{
     },
 };
 use matrix_sdk::{
-    Room,
+    Room, RoomMemberships,
     room::{
         edit::EditedContent,
         reply::{EnforceThread, Reply as SdkReply},
@@ -45,7 +46,7 @@ use crate::{
     media::{self, MediaRef},
     system_time,
 };
-use mtrx_format::{Document, markdown_to_matrix};
+use mtrx_format::{Document, Mention, MentionTarget, markdown_to_matrix};
 
 /// One row of a timeline.
 // Nearly all entries are events, so boxing would only add indirection.
@@ -280,7 +281,7 @@ impl RoomTimeline {
 
     /// Replace the text of one of our messages.
     pub async fn edit_markdown(&self, event: &EventKey, text: &str) -> Result<()> {
-        let content = markdown_content(text);
+        let content = markdown_content(self.timeline.room(), text).await;
         self.timeline
             .edit(&event.0, EditedContent::RoomMessage(content.into()))
             .await
@@ -407,13 +408,16 @@ pub(crate) async fn send_message(
         );
     }
     let mut reply_to = reply_to.map(ToOwned::to_owned);
+    let content = match text {
+        Some(text) => Some(markdown_content(room, text).await),
+        None => None,
+    };
 
     let _guard = send_lock.lock().await;
     let queue = room.send_queue();
     let (_, mut updates) = queue.subscribe().await.map_err(timeline_error)?;
     let mut queued = 0;
-    if let Some(text) = text {
-        let mut content = markdown_content(text);
+    if let Some(mut content) = content {
         if let Some(event_id) = reply_to.take() {
             // No reply fallback in the body: Matrix 1.13 dropped it.
             content.relates_to = Some(Relation::Reply(ReplyRelation::with_event_id(event_id)));
@@ -450,12 +454,78 @@ pub(crate) async fn send_message(
     })
 }
 
-fn markdown_content(text: &str) -> RoomMessageEventContent {
-    let formatted = markdown_to_matrix(text, &[]);
-    match formatted.html {
+/// `text` as a message to `room`: Markdown, with `@` mentions of its
+/// members and of the room in `m.mentions`.
+async fn markdown_content(room: &Room, text: &str) -> RoomMessageEventContent {
+    let memberships = RoomMemberships::JOIN | RoomMemberships::INVITE;
+    // Offline the member list cannot be completed; what the store has
+    // still resolves mentions, and the message is queued as usual.
+    let members = match room.members(memberships).await {
+        Ok(members) => members,
+        Err(e) => {
+            warn!("member list not loaded for mentions: {e}");
+            room.members_no_sync(memberships).await.unwrap_or_default()
+        }
+    };
+    let (targets, users): (Vec<_>, Vec<_>) =
+        mention_targets(members.iter().map(|m| (m.user_id(), m.display_name())))
+            .into_iter()
+            .unzip();
+    let formatted = markdown_to_matrix(text, &targets);
+    let mut content = match formatted.html {
         Some(html) => RoomMessageEventContent::text_html(formatted.body, html),
         None => RoomMessageEventContent::text_plain(formatted.body),
+    };
+    if !formatted.mentions.is_empty() {
+        let mut mentions = Mentions::new();
+        for index in formatted.mentions {
+            match &users[index] {
+                Some(user) => {
+                    mentions.user_ids.insert(user.clone());
+                }
+                None => mentions.room = true,
+            }
+        }
+        content.mentions = Some(mentions);
     }
+    content
+}
+
+/// What `@` can mention among a room's `members` (ID and display name
+/// each): each member by ID, and by display name when no other member has
+/// it; and the room. With the user each target mentions, `None` for the
+/// room.
+pub fn mention_targets<'a>(
+    members: impl IntoIterator<Item = (&'a UserId, Option<&'a str>)>,
+) -> Vec<(MentionTarget, Option<OwnedUserId>)> {
+    let members: Vec<_> = members.into_iter().collect();
+    let mut names: HashMap<&str, usize> = HashMap::new();
+    for name in members.iter().filter_map(|(_, name)| *name) {
+        *names.entry(name).or_default() += 1;
+    }
+    let mut targets = Vec::new();
+    for (id, name) in members {
+        let user = |text: &str| {
+            let mention = Mention::User {
+                href: id.matrix_to_uri().to_string(),
+                name: name.map_or_else(|| id.to_string(), ToOwned::to_owned),
+            };
+            let text = text.to_owned();
+            (MentionTarget { text, mention }, Some(id.to_owned()))
+        };
+        targets.push(user(&id.as_str()[1..]));
+        if let Some(name) = name.filter(|n| names[n] == 1) {
+            targets.push(user(name));
+        }
+    }
+    targets.push((
+        MentionTarget {
+            text: "room".into(),
+            mention: Mention::Room,
+        },
+        None,
+    ));
+    targets
 }
 
 /// A message in the send queue.
@@ -925,5 +995,61 @@ fn membership_change(change: SdkMembershipChange) -> MembershipChange {
         SdkMembershipChange::Unbanned => MembershipChange::Unbanned,
         SdkMembershipChange::Knocked => MembershipChange::Knocked,
         _ => MembershipChange::Other,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use matrix_sdk::ruma::owned_user_id;
+
+    use super::*;
+
+    #[test]
+    fn mentions_by_id_and_by_unique_name() {
+        let members = [
+            (owned_user_id!("@nils:server.org"), Some("Nils".to_owned())),
+            (owned_user_id!("@anna:server.org"), Some("Anna".to_owned())),
+            (owned_user_id!("@anna:other.org"), Some("Anna".to_owned())),
+            (owned_user_id!("@bot:server.org"), None),
+        ];
+        let targets = mention_targets(members.iter().map(|(id, name)| (&**id, name.as_deref())));
+        let shown: Vec<_> = targets
+            .iter()
+            .map(|(target, user)| {
+                let link = match &target.mention {
+                    Mention::User { href, name } => format!("{href} {name}"),
+                    Mention::Room => "room".to_owned(),
+                };
+                (
+                    target.text.as_str(),
+                    link,
+                    user.as_ref().map(|u| u.as_str()),
+                )
+            })
+            .collect();
+        let nils = "https://matrix.to/#/@nils:server.org Nils";
+        assert_eq!(
+            shown,
+            [
+                ("nils:server.org", nils.to_owned(), Some("@nils:server.org")),
+                ("Nils", nils.to_owned(), Some("@nils:server.org")),
+                (
+                    "anna:server.org",
+                    "https://matrix.to/#/@anna:server.org Anna".to_owned(),
+                    Some("@anna:server.org")
+                ),
+                (
+                    "anna:other.org",
+                    "https://matrix.to/#/@anna:other.org Anna".to_owned(),
+                    Some("@anna:other.org")
+                ),
+                (
+                    "bot:server.org",
+                    "https://matrix.to/#/@bot:server.org @bot:server.org".to_owned(),
+                    Some("@bot:server.org")
+                ),
+                ("room", "room".to_owned(), None),
+            ]
+        );
     }
 }
