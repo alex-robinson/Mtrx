@@ -29,6 +29,7 @@ use crate::{
     actions::{self, Compose, Editing, InlineEdit},
     arrange::{self, Arrange},
     avatar::{self, Avatars},
+    badge::{self, Badge},
     calls,
     dialog::{self, Dialog},
     emoji,
@@ -233,6 +234,7 @@ pub struct App {
     window: Size,
     scale: f32,
     math: Math,
+    badge: Badge,
 }
 
 enum Screen {
@@ -451,6 +453,7 @@ impl App {
             window: Size::new(1200.0, 800.0),
             scale: 1.0,
             math: Math::new(),
+            badge: Badge::default(),
         };
         let restore = Task::perform(
             async move { Session::restore(profile).await.map(|s| Shared(Arc::new(s))) },
@@ -490,6 +493,10 @@ impl App {
         if remember {
             self.remember_view();
         }
+        self.badge.show(match &self.screen {
+            Screen::Main(main) if self.settings.icon_badge => badge::count(&main.rooms.rooms),
+            _ => 0,
+        });
         match &self.screen {
             Screen::Main(main) if moved => Task::batch([
                 task,
