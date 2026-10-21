@@ -532,16 +532,24 @@ pub(crate) async fn send_message(
 
 /// `text` as a message to `room`: Markdown, with `@` mentions of its
 /// members and of the room in `m.mentions`.
+///
+/// Mentions resolve against the members in the store, so a message never
+/// waits on the server before its local echo shows. Only text with an `@`
+/// in a room whose member list was never loaded loads it first; when that
+/// fails (e.g. offline), the store's members still resolve mentions.
 async fn markdown_content(room: &Room, text: &str) -> RoomMessageEventContent {
     let memberships = RoomMemberships::JOIN | RoomMemberships::INVITE;
-    // Offline the member list cannot be completed; what the store has
-    // still resolves mentions, and the message is queued as usual.
-    let members = match room.members(memberships).await {
-        Ok(members) => members,
-        Err(e) => {
-            warn!("member list not loaded for mentions: {e}");
-            room.members_no_sync(memberships).await.unwrap_or_default()
-        }
+    let loaded = if text.contains('@') && !room.are_members_synced() {
+        room.members(memberships)
+            .await
+            .inspect_err(|e| warn!("member list not loaded for mentions: {e}"))
+            .ok()
+    } else {
+        None
+    };
+    let members = match loaded {
+        Some(members) => members,
+        None => room.members_no_sync(memberships).await.unwrap_or_default(),
     };
     let (targets, users): (Vec<_>, Vec<_>) =
         mention_targets(members.iter().map(|m| (m.user_id(), m.display_name())))
