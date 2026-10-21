@@ -287,6 +287,26 @@ impl Room {
         self.error = None;
     }
 
+    /// Our newest message (any row but a state change): sent, it implies
+    /// the older ones were, and read markers sit on the last message each
+    /// reader read, so only it says it was sent.
+    fn newest_own(&self) -> Option<&str> {
+        self.entries.iter().rev().find_map(|entry| match entry {
+            TimelineEntry::Event(event)
+                if event.own
+                    && !matches!(
+                        event.content,
+                        EventContent::Membership { .. }
+                            | EventContent::DisplayNameChange { .. }
+                            | EventContent::OtherState { .. }
+                    ) =>
+            {
+                Some(event.id.as_str())
+            }
+            _ => None,
+        })
+    }
+
     /// Back-pagination reached the room's creation.
     pub fn at_start(&self) -> bool {
         matches!(self.entries.first(), Some(TimelineEntry::Start))
@@ -463,6 +483,7 @@ impl Room {
             menu: self.menu.as_ref().map(|(id, at)| (id.as_str(), *at)),
             readers: self.readers.as_deref(),
             unsent: self.unsent.as_deref(),
+            newest_own: self.newest_own(),
             selected,
             dragging: self.selection.as_ref().is_some_and(|s| s.dragging),
             emoji: self.emoji.as_ref(),
@@ -826,6 +847,8 @@ struct Context<'a, 'b> {
     readers: Option<&'b str>,
     /// The row whose unsent message is offered to retry or delete.
     unsent: Option<&'b str>,
+    /// Our newest message, the only one to say it was sent.
+    newest_own: Option<&'b str>,
     /// The selection, with each message's index in the timeline.
     selected: Option<(Bounds, &'b HashMap<&'b str, usize>)>,
     dragging: bool,
@@ -1047,8 +1070,13 @@ fn event_view<'a>(
     // sit in the free margin at the bottom right, so neither ever changes
     // the row's height.
     let listed = context.readers == Some(event.id.as_str());
-    let markers = actions::read_markers(event, context.avatars, listed)
-        .or_else(|| actions::send_status(event, context.unsent == Some(event.id.as_str())));
+    let markers = actions::read_markers(event, context.avatars, listed).or_else(|| {
+        actions::send_status(
+            event,
+            context.newest_own == Some(event.id.as_str()),
+            context.unsent == Some(event.id.as_str()),
+        )
+    });
     let markers = markers.map(|markers| {
         container(markers)
             .align_right(Length::Fill)

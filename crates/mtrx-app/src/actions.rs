@@ -551,10 +551,15 @@ pub fn read_markers<'a>(
 }
 
 /// Whether our message is sent, while nobody read it (once someone did, it
-/// was): a clock while it is being sent, a tick once it is, a red cross if
-/// it could not be. The same size as a read marker. A click on the cross
-/// offers to retry or delete (`open`, while offered).
-pub fn send_status<'a>(event: &Event, open: bool) -> Option<Element<'a, app::Message>> {
+/// was): a clock while it is being sent, a tick once it is (only on our
+/// `newest` message: the older ones were sent too), a red cross if it could
+/// not be. The same size as a read marker. A click on the cross offers to
+/// retry or delete (`open`, while offered).
+pub fn send_status<'a>(
+    event: &Event,
+    newest: bool,
+    open: bool,
+) -> Option<Element<'a, app::Message>> {
     if !event.own || !event.read_by.is_empty() {
         return None;
     }
@@ -565,7 +570,8 @@ pub fn send_status<'a>(event: &Event, open: bool) -> Option<Element<'a, app::Mes
             icons::clock(READER_AVATAR, grey),
             "Waiting for connection…".to_owned(),
         ),
-        SendState::Sent => (icons::check_circle(READER_AVATAR, grey), "Sent".to_owned()),
+        SendState::Sent if newest => (icons::check_circle(READER_AVATAR, grey), "Sent".to_owned()),
+        SendState::Sent => return None,
         SendState::Failed(e) => {
             // While open, a click on it closes the menu as any outside click.
             let cross = button(icons::x_circle(READER_AVATAR, |theme| {
