@@ -261,7 +261,8 @@ impl InlineEdit {
             )
         });
         let editor = popover(editor, panel, Side::Below, Edge::Right)
-            .on_dismiss(act(Message::EditEmoji(emoji::Message::Close)));
+            .on_dismiss(act(Message::EditEmoji(emoji::Message::Close)))
+            .click_through();
         let empty = self.content.text().trim().is_empty();
         let view = column![
             editor,
@@ -522,7 +523,11 @@ pub fn quote<'a>(reply: &'a Reply) -> Element<'a, app::Message> {
         .as_deref()
         .or(reply.sender.as_ref().map(|s| s.localpart()))
         .unwrap_or("…");
-    let preview = reply.preview.as_deref().unwrap_or("Loading…");
+    let preview = reply.preview.as_deref().unwrap_or(if reply.failed {
+        "Could not load the message"
+    } else {
+        "Loading…"
+    });
     row![
         container(space())
             .width(3)

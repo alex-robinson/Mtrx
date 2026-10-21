@@ -661,11 +661,13 @@ impl Room {
             )
         });
         let composer = popover(composer, panel, Side::Above, Edge::Right)
-            .on_dismiss(Message::ComposerEmoji(emoji::Message::Close));
+            .on_dismiss(Message::ComposerEmoji(emoji::Message::Close))
+            .click_through();
         let selected = self.completion.as_ref().map_or(0, |c| c.selected);
         let completion = completing.then(|| mention::view(&candidates, selected, look.avatars));
         let composer = popover(composer, completion, Side::Above, Edge::Left)
-            .on_dismiss(Message::Mention(mention::Message::Close));
+            .on_dismiss(Message::Mention(mention::Message::Close))
+            .click_through();
         let composer_empty = self.composer.text().trim().is_empty() && self.attachments.is_empty();
         let send = hint(
             button(icons::send(18.0, |theme| {

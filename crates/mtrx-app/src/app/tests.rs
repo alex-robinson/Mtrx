@@ -68,6 +68,11 @@ fn with_start(entries: &mut Vec<TimelineEntry>) {
 }
 
 fn snapshot(app: &App, name: &str) {
+    snapshot_at(app, name, None);
+}
+
+/// A snapshot with the cursor at `cursor`, e.g. for a hint.
+fn snapshot_at(app: &App, name: &str, cursor: Option<iced::Point>) {
     // One at a time: renderers drawing at once in parallel tests crashed
     // on Windows CI (software Direct3D).
     static RENDERING: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -89,6 +94,9 @@ fn snapshot(app: &App, name: &str) {
         }
     }
     let mut ui = Simulator::with_size(fonts::settings(), Size::new(1200.0, 800.0), app.view());
+    if let Some(cursor) = cursor {
+        ui.point_at(cursor);
+    }
     // Images too large for the renderer's texture atlas only show after a
     // few frames, as the atlas grows (the app draws many).
     for _ in 0..2 {
@@ -623,7 +631,8 @@ async fn main_screen_with_math() {
             }
         }
         // A click elsewhere closes the call menu (dark) or link editor and
-        // the list of readers (light).
+        // the list of readers (light), and does nothing else: what is
+        // behind neither lights up under the cursor nor takes the click.
         let mut ui = Simulator::with_size(fonts::settings(), Size::new(1200.0, 800.0), app.view());
         ui.point_at(iced::Point::new(400.0, 130.0));
         ui.simulate(iced_test::simulator::click());
@@ -632,6 +641,14 @@ async fn main_screen_with_math() {
             messages
                 .iter()
                 .any(|m| matches!(m, Message::Calls(_, calls::Message::Close))),
+            "{messages:?}"
+        );
+        assert!(
+            messages.iter().all(|m| matches!(
+                m,
+                Message::Calls(_, calls::Message::Close)
+                    | Message::Act(actions::Message::CloseReaders | actions::Message::ClosePicker)
+            )),
             "{messages:?}"
         );
         if mode == Mode::Light {
@@ -645,6 +662,15 @@ async fn main_screen_with_math() {
                 main.room.as_mut().unwrap().readers = None;
             }
             composer_keeps_focus(&mut app);
+        } else {
+            // A service in the call menu says what starting a call does.
+            snapshot_at(&app, "call-menu-hint", Some(iced::Point::new(864.0, 110.0)));
+            // Esc closes the call menu too.
+            let _ = app.update(Message::Escape);
+            let Screen::Main(main) = &app.screen else {
+                unreachable!()
+            };
+            assert!(!main.room.as_ref().unwrap().calls.is_open());
         }
     }
 }

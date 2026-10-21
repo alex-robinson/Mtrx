@@ -220,6 +220,8 @@ pub struct Reply {
     pub sender_name: Option<String>,
     /// The start of its text; `None` until loaded.
     pub preview: Option<String>,
+    /// It could not be loaded, e.g. as it is not visible to us.
+    pub failed: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -697,20 +699,21 @@ impl Session {
         let task = tokio::spawn({
             let timeline = timeline.clone();
             async move {
-                // Replies whose original is not loaded, and readers not seen
-                // as senders, are fetched once.
-                let mut requested = HashSet::new();
+                // Readers not seen as senders are fetched once. The original
+                // of a reply is fetched whenever it shows as not loaded: the
+                // SDK marks it pending meanwhile, and an item it makes anew
+                // may lack it again.
                 let mut requested_profiles = HashSet::new();
                 loop {
+                    converter.missing_replies.sort();
+                    converter.missing_replies.dedup();
                     for event_id in converter.missing_replies.drain(..) {
-                        if requested.insert(event_id.clone()) {
-                            let timeline = timeline.clone();
-                            tokio::spawn(async move {
-                                if let Err(e) = timeline.fetch_details_for_event(&event_id).await {
-                                    warn!("could not load the replied-to message: {e}");
-                                }
-                            });
-                        }
+                        let timeline = timeline.clone();
+                        tokio::spawn(async move {
+                            if let Err(e) = timeline.fetch_details_for_event(&event_id).await {
+                                warn!("could not load the replied-to message: {e}");
+                            }
+                        });
                     }
                     for user in converter.missing_profiles.drain(..) {
                         if requested_profiles.insert(user.clone()) {
@@ -831,6 +834,7 @@ fn receipts_off_state(entries: &mut [TimelineEntry]) {
 /// Converts SDK timeline items, noting replies whose original must be fetched.
 struct Converter {
     own: OwnedUserId,
+    /// Replies whose original is not loaded.
     missing_replies: Vec<OwnedEventId>,
     /// Names and avatars of senders, readers and those who reacted.
     profiles: HashMap<OwnedUserId, Profile>,
@@ -870,7 +874,10 @@ impl Converter {
                         None => Document::from_plain(message.body()),
                     },
                     edited: message.is_edited(),
-                    in_reply_to: msg_like.in_reply_to.as_ref().map(|r| self.reply(r)),
+                    in_reply_to: msg_like
+                        .in_reply_to
+                        .as_ref()
+                        .map(|r| self.reply(r, event.event_id())),
                     reactions: msg_like
                         .reactions
                         .iter()
@@ -975,12 +982,15 @@ impl Converter {
         }
     }
 
-    fn reply(&mut self, reply: &InReplyToDetails) -> Reply {
+    /// The message `reply` answers, from the reply `event_id` (`None` while
+    /// it is being sent).
+    fn reply(&mut self, reply: &InReplyToDetails, event_id: Option<&EventId>) -> Reply {
         let mut out = Reply {
             event_id: reply.event_id.clone(),
             sender: None,
             sender_name: None,
             preview: None,
+            failed: false,
         };
         match &reply.event {
             TimelineDetails::Ready(original) => {
@@ -1003,8 +1013,12 @@ impl Converter {
                     _ => "…".into(),
                 });
             }
-            TimelineDetails::Unavailable => self.missing_replies.push(reply.event_id.clone()),
-            TimelineDetails::Pending | TimelineDetails::Error(_) => {}
+            // The SDK fetches the original for the reply's ID.
+            TimelineDetails::Unavailable => {
+                self.missing_replies.extend(event_id.map(ToOwned::to_owned))
+            }
+            TimelineDetails::Error(_) => out.failed = true,
+            TimelineDetails::Pending => {}
         }
         out
     }
