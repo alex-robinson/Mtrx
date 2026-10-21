@@ -2478,8 +2478,13 @@ impl App {
         match view.found(&main.rooms.rooms) {
             Some((space, room)) => {
                 main.restore = None;
-                main.space = space;
-                self.update(Message::OpenRoom(room))
+                main.space = space.clone();
+                // As on selecting it: the space's members, for its direct chats.
+                let members = match space {
+                    Some(space) => main.arrange.space_selected(&main.session, space),
+                    None => Task::none(),
+                };
+                Task::batch([members, self.update(Message::OpenRoom(room))])
             }
             None => {
                 if main.rooms.loaded {
