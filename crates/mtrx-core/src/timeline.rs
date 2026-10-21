@@ -82,8 +82,8 @@ pub struct Event {
     pub read_by: Vec<Reader>,
 }
 
-/// Someone who read up to an event.
-#[derive(Clone, Debug, PartialEq)]
+/// Someone who read up to an event, or reacted to it.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Reader {
     pub id: OwnedUserId,
     /// Display name and avatar, once known.
@@ -229,6 +229,8 @@ pub struct Reaction {
     pub count: usize,
     /// We reacted with it.
     pub own: bool,
+    /// Everyone who reacted with it, us included, in the order they did.
+    pub by: Vec<Reader>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -732,12 +734,16 @@ impl Session {
                         }
                         Some((user, profile)) = profile_rx.recv() => {
                             converter.profiles.insert(user.clone(), profile);
-                            // Redraw the events this reader is on.
+                            // Redraw the events this person read up to or
+                            // reacted to.
                             for (index, item) in items.iter().enumerate() {
-                                let reads = item
-                                    .as_event()
-                                    .is_some_and(|e| e.read_receipts().contains_key(&user));
-                                if reads {
+                                let shown = item.as_event().is_some_and(|e| {
+                                    e.read_receipts().contains_key(&user)
+                                        || e.content().reactions().is_some_and(|reactions| {
+                                            reactions.values().any(|by| by.contains_key(&user))
+                                        })
+                                });
+                                if shown {
                                     converted.set(index, converter.convert(item));
                                 }
                             }
@@ -826,9 +832,9 @@ fn receipts_off_state(entries: &mut [TimelineEntry]) {
 struct Converter {
     own: OwnedUserId,
     missing_replies: Vec<OwnedEventId>,
-    /// Names and avatars of senders and readers.
+    /// Names and avatars of senders, readers and those who reacted.
     profiles: HashMap<OwnedUserId, Profile>,
-    /// Readers whose profile is not known.
+    /// Readers and those who reacted whose profile is not known.
     missing_profiles: Vec<OwnedUserId>,
 }
 
@@ -872,6 +878,7 @@ impl Converter {
                             key: key.clone(),
                             count: senders.len(),
                             own: senders.contains_key(&self.own),
+                            by: senders.keys().map(|user| self.reader(user)).collect(),
                         })
                         .collect(),
                     media: media(message.msgtype()),

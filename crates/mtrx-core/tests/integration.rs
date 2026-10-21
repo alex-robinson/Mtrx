@@ -828,6 +828,8 @@ async fn replies_reactions_edits_typing_receipts() -> Result<()> {
         .key
         .clone();
     alice_timeline.toggle_reaction(&question_key, "👍").await?;
+    // With who reacted, named.
+    let alice_id = alice.session.user_id();
     wait_for("bob sees the reaction", bob_timeline.updates(), |e| {
         find_message(e, "Which dataset?").is_some_and(|ev| {
             message(ev).reactions
@@ -835,6 +837,11 @@ async fn replies_reactions_edits_typing_receipts() -> Result<()> {
                     key: "👍".into(),
                     count: 1,
                     own: false,
+                    by: vec![mtrx_core::Reader {
+                        id: alice_id.clone(),
+                        name: Some(alice_id.localpart().to_owned()),
+                        avatar: None,
+                    }],
                 }]
         })
     })

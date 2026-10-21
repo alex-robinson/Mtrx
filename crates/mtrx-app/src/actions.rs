@@ -3,7 +3,7 @@
 //! place.
 
 use iced::{
-    Alignment, Element, Length, Theme,
+    Alignment, Element, Length, Padding, Theme,
     keyboard::{Key, key::Named},
     widget::{button, column, container, row, scrollable, space, text, text_editor},
 };
@@ -15,7 +15,7 @@ use crate::{
     avatar::{Avatars, Shape},
     ellipsis::ellipsis,
     emoji, fonts,
-    hint::{Position, hint},
+    hint::{Position, hint, hint_with},
     icons, info, mention,
     message_menu::MenuAt,
     popover::{Edge, Side, popover},
@@ -25,13 +25,16 @@ use crate::{
 /// Read markers shown per message before "+N".
 const MAX_READERS: usize = 3;
 const READER_AVATAR: f32 = 16.0;
-/// Readers named in the read markers' hint before "and N others".
+/// People named in the hint of read markers or a reaction before "and N
+/// others".
 const HINT_NAMES: usize = 5;
-/// The list of everyone who read a message: the size of their pictures,
-/// its width, and its height before it scrolls.
+/// The list of everyone who read a message or reacted: the size of their
+/// pictures, its width, and its height before it scrolls.
 const LISTED_AVATAR: f32 = 24.0;
 const READERS_WIDTH: f32 = 220.0;
 const READERS_HEIGHT: f32 = 240.0;
+/// Height of the text in a reaction pill: one line of 12pt text.
+const PILL_TEXT_HEIGHT: f32 = 12.0 * 1.3;
 /// Height of the typing line: one line of 12pt text (iced's line height is
 /// 1.3 times the size), kept whether or not anyone types.
 const TYPING_HEIGHT: f32 = 12.0 * 1.3;
@@ -65,6 +68,9 @@ pub enum Message {
     /// List everyone who read up to a timeline row's message.
     OpenReaders(String),
     CloseReaders,
+    /// List everyone who reacted to a timeline row's message with a key.
+    OpenReactors(String, String),
+    CloseReactors,
     /// Offer to retry or delete a timeline row's message that was not sent.
     OpenUnsent(String),
     CloseUnsent,
@@ -417,26 +423,24 @@ pub fn picker<'a>(
     container(window).padding(4).style(style::toolbar).into()
 }
 
-/// A message's reactions; clicking one adds or takes back ours. A smiley
-/// after them opens the reaction window there (`picker`, while given).
+/// A message's reactions, each a pill: a click on its emoji adds or takes
+/// back ours, on its count lists who reacted (`listed`, the key whose list
+/// is open). A smiley after them opens the reaction window there
+/// (`picker`, while given).
 pub fn reactions<'a>(
     event: &Event,
     reactions: &[Reaction],
+    listed: Option<&str>,
+    avatars: &Avatars,
     picker: Option<Element<'a, app::Message>>,
 ) -> Element<'a, app::Message> {
     let pills = reactions.iter().map(|reaction| {
-        button(
-            row![
-                text(reaction.key.clone()).size(12).font(fonts::EMOJI),
-                text(reaction.count.to_string()).size(12),
-            ]
-            .spacing(4)
-            .align_y(Alignment::Center),
+        pill(
+            event,
+            reaction,
+            listed == Some(reaction.key.as_str()),
+            avatars,
         )
-        .padding([1, 7])
-        .style(style::reaction(reaction.own))
-        .on_press(act(Message::React(event.key.clone(), reaction.key.clone())))
-        .into()
     });
     // While open, a click on it closes the window as any outside click.
     let open = picker.is_none();
@@ -458,6 +462,57 @@ pub fn reactions<'a>(
         .align_y(Alignment::Center)
         .wrap()
         .into()
+}
+
+/// One reaction: its emoji toggles ours, its count lists who reacted
+/// (`open`, while listed). The halves together are as tall as a pill of
+/// one button: the padding moved to inside the border.
+fn pill<'a>(
+    event: &Event,
+    reaction: &Reaction,
+    open: bool,
+    avatars: &Avatars,
+) -> Element<'a, app::Message> {
+    let toggle = button(text(reaction.key.clone()).size(12).font(fonts::EMOJI))
+        .padding(Padding::ZERO.left(6).right(5))
+        .style(style::reaction_half(true))
+        .on_press(act(Message::React(event.key.clone(), reaction.key.clone())));
+    // As tall as the text: a filling height would make the message row
+    // fill the timeline.
+    let divider = container(space())
+        .width(1)
+        .height(PILL_TEXT_HEIGHT)
+        .style(style::reaction_divider(reaction.own));
+    // While open, a click on it closes the list as any outside click.
+    let count = button(text(reaction.count.to_string()).size(12))
+        .padding(Padding::ZERO.left(5).right(6))
+        .style(style::reaction_half(false))
+        .on_press_maybe((!open).then(|| {
+            act(Message::OpenReactors(
+                event.id.clone(),
+                reaction.key.clone(),
+            ))
+        }));
+    let pill = container(row![toggle, divider, count])
+        .padding(1)
+        .style(style::reaction_pill(reaction.own));
+    if open {
+        return popover(
+            pill,
+            Some(people(&reaction.by, avatars)),
+            Side::Below,
+            Edge::Left,
+        )
+        .on_dismiss(act(Message::CloseReactors))
+        .into();
+    }
+    let names: Vec<_> = reaction.by.iter().map(reader_name).collect();
+    let label = row![
+        text(reaction.key.clone()).size(12).font(fonts::EMOJI),
+        text(named(&names)).size(12),
+    ]
+    .spacing(4);
+    hint_with(pill, label, Position::Top)
 }
 
 /// The start of the message a reply answers.
@@ -538,7 +593,7 @@ pub fn read_markers<'a>(
         .style(style::text_button)
         .on_press_maybe((!open).then(|| act(Message::OpenReaders(event.id.clone()))));
     if open {
-        let list = readers(event, avatars);
+        let list = people(&event.read_by, avatars);
         return Some(
             popover(markers, Some(list), Side::Above, Edge::Right)
                 .on_dismiss(act(Message::CloseReaders))
@@ -623,9 +678,10 @@ fn unsent_menu<'a>(event: &Event) -> Element<'a, app::Message> {
     container(choices).padding(4).style(style::toolbar).into()
 }
 
-/// Everyone who read up to this message; a click on one opens their card.
-fn readers<'a>(event: &Event, avatars: &Avatars) -> Element<'a, app::Message> {
-    let rows = event.read_by.iter().map(|reader| {
+/// People who read up to a message or reacted to it; a click on one opens
+/// their card.
+fn people<'a>(people: &[Reader], avatars: &Avatars) -> Element<'a, app::Message> {
+    let rows = people.iter().map(|reader| {
         let mut label = column![ellipsis(reader_name(reader).to_owned()).size(13)];
         if reader.name.is_some() {
             label = label.push(
@@ -663,6 +719,12 @@ fn readers<'a>(event: &Event, avatars: &Avatars) -> Element<'a, app::Message> {
 /// "Read by Alice, Bob and Carol", naming at most `HINT_NAMES` readers:
 /// "Read by Alice, …, Eve and 7 others".
 fn read_by(names: &[&str]) -> String {
+    format!("Read by {}", named(names))
+}
+
+/// "Alice, Bob and Carol", naming at most `HINT_NAMES`: "Alice, …, Eve
+/// and 7 others".
+fn named(names: &[&str]) -> String {
     let shown = names.len().min(HINT_NAMES);
     let mut parts: Vec<String> = names[..shown].iter().map(|name| name.to_string()).collect();
     match names.len() - shown {
@@ -670,12 +732,11 @@ fn read_by(names: &[&str]) -> String {
         1 => parts.push("1 other".to_owned()),
         others => parts.push(format!("{others} others")),
     }
-    let list = match parts.split_last() {
+    match parts.split_last() {
         Some((last, [])) => last.clone(),
         Some((last, front)) => format!("{} and {last}", front.join(", ")),
         None => String::new(),
-    };
-    format!("Read by {list}")
+    }
 }
 
 fn reader_name(reader: &Reader) -> &str {
@@ -690,10 +751,29 @@ pub fn reader_avatars(event: &Event, listed: bool) -> impl Iterator<Item = (&Mxc
         .iter()
         .take(MAX_READERS)
         .filter_map(|r| Some((r.avatar.as_deref()?, READER_AVATAR)));
-    let list = (event.read_by.iter())
-        .filter(move |_| listed)
-        .filter_map(|r| Some((r.avatar.as_deref()?, LISTED_AVATAR)));
+    let list = listed_avatars(&event.read_by).filter(move |_| listed);
     markers.chain(list)
+}
+
+/// Pictures of everyone who reacted with `key` to the message, while
+/// listed.
+pub fn reactor_avatars<'a>(
+    event: &'a Event,
+    key: Option<&'a str>,
+) -> impl Iterator<Item = (&'a MxcUri, f32)> {
+    let by = match &event.content {
+        mtrx_core::EventContent::Message(m) => key
+            .and_then(|key| m.reactions.iter().find(|r| r.key == key))
+            .map_or(&[][..], |r| r.by.as_slice()),
+        _ => &[],
+    };
+    listed_avatars(by)
+}
+
+fn listed_avatars(people: &[Reader]) -> impl Iterator<Item = (&MxcUri, f32)> {
+    people
+        .iter()
+        .filter_map(|r| Some((r.avatar.as_deref()?, LISTED_AVATAR)))
 }
 
 /// Others typing, above the composer: a line always there, empty when
@@ -718,7 +798,7 @@ pub fn act(message: Message) -> app::Message {
 
 #[cfg(test)]
 mod tests {
-    use super::read_by;
+    use super::{named, read_by};
 
     const NAMES: [&str; 10] = [
         "Alice", "Bob", "Carol", "Dan", "Eve", "Fay", "Gus", "Hal", "Ivy", "Jo",
@@ -744,5 +824,11 @@ mod tests {
             read_by(&NAMES),
             "Read by Alice, Bob, Carol, Dan, Eve and 5 others"
         );
+    }
+
+    #[test]
+    fn named_without_prefix_for_reactions() {
+        assert_eq!(named(&NAMES[..3]), "Alice, Bob and Carol");
+        assert_eq!(named(&NAMES), "Alice, Bob, Carol, Dan, Eve and 5 others");
     }
 }

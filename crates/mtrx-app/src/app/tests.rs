@@ -554,6 +554,37 @@ async fn main_screen_with_math() {
                 main.avatars.load_now(&alice, &mxc, size).await;
             }
             snapshot(&app, "readers-light");
+            // Everyone who reacted with the reaction of two, listed from its
+            // count, instead of the readers.
+            let Screen::Main(main) = &mut app.screen else {
+                unreachable!()
+            };
+            let open = main.room.as_mut().unwrap();
+            let reacted = (open.entries.iter())
+                .find_map(|e| match e {
+                    TimelineEntry::Event(ev) => match &ev.content {
+                        EventContent::Message(m) => m
+                            .reactions
+                            .iter()
+                            .find(|r| r.count == 2)
+                            .map(|r| (ev.id.clone(), r.key.clone())),
+                        _ => None,
+                    },
+                    _ => None,
+                })
+                .unwrap();
+            let readers = open.readers.take();
+            open.reactors = Some(reacted);
+            for (mxc, size) in main.avatars_on_screen(&Default::default()) {
+                main.avatars.load_now(&alice, &mxc, size).await;
+            }
+            snapshot(&app, "reactors-light");
+            let Screen::Main(main) = &mut app.screen else {
+                unreachable!()
+            };
+            let open = main.room.as_mut().unwrap();
+            open.reactors = None;
+            open.readers = readers;
             // Alice's first message not sent, offered to retry or delete,
             // instead of the list of readers.
             let Screen::Main(main) = &mut app.screen else {

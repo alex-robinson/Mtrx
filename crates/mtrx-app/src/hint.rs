@@ -18,9 +18,18 @@ pub fn hint<'a, M: 'a>(
     label: impl text::IntoFragment<'a>,
     position: Position,
 ) -> Element<'a, M> {
+    hint_with(content, text(label).size(12), position)
+}
+
+/// A hint whose label is more than one text, e.g. with an emoji.
+pub fn hint_with<'a, M: 'a>(
+    content: impl Into<Element<'a, M>>,
+    label: impl Into<Element<'a, M>>,
+    position: Position,
+) -> Element<'a, M> {
     tooltip(
         content,
-        container(text(label).size(12))
+        container(label)
             .padding(6)
             .max_width(HINT_MAX_WIDTH)
             .style(style::hint),

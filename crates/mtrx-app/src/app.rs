@@ -1057,6 +1057,7 @@ impl App {
                 // Opened from the list of a message's readers, say.
                 if let Some(room) = &mut main.room {
                     room.readers = None;
+                    room.reactors = None;
                 }
                 let card = info::Card::new(target, &main.rooms.rooms);
                 let load = match card.user() {
@@ -1348,6 +1349,8 @@ impl App {
                         room.menu = None;
                     } else if let Some(room) = main.room.as_mut().filter(|r| r.readers.is_some()) {
                         room.readers = None;
+                    } else if let Some(room) = main.room.as_mut().filter(|r| r.reactors.is_some()) {
+                        room.reactors = None;
                     } else if let Some(room) = main.room.as_mut().filter(|r| r.unsent.is_some()) {
                         room.unsent = None;
                     } else if let Some(room) = main.room.as_mut().filter(|r| r.selection.is_some())
@@ -2161,6 +2164,14 @@ impl App {
             }
             Act::CloseReaders => {
                 room.readers = None;
+                Task::none()
+            }
+            Act::OpenReactors(id, key) => {
+                room.reactors = Some((id, key));
+                Task::none()
+            }
+            Act::CloseReactors => {
+                room.reactors = None;
                 Task::none()
             }
             Act::OpenUnsent(id) => {

@@ -95,6 +95,8 @@ pub struct Room {
     pub menu: Option<(String, MenuAt)>,
     /// The timeline row whose readers are listed.
     pub readers: Option<String>,
+    /// The timeline row and reaction key whose people are listed.
+    pub reactors: Option<(String, String)>,
     /// The timeline row whose message was not sent and is offered to retry
     /// or delete.
     pub unsent: Option<String>,
@@ -153,6 +155,7 @@ impl Room {
             picker: None,
             menu: None,
             readers: None,
+            reactors: None,
             unsent: None,
             sending: Sending::already(&entries),
             selection: None,
@@ -291,6 +294,7 @@ impl Room {
         self.reloading = false;
         self.picker = None;
         self.readers = None;
+        self.reactors = None;
         self.unsent = None;
         self.confirm_delete = None;
         self.error = None;
@@ -367,9 +371,13 @@ impl Room {
             .flat_map(|event| {
                 let sender = event.sender_avatar.as_deref().map(|a| (a, SENDER_AVATAR));
                 let listed = self.readers.as_deref() == Some(event.id.as_str());
+                let reactors = (self.reactors.as_ref())
+                    .filter(|(id, _)| *id == event.id)
+                    .map(|(_, key)| key.as_str());
                 sender
                     .into_iter()
                     .chain(actions::reader_avatars(event, listed))
+                    .chain(actions::reactor_avatars(event, reactors))
             });
         let listed = match &self.member_list {
             Some(Ok(list)) if self.show_members => list.as_slice(),
@@ -496,6 +504,7 @@ impl Room {
             picker: self.picker.as_ref().map(|(id, at)| (id.as_str(), *at)),
             menu: self.menu.as_ref().map(|(id, at)| (id.as_str(), *at)),
             readers: self.readers.as_deref(),
+            reactors: (self.reactors.as_ref()).map(|(id, key)| (id.as_str(), key.as_str())),
             unsent: self.unsent.as_deref(),
             newest_own: self.newest_own(),
             sending: &self.sending,
@@ -860,6 +869,8 @@ struct Context<'a, 'b> {
     menu: Option<(&'b str, MenuAt)>,
     /// The row whose readers are listed.
     readers: Option<&'b str>,
+    /// The row and reaction key whose people are listed.
+    reactors: Option<(&'b str, &'b str)>,
     /// The row whose unsent message is offered to retry or delete.
     unsent: Option<&'b str>,
     /// Our newest message, the only one to say it was sent.
@@ -987,7 +998,16 @@ fn event_view<'a>(
                 let picker = (picking == Some(PickerAt::Reactions)).then(|| {
                     actions::picker(event, &m.reactions, context.frequent_emoji, context.emoji)
                 });
-                parts = parts.push(actions::reactions(event, &m.reactions, picker));
+                let listed = (context.reactors)
+                    .filter(|(id, _)| *id == event.id)
+                    .map(|(_, key)| key);
+                parts = parts.push(actions::reactions(
+                    event,
+                    &m.reactions,
+                    listed,
+                    context.avatars,
+                    picker,
+                ));
             }
             parts.into()
         }
