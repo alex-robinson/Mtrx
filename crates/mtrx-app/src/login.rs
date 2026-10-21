@@ -161,12 +161,18 @@ impl Login {
             logo::view(96.0),
             text("Mtrx").size(32).font(fonts::SEMIBOLD),
             text("Sign in to your Matrix account").size(14),
-            self.input(
-                "Homeserver, e.g. matrix.org",
-                &self.homeserver,
-                Message::Homeserver,
-                Message::Browser
-            ),
+            column![
+                text("Homeserver: where your account is")
+                    .size(12)
+                    .style(text::secondary),
+                self.input(
+                    "Homeserver, e.g. matrix.org",
+                    &self.homeserver,
+                    Message::Homeserver,
+                    Message::Browser
+                ),
+            ]
+            .spacing(4),
         ]
         .spacing(14)
         .align_x(Alignment::Center)
