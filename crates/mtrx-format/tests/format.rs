@@ -129,6 +129,20 @@ mod render {
     }
 
     #[test]
+    fn mentions_are_drawn_as_text_leaves() {
+        let renderer = Renderer::new::<Vec<u8>>([]);
+        let document = Document::from_html(
+            r#"Ask <a href="https://matrix.to/#/@nils:server.org">Nils</a> about it"#,
+        );
+        let image = renderer.render(&document, &style(400.0)).unwrap();
+        // The text, the mention, the text after it.
+        let mention: Vec<_> = image.pieces.iter().filter(|p| p.leaf == 1).collect();
+        let covered: usize = mention.iter().map(|p| p.range.clone().unwrap().len()).sum();
+        assert_eq!(covered, "Nils".len());
+        assert_eq!(image.pieces.last().map(|p| p.leaf), Some(2));
+    }
+
+    #[test]
     fn finds_where_the_text_is_drawn() {
         let renderer = Renderer::new::<Vec<u8>>([]);
         let text = "The melt rate";
@@ -377,5 +391,46 @@ fn finds_mentions_longest_first() {
     assert_eq!(
         find_mentions("@Nils Weitzel, @Nilsson @room @Nils", &targets),
         [(0..13, 1), (24..29, 2), (30..35, 0)]
+    );
+}
+
+#[test]
+fn matrix_links_to_users_are_mentions() {
+    let doc = Document::from_html(
+        r#"hi <a href="https://matrix.to/#/@nils:server.org">Nils <b>W</b></a>, <a href="matrix:u/anna:server.org">Anna</a> and <a href="https://matrix.to/#/!room:server.org">the room</a>"#,
+    );
+    let mention = |user_id: &str, name: &str| Inline::Mention {
+        user_id: user_id.into(),
+        name: name.into(),
+    };
+    assert_eq!(
+        doc.blocks,
+        vec![Block::Paragraph(vec![
+            Inline::Text("hi ".into()),
+            mention("@nils:server.org", "Nils W"),
+            Inline::Text(", ".into()),
+            mention("@anna:server.org", "Anna"),
+            Inline::Text(" and ".into()),
+            Inline::Link {
+                url: "https://matrix.to/#/!room:server.org".into(),
+                content: vec![Inline::Text("the room".into())],
+            },
+        ])]
+    );
+    assert_eq!(doc.links(), ["https://matrix.to/#/!room:server.org"]);
+    assert_eq!(
+        doc.to_plain_text(),
+        "hi Nils W, Anna and the room (https://matrix.to/#/!room:server.org)"
+    );
+
+    // As sent.
+    let sent = markdown_to_matrix("thanks @Nils Weitzel", &targets());
+    let doc = Document::from_html(&sent.html.unwrap());
+    assert_eq!(
+        doc.blocks,
+        vec![Block::Paragraph(vec![
+            Inline::Text("thanks ".into()),
+            mention("@weitzel:server.org", "Nils Weitzel"),
+        ])]
     );
 }

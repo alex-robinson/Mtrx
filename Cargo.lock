@@ -5063,6 +5063,7 @@ dependencies = [
  "mitex-spec-gen",
  "png 0.18.1",
  "pulldown-cmark",
+ "ruma-common",
  "ruma-html",
  "thiserror 2.0.21",
  "typst",

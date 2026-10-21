@@ -38,7 +38,7 @@ use crate::{
     login::{self, Login},
     math::{self, Math, Rendered},
     media::{self, Previews, Viewer},
-    mention, pdf_viewer,
+    mention, message, pdf_viewer,
     room::{self, Look, Older, Room},
     selection::{self, Selection},
     send_later,
@@ -1518,10 +1518,15 @@ impl App {
                 self.math.insert(key, rendered);
                 Task::none()
             }
-            Message::LinkClicked(url) => {
-                let _ = open::that_detached(url);
-                Task::none()
-            }
+            // A mention opens the direct chat with them; other links the
+            // browser.
+            Message::LinkClicked(url) => match message::mentioned_user(&url) {
+                Some(user) => self.update(Message::ChatWith(user)),
+                None => {
+                    let _ = open::that_detached(url);
+                    Task::none()
+                }
+            },
             Message::WindowResized(size) => {
                 self.window = size;
                 Task::batch([self.render_math(), self.pdf_resized()])

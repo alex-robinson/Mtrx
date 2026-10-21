@@ -10,6 +10,7 @@ use iced::{
     Element, Font, Length, Pixels, Theme,
     widget::{column, container, row, rule, span, text, text::Span},
 };
+use mtrx_core::{OwnedUserId, UserId};
 use mtrx_format::{Block, Document, Inline, Style};
 
 use crate::{
@@ -37,14 +38,17 @@ pub struct Select<'a, M> {
     pub on_gesture: Rc<dyn Fn(Gesture) -> M + 'a>,
 }
 
+/// `document`, its mentions of `own` (us) in bold.
 pub fn view<'a, M: Clone + 'a>(
     document: &Document,
     theme: &Theme,
+    own: &UserId,
     on_link: fn(String) -> M,
     select: Select<'a, M>,
 ) -> Element<'a, M> {
     let mut walk = Walk {
         theme,
+        own: Some(own),
         on_link: Some(on_link),
         select: Some(select),
         map: TextMap::default(),
@@ -74,6 +78,7 @@ pub struct Leaf {
 pub fn text_map(document: &Document) -> TextMap {
     let mut walk: Walk<'_, '_, ()> = Walk {
         theme: &Theme::Light,
+        own: None,
         on_link: None,
         select: None,
         map: TextMap::default(),
@@ -86,6 +91,7 @@ pub fn text_map(document: &Document) -> TextMap {
 /// same order.
 struct Walk<'t, 'a, M> {
     theme: &'t Theme,
+    own: Option<&'t UserId>,
     on_link: Option<fn(String) -> M>,
     select: Option<Select<'a, M>>,
     map: TextMap,
@@ -180,7 +186,11 @@ impl<'a, M: Clone + 'a> Walk<'_, 'a, M> {
             ..Flags::default()
         };
         let mut leaves = Vec::new();
-        spans(content, flags, None, self.theme, &mut out, &mut leaves);
+        let look = Look {
+            theme: self.theme,
+            own: self.own,
+        };
+        spans(content, flags, None, &look, &mut out, &mut leaves);
         let unit = self.map.units.len();
         self.map.leaves.extend(
             leaves
@@ -233,16 +243,24 @@ impl<'a, M: Clone + 'a> Walk<'_, 'a, M> {
     }
 }
 
+/// What spans look like besides their text.
+struct Look<'t> {
+    theme: &'t Theme,
+    /// Us, whose mentions stand out.
+    own: Option<&'t UserId>,
+}
+
 /// Styled spans of `content` into `out`; each leaf's start and length in
 /// their text into `leaves`.
 fn spans(
     content: &[Inline],
     flags: Flags,
     link: Option<&str>,
-    theme: &Theme,
+    look: &Look<'_>,
     out: &mut Vec<Span<'static, String, Font>>,
     leaves: &mut Vec<(usize, usize)>,
 ) {
+    let theme = look.theme;
     for inline in content {
         let start: usize = out.iter().map(|s| s.text.len()).sum();
         match inline {
@@ -267,7 +285,7 @@ fn spans(
                     // No good native equivalent; keep the text.
                     Style::Superscript | Style::Subscript | Style::Spoiler => {}
                 }
-                spans(content, f, link, theme, out, leaves);
+                spans(content, f, link, look, out, leaves);
             }
             Inline::Code(code) => {
                 leaves.push((start, code.len()));
@@ -282,7 +300,20 @@ fn spans(
                 ));
             }
             Inline::Link { url, content } => {
-                spans(content, flags, Some(url), theme, out, leaves);
+                spans(content, flags, Some(url), look, out, leaves);
+            }
+            Inline::Mention { user_id, name } => {
+                leaves.push((start, name.len()));
+                let own = look.own.is_some_and(|own| own.as_str() == user_id);
+                let url = mention_url(user_id);
+                for (is_emoji, run) in emoji::runs(name) {
+                    let run = mention(span(run), flags, own, theme).link(url.clone());
+                    out.push(if is_emoji {
+                        run.font(fonts::EMOJI)
+                    } else {
+                        run
+                    });
+                }
             }
             Inline::Math(tex) => {
                 let shown = format!("${tex}$");
@@ -300,6 +331,31 @@ fn spans(
             Inline::LineBreak => out.push(span("\n".to_owned())),
         }
     }
+}
+
+/// A mention: the name in the link colour, bold when it is us.
+fn mention(
+    s: Span<'static, String, Font>,
+    flags: Flags,
+    own: bool,
+    theme: &Theme,
+) -> Span<'static, String, Font> {
+    s.font(fonts::styled(flags.bold || own, flags.italic))
+        .color(theme.extended_palette().primary.base.color)
+        .strikethrough(flags.strike)
+}
+
+/// What a click on a mention of `user_id` sends: a `matrix.to` link.
+fn mention_url(user_id: &str) -> String {
+    format!("{MATRIX_TO}{user_id}")
+}
+
+const MATRIX_TO: &str = "https://matrix.to/#/";
+
+/// The user a clicked link is to, if it is a mention's (see
+/// [`mention_url`]); links to rooms are not.
+pub fn mentioned_user(url: &str) -> Option<OwnedUserId> {
+    OwnedUserId::try_from(url.strip_prefix(MATRIX_TO)?).ok()
 }
 
 fn styled(
@@ -344,9 +400,11 @@ mod tests {
         dragging: bool,
         steps: &[((f32, f32), mouse::Event)],
     ) -> String {
+        let own = OwnedUserId::try_from("@me:example.org").unwrap();
         let view = view(
             document,
             &Theme::Light,
+            &own,
             |_| Gesture::Drag {
                 unit: usize::MAX,
                 offset: 0,
@@ -452,6 +510,26 @@ mod tests {
             select(&document, false, &click.repeat(3)),
             "Hello you there"
         );
+    }
+
+    #[test]
+    fn mentions_link_to_their_user() {
+        let url = mention_url("@nils:server.org");
+        assert_eq!(url, "https://matrix.to/#/@nils:server.org");
+        assert_eq!(
+            mentioned_user(&url).as_deref().map(|u| u.as_str()),
+            Some("@nils:server.org")
+        );
+        // Rooms and other links open as before.
+        assert_eq!(mentioned_user("https://matrix.to/#/!room:server.org"), None);
+        assert_eq!(mentioned_user("https://example.org/@nils"), None);
+        // A mention is one leaf of text.
+        let document = Document::from_html(
+            r#"Ask <a href="https://matrix.to/#/@nils:server.org">Nils</a> now"#,
+        );
+        let map = text_map(&document);
+        assert_eq!(map.units[0].text, "Ask Nils now");
+        assert_eq!(map.leaves.len(), 3);
     }
 
     #[test]

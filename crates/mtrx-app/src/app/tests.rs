@@ -1191,6 +1191,94 @@ async fn room_management_screens() {
     );
 }
 
+/// Mentions of the viewer and of someone else in a received message.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs local Synapse (testserver/run.sh)"]
+async fn mention_colours() {
+    let dir = TempDir::new().unwrap();
+    let (_, alice) = user("pill-alice", &dir).await;
+    let (_, bob) = user("pill-bob", &dir).await;
+    let (_, carol) = user("pill-carol", &dir).await;
+    for (session, name) in [
+        (&alice, "Alice Nordin"),
+        (&bob, "Bob Weitzel"),
+        (&carol, "Carol Berg"),
+    ] {
+        session.set_display_name(name).await.unwrap();
+    }
+    let room = alice
+        .create_room(NewRoom {
+            name: Some("ice-sheets".into()),
+            invite: vec![bob.user_id(), carol.user_id()],
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    accept_invite(&bob, &room).await;
+    let bob_timeline = bob.timeline(&room).await.unwrap();
+    let text = "Thanks @Alice Nordin! @Carol Berg, can you check the sign in eq. 2?";
+    send(&bob_timeline, text).await;
+
+    let list = alice.room_list().await.unwrap();
+    let rooms = tokio::time::timeout(TIMEOUT, async {
+        let mut updates = std::pin::pin!(list.updates());
+        while let Some(state) = updates.next().await {
+            if state.loaded
+                && state
+                    .rooms
+                    .iter()
+                    .any(|r| r.id == room && r.name == "ice-sheets")
+            {
+                return state;
+            }
+        }
+        unreachable!()
+    })
+    .await
+    .unwrap();
+    let timeline = Arc::new(alice.timeline(&room).await.unwrap());
+    while !timeline.paginate_back(50).await.unwrap() {}
+    let entries = tokio::time::timeout(TIMEOUT, async {
+        let mut updates = std::pin::pin!(timeline.updates());
+        while let Some(entries) = updates.next().await {
+            let mentioned = entries.iter().any(|e| {
+                matches!(e, TimelineEntry::Event(ev)
+                    if matches!(&ev.content, EventContent::Message(m) if m.body == text))
+            });
+            if mentioned {
+                return entries;
+            }
+        }
+        unreachable!()
+    })
+    .await
+    .unwrap();
+    let message = entries
+        .iter()
+        .find_map(|e| match e {
+            TimelineEntry::Event(ev) => match &ev.content {
+                EventContent::Message(m) if m.body == text => Some(m),
+                _ => None,
+            },
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(
+        message.document.to_plain_text(),
+        "Thanks Alice Nordin! Carol Berg, can you check the sign in eq. 2?"
+    );
+
+    let mut main = Main::new(Arc::new(alice));
+    main.rooms = rooms;
+    main.verified = Some(true);
+    let mut open = Room::new(room.clone(), timeline.clone());
+    open.entries = entries;
+    with_start(&mut open.entries);
+    main.room = Some(open);
+    let app = app(Screen::Main(Box::new(main)), Mode::Light);
+    snapshot(&app, "mention-colours");
+}
+
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "needs local Synapse (testserver/run.sh)"]
 async fn media_messages() {

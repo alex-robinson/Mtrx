@@ -439,6 +439,7 @@ impl Room {
             .and_then(|(selection, order)| Some((selection.ordered(order)?, order)));
         let context = Context {
             theme: &look.theme,
+            own_user: look.own_user,
             math: look.math,
             params: &look.params,
             avatars: look.avatars,
@@ -798,6 +799,8 @@ pub struct Look<'a> {
 /// What rendering an event needs besides the event.
 struct Context<'a, 'b> {
     theme: &'b Theme,
+    /// Us, whose mentions stand out.
+    own_user: &'b UserId,
     math: &'a Math,
     params: &'b math::Params,
     avatars: &'b Avatars,
@@ -875,11 +878,23 @@ fn event_view<'a>(
                             .on_gesture(select.on_gesture)
                             .into()
                         }
-                        _ => message::view(&m.document, theme, Message::LinkClicked, select()),
+                        _ => message::view(
+                            &m.document,
+                            theme,
+                            context.own_user,
+                            Message::LinkClicked,
+                            select(),
+                        ),
                     }
                 }
                 (MessageKind::Text | MessageKind::Notice | MessageKind::Emote, false) => {
-                    message::view(&m.document, theme, Message::LinkClicked, select())
+                    message::view(
+                        &m.document,
+                        theme,
+                        context.own_user,
+                        Message::LinkClicked,
+                        select(),
+                    )
                 }
                 (kind, _) => match &m.media {
                     Some(file) => media::view(
