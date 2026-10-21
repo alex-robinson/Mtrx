@@ -116,27 +116,76 @@ deletes it.
 
 ## 4. Android app
 
-- Build: `scripts/build-android-ffi.sh` fills the Gradle module
-  `apps/android/mtrx-ffi`: `src/main/jniLibs/{arm64-v8a,x86_64}/libmtrx_ffi.so`
-  and `src/main/kotlin/uniffi/mtrx/mtrx.kt`, next to the committed
-  `org/mtrx/ffi/AndroidPlatform.kt`. CI's artifact `mtrx-ffi-android` holds
-  the same. The module (an Android library) needs JNA
-  (`net.java.dev.jna:jna:<5.x>@aar`), `kotlinx-coroutines-android`,
-  `androidx.annotation`, and the platform verifier's Kotlin part (group
-  `rustls`, artifact `rustls-platform-verifier`, version of
-  `rustls-platform-verifier-android` in Cargo.lock, now 0.2.0; Maven
-  repository and Gradle snippet in that crate's README).
-- Start: `AndroidPlatform.initialize(context)` once (in
-  `Application.onCreate`), before any other call: the TLS verifier calls
-  Android's through the JVM. Then `Mtrx(filesDir, cacheDir, secrets)` with
-  a `SecretBackend` that encrypts values with an AES-GCM key in the Android
-  Keystore and stores them in app-private storage.
-- Sync: start and stop with the process lifecycle (`ProcessLifecycleOwner`).
-- Browser login: open `url()` in a Custom Tab; an activity with an intent
-  filter for scheme `io.github.alex-robinson` (path `/oauth`) receives the
-  redirect and passes its URL to `finish`.
-- R8: keep `com.sun.jna.**`, `uniffi.mtrx.**` and
-  `org.rustls.platformverifier.**`.
+Jetpack Compose (Material 3) in `apps/android`, a Gradle project with a
+version catalog (`gradle/libs.versions.toml`: AGP 8.10.1, Kotlin 2.1.21 with
+its Compose compiler plugin, Compose BOM 2025.05.01; Gradle 8.14.3, JDK 17).
+Application id `org.mtrx.app`, minSdk 26, target and compile SDK 36. Written
+without an Android SDK at hand: it has been built only by CI.
+
+- `:mtrx-ffi`, an Android library: `scripts/build-android-ffi.sh` fills it
+  with `src/main/jniLibs/{arm64-v8a,x86_64}/libmtrx_ffi.so` and
+  `src/main/kotlin/uniffi/mtrx/mtrx.kt` (gitignored), next to the committed
+  `org/mtrx/ffi/AndroidPlatform.kt`. Dependencies: JNA
+  (`net.java.dev.jna:jna:5.17.0@aar`), `kotlinx-coroutines-android`,
+  `androidx.annotation`, and the platform verifier's Kotlin part
+  (`org.rustls:rustls-platform-verifier`, an aar from the crate's Maven
+  repository on GitHub, at the version of `rustls-platform-verifier-android` the build
+  reads from Cargo.lock). Consumer R8 rules keep `com.sun.jna.**`,
+  `uniffi.mtrx.**` and `org.rustls.platformverifier.**`.
+- `:app` (`org.mtrx.app`), only the ABIs the library is built for:
+  - `MtrxApplication`: `AndroidPlatform.initialize` first, then
+    `Mtrx(filesDir, cacheDir, secrets)` and the `Account`; sync follows
+    `ProcessLifecycleOwner` (start in the foreground, stop in the background).
+  - `model/Secrets.kt`: `FileSecretBackend`, one file per secret in
+    `noBackupFilesDir/secrets` named by the SHA-256 of its key, encrypted
+    with AES-256-GCM (random IV, the key as associated data) by a key that
+    stays in the Android Keystore (alias `mtrx-secrets`). Backups and device
+    transfer are off, as the key cannot follow the data.
+  - `model/Account.kt`: the session holder (no Compose): `restore()` at
+    start, sign-in, sign-out and `forget()`; state, room list and connection
+    as `StateFlow`s set by the listeners (on the library's threads); session
+    changes and sync under one mutex; subscriptions cancelled and closed at
+    sign-out. Browser sign-in: `startOauthLogin`, the page in a Custom Tab,
+    and `OAuthRedirectActivity` (intent filter for scheme
+    `io.github.alex-robinson`; the path `/oauth` is checked in code, as
+    Android ignores path filters without a host) calls `finish` and returns
+    to `MainActivity`. Back from the browser without the redirect cancels.
+  - `model/Images.kt`: avatars and image previews, decoded (downsampled)
+    and kept in an in-memory LRU cache.
+  - Screens: sign-in (homeserver, then password or "Sign in with browser" as
+    `supportsOauth` says), room list (avatars, unread and mention counts,
+    last activity, filters All, People, Rooms, Spaces; banners for offline
+    and signed out by the server; sign-out), and a room's timeline
+    (newest at the bottom, keyed by `TimelineItem.id`; day dividers, read
+    marker, grouped bubbles with sender names and avatars, send states,
+    images, state events summarised in a line as on the desktop; older
+    events near the top; marked read while the newest message shows;
+    composer with `sendText`). Navigation Compose: `rooms`, `room/{roomId}`.
+  - Unit tests (JVM) on fakes of the library's objects (subclasses made with
+    `NoHandle`): secrets, the account's sync and sign-out, timeline rows,
+    the timeline's view model.
+- Build locally, with the Android SDK and NDK, Rust's two Android targets
+  and cargo-ndk: `scripts/build-android-ffi.sh`, then in `apps/android`
+  `gradle :app:assembleDebug` (Gradle 8.11.1 or later, or a wrapper made with
+  `gradle wrapper --gradle-version 8.14.3`; `local.properties` or
+  `ANDROID_HOME` for the SDK). Tests: `gradle :app:testDebugUnitTest`.
+- CI (`.github/workflows/android.yml`, Ubuntu): the library and bindings
+  with the build script, then the debug APK, artifact `Mtrx-android-debug`,
+  then the unit tests.
+
+Remaining:
+
+- The generated Kotlin does not compile yet, as far as can be seen without
+  a compiler: UniFFI declares error fields named `message` (`MtrxError`'s
+  `InvalidInput`, `SecretStorage`, `Other`; `SecretError::Failed`) as
+  properties next to its own `override val message`. Rename those fields in
+  `crates/mtrx-ffi` (or make the errors flat), then adjust
+  `model/Errors.kt`, `Secrets.kt` and the tests that construct them.
+- Each CI run signs with a new debug key, so an update needs the previous
+  build uninstalled; a shared debug keystore (in the repository or a CI
+  secret) fixes that.
+- Not yet run on a device or emulator. Not done: notifications, sending
+  images, opening files, reactions and replies, release signing.
 
 ## 5. Builds and CI
 
