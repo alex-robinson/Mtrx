@@ -1,7 +1,7 @@
 # Android app (apps/android): the Rust library and its Kotlin bindings, then
 # a debug APK (artifact Mtrx-android-debug, signed with the runner's debug
-# key) and the app's unit tests. Gradle is set up by version; no wrapper jar
-# is committed.
+# key), the app's unit tests, and the APK started on an emulator (artifact
+# android-smoke). Gradle is set up by version; no wrapper jar is committed.
 name: Android
 
 on:
@@ -60,6 +60,28 @@ jobs:
       - name: Unit tests
         working-directory: apps/android
         run: gradle --no-daemon --stacktrace :app:testDebugUnitTest
+      - name: Enable KVM for the emulator
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Start the app on an emulator
+        # x86_64, as the library is built for. The sign-in screen shows, the
+        # process lives, no crash in the log. Screenshot as an artifact.
+        id: smoke
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          target: default
+          arch: x86_64
+          disable-animations: true
+          script: scripts/android-smoke.sh target/mobile/Mtrx-android-debug.apk
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() && steps.smoke.outcome != 'skipped' }}
+        with:
+          name: android-smoke
+          path: target/smoke
+          if-no-files-found: error
       - uses: actions/upload-artifact@v4
         if: failure()
         with:

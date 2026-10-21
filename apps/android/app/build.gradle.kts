@@ -42,6 +42,8 @@ android {
     testOptions {
         // Android classes (Log, LruCache) do nothing in JVM unit tests.
         unitTests.isReturnDefaultValues = true
+        // Each test's result in the build's output (and CI's log).
+        unitTests.all { it.testLogging { events("passed", "skipped", "failed") } }
     }
 
     packaging {
