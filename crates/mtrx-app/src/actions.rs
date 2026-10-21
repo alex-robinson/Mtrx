@@ -261,7 +261,8 @@ impl InlineEdit {
             )
         });
         let editor = popover(editor, panel, Side::Below, Edge::Right)
-            .on_dismiss(act(Message::EditEmoji(emoji::Message::Close)));
+            .on_dismiss(act(Message::EditEmoji(emoji::Message::Close)))
+            .click_through();
         let empty = self.content.text().trim().is_empty();
         let view = column![
             editor,

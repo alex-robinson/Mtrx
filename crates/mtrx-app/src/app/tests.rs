@@ -623,7 +623,8 @@ async fn main_screen_with_math() {
             }
         }
         // A click elsewhere closes the call menu (dark) or link editor and
-        // the list of readers (light).
+        // the list of readers (light), and does nothing else: what is
+        // behind neither lights up under the cursor nor takes the click.
         let mut ui = Simulator::with_size(fonts::settings(), Size::new(1200.0, 800.0), app.view());
         ui.point_at(iced::Point::new(400.0, 130.0));
         ui.simulate(iced_test::simulator::click());
@@ -632,6 +633,14 @@ async fn main_screen_with_math() {
             messages
                 .iter()
                 .any(|m| matches!(m, Message::Calls(_, calls::Message::Close))),
+            "{messages:?}"
+        );
+        assert!(
+            messages.iter().all(|m| matches!(
+                m,
+                Message::Calls(_, calls::Message::Close)
+                    | Message::Act(actions::Message::CloseReaders | actions::Message::ClosePicker)
+            )),
             "{messages:?}"
         );
         if mode == Mode::Light {

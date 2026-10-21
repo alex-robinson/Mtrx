@@ -1,6 +1,8 @@
 //! A panel floating above or below a widget, over everything else, as for
-//! emoji. A click outside the panel closes it and still reaches what was
-//! clicked, e.g. the text field.
+//! emoji or a menu. While it is open, what is behind it neither lights up
+//! under the cursor nor takes clicks: a click outside only closes it. A
+//! click-through panel instead lets the click reach what was clicked, e.g.
+//! the text field being typed in.
 
 use iced::{
     Element, Event, Length, Rectangle, Renderer, Size, Theme, Vector,
@@ -38,6 +40,7 @@ pub struct Popover<'a, Message> {
     side: Side,
     edge: Edge,
     on_dismiss: Option<Message>,
+    click_through: bool,
 }
 
 /// `anchor`, with `panel` floating on `side` of it, lined up with its
@@ -55,6 +58,7 @@ pub fn popover<'a, Message: Clone + 'a>(
         side,
         edge,
         on_dismiss: None,
+        click_through: false,
     }
 }
 
@@ -62,6 +66,12 @@ impl<Message> Popover<'_, Message> {
     /// Sent on a click outside the panel.
     pub fn on_dismiss(mut self, message: Message) -> Self {
         self.on_dismiss = Some(message);
+        self
+    }
+
+    /// Clicks and the cursor outside the panel still reach what is there.
+    pub fn click_through(mut self) -> Self {
+        self.click_through = true;
         self
     }
 }
@@ -188,6 +198,7 @@ impl<'a, Message: Clone + 'a> Widget<Message, Theme, Renderer> for Popover<'a, M
                 self.side,
                 self.edge,
                 self.on_dismiss.clone(),
+                self.click_through,
             )
         });
         let overlays: Vec<_> = nested.into_iter().chain(panel).collect();
@@ -197,7 +208,7 @@ impl<'a, Message: Clone + 'a> Widget<Message, Theme, Renderer> for Popover<'a, M
 
 /// `panel` floating on `side` of `anchor` (in window coordinates), lined
 /// up with its `edge`, over everything else; a click outside it sends
-/// `on_dismiss`.
+/// `on_dismiss`, and only reaches what was clicked if `click_through`.
 pub fn floating<'a, 'b, Message: Clone + 'a>(
     panel: &'b mut Element<'a, Message>,
     tree: &'b mut Tree,
@@ -205,6 +216,7 @@ pub fn floating<'a, 'b, Message: Clone + 'a>(
     side: Side,
     edge: Edge,
     on_dismiss: Option<Message>,
+    click_through: bool,
 ) -> overlay::Element<'b, Message, Theme, Renderer> {
     overlay::Element::new(Box::new(Panel {
         panel,
@@ -213,6 +225,7 @@ pub fn floating<'a, 'b, Message: Clone + 'a>(
         side,
         edge,
         on_dismiss,
+        click_through,
     }))
 }
 
@@ -223,6 +236,7 @@ struct Panel<'a, 'b, Message> {
     side: Side,
     edge: Edge,
     on_dismiss: Option<Message>,
+    click_through: bool,
 }
 
 impl<Message: Clone> overlay::Overlay<Message, Theme, Renderer> for Panel<'_, '_, Message> {
@@ -287,9 +301,14 @@ impl<Message: Clone> overlay::Overlay<Message, Theme, Renderer> for Panel<'_, '_
     ) {
         if let Event::Mouse(mouse::Event::ButtonPressed(_)) = event
             && !cursor.is_over(layout.bounds())
-            && let Some(message) = &self.on_dismiss
         {
-            shell.publish(message.clone());
+            if let Some(message) = &self.on_dismiss {
+                shell.publish(message.clone());
+            }
+            if !self.click_through {
+                shell.capture_event();
+                return;
+            }
         }
         self.panel.as_widget_mut().update(
             self.tree,
@@ -309,13 +328,21 @@ impl<Message: Clone> overlay::Overlay<Message, Theme, Renderer> for Panel<'_, '_
         cursor: mouse::Cursor,
         renderer: &Renderer,
     ) -> mouse::Interaction {
-        self.panel.as_widget().mouse_interaction(
+        let interaction = self.panel.as_widget().mouse_interaction(
             self.tree,
             layout,
             cursor,
             &layout.bounds(),
             renderer,
-        )
+        );
+        // Anything but `None` hides the cursor from what is behind.
+        if interaction == mouse::Interaction::None
+            && (!self.click_through || cursor.is_over(layout.bounds()))
+        {
+            mouse::Interaction::Idle
+        } else {
+            interaction
+        }
     }
 }
 
