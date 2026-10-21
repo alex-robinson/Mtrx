@@ -1,0 +1,42 @@
+[package]
+name = "mtrx-ffi"
+description = "Bindings of mtrx-core for the iOS and Android apps (UniFFI)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+name = "mtrx_ffi"
+# staticlib: the iOS xcframework; cdylib: Android's .so (and bindings
+# generation on the host); lib: tests and the bindgen binary.
+crate-type = ["lib", "staticlib", "cdylib"]
+
+[[bin]]
+# Generates the Swift and Kotlin bindings from the built library.
+name = "uniffi-bindgen"
+path = "uniffi-bindgen.rs"
+
+[dependencies]
+mtrx-core.workspace = true
+uniffi = { version = "0.32.2", features = ["cli"] }
+tokio = { workspace = true, features = ["fs"] }
+futures-util.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+sha2.workspace = true
+
+# The platform TLS verifier (rustls-platform-verifier, through reqwest)
+# needs the app's Context on Android: see `src/android.rs`.
+[target.'cfg(target_os = "android")'.dependencies]
+jni = { version = "0.22.4", default-features = false }
+rustls-platform-verifier = "0.7.1"
+
+[dev-dependencies]
+mtrx-core = { path = "../mtrx-core", features = ["test-support"] }
+mtrx-format.workspace = true
+tempfile.workspace = true
+futures-executor = "0.3"
+
