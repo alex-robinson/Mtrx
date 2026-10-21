@@ -79,6 +79,18 @@ impl RoomCalls {
         }
     }
 
+    /// The menu or the link editor is open.
+    pub fn is_open(&self) -> bool {
+        self.menu || self.editor.is_some()
+    }
+
+    /// Close the menu or the link editor.
+    pub fn close(&mut self) {
+        self.menu = false;
+        self.editor = None;
+        self.error = None;
+    }
+
     fn message(&self, message: Message) -> app::Message {
         app::Message::Calls(self.room.clone(), message)
     }
@@ -101,7 +113,7 @@ impl RoomCalls {
     /// Buttons at the right of the room header: Join or Start call, and
     /// the menu, which also holds the link editor.
     pub fn header_controls<'a>(&'a self, own: &'a [CallService]) -> Element<'a, app::Message> {
-        let open = self.menu || self.editor.is_some();
+        let open = self.is_open();
         // Hints would cover the open menu.
         let tip = |control: Element<'a, app::Message>, label: String| {
             if open {

@@ -1353,6 +1353,8 @@ impl App {
                         main.pdf = None;
                     } else if main.info.is_some() {
                         main.info = None;
+                    } else if let Some(room) = main.room.as_mut().filter(|r| r.calls.is_open()) {
+                        room.calls.close();
                     } else if let Some(room) = main
                         .room
                         .as_mut()
@@ -1986,11 +1988,7 @@ impl App {
                 state.editor = None;
                 state.error = None;
             }
-            Calls::Close => {
-                state.menu = false;
-                state.editor = None;
-                state.error = None;
-            }
+            Calls::Close => state.close(),
             Calls::Start(service) => {
                 state.busy = true;
                 state.menu = false;

@@ -654,6 +654,13 @@ async fn main_screen_with_math() {
                 main.room.as_mut().unwrap().readers = None;
             }
             composer_keeps_focus(&mut app);
+        } else {
+            // Esc closes the call menu too.
+            let _ = app.update(Message::Escape);
+            let Screen::Main(main) = &app.screen else {
+                unreachable!()
+            };
+            assert!(!main.room.as_ref().unwrap().calls.is_open());
         }
     }
 }
