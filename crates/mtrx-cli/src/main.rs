@@ -203,7 +203,7 @@ async fn main() -> Result<()> {
         SecretStoreArg::Keyring => SecretStore::Keyring,
         SecretStoreArg::File => SecretStore::File,
     };
-    let profile = Profile::new(&cli.profile, cli.data_dir.as_deref(), secrets)?;
+    let profile = Profile::new(&cli.profile, cli.data_dir.as_deref(), secrets.clone())?;
 
     match cli.command {
         Command::Login {

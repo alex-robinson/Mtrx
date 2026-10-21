@@ -73,6 +73,7 @@ impl Profile {
         let secret = Secret::new(
             secrets,
             dir.to_string_lossy().into_owned(),
+            format!("profiles/{name}"),
             dir.join(SECRETS_FILE),
         );
         Ok(Self {
