@@ -314,11 +314,16 @@ async fn main_screen_with_math() {
     )
     .await;
     let carol_timeline = carol.timeline(&room).await.unwrap();
-    send(
-        &carol_timeline,
-        "I can run the sensitivity tests tonight. Quick call first? https://meet.google.com/abc-defg-hij",
-    )
-    .await;
+    // Sent with a typo, then edited.
+    let typo = "I can run the sensitivity tests tonite. Quick call first? https://meet.google.com/abc-defg-hij";
+    send(&carol_timeline, typo).await;
+    carol_timeline
+        .edit_markdown(
+            &key_of(&carol_timeline, typo).await,
+            "I can run the sensitivity tests tonight. Quick call first? https://meet.google.com/abc-defg-hij",
+        )
+        .await
+        .unwrap();
     send(
         &carol.timeline(&dm).await.unwrap(),
         "Coffee before the meeting?",
@@ -385,7 +390,8 @@ async fn main_screen_with_math() {
             let reactions = messages().filter(|m| !m.reactions.is_empty()).count() == 2
                 && messages().any(|m| m.reactions.iter().any(|r| r.count == 2));
             let read = events().any(|ev| ev.read_by.iter().any(|r| r.id == bob.user_id()));
-            if from_carol && reply_loaded && reactions && read {
+            let edited = messages().any(|m| m.edited);
+            if from_carol && reply_loaded && reactions && read && edited {
                 return entries;
             }
         }

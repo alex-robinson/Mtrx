@@ -842,6 +842,8 @@ fn event_view<'a>(
         .map(|(_, at)| at);
     // Its math is shown typeset, so it can be saved as a picture.
     let mut math_shown = false;
+    // Shown as text, which carries the mark of an edit.
+    let mut as_text = false;
     let select = || {
         let id = event.id.clone();
         message::Select {
@@ -876,22 +878,28 @@ fn event_view<'a>(
                             .on_gesture(select.on_gesture)
                             .into()
                         }
-                        _ => message::view(
-                            &m.document,
-                            theme,
-                            context.own_user,
-                            Message::LinkClicked,
-                            select(),
-                        ),
+                        _ => {
+                            as_text = true;
+                            message::view(
+                                &m.document,
+                                theme,
+                                context.own_user,
+                                Message::LinkClicked,
+                                select(),
+                                m.edited,
+                            )
+                        }
                     }
                 }
                 (MessageKind::Text | MessageKind::Notice | MessageKind::Emote, false) => {
+                    as_text = true;
                     message::view(
                         &m.document,
                         theme,
                         context.own_user,
                         Message::LinkClicked,
                         select(),
+                        m.edited,
                     )
                 }
                 (kind, _) => match &m.media {
@@ -914,8 +922,8 @@ fn event_view<'a>(
             if let Some(cards) = calls::cards(&m.document.links(), context.call_services) {
                 parts = parts.push(cards);
             }
-            if m.edited {
-                parts = parts.push(text("(edited)").size(11).style(text::secondary));
+            if m.edited && !as_text {
+                parts = parts.push(message::edited_line());
             }
             if !m.reactions.is_empty() {
                 let picker = (picking == Some(PickerAt::Reactions)).then(|| {
