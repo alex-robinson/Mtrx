@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- crates/mtrx-app/assets/logo.svg: the speech bubble and its mark, in the
+     SVG's coordinates, scaled into the adaptive icon's safe zone (66 of 108 dp). -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="1024"
+    android:viewportHeight="1024">
+    <group
+        android:pivotX="512"
+        android:pivotY="512"
+        android:scaleX="0.85"
+        android:scaleY="0.85">
+        <path
+            android:fillColor="#FFFFFFFF"
+            android:pathData="M360,270H664A110,110 0,0 1,774,380V580A110,110 0,0 1,664,690H450L318,790L340,690A110,110 0,0 1,250,580V380A110,110 0,0 1,360,270Z" />
+        <path
+            android:pathData="M622,365L405,365L535,480L405,595L622,595"
+            android:strokeWidth="66"
+            android:strokeColor="#FF4A58D6"
+            android:strokeLineCap="round"
+            android:strokeLineJoin="round" />
+    </group>
+</vector>
