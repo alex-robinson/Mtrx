@@ -1,7 +1,8 @@
 # iOS and Android: the shared Rust layer
 
-Status: the Rust layer (`crates/mtrx-ffi`) and its builds are done; the apps
-are to do. This is the plan, and the contract the apps are built on.
+Status: the Rust layer (`crates/mtrx-ffi`) and its builds are done, and the
+first iOS app (section 3); the Android app is to do. This is the plan, and
+the contract the apps are built on.
 
 ## Decisions
 
@@ -113,6 +114,64 @@ deletes it.
 - Browser login: `ASWebAuthenticationSession(url: login.url(),
   callbackURLScheme: "io.github.alex-robinson")`; pass the callback URL to
   `finish`. No URL type in Info.plist is needed for this session.
+
+### What exists
+
+SwiftUI, iOS 16, iPhone and iPad, bundle `org.mtrx.Mtrx`, unsigned. Sign in
+(the homeserver, then a password or the browser, as `supportsOauth` says),
+room list, room timeline with text and images, sending text, sign out.
+
+```
+apps/ios/
+  Mtrx.xcodeproj      app target Mtrx, tests MtrxTests, local package MtrxFFI;
+                      folders are synchronized groups (no per-file entries)
+  Mtrx/
+    MtrxApp.swift     entry; scene phase -> sync
+    Core/             Keychain backend, Feed (listeners -> AsyncStream),
+                      browser sign-in, error messages
+    Models/           AppModel (phase: starting, signed out, signed in),
+                      SignInModel, SessionModel (room list, connection, sync),
+                      TimelineModel, ImageCache, TimelineRows, RoomSections
+    Views/            sign-in, room list, room (timeline, composer), settings
+    Assets.xcassets   icon (logo.svg, full-bleed), logo, accent colour
+  MtrxTests/          models with fakes of the FFI classes
+```
+
+- Threading: listeners yield into an `AsyncStream` that keeps only the
+  newest state; a main-actor task applies it. Models are `@MainActor`
+  `ObservableObject`s; views only read them.
+- Room list: invites, direct messages, rooms (joined spaces left out, as on
+  the desktop), most recently active first; search by name. Invites are
+  listed but answered on the desktop (no join call in the FFI yet).
+- Timeline: rows keyed by `TimelineItem.id`; runs of state events folded
+  into one line (as the desktop writes them); messages grouped by sender.
+  Bottom-anchored (`defaultScrollAnchor`) on iOS 17+, a flipped scroll view
+  on iOS 16. Older messages load while the top is on screen; read when shown.
+- Images: avatars and `mediaPreview`s decoded off the main thread, kept in
+  an `NSCache` (the library caches the downloads).
+- Tests: fakes subclass the generated classes (`init(noHandle:)`), so the
+  models need no protocol layer.
+
+Locally: run `scripts/build-ios-ffi.sh` once (or unzip CI's `MtrxFFI-ios`
+into `apps/ios`), open `apps/ios/Mtrx.xcodeproj`, run on a simulator; for a
+device, choose a team under Signing. From the command line:
+
+```
+cd apps/ios
+xcodebuild build -project Mtrx.xcodeproj -scheme Mtrx \
+  -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO
+xcodebuild test -project Mtrx.xcodeproj -scheme Mtrx \
+  -destination 'platform=iOS Simulator,name=<an iPhone>' CODE_SIGNING_ALLOWED=NO
+```
+
+CI (`.github/workflows/ios.yml`): builds the package with the script, the
+app (Release) for the simulator, runs the unit tests on the first iPhone
+simulator, and uploads `Mtrx-ios-simulator` (the zipped `.app`; install
+with `xcrun simctl install booted Mtrx.app`). Not run yet.
+
+To do: opening images full size and files (`mediaFile`); answering
+invites; reconnecting when the network returns (`reconnect`); a build for
+devices (signing).
 
 ## 4. Android app
 
