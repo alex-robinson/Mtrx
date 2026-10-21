@@ -1,8 +1,10 @@
 # iOS and Android: the shared Rust layer
 
 Status: the Rust layer (`crates/mtrx-ffi`) and the first iOS and Android
-apps (sections 3 and 4) are written; none of the mobile builds has run in
-CI yet. This is the plan, and the contract the apps are built on.
+apps (sections 3 and 4) are written. The library builds for both in CI
+(`mobile-ffi.yml`); the Android app builds, passes its unit tests and starts
+on an emulator in CI (`android.yml`). This is the plan, and the contract the
+apps are built on.
 
 ## Decisions
 
@@ -178,8 +180,8 @@ devices (signing).
 Jetpack Compose (Material 3) in `apps/android`, a Gradle project with a
 version catalog (`gradle/libs.versions.toml`: AGP 8.10.1, Kotlin 2.1.21 with
 its Compose compiler plugin, Compose BOM 2025.05.01; Gradle 8.14.3, JDK 17).
-Application id `org.mtrx.app`, minSdk 26, target and compile SDK 36. Written
-without an Android SDK at hand: it has been built only by CI.
+Application id `org.mtrx.app`, minSdk 26, target and compile SDK 36. Built
+and tested by CI only; no Android SDK is used locally.
 
 - `:mtrx-ffi`, an Android library: `scripts/build-android-ffi.sh` fills it
   with `src/main/jniLibs/{arm64-v8a,x86_64}/libmtrx_ffi.so` and
@@ -230,21 +232,20 @@ without an Android SDK at hand: it has been built only by CI.
   `ANDROID_HOME` for the SDK). Tests: `gradle :app:testDebugUnitTest`.
 - CI (`.github/workflows/android.yml`, Ubuntu): the library and bindings
   with the build script, then the debug APK, artifact `Mtrx-android-debug`,
-  then the unit tests.
+  then the unit tests, then `scripts/android-smoke.sh` on an x86_64 emulator
+  (API 34): installs and starts the APK, checks that the sign-in screen
+  shows, the process lives and the log has no crash; screenshot, UI tree and
+  log as artifact `android-smoke`.
 
 Remaining:
 
-- The generated Kotlin does not compile yet, as far as can be seen without
-  a compiler: UniFFI declares error fields named `message` (`MtrxError`'s
-  `InvalidInput`, `SecretStorage`, `Other`; `SecretError::Failed`) as
-  properties next to its own `override val message`. Rename those fields in
-  `crates/mtrx-ffi` (or make the errors flat), then adjust
-  `model/Errors.kt`, `Secrets.kt` and the tests that construct them.
 - Each CI run signs with a new debug key, so an update needs the previous
   build uninstalled; a shared debug keystore (in the repository or a CI
   secret) fixes that.
-- Not yet run on a device or emulator. Not done: notifications, sending
-  images, opening files, reactions and replies, release signing.
+- Run only to the sign-in screen (emulator, CI); signing in, the room list
+  and the timeline are not yet tried on an emulator or device. Not done:
+  notifications, sending images, opening files, reactions and replies,
+  release signing.
 
 ## 5. Builds and CI
 
@@ -258,7 +259,7 @@ Remaining:
 - [x] `.github/workflows/mobile-ffi.yml`: iOS (xcframework, the package
       built for the simulator, a simulator executable linked against it) and
       Android (cargo-ndk with the runner's NDK; checks the JNI entry point).
-      Not run yet.
+      Both pass.
 - [x] Tests: conversions and the runtime (unit); sign-in, room list,
       timeline, image, send and sign-out through the bindings against
       Synapse (`cargo test -p mtrx-ffi --test integration -- --ignored`,
