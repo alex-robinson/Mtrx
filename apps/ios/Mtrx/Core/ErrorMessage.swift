@@ -20,10 +20,10 @@ func errorMessage(_ error: Error) -> String? {
             return "Already signed in."
         case .RoomNotFound:
             return "The room is not in the room list (any more)."
-        case .InvalidInput(let message), .Other(let message):
-            return message
-        case .SecretStorage(let message):
-            return "The Keychain failed: \(message)"
+        case .InvalidInput(let reason), .Other(let reason):
+            return reason
+        case .SecretStorage(let reason):
+            return "The Keychain failed: \(reason)"
         }
     default:
         return error.localizedDescription

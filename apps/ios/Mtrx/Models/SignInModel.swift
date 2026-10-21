@@ -93,7 +93,7 @@ final class SignInModel: ObservableObject {
                 // Dropping `login` (on failure) cancels the sign-in.
                 let login = try await core.startOauthLogin(homeserver: server)
                 guard let url = URL(string: login.url()) else {
-                    throw MtrxError.Other(message: "The server's sign-in page has an invalid address.")
+                    throw MtrxError.Other(reason: "The server's sign-in page has an invalid address.")
                 }
                 let callback = try await browser.signIn(at: url, callbackScheme: Self.callbackScheme)
                 let session = try await login.finish(redirectUrl: callback.absoluteString)

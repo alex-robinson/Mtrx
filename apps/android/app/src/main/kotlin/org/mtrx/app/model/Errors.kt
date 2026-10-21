@@ -8,7 +8,7 @@ fun describe(error: MtrxException): String? = when (error) {
     is MtrxException.NotLoggedIn -> "Not signed in"
     is MtrxException.AlreadyLoggedIn -> "Already signed in; sign out first"
     is MtrxException.RoomNotFound -> "No room ${error.roomId}"
-    is MtrxException.InvalidInput -> error.message
-    is MtrxException.SecretStorage -> "Secret storage: ${error.message}"
-    is MtrxException.Other -> error.message
+    is MtrxException.InvalidInput -> error.reason
+    is MtrxException.SecretStorage -> "Secret storage: ${error.reason}"
+    is MtrxException.Other -> error.reason
 }

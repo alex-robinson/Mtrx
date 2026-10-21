@@ -33,7 +33,7 @@ final class TimelineModelTests: XCTestCase {
     }
 
     func testKeepsTheDraftWhenSendingFails() async {
-        session.fakeTimeline.sendError = MtrxError.Other(message: "No connection")
+        session.fakeTimeline.sendError = MtrxError.Other(reason: "No connection")
         model.draft = "Hello"
         await model.send()
         XCTAssertEqual(model.draft, "Hello")

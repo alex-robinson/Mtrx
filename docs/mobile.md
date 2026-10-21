@@ -1,8 +1,8 @@
 # iOS and Android: the shared Rust layer
 
-Status: the Rust layer (`crates/mtrx-ffi`) and its builds are done, and the
-first iOS app (section 3); the Android app is to do. This is the plan, and
-the contract the apps are built on.
+Status: the Rust layer (`crates/mtrx-ffi`) and the first iOS and Android
+apps (sections 3 and 4) are written; none of the mobile builds has run in
+CI yet. This is the plan, and the contract the apps are built on.
 
 ## Decisions
 

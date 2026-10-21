@@ -84,7 +84,7 @@ final class FakeOAuthLogin: OAuthLogin {
 
 final class FakeMtrx: Mtrx {
     var oauth = false
-    var loginResult: Result<Session, Error> = .failure(MtrxError.Other(message: "Invalid password"))
+    var loginResult: Result<Session, Error> = .failure(MtrxError.Other(reason: "Invalid password"))
     let oauthLogin = FakeOAuthLogin(noHandle: .init())
 
     override func supportsOauth(homeserver: String) async throws -> Bool { oauth }

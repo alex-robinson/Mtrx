@@ -22,7 +22,7 @@ final class KeychainSecrets: SecretBackend {
         switch status {
         case errSecSuccess:
             guard let data = result as? Data, let value = String(data: data, encoding: .utf8) else {
-                throw SecretError.Failed(message: "The Keychain item \(key) is not text")
+                throw SecretError.Failed(reason: "The Keychain item \(key) is not text")
             }
             return value
         case errSecItemNotFound:
@@ -71,6 +71,6 @@ final class KeychainSecrets: SecretBackend {
 
     private func failure(_ status: OSStatus, _ action: String, _ key: String) -> SecretError {
         let reason = SecCopyErrorMessageString(status, nil) as String? ?? "error \(status)"
-        return .Failed(message: "Could not \(action) \(key) in the Keychain: \(reason)")
+        return .Failed(reason: "Could not \(action) \(key) in the Keychain: \(reason)")
     }
 }
