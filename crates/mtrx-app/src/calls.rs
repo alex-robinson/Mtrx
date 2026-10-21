@@ -47,6 +47,14 @@ pub enum Message {
     LinkSaved(Result<(), String>),
 }
 
+/// What starting a call with `service` does.
+fn start_hint(service: &CallService) -> String {
+    format!(
+        "Start a {} call now: posts a new link in the chat",
+        service.name
+    )
+}
+
 /// Call state of the open room.
 pub struct RoomCalls {
     room: OwnedRoomId,
@@ -138,12 +146,7 @@ impl RoomCalls {
             None => {
                 let service = self.default_service(own);
                 let label = match service {
-                    Some(service) => {
-                        format!(
-                            "Start a {} call now: posts a new link in the chat",
-                            service.name
-                        )
-                    }
+                    Some(service) => start_hint(service),
                     None => "Add a call service in Settings to start calls".to_owned(),
                 };
                 tip(
@@ -204,7 +207,11 @@ impl RoomCalls {
             } else {
                 service.name.clone()
             };
-            menu = menu.push(item(label, Some(Message::Start(service.clone()))));
+            menu = menu.push(hint(
+                item(label, Some(Message::Start(service.clone()))),
+                start_hint(service),
+                Position::Left,
+            ));
         }
         menu = menu.push(container(rule::horizontal(1).style(style::separator)).padding([4, 0]));
         let allowed = self.can_set_link != Some(false);
