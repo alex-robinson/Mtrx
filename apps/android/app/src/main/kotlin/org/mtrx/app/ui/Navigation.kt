@@ -1,0 +1,48 @@
+package org.mtrx.app.ui
+
+import android.net.Uri
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.navigation.NavType
+import androidx.navigation.compose.NavHost
+import androidx.navigation.compose.composable
+import androidx.navigation.compose.rememberNavController
+import androidx.navigation.navArgument
+import org.mtrx.app.model.Account
+import org.mtrx.app.model.AccountState
+import org.mtrx.app.rooms.RoomListScreen
+import org.mtrx.app.timeline.TimelineScreen
+import org.mtrx.app.timeline.TimelineViewModel
+
+private const val ROOMS = "rooms"
+private const val ROOM = "room/{roomId}"
+
+/** The screens of a signed-in session: the room list, and a room's timeline. */
+@Composable
+fun SignedInNavigation(account: Account, signedIn: AccountState.SignedIn) {
+    val nav = rememberNavController()
+    val userId = remember(signedIn.session) { signedIn.session.userId() }
+    NavHost(nav, startDestination = ROOMS) {
+        composable(ROOMS) {
+            RoomListScreen(
+                account,
+                userId,
+                signedIn.images,
+                onOpenRoom = { roomId -> nav.navigate("room/${Uri.encode(roomId)}") },
+            )
+        }
+        composable(ROOM, arguments = listOf(navArgument("roomId") { type = NavType.StringType })) { entry ->
+            val roomId = entry.arguments?.getString("roomId") ?: return@composable
+            // One per visit of the room (the back stack entry's).
+            val viewModel: TimelineViewModel = viewModel {
+                TimelineViewModel(roomId) { signedIn.session.timeline(it) }
+            }
+            val rooms by account.rooms.collectAsStateWithLifecycle()
+            val title = rooms.rooms.firstOrNull { it.id == roomId }?.name ?: roomId
+            TimelineScreen(title, viewModel, signedIn.images, onBack = { nav.popBackStack() })
+        }
+    }
+}

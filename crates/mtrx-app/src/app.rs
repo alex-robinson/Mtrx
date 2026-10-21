@@ -430,7 +430,7 @@ fn environment() -> Result<(Profile, PathBuf, SecretStore), String> {
         Ok("file") => SecretStore::File,
         _ => SecretStore::Keyring,
     };
-    let profile = Profile::new(&name, Some(&data_root), secrets).map_err(|e| e.to_string())?;
+    let profile = Profile::new(&name, &data_root, secrets.clone()).map_err(|e| e.to_string())?;
     Ok((profile, data_root, secrets))
 }
 

@@ -13,7 +13,10 @@ use std::{
 use base64::{Engine, engine::general_purpose::STANDARD};
 use chacha20poly1305::{KeyInit, XChaCha20Poly1305, XNonce, aead::Aead};
 
-use super::{Secret, delete_credential, get_credential, set_credential};
+use super::{
+    Secret,
+    os_keyring::{delete_credential, get_credential, set_credential},
+};
 use crate::Result;
 
 const NONCE_LEN: usize = 24;
@@ -129,6 +132,7 @@ mod tests {
         let secret = Secret::new(
             SecretStore::Keyring,
             name.clone(),
+            String::new(),
             dir.path().join("s.json"),
         );
 

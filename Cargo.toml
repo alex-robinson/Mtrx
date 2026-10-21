@@ -1,6 +1,13 @@
 [workspace]
 resolver = "3"
-members = ["crates/mtrx-core", "crates/mtrx-format", "crates/mtrx-cli", "crates/mtrx-app", "crates/xtask"]
+members = [
+    "crates/mtrx-core",
+    "crates/mtrx-format",
+    "crates/mtrx-cli",
+    "crates/mtrx-app",
+    "crates/mtrx-ffi",
+    "crates/xtask",
+]
 
 [workspace.package]
 version = "0.1.3"
@@ -41,6 +48,13 @@ base64 = "0.23.1"
 # Dependencies are slow unoptimized (store key derivation, crypto); our crates stay quick to rebuild.
 [profile.dev.package."*"]
 opt-level = 2
+
+# The mobile libraries (scripts/build-{ios,android}-ffi.sh): link-time
+# optimized, so the static library holds only what the bindings use.
+[profile.mobile]
+inherits = "release"
+lto = true
+codegen-units = 1
 
 # mitex 0.2.4 ignores a custom command spec when writing output; patched copy.
 [patch.crates-io]

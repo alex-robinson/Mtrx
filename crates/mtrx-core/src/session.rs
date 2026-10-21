@@ -6,6 +6,7 @@ use matrix_sdk::{
     Client,
     authentication::oauth::{
         ClientId, OAuthSession,
+        error::{OAuthAuthorizationCodeError, OAuthError},
         registration::{ApplicationType, ClientMetadata, Localized, OAuthGrantType},
     },
     encryption::{BackupDownloadStrategy, EncryptionSettings, verification::VerificationRequest},
@@ -33,6 +34,11 @@ use crate::{
 const DEVICE_DISPLAY_NAME: &str = "Mtrx";
 /// Shown by the server's login page as the app's home page.
 const CLIENT_URI: &str = "https://alex-robinson.github.io/";
+/// Where the server sends the browser back to the mobile apps after a
+/// browser login ([`Session::start_oauth_login`]): a private-use URI scheme
+/// (RFC 8252), which servers require to be [`CLIENT_URI`]'s host reversed.
+/// The apps register the scheme with the OS.
+pub const APP_OAUTH_REDIRECT_URI: &str = "io.github.alex-robinson:/oauth";
 const BROWSER_DONE_PAGE: &str = "<!doctype html><title>Mtrx</title>\
     <p style=\"font-family: sans-serif\">Signed in. You can close this tab and return to Mtrx.</p>";
 
@@ -76,15 +82,19 @@ impl Session {
         user: &str,
         password: &str,
     ) -> Result<Self> {
-        Self::login_with(profile, homeserver, async |client| {
-            client
-                .matrix_auth()
-                .login_username(user, password)
-                .initial_device_display_name(DEVICE_DISPLAY_NAME)
-                .await?;
-            Ok(())
-        })
-        .await
+        let (login, ()) = NewLogin::start(profile, homeserver)
+            .await?
+            .step(async |login| {
+                login
+                    .client
+                    .matrix_auth()
+                    .login_username(user, password)
+                    .initial_device_display_name(DEVICE_DISPLAY_NAME)
+                    .await?;
+                Ok(())
+            })
+            .await?;
+        login.finish().await
     }
 
     /// Log in through the server's web page (OAuth 2.0, e.g. matrix.org).
@@ -96,73 +106,54 @@ impl Session {
         homeserver: &str,
         open_url: impl FnOnce(Url),
     ) -> Result<Self> {
-        Self::login_with(profile, homeserver, async |client| {
-            let (redirect_uri, redirect) = LocalServerBuilder::new()
-                .response(LocalServerResponse::Html(BROWSER_DONE_PAGE.into()))
-                .spawn()
-                .await?;
-            let oauth = client.oauth();
-            let authorization = oauth
-                .login(
-                    redirect_uri.clone(),
-                    None,
-                    Some(client_metadata(redirect_uri)?.into()),
-                    None,
-                )
-                .build()
-                .await?;
-            open_url(authorization.url);
-            let query = redirect.await.ok_or(Error::LoginCancelled)?;
-            oauth.finish_login(UrlOrQuery::Query(query.0)).await?;
-            Ok(())
-        })
-        .await
+        let (redirect_uri, redirect) = LocalServerBuilder::new()
+            .response(LocalServerResponse::Html(BROWSER_DONE_PAGE.into()))
+            .spawn()
+            .await?;
+        let login = Self::start_oauth_login(profile, homeserver, redirect_uri).await?;
+        open_url(login.url().clone());
+        match redirect.await {
+            Some(query) => login.finish_with(UrlOrQuery::Query(query.0)).await,
+            None => {
+                login.login.abandon()?;
+                Err(Error::LoginCancelled)
+            }
+        }
+    }
+
+    /// Start a browser login (OAuth 2.0) that the caller completes, for apps
+    /// that receive the redirect themselves (the mobile apps, with
+    /// [`APP_OAUTH_REDIRECT_URI`]): show [`OAuthLogin::url`] in a browser,
+    /// then pass the URL it was redirected to to [`OAuthLogin::finish`].
+    pub async fn start_oauth_login(
+        profile: Profile,
+        homeserver: &str,
+        redirect_uri: Url,
+    ) -> Result<OAuthLogin> {
+        let (login, url) = NewLogin::start(profile, homeserver)
+            .await?
+            .step(async |login| {
+                let authorization = login
+                    .client
+                    .oauth()
+                    .login(
+                        redirect_uri.clone(),
+                        None,
+                        Some(client_metadata(redirect_uri)?.into()),
+                        None,
+                    )
+                    .build()
+                    .await?;
+                Ok(authorization.url)
+            })
+            .await?;
+        Ok(OAuthLogin { login, url })
     }
 
     /// Whether the server offers [`Session::login_oauth`].
     pub async fn supports_oauth(homeserver: &str) -> Result<bool> {
         let client = client_builder(homeserver).build().await?;
         Ok(client.oauth().server_metadata().await.is_ok())
-    }
-
-    /// Shared part of the logins: fresh store, `authenticate`, persist.
-    async fn login_with(
-        profile: Profile,
-        homeserver: &str,
-        authenticate: impl AsyncFnOnce(&Client) -> Result<()>,
-    ) -> Result<Self> {
-        if profile.load_session()?.is_some() {
-            return Err(Error::AlreadyLoggedIn(profile.name().to_owned()));
-        }
-        // Leftovers from an earlier failed login would not open with a new passphrase.
-        profile.wipe()?;
-
-        let store_passphrase = random_passphrase();
-        let result = async {
-            let client = build_client(&profile, homeserver, &store_passphrase).await?;
-            authenticate(&client).await?;
-            // Cross-signing and backup setup run in the background; finish them
-            // before the caller can exit or start syncing.
-            client
-                .encryption()
-                .wait_for_e2ee_initialization_tasks()
-                .await;
-            profile.save_session(&StoredSession {
-                homeserver: client.homeserver().to_string(),
-                auth: stored_auth(&client),
-                store_passphrase,
-            })?;
-            Ok(client)
-        }
-        .await;
-
-        match result {
-            Ok(client) => Self::new(client, profile).await,
-            Err(e) => {
-                profile.wipe()?;
-                Err(e)
-            }
-        }
     }
 
     /// Reopen the session previously saved in `profile`.
@@ -289,6 +280,117 @@ impl Session {
     }
 }
 
+/// A browser login waiting for the redirect, see [`Session::start_oauth_login`].
+/// Dropping it cancels the login; the next login deletes what it stored.
+pub struct OAuthLogin {
+    login: NewLogin,
+    url: Url,
+}
+
+impl OAuthLogin {
+    /// The server's login page, to show in a browser.
+    pub fn url(&self) -> &Url {
+        &self.url
+    }
+
+    /// Complete the login with the URL the browser was redirected to, and
+    /// persist the session in the profile.
+    pub async fn finish(self, redirect: &Url) -> Result<Session> {
+        self.finish_with(UrlOrQuery::Url(redirect.clone())).await
+    }
+
+    async fn finish_with(self, redirect: UrlOrQuery) -> Result<Session> {
+        let (login, ()) = self
+            .login
+            .step(async move |login| {
+                match login.client.oauth().finish_login(redirect).await {
+                    // The user declined on the server's page.
+                    Err(matrix_sdk::Error::OAuth(error))
+                        if matches!(
+                            *error,
+                            OAuthError::AuthorizationCode(OAuthAuthorizationCodeError::Cancelled)
+                        ) =>
+                    {
+                        Err(Error::LoginCancelled)
+                    }
+                    result => Ok(result?),
+                }
+            })
+            .await?;
+        login.finish().await
+    }
+}
+
+/// A login in progress: a client with a fresh store, not yet saved in the
+/// profile.
+struct NewLogin {
+    profile: Profile,
+    client: Client,
+    store_passphrase: String,
+}
+
+impl NewLogin {
+    async fn start(profile: Profile, homeserver: &str) -> Result<Self> {
+        if profile.load_session()?.is_some() {
+            return Err(Error::AlreadyLoggedIn(profile.name().to_owned()));
+        }
+        // Leftovers from an earlier failed login would not open with a new passphrase.
+        profile.wipe()?;
+        let store_passphrase = random_passphrase();
+        match build_client(&profile, homeserver, &store_passphrase).await {
+            Ok(client) => Ok(Self {
+                profile,
+                client,
+                store_passphrase,
+            }),
+            Err(e) => {
+                profile.wipe()?;
+                Err(e)
+            }
+        }
+    }
+
+    /// Run a step of the login; if it fails, delete what the login stored.
+    async fn step<T>(self, step: impl AsyncFnOnce(&Self) -> Result<T>) -> Result<(Self, T)> {
+        match step(&self).await {
+            Ok(value) => Ok((self, value)),
+            Err(e) => {
+                self.abandon()?;
+                Err(e)
+            }
+        }
+    }
+
+    fn abandon(self) -> Result<()> {
+        let Self {
+            profile, client, ..
+        } = self;
+        drop(client);
+        profile.wipe()
+    }
+
+    /// Persist the session in the profile.
+    async fn finish(self) -> Result<Session> {
+        let (login, ()) = self
+            .step(async |login| {
+                // Cross-signing and backup setup run in the background; finish
+                // them before the caller can exit or start syncing.
+                login
+                    .client
+                    .encryption()
+                    .wait_for_e2ee_initialization_tasks()
+                    .await;
+                login.profile.save_session(&StoredSession {
+                    homeserver: login.client.homeserver().to_string(),
+                    auth: stored_auth(&login.client),
+                    store_passphrase: login.store_passphrase.clone(),
+                })
+            })
+            .await?;
+        Session::new(login.client, login.profile).await
+    }
+}
+
 fn client_builder(homeserver: &str) -> matrix_sdk::ClientBuilder {
     let builder = Client::builder();
     // A full URL is used as-is; a bare server name goes through .well-known discovery.
@@ -301,7 +403,11 @@ fn client_builder(homeserver: &str) -> matrix_sdk::ClientBuilder {
 
 async fn build_client(profile: &Profile, homeserver: &str, passphrase: &str) -> Result<Client> {
     let client = client_builder(homeserver)
-        .sqlite_store(profile.store_dir(), Some(passphrase))
+        .sqlite_store_with_cache_path(
+            profile.store_dir(),
+            profile.cache_store_dir(),
+            Some(passphrase),
+        )
         .handle_refresh_tokens()
         .with_encryption_settings(EncryptionSettings {
             auto_enable_cross_signing: true,
@@ -374,4 +480,26 @@ fn client_metadata(redirect_uri: Url) -> Result<Raw<ClientMetadata>> {
 fn random_passphrase() -> String {
     let bytes: [u8; 32] = rand::random();
     bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn app_redirect_scheme_is_the_client_uri_host_reversed() {
+        let redirect = Url::parse(APP_OAUTH_REDIRECT_URI).unwrap();
+        let host = Url::parse(CLIENT_URI)
+            .unwrap()
+            .host_str()
+            .unwrap()
+            .to_owned();
+        let reversed: Vec<_> = redirect.scheme().split('.').rev().collect();
+        assert_eq!(reversed.join("."), host);
+        assert!(
+            redirect.host().is_none(),
+            "private-use scheme URIs have no authority"
+        );
+        assert!(client_metadata(redirect).is_ok());
+    }
 }

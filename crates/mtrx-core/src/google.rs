@@ -132,6 +132,7 @@ impl Google {
         let secret = Secret::new(
             secrets,
             format!("google:{}", data_root.display()),
+            "google".into(),
             data_root.join(SECRETS_FILE),
         );
         Self {

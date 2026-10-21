@@ -53,11 +53,16 @@ pub enum Error {
     Crypto(#[from] matrix_sdk::encryption::CryptoStoreError),
     #[error(transparent)]
     ClientBuild(#[from] matrix_sdk::ClientBuildError),
+    #[cfg(not(any(target_os = "ios", target_os = "android")))]
     #[error("secret storage: {0}")]
     Keyring(#[from] keyring::Error),
     /// The OS credential store cannot be opened (Linux: no Secret Service).
+    #[cfg(not(any(target_os = "ios", target_os = "android")))]
     #[error("{advice} ({0})", advice = crate::secrets::NO_SECRET_STORE)]
     NoSecretStore(String),
+    /// The app's secret store failed ([`crate::SecretStore::Custom`]).
+    #[error("secret storage: {0}")]
+    SecretStorage(String),
     #[error(transparent)]
     Io(#[from] std::io::Error),
     #[error(transparent)]

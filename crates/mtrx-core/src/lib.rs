@@ -52,9 +52,9 @@ pub use room_colours::RoomListColours;
 pub use room_settings::{Access, NotifyMode, RoomSettings};
 pub use rooms::{NewRoom, RoomKind, RoomList, RoomListState, RoomSummary, UserSummary};
 pub use scheduled::{ScheduledFile, ScheduledMessage};
-pub use secrets::SecretStore;
+pub use secrets::{SecretBackend, SecretStore};
 pub use send_time::{describe_send_time, parse_send_time};
-pub use session::Session;
+pub use session::{APP_OAUTH_REDIRECT_URI, OAuthLogin, Session};
 pub use timeline::{
     Attachment, Event, EventContent, EventKey, Media, MediaKind, MembershipChange, Message,
     MessageKind, PendingSend, Reaction, Reader, Reply, RoomTimeline, SendState, TimelineEntry,

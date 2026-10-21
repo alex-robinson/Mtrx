@@ -1,0 +1,92 @@
+# Android app (apps/android): the Rust library and its Kotlin bindings, then
+# a debug APK (artifact Mtrx-android-debug, signed with the runner's debug
+# key), the app's unit tests, and the APK started on an emulator (artifact
+# android-smoke). Gradle is set up by version; no wrapper jar is committed.
+name: Android
+
+on:
+  push:
+    branches: [main, core-cli, mobile, mobile-android]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  app:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,x86_64-linux-android
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: android
+      - name: cargo-ndk
+        run: cargo install cargo-ndk --version 4.1.2 --locked
+      - name: Build the libraries and Kotlin bindings
+        # The runner's newest NDK.
+        run: |
+          export ANDROID_NDK_HOME="$ANDROID_NDK_LATEST_HOME"
+          scripts/build-android-ffi.sh
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.14.3'
+      - name: Debug APK
+        working-directory: apps/android
+        run: gradle --no-daemon --stacktrace :app:assembleDebug
+      - name: Rename the APK
+        run: |
+          mkdir -p target/mobile
+          cp apps/android/app/build/outputs/apk/debug/app-debug.apk target/mobile/Mtrx-android-debug.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Mtrx-android-debug
+          path: target/mobile/Mtrx-android-debug.apk
+          if-no-files-found: error
+      - name: Unit tests
+        working-directory: apps/android
+        run: gradle --no-daemon --stacktrace :app:testDebugUnitTest
+      - name: Enable KVM for the emulator
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Start the app on an emulator
+        # x86_64, as the library is built for. The sign-in screen shows, the
+        # process lives, no crash in the log. Screenshot as an artifact.
+        id: smoke
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          target: default
+          arch: x86_64
+          disable-animations: true
+          script: scripts/android-smoke.sh target/mobile/Mtrx-android-debug.apk
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() && steps.smoke.outcome != 'skipped' }}
+        with:
+          name: android-smoke
+          path: target/smoke
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: android-reports
+          path: |
+            apps/android/app/build/reports
+            apps/android/mtrx-ffi/build/reports
+          if-no-files-found: ignore

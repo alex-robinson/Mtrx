@@ -15,6 +15,7 @@ use matrix_sdk::{
     ruma::{MxcUri, OwnedMxcUri, UInt, events::room::MediaSource, media::Method},
 };
 use mime_guess::mime::{self, Mime};
+use serde::{Deserialize, Serialize};
 
 use crate::{Error, Result, Session};
 
@@ -22,8 +23,9 @@ use crate::{Error, Result, Session};
 const THUMBNAIL_SIZE: (u32, u32) = (800, 600);
 
 /// Where a message's file and its thumbnail are. Two refer to the same media
-/// if their files have the same URI.
-#[derive(Clone, Debug)]
+/// if their files have the same URI. Serializable, for frontends that hand it
+/// to another language (the mobile apps).
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct MediaRef {
     file: MediaSource,
     thumbnail: Option<MediaSource>,
@@ -43,7 +45,8 @@ impl MediaRef {
         Self::new(&MediaSource::Plain(uri.into()), None)
     }
 
-    fn uri(&self) -> &MxcUri {
+    /// The file's URI: the same for the same media.
+    pub fn uri(&self) -> &MxcUri {
         match &self.file {
             MediaSource::Plain(uri) => uri,
             MediaSource::Encrypted(file) => &file.url,
@@ -243,6 +246,32 @@ mod tests {
 
         let transparent = attachment_config(&mime::IMAGE_PNG, &png(900, 900, true));
         assert_eq!(transparent.thumbnail.unwrap().content_type, mime::IMAGE_PNG);
+    }
+
+    #[test]
+    fn media_refs_round_trip_through_json() {
+        let file: MediaSource = serde_json::from_value(serde_json::json!({
+            "file": {
+                "url": "mxc://example.org/abc",
+                "key": {
+                    "kty": "oct",
+                    "key_ops": ["encrypt", "decrypt"],
+                    "alg": "A256CTR",
+                    "k": "qcHVMSgYg-71CauWBezXI5qkaRb0LuIy-Wx5kIaHMIA",
+                    "ext": true
+                },
+                "iv": "X85+XgHN+HEAAAAAAAAAAA",
+                "hashes": {"sha256": "5qG4fFnbbVdlAB1Q72JDKwCagV6Dbkx9uds4rSak37c"},
+                "v": "v2"
+            }
+        }))
+        .unwrap();
+        let thumbnail = MediaSource::Plain("mxc://example.org/thumb".into());
+        let media = MediaRef::new(&file, Some(&thumbnail));
+        let json = serde_json::to_string(&media).unwrap();
+        let back: MediaRef = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.uri().as_str(), "mxc://example.org/abc");
+        assert_eq!(serde_json::to_string(&back).unwrap(), json);
     }
 
     #[test]

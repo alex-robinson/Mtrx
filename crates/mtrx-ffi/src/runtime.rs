@@ -1,0 +1,163 @@
+//! The tokio runtime the library runs on. The SDK needs tokio (timers,
+//! sockets, spawned tasks), while Swift and Kotlin poll async calls on their
+//! own executors; so each call runs as a task here and is awaited there.
+
+use std::{future::Future, sync::LazyLock};
+
+use tokio::{runtime::Runtime, task::JoinHandle};
+
+static RUNTIME: LazyLock<Runtime> = LazyLock::new(|| {
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .thread_name("mtrx")
+        .build()
+        .expect("could not start the tokio runtime")
+});
+
+/// Run `future` on the runtime and wait for it. If the caller stops
+/// waiting (a cancelled Swift `Task` or Kotlin coroutine), it is cancelled.
+pub(crate) async fn run<T: Send + 'static>(future: impl Future<Output = T> + Send + 'static) -> T {
+    let mut task = AbortOnDrop(RUNTIME.spawn(future));
+    match (&mut task.0).await {
+        Ok(value) => value,
+        // Never cancelled while awaited: only dropping `task` aborts it.
+        Err(error) => std::panic::resume_unwind(error.into_panic()),
+    }
+}
+
+struct AbortOnDrop<T>(JoinHandle<T>);
+
+impl<T> Drop for AbortOnDrop<T> {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+/// Keeps `T` alive and drops it inside the runtime: Swift and Kotlin
+/// release objects on their own threads, and the SDK's types may need the
+/// runtime when they are dropped.
+pub(crate) struct InRuntime<T>(Option<T>);
+
+impl<T> InRuntime<T> {
+    pub(crate) fn new(value: T) -> Self {
+        Self(Some(value))
+    }
+
+    pub(crate) fn into_inner(mut self) -> T {
+        self.0.take().expect("present until dropped")
+    }
+}
+
+impl<T> std::ops::Deref for InRuntime<T> {
+    type Target = T;
+
+    fn deref(&self) -> &T {
+        self.0.as_ref().expect("present until dropped")
+    }
+}
+
+impl<T> Drop for InRuntime<T> {
+    fn drop(&mut self) {
+        let _runtime = RUNTIME.enter();
+        drop(self.0.take());
+    }
+}
+
+/// A subscription (to a listener), running until cancelled. Dropping the
+/// handle cancels it too: Swift releases it with its last reference; in
+/// Kotlin call `cancel()` or `close()`, as the garbage collector may take a
+/// while.
+#[derive(uniffi::Object)]
+pub struct TaskHandle(JoinHandle<()>);
+
+impl TaskHandle {
+    pub(crate) fn spawn(task: impl Future<Output = ()> + Send + 'static) -> std::sync::Arc<Self> {
+        std::sync::Arc::new(Self(RUNTIME.spawn(task)))
+    }
+}
+
+#[uniffi::export]
+impl TaskHandle {
+    /// Stop the subscription; its listener is not called afterwards.
+    pub fn cancel(&self) {
+        self.0.abort();
+    }
+
+    /// Whether the subscription ended (cancelled, or its source closed).
+    pub fn is_finished(&self) -> bool {
+        self.0.is_finished()
+    }
+}
+
+impl Drop for TaskHandle {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        },
+        time::Duration,
+    };
+
+    use super::*;
+
+    /// Awaited without a tokio runtime, as Swift and Kotlin do.
+    fn block_on<T>(future: impl Future<Output = T>) -> T {
+        futures_executor::block_on(future)
+    }
+
+    #[test]
+    fn calls_run_on_the_runtime() {
+        let value = block_on(run(async {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+            tokio::runtime::Handle::current();
+            42
+        }));
+        assert_eq!(value, 42);
+    }
+
+    #[test]
+    fn dropping_a_call_cancels_it() {
+        let finished = Arc::new(AtomicBool::new(false));
+        let call = run({
+            let finished = finished.clone();
+            async move {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                finished.store(true, Ordering::SeqCst);
+            }
+        });
+        // Polled once, so the task is spawned, then dropped.
+        block_on(async {
+            let mut call = std::pin::pin!(call);
+            assert!(futures_util::poll!(&mut call).is_pending());
+        });
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(!finished.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn task_handles_cancel_when_dropped() {
+        let handle = TaskHandle::spawn(std::future::pending());
+        assert!(!handle.is_finished());
+        handle.cancel();
+        for _ in 0..100 {
+            if handle.is_finished() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(handle.is_finished());
+    }
+
+    #[test]
+    #[should_panic(expected = "boom")]
+    fn panics_reach_the_caller() {
+        block_on(run(async { panic!("boom") }))
+    }
+}

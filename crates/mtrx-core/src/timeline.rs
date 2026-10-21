@@ -95,6 +95,14 @@ pub struct Reader {
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct EventKey(TimelineEventItemId);
 
+impl EventKey {
+    /// The key of a local echo, for tests of frontends.
+    #[cfg(feature = "test-support")]
+    pub fn local(transaction_id: &str) -> Self {
+        Self(TimelineEventItemId::TransactionId(transaction_id.into()))
+    }
+}
+
 impl Event {
     /// A state change (membership, name, room settings), shown folded into
     /// a summary line.
