@@ -1,8 +1,10 @@
 # iOS and Android: the shared Rust layer
 
 Status: the Rust layer (`crates/mtrx-ffi`) and the first iOS and Android
-apps (sections 3 and 4) are written; none of the mobile builds has run in
-CI yet. This is the plan, and the contract the apps are built on.
+apps (sections 3 and 4) are written. The libraries build for both in CI;
+the iOS app builds, passes its unit tests and starts on the simulator in CI
+(not yet tried against a server). The Android app: see section 4. This is
+the plan, and the contract the apps are built on.
 
 ## Decisions
 
@@ -172,12 +174,16 @@ entitlement is not present"), so no account can be opened.
 
 CI (`.github/workflows/ios.yml`): builds the package with the script, the
 app (Release) for the simulator, runs the unit tests on the first iPhone
-simulator, and uploads `Mtrx-ios-simulator` (the zipped `.app`; install
-with `xcrun simctl install booted Mtrx.app`). Not run yet.
+simulator, starts the app there (it must still run after 15 s, without a
+crash report; the screenshot is the artifact `ios-smoke`), and uploads
+`Mtrx-ios-simulator` (the zipped `.app`; install with `xcrun simctl install
+booted Mtrx.app`). Passes; the screenshot shows the sign-in screen.
 
-To do: opening images full size and files (`mediaFile`); answering
-invites; reconnecting when the network returns (`reconnect`); a build for
-devices (signing).
+To do: signing in, the room list and the timeline tried against a server
+(only the models' unit tests and the sign-in screen are checked so far; the
+CI start does not check which screen shows); opening images full size and
+files (`mediaFile`); answering invites; reconnecting when the network
+returns (`reconnect`); a build for devices (signing).
 
 ## 4. Android app
 
@@ -264,7 +270,7 @@ Remaining:
 - [x] `.github/workflows/mobile-ffi.yml`: iOS (xcframework, the package
       built for the simulator, a simulator executable linked against it) and
       Android (cargo-ndk with the runner's NDK; checks the JNI entry point).
-      Not run yet.
+      Passes.
 - [x] Tests: conversions and the runtime (unit); sign-in, room list,
       timeline, image, send and sign-out through the bindings against
       Synapse (`cargo test -p mtrx-ffi --test integration -- --ignored`,
