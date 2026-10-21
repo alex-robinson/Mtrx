@@ -95,6 +95,35 @@ pub struct Reader {
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct EventKey(TimelineEventItemId);
 
+#[cfg(feature = "test-support")]
+impl Event {
+    /// A text message `id` from `sender`, sent, for tests.
+    pub fn test_message(id: &str, sender: OwnedUserId, body: &str) -> Self {
+        Self {
+            id: id.to_owned(),
+            key: EventKey(TimelineEventItemId::TransactionId(id.into())),
+            event_id: None,
+            sender,
+            sender_name: None,
+            sender_avatar: None,
+            timestamp: SystemTime::UNIX_EPOCH,
+            own: false,
+            editable: false,
+            content: EventContent::Message(Message {
+                kind: MessageKind::Text,
+                body: body.to_owned(),
+                document: Document::from_plain(body),
+                edited: false,
+                in_reply_to: None,
+                reactions: Vec::new(),
+                media: None,
+            }),
+            send_state: SendState::Sent,
+            read_by: Vec::new(),
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum SendState {
     Sent,

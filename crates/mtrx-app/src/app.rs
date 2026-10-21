@@ -92,6 +92,8 @@ pub enum Message {
     Composer(text_editor::Action),
     Send,
     Sent(OwnedRoomId, Result<(), String>),
+    /// Our message in a timeline row started sending a while ago.
+    SendingSlow(OwnedRoomId, String),
     Later(send_later::Message),
     Act(actions::Message),
     /// Selecting text in the timeline.
@@ -735,7 +737,14 @@ impl App {
                 let grew = entries.len() != room.entries.len();
                 room.entries = entries;
                 let read = if grew { mark_read(room) } else { Task::none() };
+                let clocks = room.sending_changed().into_iter().map(|row| {
+                    let id = id.clone();
+                    Task::perform(tokio::time::sleep(room::SENDING_CLOCK), move |()| {
+                        Message::SendingSlow(id.clone(), row.clone())
+                    })
+                });
                 Task::batch([
+                    Task::batch(clocks),
                     read,
                     fill(room),
                     self.render_math(),
@@ -892,6 +901,14 @@ impl App {
                     },
                     move |result| Message::Sent(id.clone(), result.map_err(|e| e.to_string())),
                 )
+            }
+            Message::SendingSlow(id, row) => {
+                if let Screen::Main(main) = &mut self.screen
+                    && let Some(room) = main.room.as_mut().filter(|r| r.id == id)
+                {
+                    room.sending_slow(&row);
+                }
+                Task::none()
             }
             Message::Sent(id, result) => {
                 if let Screen::Main(main) = &mut self.screen

@@ -550,27 +550,40 @@ pub fn read_markers<'a>(
     Some(hint(markers, read_by(&names), Position::Top))
 }
 
+/// How a message's send status shows, besides its state.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Status {
+    /// Our newest message: the only one with the tick.
+    pub newest: bool,
+    /// Being sent long enough to show the clock.
+    pub slow: bool,
+    /// Its menu to retry or delete is open.
+    pub open: bool,
+}
+
 /// Whether our message is sent, while nobody read it (once someone did, it
-/// was): a clock while it is being sent, a tick once it is (only on our
-/// `newest` message: the older ones were sent too), a red cross if it could
-/// not be. The same size as a read marker. A click on the cross offers to
-/// retry or delete (`open`, while offered).
-pub fn send_status<'a>(
-    event: &Event,
-    newest: bool,
-    open: bool,
-) -> Option<Element<'a, app::Message>> {
+/// was): a clock while it is being sent (only once that takes a while) or
+/// waits for the connection, a tick once it is sent (only on our newest
+/// message: the older ones were sent too), a red cross if it could not be.
+/// The same size as a read marker. A click on the cross offers to retry or
+/// delete.
+pub fn send_status<'a>(event: &Event, status: Status) -> Option<Element<'a, app::Message>> {
     if !event.own || !event.read_by.is_empty() {
         return None;
     }
     let grey = |theme: &Theme| theme.extended_palette().secondary.base.color;
     let (icon, label) = match &event.send_state {
-        SendState::Sending => (icons::clock(READER_AVATAR, grey), "Sending…".to_owned()),
+        SendState::Sending if status.slow => {
+            (icons::clock(READER_AVATAR, grey), "Sending…".to_owned())
+        }
+        SendState::Sending => return None,
         SendState::Waiting => (
             icons::clock(READER_AVATAR, grey),
             "Waiting for connection…".to_owned(),
         ),
-        SendState::Sent if newest => (icons::check_circle(READER_AVATAR, grey), "Sent".to_owned()),
+        SendState::Sent if status.newest => {
+            (icons::check_circle(READER_AVATAR, grey), "Sent".to_owned())
+        }
         SendState::Sent => return None,
         SendState::Failed(e) => {
             // While open, a click on it closes the menu as any outside click.
@@ -579,8 +592,8 @@ pub fn send_status<'a>(
             }))
             .padding(0)
             .style(style::text_button)
-            .on_press_maybe((!open).then(|| act(Message::OpenUnsent(event.id.clone()))));
-            if open {
+            .on_press_maybe((!status.open).then(|| act(Message::OpenUnsent(event.id.clone()))));
+            if status.open {
                 return Some(
                     popover(cross, Some(unsent_menu(event)), Side::Above, Edge::Right)
                         .on_dismiss(act(Message::CloseUnsent))

@@ -20,8 +20,8 @@ use iced::{
 };
 use mtrx_core::{
     CallService, Event, EventContent, Media, Member, MembershipChange, MessageKind, MxcUri,
-    OwnedRoomId, OwnedUserId, RoomKind, RoomSummary, RoomTimeline, ScheduledMessage, TimelineEntry,
-    UserId,
+    OwnedRoomId, OwnedUserId, RoomKind, RoomSummary, RoomTimeline, ScheduledMessage, SendState,
+    TimelineEntry, UserId,
 };
 
 use crate::{
@@ -70,6 +70,9 @@ pub const TIMELINE: &str = "timeline";
 
 /// Consecutive messages of one sender within this gap share a header.
 const GROUP_GAP: Duration = Duration::from_secs(5 * 60);
+/// How long our message is being sent before its clock shows, so a fast
+/// send never flashes one.
+pub const SENDING_CLOCK: Duration = Duration::from_millis(300);
 
 /// Left edge of message text within the timeline column.
 const TEXT_INDENT: f32 = MESSAGE_PADDING + SENDER_AVATAR + GUTTER_SPACING;
@@ -95,6 +98,8 @@ pub struct Room {
     /// The timeline row whose message was not sent and is offered to retry
     /// or delete.
     pub unsent: Option<String>,
+    /// Our messages being sent.
+    sending: Sending,
     /// Text selected in the timeline.
     pub selection: Option<Selection>,
     /// All emoji in the reaction picker, while shown.
@@ -139,6 +144,8 @@ pub enum Older {
 
 impl Room {
     pub fn new(id: OwnedRoomId, timeline: Arc<RoomTimeline>) -> Self {
+        // Messages being sent already when the room opens show their clock.
+        let entries = timeline.current();
         Self {
             calls: RoomCalls::new(id.clone()),
             compose: Compose::New,
@@ -147,6 +154,7 @@ impl Room {
             menu: None,
             readers: None,
             unsent: None,
+            sending: Sending::already(&entries),
             selection: None,
             emoji: None,
             composer_emoji: None,
@@ -159,7 +167,7 @@ impl Room {
             can_mention_room: false,
             completion: None,
             id,
-            entries: timeline.current(),
+            entries,
             timeline,
             composer: text_editor::Content::new(),
             attachments: Vec::new(),
@@ -276,6 +284,7 @@ impl Room {
     /// Show a freshly loaded timeline, keeping what is being written.
     pub fn reload(&mut self, timeline: Arc<RoomTimeline>) {
         self.entries = timeline.current();
+        self.sending = Sending::already(&self.entries);
         self.timeline = timeline;
         self.shown = WINDOW;
         self.paginating = false;
@@ -285,6 +294,19 @@ impl Room {
         self.unsent = None;
         self.confirm_delete = None;
         self.error = None;
+    }
+
+    /// Follow which of our messages are being sent, once the entries
+    /// changed. Returns the rows of those that started: their clock shows
+    /// once [`Room::sending_slow`] after [`SENDING_CLOCK`].
+    pub fn sending_changed(&mut self) -> Vec<String> {
+        self.sending.changed(&self.entries)
+    }
+
+    /// Our message in row `id` started sending [`SENDING_CLOCK`] ago: its
+    /// clock shows if it still is.
+    pub fn sending_slow(&mut self, id: &str) {
+        self.sending.slow(id);
     }
 
     /// Our newest message (any row but a state change): sent, it implies
@@ -484,6 +506,7 @@ impl Room {
             readers: self.readers.as_deref(),
             unsent: self.unsent.as_deref(),
             newest_own: self.newest_own(),
+            sending: &self.sending,
             selected,
             dragging: self.selection.as_ref().is_some_and(|s| s.dragging),
             emoji: self.emoji.as_ref(),
@@ -849,6 +872,8 @@ struct Context<'a, 'b> {
     unsent: Option<&'b str>,
     /// Our newest message, the only one to say it was sent.
     newest_own: Option<&'b str>,
+    /// Our messages being sent.
+    sending: &'b Sending,
     /// The selection, with each message's index in the timeline.
     selected: Option<(Bounds, &'b HashMap<&'b str, usize>)>,
     dragging: bool,
@@ -1073,8 +1098,11 @@ fn event_view<'a>(
     let markers = actions::read_markers(event, context.avatars, listed).or_else(|| {
         actions::send_status(
             event,
-            context.newest_own == Some(event.id.as_str()),
-            context.unsent == Some(event.id.as_str()),
+            actions::Status {
+                newest: context.newest_own == Some(event.id.as_str()),
+                slow: context.sending.shows_clock(&event.id),
+                open: context.unsent == Some(event.id.as_str()),
+            },
         )
     });
     let markers = markers.map(|markers| {
@@ -1142,6 +1170,58 @@ fn event_view<'a>(
         column![space().height(6), row].into()
     } else {
         row.into()
+    }
+}
+
+/// Our messages being sent, by row, and whether they show their clock yet:
+/// only once sending took [`SENDING_CLOCK`], so a fast send shows none.
+#[derive(Debug, Default)]
+struct Sending(HashMap<String, bool>);
+
+impl Sending {
+    /// Those being sent in `entries` when a room opens: they show their
+    /// clock at once.
+    fn already(entries: &[TimelineEntry]) -> Self {
+        Self(
+            Self::rows(entries)
+                .map(|id| (id.to_owned(), true))
+                .collect(),
+        )
+    }
+
+    /// Follow the `entries`. Returns the rows that started sending.
+    fn changed(&mut self, entries: &[TimelineEntry]) -> Vec<String> {
+        let now: Vec<&str> = Self::rows(entries).collect();
+        self.0.retain(|id, _| now.contains(&id.as_str()));
+        let started: Vec<String> = now
+            .into_iter()
+            .filter(|id| !self.0.contains_key(*id))
+            .map(ToOwned::to_owned)
+            .collect();
+        for id in &started {
+            self.0.insert(id.clone(), false);
+        }
+        started
+    }
+
+    /// Row `id` started sending [`SENDING_CLOCK`] ago.
+    fn slow(&mut self, id: &str) {
+        if let Some(shown) = self.0.get_mut(id) {
+            *shown = true;
+        }
+    }
+
+    fn shows_clock(&self, id: &str) -> bool {
+        self.0.get(id) == Some(&true)
+    }
+
+    fn rows(entries: &[TimelineEntry]) -> impl Iterator<Item = &str> {
+        entries.iter().filter_map(|entry| match entry {
+            TimelineEntry::Event(event) if event.own && event.send_state == SendState::Sending => {
+                Some(event.id.as_str())
+            }
+            _ => None,
+        })
     }
 }
 
@@ -1388,5 +1468,39 @@ mod tests {
         // Partly shown rows count.
         assert_eq!(on_screen(view, 450.0, &rows), Some((4, 7)));
         assert_eq!(on_screen(view, 5000.0, &rows), None);
+    }
+
+    fn own_message(id: &str, send_state: SendState) -> TimelineEntry {
+        let sender = "@alice:example.org".try_into().unwrap();
+        TimelineEntry::Event(Event {
+            own: true,
+            send_state,
+            ..Event::test_message(id, sender, "hi")
+        })
+    }
+
+    #[test]
+    fn the_sending_clock_shows_after_a_while() {
+        let mut sending = Sending::default();
+        // A send starts: no clock until it took a while.
+        let entries = [own_message("a", SendState::Sending)];
+        assert_eq!(sending.changed(&entries), ["a"]);
+        assert!(!sending.shows_clock("a"));
+        assert!(sending.changed(&entries).is_empty(), "started once");
+        sending.slow("a");
+        assert!(sending.shows_clock("a"));
+        // Sent: gone; a late timer changes nothing.
+        assert!(
+            sending
+                .changed(&[own_message("a", SendState::Sent)])
+                .is_empty()
+        );
+        sending.slow("a");
+        assert!(!sending.shows_clock("a"));
+        // Retried after failing: waits again.
+        assert_eq!(sending.changed(&entries), ["a"]);
+        assert!(!sending.shows_clock("a"));
+        // Being sent when the room opens: at once.
+        assert!(Sending::already(&entries).shows_clock("a"));
     }
 }
