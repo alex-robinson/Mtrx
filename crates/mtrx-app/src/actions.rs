@@ -5,7 +5,8 @@
 use iced::{
     Alignment, Element, Length, Padding, Theme,
     keyboard::{Key, key::Named},
-    widget::{button, column, container, row, scrollable, space, text, text_editor},
+    mouse,
+    widget::{button, column, container, mouse_area, row, scrollable, space, text, text_editor},
 };
 use mtrx_core::{Event, EventKey, Media, MxcUri, OwnedEventId, Reaction, Reader, Reply, SendState};
 use mtrx_format::Document;
@@ -24,6 +25,8 @@ use crate::{
 
 /// Read markers shown per message before "+N".
 const MAX_READERS: usize = 3;
+/// Lines of a reply's quote of its original.
+const QUOTE_LINES: usize = 3;
 const READER_AVATAR: f32 = 16.0;
 /// People named in the hint of read markers or a reaction before "and N
 /// others".
@@ -516,7 +519,7 @@ fn pill<'a>(
     hint_with(pill, label, Position::Top)
 }
 
-/// The start of the message a reply answers.
+/// The message a reply answers, in a few lines; a click goes to it.
 pub fn quote<'a>(reply: &'a Reply) -> Element<'a, app::Message> {
     let sender = reply
         .sender_name
@@ -528,14 +531,15 @@ pub fn quote<'a>(reply: &'a Reply) -> Element<'a, app::Message> {
     } else {
         "Loading…"
     });
-    row![
+    let quote = row![
         container(space())
             .width(3)
-            .height(18)
+            .height(Length::Fill)
             .style(style::quote_accent),
         row![
             text(sender).size(12).font(fonts::SEMIBOLD),
             ellipsis(preview)
+                .lines(QUOTE_LINES)
                 .size(12)
                 .style(text::secondary)
                 .width(Length::Fill),
@@ -543,8 +547,17 @@ pub fn quote<'a>(reply: &'a Reply) -> Element<'a, app::Message> {
         .spacing(6),
     ]
     .spacing(8)
-    .align_y(Alignment::Center)
-    .into()
+    .height(Length::Shrink);
+    if reply.failed {
+        return quote.into();
+    }
+    hint(
+        mouse_area(quote)
+            .interaction(mouse::Interaction::Pointer)
+            .on_press(app::Message::GoTo(reply.event_id.clone())),
+        "Go to the original message",
+        Position::Top,
+    )
 }
 
 /// Asks before deleting.
