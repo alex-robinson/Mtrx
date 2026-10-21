@@ -42,6 +42,24 @@ async fn user(prefix: &str, dir: &TempDir) -> (String, Session) {
     (name, session)
 }
 
+/// A member of a room, for mentions.
+fn person(id: &str, name: &str, role: mtrx_core::Role) -> Member {
+    Member {
+        id: OwnedUserId::try_from(id).unwrap(),
+        name: Some(name.into()),
+        avatar: None,
+        role,
+        invited: false,
+    }
+}
+
+/// `text` in an editor, the cursor at its end.
+fn typed(text: &str) -> text_editor::Content {
+    let mut content = text_editor::Content::with_text(text);
+    content.perform(text_editor::Action::Move(text_editor::Motion::DocumentEnd));
+    content
+}
+
 /// Show the room's start, as once back-pagination reached it.
 fn with_start(entries: &mut Vec<TimelineEntry>) {
     if !matches!(entries.first(), Some(TimelineEntry::Start)) {
@@ -557,17 +575,21 @@ fn composer_keeps_focus(app: &mut App) {
     let mut cache = ui.into_cache();
 
     type Change = (&'static str, fn(&mut App));
-    let changes: [Change; 14] = [
+    let changes: [Change; 16] = [
         ("someone types", |app| room(app).typing = vec!["bob".into()]),
         ("they stop", |app| room(app).typing.clear()),
         ("an error below", |app| {
             room(app).error = Some("Not sent".into())
         }),
         ("it goes", |app| room(app).error = None),
-        ("members open", |app| {
-            room(app).members = Some(Default::default())
+        ("members open", |app| room(app).show_members = true),
+        ("members close", |app| room(app).show_members = false),
+        ("mentions offered", |app| {
+            let member = person("@ana:example.org", "Ana", mtrx_core::Role::Member);
+            room(app).members_loaded(Ok((vec![member], false)));
+            room(app).set_composer(typed("Thanks @an"));
         }),
-        ("members close", |app| room(app).members = None),
+        ("one picked", |app| room(app).complete("@Ana")),
         ("offline", |app| main(app).connection = Connection::Offline),
         ("online", |app| main(app).connection = Connection::Online),
         ("a banner", |app| {
@@ -848,6 +870,39 @@ async fn send_later_bar() {
     {
         open.editing = None;
     }
+    // Completing a mention: names starting with "an" first, then those
+    // with it inside; the two people named Ana complete as their IDs.
+    if let Screen::Main(main) = &mut app.screen
+        && let Some(open) = main.room.as_mut()
+    {
+        use mtrx_core::Role::{Admin, Member};
+        open.members_loaded(Ok((
+            vec![
+                person("@anna:example.org", "Anna Lindqvist", Admin),
+                person("@jan:example.org", "Jan Hansen", Member),
+                person("@andreas:example.org", "Andreas Born", Member),
+                person("@ana:example.org", "Ana", Member),
+                person("@ana:other.org", "Ana", Member),
+            ],
+            true,
+        )));
+        open.set_composer(typed(
+            "Thanks @Anna Lindqvist! Who can take the Monday slot? @an",
+        ));
+    }
+    snapshot(&app, "composer-mention");
+    let _ = app.update(Message::Mention(mention::Message::Down));
+    let _ = app.update(Message::Mention(mention::Message::Choose));
+    if let Screen::Main(main) = &mut app.screen
+        && let Some(open) = main.room.as_mut()
+    {
+        assert_eq!(
+            open.composer.text(),
+            "Thanks @Anna Lindqvist! Who can take the Monday slot? @Andreas Born "
+        );
+        assert_eq!(open.completion, None);
+        open.set_composer(typed("Who can take the Monday slot? ❤"));
+    }
     let mut panel = settings::Panel::default();
     panel.room = Some(settings::Access::new(
         room.clone(),
@@ -1080,9 +1135,9 @@ async fn room_management_screens() {
     snapshot(
         &main_with(&|main| {
             main.filter = "ice".into();
-            main.room.as_mut().unwrap().members = Some(Members {
-                list: Some(Ok(members.clone())),
-            });
+            let room = main.room.as_mut().unwrap();
+            room.show_members = true;
+            room.members_loaded(Ok((members.clone(), true)));
         }),
         "members-search",
     );

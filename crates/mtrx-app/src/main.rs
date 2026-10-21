@@ -27,6 +27,7 @@ mod logo;
 mod math;
 mod media;
 mod members;
+mod mention;
 mod message;
 mod message_menu;
 mod pdf;

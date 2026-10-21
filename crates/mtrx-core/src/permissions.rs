@@ -134,6 +134,12 @@ impl Session {
         Ok(levels.user_can_send_state(&self.user_id(), StateEventType::RoomPowerLevels))
     }
 
+    /// Whether we may notify everyone in the room with `@room`.
+    pub async fn can_mention_room(&self, room_id: &RoomId) -> Result<bool> {
+        let levels = power_levels(&self.room(room_id)?).await?;
+        Ok(levels.user_can_trigger_room_notification(&self.user_id()))
+    }
+
     /// Let every member invite and edit the room (see the module docs).
     pub async fn let_everyone_edit(&self, room_id: &RoomId) -> Result<()> {
         let room = self.room(room_id)?;

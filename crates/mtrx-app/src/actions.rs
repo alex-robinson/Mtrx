@@ -16,7 +16,7 @@ use crate::{
     ellipsis::ellipsis,
     emoji, fonts,
     hint::{Position, hint},
-    icons,
+    icons, mention,
     message_menu::MenuAt,
     popover::{Edge, Side, popover},
     style,
@@ -210,7 +210,7 @@ impl InlineEdit {
     pub fn view<'a>(&'a self, frequent: &[String]) -> Element<'a, app::Message> {
         let editor = text_editor(&self.content)
             .id(EDITOR)
-            .highlight_with::<emoji::Highlighter>((), emoji::format)
+            .highlight_with::<mention::Highlighter>(Default::default(), mention::format)
             .style(style::editor)
             .on_action(|action| act(Message::EditAction(action)))
             .key_binding(|press| match press.key {

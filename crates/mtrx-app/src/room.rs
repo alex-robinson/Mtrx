@@ -19,8 +19,9 @@ use iced::{
     },
 };
 use mtrx_core::{
-    CallService, Event, EventContent, Media, MembershipChange, MessageKind, MxcUri, OwnedRoomId,
-    OwnedUserId, RoomKind, RoomSummary, RoomTimeline, ScheduledMessage, SendState, TimelineEntry,
+    CallService, Event, EventContent, Media, Member, MembershipChange, MessageKind, MxcUri,
+    OwnedRoomId, OwnedUserId, RoomKind, RoomSummary, RoomTimeline, ScheduledMessage, SendState,
+    TimelineEntry, UserId,
 };
 
 use crate::{
@@ -36,7 +37,8 @@ use crate::{
     icons, info,
     math::{self, Math, Rendered},
     media::{self, Attached, Previews},
-    members::Members,
+    members,
+    mention::{self, Candidate, Completion},
     message,
     message_menu::{self, MenuAt},
     popover::{Edge, Side, popover},
@@ -98,8 +100,19 @@ pub struct Room {
     pub confirm_delete: Option<String>,
     /// Names of others typing.
     pub typing: Vec<String>,
-    /// The member list, while shown.
-    pub members: Option<Members>,
+    /// The member list is shown.
+    pub show_members: bool,
+    /// The members once loaded, or why loading failed: for the member list
+    /// and mentions.
+    pub member_list: Option<Result<Vec<Member>, String>>,
+    /// The members are being loaded.
+    pub loading_members: bool,
+    /// What `@` may mention, see [`mention::texts`].
+    pub mentions: Arc<[String]>,
+    /// We may mention everyone with `@room`.
+    pub can_mention_room: bool,
+    /// Completing a mention in the composer.
+    pub completion: Option<Completion>,
     /// How many of the newest entries are rendered.
     shown: usize,
     pub paginating: bool,
@@ -132,7 +145,12 @@ impl Room {
             composer_emoji: None,
             confirm_delete: None,
             typing: Vec::new(),
-            members: None,
+            show_members: false,
+            member_list: None,
+            loading_members: false,
+            mentions: Default::default(),
+            can_mention_room: false,
+            completion: None,
             id,
             entries: timeline.current(),
             timeline,
@@ -191,7 +209,7 @@ impl Room {
         }
         // Keep the changes: in the composer if it is free.
         if self.composer.text().trim().is_empty() {
-            self.composer = text_editor::Content::with_text(&edit.text());
+            self.set_composer(text_editor::Content::with_text(&edit.text()));
             self.editing = None;
             self.error = Some(
                 "The scheduled message was sent before your changes were saved; \
@@ -202,6 +220,50 @@ impl Room {
             self.error =
                 Some("The scheduled message was sent before your changes were saved.".into());
         }
+    }
+
+    /// Replace what the composer holds.
+    pub fn set_composer(&mut self, content: text_editor::Content) {
+        self.composer = content;
+        self.update_completion();
+    }
+
+    /// The composer's text or cursor changed: complete the mention there.
+    pub fn update_completion(&mut self) {
+        self.completion = Completion::of(&self.composer, self.completion.as_ref());
+    }
+
+    /// Who the mention being completed may be.
+    pub fn candidates(&self, own: &UserId) -> Vec<Candidate<'_>> {
+        match (&self.completion, &self.member_list) {
+            (Some(completion), Some(Ok(members))) => mention::candidates(
+                &completion.query.text,
+                members,
+                &self.mentions,
+                own,
+                self.can_mention_room,
+            ),
+            _ => Vec::new(),
+        }
+    }
+
+    /// The members were loaded (with whether we may mention the room), or
+    /// not.
+    pub fn members_loaded(&mut self, result: Result<(Vec<Member>, bool), String>) {
+        self.loading_members = false;
+        self.member_list = Some(result.map(|(members, can_mention_room)| {
+            self.mentions = mention::texts(&members);
+            self.can_mention_room = can_mention_room;
+            members
+        }));
+    }
+
+    /// Complete the mention being written with `mention`.
+    pub fn complete(&mut self, mention: &str) {
+        if let Some(completion) = self.completion.take() {
+            mention::insert(&mut self.composer, &completion.query, mention);
+        }
+        self.update_completion();
     }
 
     /// Show a freshly loaded timeline, keeping what is being written.
@@ -249,6 +311,7 @@ impl Room {
     pub fn avatars<'a>(
         &'a self,
         summary: Option<&'a RoomSummary>,
+        own: &UserId,
     ) -> impl Iterator<Item = (&'a MxcUri, f32)> {
         let room = summary.and_then(|s| Some((s.avatar.as_deref()?, HEADER_AVATAR)));
         let senders = self
@@ -262,8 +325,23 @@ impl Room {
                 let sender = event.sender_avatar.as_deref().map(|a| (a, SENDER_AVATAR));
                 sender.into_iter().chain(actions::reader_avatars(event))
             });
-        let members = self.members.iter().flat_map(crate::members::avatars);
-        room.into_iter().chain(senders).chain(members)
+        let listed = match &self.member_list {
+            Some(Ok(list)) if self.show_members => list.as_slice(),
+            _ => &[],
+        };
+        let members = members::avatars(listed);
+        let candidates = self
+            .candidates(own)
+            .into_iter()
+            .filter_map(|candidate| match candidate {
+                Candidate::Member { member, .. } => Some(member),
+                Candidate::Room => None,
+            });
+        let completed = members::avatars_of(candidates);
+        room.into_iter()
+            .chain(senders)
+            .chain(members)
+            .chain(completed)
     }
 
     /// Images of the rendered messages, for loading their previews.
@@ -443,30 +521,45 @@ impl Room {
         );
 
         let cancellable = self.compose.cancellable();
-        let composer =
-            text_editor(&self.composer)
-                .id(COMPOSER)
-                .highlight_with::<emoji::Highlighter>((), emoji::format)
-                .style(style::editor)
-                .placeholder("Message…  (Markdown, $…$ for math; Shift+Enter for a new line)")
-                .on_action(Message::Composer)
-                .key_binding(move |press| match press.key {
-                    Key::Named(Named::Enter) if !press.modifiers.shift() => {
-                        Some(text_editor::Binding::Custom(Message::Send))
+        let candidates = self.candidates(look.own_user);
+        let completing = !candidates.is_empty();
+        let composer = text_editor(&self.composer)
+            .id(COMPOSER)
+            .highlight_with::<mention::Highlighter>(self.mentions.clone(), mention::format)
+            .style(style::editor)
+            .placeholder("Message…  (Markdown, $…$ for math; Shift+Enter for a new line)")
+            .on_action(Message::Composer)
+            .key_binding(move |press| {
+                let custom = |message| Some(text_editor::Binding::Custom(message));
+                match press.key {
+                    Key::Named(Named::ArrowUp) if completing => {
+                        custom(Message::Mention(mention::Message::Up))
                     }
-                    Key::Named(Named::Escape) if cancellable => Some(text_editor::Binding::Custom(
-                        Message::Act(actions::Message::CancelCompose),
-                    )),
+                    Key::Named(Named::ArrowDown) if completing => {
+                        custom(Message::Mention(mention::Message::Down))
+                    }
+                    Key::Named(Named::Enter | Named::Tab) if completing => {
+                        custom(Message::Mention(mention::Message::Choose))
+                    }
+                    // The window's Esc closes the completion.
+                    Key::Named(Named::Escape) if completing => None,
+                    Key::Named(Named::Enter) if !press.modifiers.shift() => custom(Message::Send),
+                    Key::Named(Named::Escape) if cancellable => {
+                        custom(Message::Act(actions::Message::CancelCompose))
+                    }
                     _ => text_editor::Binding::from_key_press(press),
-                })
-                .padding(Padding::new(10.0).right(COMPOSER_INSET).top(
-                    if self.attachments.is_empty() {
+                }
+            })
+            .padding(
+                Padding::new(10.0)
+                    .right(COMPOSER_INSET)
+                    .top(if self.attachments.is_empty() {
                         10.0
                     } else {
                         media::CHIP_HEIGHT + 18.0
-                    },
-                ))
-                .max_height(200);
+                    }),
+            )
+            .max_height(200);
         let attach = hint(
             button(icons::paperclip(19.0, |theme| {
                 theme
@@ -510,6 +603,10 @@ impl Room {
         });
         let composer = popover(composer, panel, Side::Above, Edge::Right)
             .on_dismiss(Message::ComposerEmoji(emoji::Message::Close));
+        let selected = self.completion.as_ref().map_or(0, |c| c.selected);
+        let completion = completing.then(|| mention::view(&candidates, selected, look.avatars));
+        let composer = popover(composer, completion, Side::Above, Edge::Left)
+            .on_dismiss(Message::Mention(mention::Message::Close));
         let composer_empty = self.composer.text().trim().is_empty() && self.attachments.is_empty();
         let send = hint(
             button(icons::send(18.0, |theme| {
@@ -584,9 +681,15 @@ impl Room {
         let main = column![timeline, bottom].width(Length::Fill);
         // The member list comes after, so it does not move the composer.
         let mut body = row![main];
-        if let Some(members) = &self.members {
+        if self.show_members {
             let name = summary.map_or("", |s| s.name.as_str());
-            body = body.push(members.view(&self.id, name, look.own_user, look.avatars));
+            body = body.push(members::view(
+                self.member_list.as_ref(),
+                &self.id,
+                name,
+                look.own_user,
+                look.avatars,
+            ));
         }
         column![header, body].into()
     }
@@ -634,7 +737,7 @@ impl Room {
             Some(RoomKind::Direct) => "Who this is",
             _ => "Room settings and address",
         };
-        let members_tip = if self.members.is_some() {
+        let members_tip = if self.show_members {
             "Hide the member list"
         } else {
             "Show who is in the room"
@@ -646,7 +749,7 @@ impl Room {
                 hint(
                     button(text("Members").size(13))
                         .padding([5, 10])
-                        .style(style::list_item(self.members.is_some()))
+                        .style(style::list_item(self.show_members))
                         .on_press(Message::ToggleMembers),
                     members_tip,
                     Position::Bottom,

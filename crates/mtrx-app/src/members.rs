@@ -19,75 +19,72 @@ use crate::{
 const WIDTH: f32 = 250.0;
 const AVATAR: f32 = 24.0;
 
-/// The panel's state: the members once loaded, or why loading failed.
-#[derive(Default)]
-pub struct Members {
-    pub list: Option<Result<Vec<Member>, String>>,
-}
-
-impl Members {
-    pub fn view<'a>(
-        &'a self,
-        room: &OwnedRoomId,
-        room_name: &str,
-        own: &OwnedUserId,
-        avatars: &Avatars,
-    ) -> Element<'a, Message> {
-        let mut panel = column![
-            row![
-                text("Members")
-                    .size(14)
-                    .font(fonts::SEMIBOLD)
-                    .width(Length::Fill),
-                button(text("Invite…").size(12))
-                    .padding([2, 8])
-                    .style(style::text_button)
-                    .on_press(Message::OpenDialog(Kind::Invite {
-                        room: room.clone(),
-                        name: room_name.to_owned(),
-                    })),
-                button(text("×").size(14))
-                    .padding([0, 6])
-                    .style(style::text_button)
-                    .on_press(Message::ToggleMembers),
-            ]
-            .spacing(4)
-            .align_y(Alignment::Center)
+/// The panel: the members once loaded (`list`), or why loading failed.
+pub fn view<'a>(
+    list: Option<&'a Result<Vec<Member>, String>>,
+    room: &OwnedRoomId,
+    room_name: &str,
+    own: &OwnedUserId,
+    avatars: &Avatars,
+) -> Element<'a, Message> {
+    let mut panel = column![
+        row![
+            text("Members")
+                .size(14)
+                .font(fonts::SEMIBOLD)
+                .width(Length::Fill),
+            button(text("Invite…").size(12))
+                .padding([2, 8])
+                .style(style::text_button)
+                .on_press(Message::OpenDialog(Kind::Invite {
+                    room: room.clone(),
+                    name: room_name.to_owned(),
+                })),
+            button(text("×").size(14))
+                .padding([0, 6])
+                .style(style::text_button)
+                .on_press(Message::ToggleMembers),
         ]
-        .spacing(2)
-        .padding(8);
-        match &self.list {
-            None => panel = panel.push(text("Loading…").size(12).style(text::secondary)),
-            Some(Err(e)) => panel = panel.push(text(e).size(12).style(text::danger)),
-            Some(Ok(members)) => {
-                let (joined, invited): (Vec<_>, Vec<_>) = members.iter().partition(|m| !m.invited);
-                panel = panel.push(heading(format!("Joined · {}", joined.len())));
-                for member in joined {
+        .spacing(4)
+        .align_y(Alignment::Center)
+    ]
+    .spacing(2)
+    .padding(8);
+    match list {
+        None => panel = panel.push(text("Loading…").size(12).style(text::secondary)),
+        Some(Err(e)) => panel = panel.push(text(e).size(12).style(text::danger)),
+        Some(Ok(members)) => {
+            let (joined, invited): (Vec<_>, Vec<_>) = members.iter().partition(|m| !m.invited);
+            panel = panel.push(heading(format!("Joined · {}", joined.len())));
+            for member in joined {
+                panel = panel.push(entry(member, own, avatars));
+            }
+            if !invited.is_empty() {
+                panel = panel.push(heading(format!("Invited · {}", invited.len())));
+                for member in invited {
                     panel = panel.push(entry(member, own, avatars));
-                }
-                if !invited.is_empty() {
-                    panel = panel.push(heading(format!("Invited · {}", invited.len())));
-                    for member in invited {
-                        panel = panel.push(entry(member, own, avatars));
-                    }
                 }
             }
         }
-        container(scrollable(panel))
-            .width(WIDTH)
-            .height(Length::Fill)
-            .style(style::panel)
-            .into()
     }
+    container(scrollable(panel))
+        .width(WIDTH)
+        .height(Length::Fill)
+        .style(style::panel)
+        .into()
 }
 
 /// Pictures of the listed members, with their size.
-pub fn avatars(members: &Members) -> impl Iterator<Item = (&mtrx_core::MxcUri, f32)> {
+pub fn avatars(members: &[Member]) -> impl Iterator<Item = (&mtrx_core::MxcUri, f32)> {
+    avatars_of(members)
+}
+
+/// Pictures of `members` at the list's size, also for mentions.
+pub fn avatars_of<'a>(
+    members: impl IntoIterator<Item = &'a Member>,
+) -> impl Iterator<Item = (&'a mtrx_core::MxcUri, f32)> {
     members
-        .list
-        .iter()
-        .flatten()
-        .flatten()
+        .into_iter()
         .filter_map(|m| Some((m.avatar.as_deref()?, AVATAR)))
 }
 

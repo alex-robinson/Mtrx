@@ -38,8 +38,7 @@ use crate::{
     login::{self, Login},
     math::{self, Math, Rendered},
     media::{self, Previews, Viewer},
-    members::Members,
-    pdf_viewer,
+    mention, pdf_viewer,
     room::{self, Look, Older, Room},
     selection::{self, Selection},
     send_later,
@@ -125,7 +124,10 @@ pub enum Message {
     FocusSearch,
     Escape,
     ToggleMembers,
-    MembersLoaded(OwnedRoomId, Result<Vec<Member>, String>),
+    /// A room's members, and whether we may mention everyone (`@room`).
+    MembersLoaded(OwnedRoomId, Result<(Vec<Member>, bool), String>),
+    /// Completing a mention in the composer.
+    Mention(mention::Message),
     /// Start or open a direct chat with a member.
     ChatWith(OwnedUserId),
     /// Start the Notes to self and open them.
@@ -354,7 +356,7 @@ impl Main {
         let mut wanted = sidebar::avatars(&self.room_list_view(settings));
         wanted.extend(self.info.as_ref().and_then(|c| c.avatar(rooms)));
         if let Some(room) = &self.room {
-            wanted.extend(room.avatars(rooms.iter().find(|r| r.id == room.id)));
+            wanted.extend(room.avatars(rooms.iter().find(|r| r.id == room.id), &self.own_user));
         }
         wanted
             .into_iter()
@@ -786,21 +788,77 @@ impl App {
                 ])
             }
             Message::Composer(action) => {
-                if let Screen::Main(main) = &mut self.screen
-                    && let Some(room) = main.room.as_mut()
+                let Screen::Main(main) = &mut self.screen else {
+                    return Task::none();
+                };
+                let Some(room) = main.room.as_mut() else {
+                    return Task::none();
+                };
+                let edit = action.is_edit();
+                room.composer.perform(action);
+                room.update_completion();
+                // Mentions need the members: loaded on the first `@`.
+                let members = if room.completion.is_some()
+                    && room.member_list.is_none()
+                    && !room.loading_members
                 {
-                    let edit = action.is_edit();
-                    room.composer.perform(action);
-                    if edit {
-                        let timeline = room.timeline.clone();
-                        let typing = !room.composer.text().trim().is_empty();
-                        return Task::future(async move {
-                            let _ = timeline.typing(typing).await;
-                        })
-                        .discard();
+                    load_members(&main.session, room)
+                } else {
+                    Task::none()
+                };
+                let typing = if edit {
+                    let timeline = room.timeline.clone();
+                    let typing = !room.composer.text().trim().is_empty();
+                    Task::future(async move {
+                        let _ = timeline.typing(typing).await;
+                    })
+                    .discard()
+                } else {
+                    Task::none()
+                };
+                // The pictures of those offered.
+                let avatars = if room.completion.is_some() {
+                    self.load_avatars()
+                } else {
+                    Task::none()
+                };
+                Task::batch([members, typing, avatars])
+            }
+            Message::Mention(message) => {
+                let Screen::Main(main) = &mut self.screen else {
+                    return Task::none();
+                };
+                let Some(room) = main.room.as_mut() else {
+                    return Task::none();
+                };
+                let count = room.candidates(&main.own_user).len();
+                let mention = match message {
+                    mention::Message::Close => {
+                        room.completion = None;
+                        return Task::none();
                     }
-                }
-                Task::none()
+                    mention::Message::Up | mention::Message::Down => {
+                        let step = if matches!(message, mention::Message::Up) {
+                            -1
+                        } else {
+                            1
+                        };
+                        if let Some(completion) = &mut room.completion {
+                            completion.step(step, count);
+                        }
+                        return Task::none();
+                    }
+                    mention::Message::Choose => {
+                        let selected = room.completion.as_ref().map_or(0, |c| c.selected);
+                        match room.candidates(&main.own_user).get(selected) {
+                            Some(candidate) => candidate.mention(),
+                            None => return Task::none(),
+                        }
+                    }
+                    mention::Message::Pick(mention) => mention,
+                };
+                room.complete(&mention);
+                iced::widget::operation::focus(room::COMPOSER)
             }
             Message::Send => {
                 let Screen::Main(main) = &mut self.screen else {
@@ -814,7 +872,7 @@ impl App {
                     return Task::none();
                 }
                 let compose = std::mem::take(&mut room.compose);
-                room.composer = text_editor::Content::new();
+                room.set_composer(text_editor::Content::new());
                 let files = std::mem::take(&mut room.attachments)
                     .into_iter()
                     .map(|attached| attached.file)
@@ -952,6 +1010,7 @@ impl App {
                     return Task::none();
                 };
                 emoji::insert(&mut room.composer, &emoji);
+                room.update_completion();
                 Task::batch([
                     iced::widget::operation::focus(room::COMPOSER),
                     used_emoji(main, emoji),
@@ -1258,6 +1317,12 @@ impl App {
                         main.pdf = None;
                     } else if main.info.is_some() {
                         main.info = None;
+                    } else if let Some(room) = main
+                        .room
+                        .as_mut()
+                        .filter(|r| !r.candidates(&main.own_user).is_empty())
+                    {
+                        room.completion = None;
                     } else if let Some(room) = main.room.as_mut().filter(|r| r.menu.is_some()) {
                         room.menu = None;
                     } else if let Some(room) = main.room.as_mut().filter(|r| r.selection.is_some())
@@ -1296,18 +1361,19 @@ impl App {
                 let Some(room) = main.room.as_mut() else {
                     return Task::none();
                 };
-                if room.members.take().is_some() {
-                    return Task::none();
+                room.show_members = !room.show_members;
+                // Opening it shows the members anew.
+                if room.show_members && !room.loading_members {
+                    load_members(&main.session, room)
+                } else {
+                    Task::none()
                 }
-                room.members = Some(Members::default());
-                load_members(main.session.clone(), room.id.clone())
             }
             Message::MembersLoaded(id, result) => {
                 if let Screen::Main(main) = &mut self.screen
                     && let Some(room) = main.room.as_mut().filter(|r| r.id == id)
-                    && let Some(members) = &mut room.members
                 {
-                    members.list = Some(result);
+                    room.members_loaded(result);
                 }
                 self.load_avatars()
             }
@@ -2298,7 +2364,7 @@ impl App {
                 // A new time leaves the composer alone; scheduling took its text.
                 if room.later.rescheduling.is_none() {
                     room.compose = Compose::New;
-                    room.composer = text_editor::Content::new();
+                    room.set_composer(text_editor::Content::new());
                     room.attachments.clear();
                 }
                 room.later = Default::default();
@@ -2990,13 +3056,24 @@ fn attach(room: OwnedRoomId, paths: Vec<PathBuf>) -> Task<Message> {
     })
 }
 
-fn load_members(session: Arc<Session>, room: OwnedRoomId) -> Task<Message> {
+/// Load the room's members, for its member list and mentions, and whether
+/// we may mention everyone.
+fn load_members(session: &Arc<Session>, room: &mut Room) -> Task<Message> {
+    room.loading_members = true;
+    let (session, id) = (session.clone(), room.id.clone());
     Task::perform(
         {
-            let room = room.clone();
-            async move { session.members(&room).await.map_err(|e| e.to_string()) }
+            let id = id.clone();
+            async move {
+                let (members, everyone) =
+                    futures_util::join!(session.members(&id), session.can_mention_room(&id));
+                Ok((
+                    members.map_err(|e| e.to_string())?,
+                    everyone.unwrap_or(false),
+                ))
+            }
         },
-        move |result| Message::MembersLoaded(room.clone(), result),
+        move |result| Message::MembersLoaded(id.clone(), result),
     )
 }
 
