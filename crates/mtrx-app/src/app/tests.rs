@@ -50,6 +50,10 @@ fn with_start(entries: &mut Vec<TimelineEntry>) {
 }
 
 fn snapshot(app: &App, name: &str) {
+    // One at a time: renderers drawing at once in parallel tests crashed
+    // on Windows CI (software Direct3D).
+    static RENDERING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _rendering = RENDERING.lock().unwrap_or_else(|e| e.into_inner());
     // Snapshots are for looking at, not regression baselines: always rewrite.
     // iced_test appends the renderer name, e.g. `login-wgpu.png`.
     let path = snapshot_dir().join(name);
