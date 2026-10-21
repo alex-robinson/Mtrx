@@ -6,15 +6,16 @@ import XCTest
 
 // Fakes of the library's objects, made the way UniFFI provides for: the
 // generated classes are open, and `init(noHandle:)` makes one without a
-// Rust object behind it. Only overridden methods may be called.
+// Rust object behind it. Only overridden methods may be called. They hold
+// unsynchronised state, used from the tests' main actor only.
 
-final class FakeTaskHandle: TaskHandle {
+final class FakeTaskHandle: TaskHandle, @unchecked Sendable {
     var cancelled = false
     override func cancel() { cancelled = true }
     override func isFinished() -> Bool { cancelled }
 }
 
-final class FakeTimeline: Timeline {
+final class FakeTimeline: Timeline, @unchecked Sendable {
     var listener: TimelineListener?
     var sent: [String] = []
     var sendError: Error?
@@ -45,7 +46,7 @@ final class FakeTimeline: Timeline {
     }
 }
 
-final class FakeSession: Session {
+final class FakeSession: Session, @unchecked Sendable {
     let fakeTimeline = FakeTimeline(noHandle: .init())
     var roomListListener: RoomListListener?
     var connectionListener: ConnectionListener?
@@ -69,7 +70,7 @@ final class FakeSession: Session {
     }
 }
 
-final class FakeOAuthLogin: OAuthLogin {
+final class FakeOAuthLogin: OAuthLogin, @unchecked Sendable {
     var session: Session?
     var finishedWith: String?
 
@@ -82,7 +83,7 @@ final class FakeOAuthLogin: OAuthLogin {
     }
 }
 
-final class FakeMtrx: Mtrx {
+final class FakeMtrx: Mtrx, @unchecked Sendable {
     var oauth = false
     var loginResult: Result<Session, Error> = .failure(MtrxError.Other(reason: "Invalid password"))
     let oauthLogin = FakeOAuthLogin(noHandle: .init())
