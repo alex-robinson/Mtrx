@@ -93,6 +93,17 @@ pub fn panel(theme: &Theme) -> container::Style {
     }
 }
 
+/// Hover help: iced's rounded box, rounder.
+pub fn hint(theme: &Theme) -> container::Style {
+    let palette = theme.extended_palette();
+    container::Style {
+        background: Some(Background::Color(palette.background.weak.color)),
+        text_color: Some(palette.background.weak.text),
+        border: Border::default().rounded(6),
+        ..Default::default()
+    }
+}
+
 pub fn space_bar(theme: &Theme) -> container::Style {
     let palette = theme.extended_palette();
     container::Style {

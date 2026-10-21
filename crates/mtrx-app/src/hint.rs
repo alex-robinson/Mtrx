@@ -6,7 +6,12 @@ use iced::{
     widget::{container, text, tooltip},
 };
 
+use crate::style;
+
 pub use iced::widget::tooltip::Position;
+
+/// Longer labels wrap rather than make a very wide box.
+const HINT_MAX_WIDTH: f32 = 260.0;
 
 pub fn hint<'a, M: 'a>(
     content: impl Into<Element<'a, M>>,
@@ -17,7 +22,8 @@ pub fn hint<'a, M: 'a>(
         content,
         container(text(label).size(12))
             .padding(6)
-            .style(container::rounded_box),
+            .max_width(HINT_MAX_WIDTH)
+            .style(style::hint),
         position,
     )
     .into()

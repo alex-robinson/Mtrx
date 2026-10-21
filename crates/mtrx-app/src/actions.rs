@@ -25,6 +25,8 @@ use crate::{
 /// Read markers shown per message before "+N".
 const MAX_READERS: usize = 3;
 const READER_AVATAR: f32 = 16.0;
+/// Readers named in the read markers' hint before "and N others".
+const HINT_NAMES: usize = 5;
 /// Height of the typing line: one line of 12pt text (iced's line height is
 /// 1.3 times the size), kept whether or not anyone types.
 const TYPING_HEIGHT: f32 = 12.0 * 1.3;
@@ -512,11 +514,25 @@ pub fn read_markers<'a>(event: &Event, avatars: &Avatars) -> Option<Element<'a, 
     }
     let names: Vec<_> = event.read_by.iter().map(reader_name).collect();
     // The names show over the pictures.
-    Some(hint(
-        markers,
-        format!("Read by {}", names.join(", ")),
-        Position::Top,
-    ))
+    Some(hint(markers, read_by(&names), Position::Top))
+}
+
+/// "Read by Alice, Bob and Carol", naming at most `HINT_NAMES` readers:
+/// "Read by Alice, …, Eve and 7 others".
+fn read_by(names: &[&str]) -> String {
+    let shown = names.len().min(HINT_NAMES);
+    let mut parts: Vec<String> = names[..shown].iter().map(|name| name.to_string()).collect();
+    match names.len() - shown {
+        0 => {}
+        1 => parts.push("1 other".to_owned()),
+        others => parts.push(format!("{others} others")),
+    }
+    let list = match parts.split_last() {
+        Some((last, [])) => last.clone(),
+        Some((last, front)) => format!("{} and {last}", front.join(", ")),
+        None => String::new(),
+    };
+    format!("Read by {list}")
 }
 
 fn reader_name(reader: &Reader) -> &str {
@@ -550,4 +566,35 @@ pub fn typing<'a>(names: &[String]) -> Element<'a, app::Message> {
 
 pub fn act(message: Message) -> app::Message {
     app::Message::Act(message)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::read_by;
+
+    const NAMES: [&str; 10] = [
+        "Alice", "Bob", "Carol", "Dan", "Eve", "Fay", "Gus", "Hal", "Ivy", "Jo",
+    ];
+
+    #[test]
+    fn read_by_names_up_to_five() {
+        assert_eq!(read_by(&NAMES[..1]), "Read by Alice");
+        assert_eq!(read_by(&NAMES[..2]), "Read by Alice and Bob");
+        assert_eq!(
+            read_by(&NAMES[..5]),
+            "Read by Alice, Bob, Carol, Dan and Eve"
+        );
+    }
+
+    #[test]
+    fn read_by_counts_the_rest() {
+        assert_eq!(
+            read_by(&NAMES[..6]),
+            "Read by Alice, Bob, Carol, Dan, Eve and 1 other"
+        );
+        assert_eq!(
+            read_by(&NAMES),
+            "Read by Alice, Bob, Carol, Dan, Eve and 5 others"
+        );
+    }
 }
