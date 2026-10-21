@@ -7,7 +7,7 @@ fn main() {
     let mut args = std::env::args().skip(1);
     let out = args.next().expect("output path");
     let text = args.next().expect("markdown text");
-    let formatted = markdown_to_matrix(&text);
+    let formatted = markdown_to_matrix(&text, &[]);
     let doc = formatted
         .html
         .map(|h| Document::from_html(&h))

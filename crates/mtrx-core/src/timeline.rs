@@ -451,7 +451,7 @@ pub(crate) async fn send_message(
 }
 
 fn markdown_content(text: &str) -> RoomMessageEventContent {
-    let formatted = markdown_to_matrix(text);
+    let formatted = markdown_to_matrix(text, &[]);
     match formatted.html {
         Some(html) => RoomMessageEventContent::text_html(formatted.body, html),
         None => RoomMessageEventContent::text_plain(formatted.body),
