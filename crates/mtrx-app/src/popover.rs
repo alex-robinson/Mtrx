@@ -226,6 +226,7 @@ pub fn floating<'a, 'b, Message: Clone + 'a>(
         edge,
         on_dismiss,
         click_through,
+        window: Size::ZERO,
     }))
 }
 
@@ -237,10 +238,13 @@ struct Panel<'a, 'b, Message> {
     edge: Edge,
     on_dismiss: Option<Message>,
     click_through: bool,
+    /// The window's size, as of the last layout.
+    window: Size,
 }
 
 impl<Message: Clone> overlay::Overlay<Message, Theme, Renderer> for Panel<'_, '_, Message> {
     fn layout(&mut self, renderer: &Renderer, bounds: Size) -> Node {
+        self.window = bounds;
         let node = self.panel.as_widget_mut().layout(
             self.tree,
             renderer,
@@ -282,6 +286,21 @@ impl<Message: Clone> overlay::Overlay<Message, Theme, Renderer> for Panel<'_, '_
             cursor,
             &layout.bounds(),
         );
+    }
+
+    /// Hints of the panel's controls.
+    fn overlay<'c>(
+        &'c mut self,
+        layout: Layout<'c>,
+        renderer: &Renderer,
+    ) -> Option<overlay::Element<'c, Message, Theme, Renderer>> {
+        self.panel.as_widget_mut().overlay(
+            self.tree,
+            layout,
+            renderer,
+            &Rectangle::with_size(self.window),
+            Vector::ZERO,
+        )
     }
 
     fn operate(&mut self, layout: Layout<'_>, renderer: &Renderer, operation: &mut dyn Operation) {
