@@ -20,8 +20,8 @@ use iced::{
 };
 use mtrx_core::{
     CallService, Event, EventContent, Media, Member, MembershipChange, MessageKind, MxcUri,
-    OwnedRoomId, OwnedUserId, RoomKind, RoomSummary, RoomTimeline, ScheduledMessage, SendState,
-    TimelineEntry, UserId,
+    OwnedEventId, OwnedRoomId, OwnedUserId, RoomKind, RoomSummary, RoomTimeline, ScheduledMessage,
+    SendState, TimelineEntry, UserId,
 };
 
 use crate::{
@@ -131,6 +131,11 @@ pub struct Room {
     pub error: Option<String>,
     /// [`Event::id`] of the message under the cursor.
     hovered: Option<String>,
+    /// [`Event::id`] of the message just gone to, e.g. a reply's original.
+    pub marked: Option<String>,
+    /// The message being gone to while older events load, and how many
+    /// pages were loaded for it.
+    pub seeking: Option<(OwnedEventId, usize)>,
 }
 
 /// What scrolling to the top should do.
@@ -177,6 +182,8 @@ impl Room {
             reloading: false,
             error: None,
             hovered: None,
+            marked: None,
+            seeking: None,
         }
     }
 
@@ -334,6 +341,18 @@ impl Room {
 
     pub fn show_more(&mut self) {
         self.shown += WINDOW_STEP;
+    }
+
+    /// Render the message `event` if it is loaded; its [`Event::id`].
+    pub fn reveal(&mut self, event: &OwnedEventId) -> Option<String> {
+        let index = self.entries.iter().position(
+            |entry| matches!(entry, TimelineEntry::Event(e) if e.event_id.as_ref() == Some(event)),
+        )?;
+        self.shown = self.shown.max(self.entries.len() - index);
+        match &self.entries[index] {
+            TimelineEntry::Event(e) => Some(e.id.clone()),
+            _ => None,
+        }
     }
 
     fn visible(&self) -> &[TimelineEntry] {
@@ -500,6 +519,7 @@ impl Room {
             colored_names: look.colored_names,
             call_services: look.call_services,
             hovered: self.hovered.as_deref(),
+            marked: self.marked.as_deref(),
             picker: self.picker.as_ref().map(|(id, at)| (id.as_str(), *at)),
             menu: self.menu.as_ref().map(|(id, at)| (id.as_str(), *at)),
             readers: self.readers.as_deref(),
@@ -868,6 +888,7 @@ struct Context<'a, 'b> {
     colored_names: bool,
     call_services: &'b [CallService],
     hovered: Option<&'b str>,
+    marked: Option<&'b str>,
     picker: Option<(&'b str, PickerAt)>,
     menu: Option<(&'b str, MenuAt)>,
     /// The row whose readers are listed.
@@ -1105,7 +1126,10 @@ fn event_view<'a>(
     let row = container(line)
         .padding(Padding::new(MESSAGE_PADDING).top(top).bottom(1))
         .width(Length::Fill)
-        .style(style::message_row(hovered));
+        .style(style::message_row(
+            hovered,
+            context.marked == Some(event.id.as_str()),
+        ));
     // Read markers, or while nobody read our message whether it is sent,
     // sit in the free margin at the bottom right, so neither ever changes
     // the row's height.
@@ -1243,6 +1267,67 @@ impl Sending {
 /// The container around a message's row.
 fn row_id(event: &str) -> Id {
     Id::from(format!("row:{event}"))
+}
+
+/// Scroll the timeline to show the row of message `id` in the middle.
+pub fn scroll_to_row(id: &str) -> Task<Message> {
+    iced::advanced::widget::operate(FindRow {
+        row: row_id(id),
+        view: None,
+        found: None,
+    })
+    .then(|offset| match offset {
+        Some(y) => iced::widget::operation::scroll_to(
+            TIMELINE,
+            scrollable::AbsoluteOffset {
+                x: None,
+                y: Some(y),
+            },
+        ),
+        None => Task::none(),
+    })
+}
+
+/// The offset of the timeline (from the bottom, where it is anchored)
+/// with a row in the middle.
+struct FindRow {
+    row: Id,
+    /// The timeline's bounds and content height.
+    view: Option<(Rectangle, f32)>,
+    found: Option<Rectangle>,
+}
+
+impl Operation<Option<f32>> for FindRow {
+    fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn Operation<Option<f32>>)) {
+        operate(self);
+    }
+
+    fn scrollable(
+        &mut self,
+        id: Option<&Id>,
+        bounds: Rectangle,
+        content_bounds: Rectangle,
+        _translation: Vector,
+        _state: &mut dyn operation::Scrollable,
+    ) {
+        if id == Some(&Id::new(TIMELINE)) {
+            self.view = Some((bounds, content_bounds.height));
+        }
+    }
+
+    fn container(&mut self, id: Option<&Id>, bounds: Rectangle) {
+        if id == Some(&self.row) {
+            self.found = Some(bounds);
+        }
+    }
+
+    fn finish(&self) -> operation::Outcome<Option<f32>> {
+        operation::Outcome::Some(self.view.zip(self.found).map(|((view, content), row)| {
+            // From the top, then from the bottom.
+            let top = row.y - view.y - (view.height - row.height).max(0.0) / 2.0;
+            ((content - view.height).max(0.0) - top.max(0.0)).max(0.0)
+        }))
+    }
 }
 
 /// Where the timeline is and which messages' rows are in its view.

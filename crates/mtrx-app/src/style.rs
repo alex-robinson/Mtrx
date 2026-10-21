@@ -165,21 +165,21 @@ pub fn separator(theme: &Theme) -> rule::Style {
     }
 }
 
-/// A timeline row; the hovered one is highlighted.
-pub fn message_row(hovered: bool) -> impl Fn(&Theme) -> container::Style {
-    move |theme| container::Style {
-        background: hovered.then(|| {
-            Background::Color(
-                theme
-                    .extended_palette()
-                    .background
-                    .strong
-                    .color
-                    .scale_alpha(0.3),
-            )
-        }),
-        border: Border::default().rounded(6),
-        ..Default::default()
+/// A timeline row; the hovered one is highlighted, one gone to in colour.
+pub fn message_row(hovered: bool, marked: bool) -> impl Fn(&Theme) -> container::Style {
+    move |theme| {
+        let palette = theme.extended_palette();
+        container::Style {
+            background: if marked {
+                Some(Background::Color(
+                    palette.primary.weak.color.scale_alpha(0.3),
+                ))
+            } else {
+                hovered.then(|| Background::Color(palette.background.strong.color.scale_alpha(0.3)))
+            },
+            border: Border::default().rounded(6),
+            ..Default::default()
+        }
     }
 }
 

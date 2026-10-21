@@ -142,6 +142,14 @@ fn login_without_keyring() {
     snapshot(&app, "login-no-keyring");
 }
 
+/// [`Event::id`](mtrx_core::Event::id) of message `event` in `entries`.
+fn room_row(entries: &[TimelineEntry], event: &mtrx_core::OwnedEventId) -> Option<String> {
+    entries.iter().find_map(|e| match e {
+        TimelineEntry::Event(ev) if ev.event_id.as_ref() == Some(event) => Some(ev.id.clone()),
+        _ => None,
+    })
+}
+
 /// A diagonal gradient as PNG, for avatars.
 fn picture(from: [u8; 3], to: [u8; 3]) -> Vec<u8> {
     gradient(96, 96, from, to)
@@ -532,6 +540,29 @@ async fn main_screen_with_math() {
             for document in main.room.as_ref().unwrap().math_documents() {
                 app.math.render_now(document, &params);
             }
+        }
+        if mode == Mode::Dark
+            && let Screen::Main(main) = &mut app.screen
+        {
+            // A quote of a long message wraps onto a few lines; the message
+            // it quotes is marked, as just gone to.
+            let room = main.room.as_mut().unwrap();
+            let quoted = room.entries.iter_mut().find_map(|entry| match entry {
+                TimelineEntry::Event(ev) => match &mut ev.content {
+                    EventContent::Message(m) => m.in_reply_to.as_mut(),
+                    _ => None,
+                },
+                _ => None,
+            });
+            let reply = quoted.unwrap();
+            reply.preview = Some("Morning! Draft of the ice flux section is up. ".repeat(12));
+            let original = reply.event_id.clone();
+            let row = room_row(&room.entries, &original);
+            let _ = app.update(Message::GoTo(original));
+            let Screen::Main(main) = &app.screen else {
+                unreachable!()
+            };
+            assert_eq!(main.room.as_ref().unwrap().marked, row);
         }
         let name = if mode == Mode::Dark {
             "main-dark"

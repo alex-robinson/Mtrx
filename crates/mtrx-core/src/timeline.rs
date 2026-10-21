@@ -218,7 +218,7 @@ pub struct Reply {
     /// `None` until loaded.
     pub sender: Option<OwnedUserId>,
     pub sender_name: Option<String>,
-    /// The start of its text; `None` until loaded.
+    /// Its text, shortened; `None` until loaded.
     pub preview: Option<String>,
     /// It could not be loaded, e.g. as it is not visible to us.
     pub failed: bool,
@@ -1024,17 +1024,15 @@ impl Converter {
     }
 }
 
-/// The first line of a message, shortened.
+/// The text of a message on one line, shortened.
 fn preview(body: &str) -> String {
-    const MAX: usize = 120;
-    let line = body
-        .lines()
-        .find(|l| !l.trim().is_empty())
-        .unwrap_or_default();
-    if line.chars().count() > MAX {
-        format!("{}…", line.chars().take(MAX).collect::<String>())
+    // More than a few lines of a wide window.
+    const MAX: usize = 600;
+    let text = body.split_whitespace().collect::<Vec<_>>().join(" ");
+    if text.chars().count() > MAX {
+        format!("{}…", text.chars().take(MAX).collect::<String>())
     } else {
-        line.to_owned()
+        text
     }
 }
 

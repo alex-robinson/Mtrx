@@ -1,5 +1,5 @@
-//! Single-line text that ends in "…" when it does not fit (iced has no
-//! built-in ellipsis). The fitted paragraph is cached until the text or the
+//! Text of at most a few lines (one by default) that ends in "…" when it
+//! does not fit (iced has no built-in ellipsis). The fitted paragraph is cached until the text or the
 //! available width changes.
 
 use iced::{
@@ -23,6 +23,7 @@ pub struct Ellipsis<'a> {
     size: Pixels,
     font: Font,
     width: Length,
+    lines: usize,
     style: fn(&Theme) -> text::Style,
 }
 
@@ -32,6 +33,7 @@ pub fn ellipsis<'a>(content: impl Into<Cow<'a, str>>) -> Ellipsis<'a> {
         size: Pixels(crate::style::TEXT_SIZE),
         font: crate::fonts::INTER,
         width: Length::Shrink,
+        lines: 1,
         style: text::default,
     }
 }
@@ -52,29 +54,54 @@ impl Ellipsis<'_> {
         self
     }
 
+    /// Wrap onto up to `lines` lines.
+    pub fn lines(mut self, lines: usize) -> Self {
+        self.lines = lines.max(1);
+        self
+    }
+
     pub fn style(mut self, style: fn(&Theme) -> text::Style) -> Self {
         self.style = style;
         self
     }
 
-    fn paragraph<P: core_text::Paragraph<Font = Font>>(&self, content: &str) -> P {
+    fn paragraph<P: core_text::Paragraph<Font = Font>>(&self, content: &str, max_width: f32) -> P {
+        let wraps = self.lines > 1;
         P::with_text(core_text::Text {
             content,
-            bounds: Size::INFINITE,
+            bounds: if wraps {
+                Size::new(max_width, f32::INFINITY)
+            } else {
+                Size::INFINITE
+            },
             size: self.size,
             line_height: core_text::LineHeight::default(),
             font: self.font,
             align_x: core_text::Alignment::Default,
             align_y: alignment::Vertical::Top,
             shaping: core_text::Shaping::Advanced,
-            wrapping: core_text::Wrapping::None,
+            wrapping: if wraps {
+                core_text::Wrapping::WordOrGlyph
+            } else {
+                core_text::Wrapping::None
+            },
         })
     }
 
-    /// The longest prefix (whole graphemes) plus "…" within `max_width`.
+    fn fits<P: core_text::Paragraph<Font = Font>>(&self, paragraph: &P, max_width: f32) -> bool {
+        if self.lines == 1 {
+            paragraph.min_width() <= max_width
+        } else {
+            let line = core_text::LineHeight::default().to_absolute(self.size).0;
+            paragraph.min_height() <= self.lines as f32 * line + 0.5
+        }
+    }
+
+    /// The longest prefix (whole graphemes) plus "…" within `max_width`
+    /// and the lines allowed.
     fn fit<P: core_text::Paragraph<Font = Font>>(&self, max_width: f32) -> P {
-        let full: P = self.paragraph(&self.content);
-        if full.min_width() <= max_width {
+        let full: P = self.paragraph(&self.content, max_width);
+        if self.fits(&full, max_width) {
             return full;
         }
         let cuts: Vec<usize> = self
@@ -84,14 +111,14 @@ impl Ellipsis<'_> {
             .collect();
         let shortened = |n: usize| -> P {
             let prefix = self.content[..cuts[n]].trim_end();
-            self.paragraph(&format!("{prefix}{ELLIPSIS}"))
+            self.paragraph(&format!("{prefix}{ELLIPSIS}"), max_width)
         };
         // The largest grapheme count whose shortened text fits; cutting
         // after zero graphemes (just "…") is the floor.
         let (mut low, mut high) = (0, cuts.len() - 1);
         while low < high {
             let middle = (low + high).div_ceil(2);
-            if shortened(middle).min_width() <= max_width {
+            if self.fits(&shortened(middle), max_width) {
                 low = middle;
             } else {
                 high = middle - 1;
@@ -102,8 +129,8 @@ impl Ellipsis<'_> {
 }
 
 struct State<P> {
-    /// Text and width the paragraph was fitted for.
-    fitted: Option<(String, f32, Pixels, Font)>,
+    /// Text, width, size, font and lines the paragraph was fitted for.
+    fitted: Option<(String, f32, Pixels, Font, usize)>,
     paragraph: P,
 }
 
@@ -137,15 +164,22 @@ where
         let current = state
             .fitted
             .as_ref()
-            .is_some_and(|(content, width, size, font)| {
+            .is_some_and(|(content, width, size, font, lines)| {
                 *content == self.content
                     && *width == max_width
                     && *size == self.size
                     && *font == self.font
+                    && *lines == self.lines
             });
         if !current {
             state.paragraph = self.fit(max_width);
-            state.fitted = Some((self.content.to_string(), max_width, self.size, self.font));
+            state.fitted = Some((
+                self.content.to_string(),
+                max_width,
+                self.size,
+                self.font,
+                self.lines,
+            ));
         }
         let bounds = state.paragraph.min_bounds();
         layout::Node::new(limits.resolve(self.width, Length::Shrink, bounds))

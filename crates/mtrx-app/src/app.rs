@@ -19,10 +19,10 @@ use iced::{
     window,
 };
 use mtrx_core::{
-    CallService, Connection, Contact, Google, Media, MediaRef, Member, Notification, OwnedMxcUri,
-    OwnedRoomId, OwnedUserId, Profile, RecoveryStep, RoomList, RoomListColours, RoomListState,
-    RoomOrAliasId, RoomTag, RoomTimeline, ScheduledMessage, SecretStore, ServiceKind, Session,
-    TimelineEntry, Url,
+    CallService, Connection, Contact, Google, Media, MediaRef, Member, Notification, OwnedEventId,
+    OwnedMxcUri, OwnedRoomId, OwnedUserId, Profile, RecoveryStep, RoomList, RoomListColours,
+    RoomListState, RoomOrAliasId, RoomTag, RoomTimeline, ScheduledMessage, SecretStore,
+    ServiceKind, Session, TimelineEntry, Url,
 };
 
 use crate::{
@@ -151,6 +151,11 @@ pub enum Message {
     AvatarLoaded(avatar::Key, Option<image::Handle>),
     /// The cursor entered (`true`) or left a timeline event.
     Hover(String, bool),
+    /// Scroll to a message, e.g. the original of a reply, loading older
+    /// events until it is found.
+    GoTo(OwnedEventId),
+    /// The message gone to is no longer marked.
+    Unmark(String),
     PreviewLoaded(MediaRef, Option<media::Preview>),
     /// Show an image large.
     OpenImage(Media),
@@ -793,10 +798,14 @@ impl App {
                 let mut more = Task::none();
                 if let Some(room) = main.room.as_mut().filter(|r| r.id == id) {
                     room.paginating = false;
+                    let seeking = room.seeking.take();
                     match result {
                         Ok(()) => {
                             room.show_more();
-                            more = fill(room);
+                            more = match seeking {
+                                Some((event, pages)) => go_to(room, event, pages),
+                                None => fill(room),
+                            };
                         }
                         // Loaded once the server is back.
                         Err(_) if main.connection != Connection::Online => {}
@@ -1592,6 +1601,31 @@ impl App {
                     && let Some(room) = main.room.as_mut()
                 {
                     room.hover(id, entered);
+                }
+                Task::none()
+            }
+            Message::GoTo(event) => {
+                let Screen::Main(main) = &mut self.screen else {
+                    return Task::none();
+                };
+                let Some(room) = main.room.as_mut() else {
+                    return Task::none();
+                };
+                room.error = None;
+                let go = go_to(room, event, 0);
+                Task::batch([
+                    go,
+                    self.render_math(),
+                    self.load_avatars(),
+                    self.load_previews(),
+                ])
+            }
+            Message::Unmark(id) => {
+                if let Screen::Main(main) = &mut self.screen
+                    && let Some(room) = main.room.as_mut()
+                    && room.marked.as_ref() == Some(&id)
+                {
+                    room.marked = None;
                 }
                 Task::none()
             }
@@ -3310,6 +3344,30 @@ fn near_spaces(
         dialog::Kind::Invite { room, .. } => around(room),
         _ => shown.map(around).unwrap_or_default(),
     }
+}
+
+/// Older events loaded at most to find a message gone to.
+const GO_TO_PAGES: usize = 20;
+
+/// Scroll to message `event` and mark it for a moment, first loading older
+/// events (`pages` were already) if needed.
+fn go_to(room: &mut Room, event: OwnedEventId, pages: usize) -> Task<Message> {
+    if let Some(id) = room.reveal(&event) {
+        room.marked = Some(id.clone());
+        let unmark = id.clone();
+        return Task::batch([
+            room::scroll_to_row(&id),
+            Task::perform(tokio::time::sleep(Duration::from_secs(2)), move |()| {
+                Message::Unmark(unmark.clone())
+            }),
+        ]);
+    }
+    if room.at_start() || pages >= GO_TO_PAGES {
+        room.error = Some("The original message was not found in the room's history".into());
+        return Task::none();
+    }
+    room.seeking = Some((event, pages + 1));
+    paginate(room)
 }
 
 /// Load older events while too few are loaded to fill the view.
