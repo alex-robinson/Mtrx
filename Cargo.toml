@@ -49,6 +49,13 @@ base64 = "0.23.1"
 [profile.dev.package."*"]
 opt-level = 2
 
+# The mobile libraries (scripts/build-{ios,android}-ffi.sh): link-time
+# optimized, so the static library holds only what the bindings use.
+[profile.mobile]
+inherits = "release"
+lto = true
+codegen-units = 1
+
 # mitex 0.2.4 ignores a custom command spec when writing output; patched copy.
 [patch.crates-io]
 mitex = { path = "vendor/mitex" }

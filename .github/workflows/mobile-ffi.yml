@@ -1,0 +1,95 @@
+# iOS and Android: the Rust library (mtrx-ffi) with its Swift and Kotlin
+# bindings, as the apps consume them. Host checks and tests of mtrx-ffi run
+# in the platform workflows (cargo clippy/test --workspace).
+name: Mobile FFI
+
+on:
+  push:
+    branches: [main, core-cli, mobile]
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mobile-ffi-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  ios:
+    runs-on: macos-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios,aarch64-apple-ios-sim
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ios
+      - name: Build the xcframework and Swift bindings
+        run: scripts/build-ios-ffi.sh
+      - name: Swift package builds for the simulator
+        working-directory: apps/ios/MtrxFFI
+        run: xcodebuild build -scheme MtrxFFI -destination 'generic/platform=iOS Simulator' -quiet
+      - name: Bindings link into a simulator executable
+        # Catches symbols the static library needs from system frameworks.
+        run: |
+          slice=apps/ios/MtrxFFI/mtrxFFI.xcframework/ios-arm64-simulator
+          mkdir -p target/link-check
+          echo 'print(oauthRedirectUri())' > target/link-check/main.swift
+          xcrun --sdk iphonesimulator swiftc \
+            -target arm64-apple-ios16.0-simulator \
+            -I "$slice/Headers" \
+            apps/ios/MtrxFFI/Sources/MtrxFFI/mtrx.swift target/link-check/main.swift \
+            "$slice/libmtrx_ffi.a" \
+            -framework Security -framework SystemConfiguration -framework CoreFoundation \
+            -o target/link-check/smoke
+      - name: Package
+        run: |
+          mkdir -p target/mobile
+          cd apps/ios && zip -qry ../../target/mobile/MtrxFFI-ios.zip MtrxFFI -x 'MtrxFFI/.build/*' 'MtrxFFI/.swiftpm/*'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: MtrxFFI-ios
+          path: target/mobile/MtrxFFI-ios.zip
+          if-no-files-found: error
+
+  android:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,x86_64-linux-android
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: android
+      - name: cargo-ndk
+        run: cargo install cargo-ndk --version 4.1.2 --locked
+      - name: Build the libraries and Kotlin bindings
+        # The runner's newest NDK.
+        run: |
+          export ANDROID_NDK_HOME="$ANDROID_NDK_LATEST_HOME"
+          scripts/build-android-ffi.sh
+      - name: Check the libraries
+        run: |
+          nm="$ANDROID_NDK_LATEST_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-nm"
+          for abi in arm64-v8a x86_64; do
+            lib=apps/android/mtrx-ffi/src/main/jniLibs/$abi/libmtrx_ffi.so
+            file "$lib"
+            # The JNI entry point AndroidPlatform.kt calls.
+            "$nm" -D --defined-only "$lib" | grep -q Java_org_mtrx_ffi_AndroidPlatform_initialize
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mtrx-ffi-android
+          path: |
+            apps/android/mtrx-ffi/src/main/jniLibs
+            apps/android/mtrx-ffi/src/main/kotlin
+          if-no-files-found: error

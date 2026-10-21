@@ -65,6 +65,8 @@ jobs:
           testserver/run.sh
       - name: Integration tests (mtrx-core)
         run: cargo test -p mtrx-core --test integration -- --ignored
+      - name: Integration tests (mtrx-ffi)
+        run: cargo test -p mtrx-ffi --test integration -- --ignored
       - name: UI tests (mtrx-app)
         run: cargo test -p mtrx-app -- --ignored --skip big_room
       - name: Synapse log

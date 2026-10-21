@@ -1,2 +1,9 @@
 /target
 .claude/worktrees/
+# Built by scripts/build-{ios,android}-ffi.sh.
+/apps/ios/MtrxFFI/mtrxFFI.xcframework/
+/apps/ios/MtrxFFI/Sources/MtrxFFI/mtrx.swift
+/apps/ios/MtrxFFI/.build/
+/apps/ios/MtrxFFI/.swiftpm/
+/apps/android/mtrx-ffi/src/main/jniLibs/
+/apps/android/mtrx-ffi/src/main/kotlin/uniffi/
