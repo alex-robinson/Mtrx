@@ -1637,21 +1637,24 @@ async fn website_screenshots() {
 
     let ana = Arc::new(ana);
     let now = SystemTime::now();
+    // Tomorrow at nine.
+    let tomorrow_nine: SystemTime = (chrono::Local::now().date_naive() + chrono::Days::new(1))
+        .and_hms_opt(9, 0, 0)
+        .unwrap()
+        .and_local_timezone(chrono::Local)
+        .unwrap()
+        .into();
     let screen = |mode: Mode| {
         let mut main = Main::new(ana.clone());
         main.rooms = rooms.clone();
         main.space = Some(space.clone());
         main.verified = Some(true);
         main.now = now;
-        main.colours = RoomListColours {
-            home: None,
-            spaces: [(space.clone(), "Teal".to_owned())].into(),
-        };
         main.scheduled = vec![ScheduledMessage {
             id: "a".into(),
             room_id: room.clone(),
             text: "Reminder: figures for Thursday's meeting, please!".into(),
-            send_at: now + Duration::from_secs(14 * 3600),
+            send_at: tomorrow_nine,
             in_reply_to: None,
             overdue: false,
             files: Vec::new(),
