@@ -25,7 +25,7 @@
     real app, not a web page in a wrapper, with what research groups need: messages sent later, LaTeX math, notes to
     self, PDFs and call links.</p>
   <p class="actions">
-    <a class="button primary" href="#download">Download for Mac</a>
+    <a class="button primary" href="#download">Download</a>
     <a class="button" href="https://github.com/alex-robinson/Mtrx">View source</a>
   </p>
   <picture class="shot">
@@ -111,15 +111,34 @@
         <pre><code>xattr -dr com.apple.quarantine /Applications/Mtrx.app</code></pre>
       </details>
     </article>
-    <article class="platform soon">
+    <article class="platform">
       <h3>Windows</h3>
-      <p>Planned.</p>
+      <p>For 64-bit Windows 10 and 11.</p>
+      <a class="button primary" href="https://github.com/alex-robinson/Mtrx/releases/latest/download/Mtrx-windows-x64-setup.exe">Download Mtrx for Windows</a>
+      <p class="alt"><a href="https://github.com/alex-robinson/Mtrx/releases/latest/download/Mtrx-windows-x64.zip">Portable zip</a>, without installing</p>
+      <details>
+        <summary>First start</summary>
+        <p>Mtrx is not signed yet, so Windows SmartScreen warns the first time: click More info, then Run anyway.
+          The installer needs no administrator rights.</p>
+      </details>
     </article>
-    <article class="platform soon">
+    <article class="platform">
       <h3>Linux</h3>
-      <p>Planned.</p>
+      <p>A .deb for Ubuntu 22.04 or later, and Debian.</p>
+      <a class="button primary" href="https://github.com/alex-robinson/Mtrx/releases/latest/download/Mtrx-linux-amd64.deb">Download Mtrx for Linux</a>
+      <p class="alt"><a href="https://github.com/alex-robinson/Mtrx/releases/latest/download/Mtrx-linux-x86_64.AppImage">AppImage</a>, for other x86-64 distributions</p>
+      <details>
+        <summary>First start</summary>
+        <p>Install the .deb with</p>
+        <pre><code>sudo apt install ./Mtrx-linux-amd64.deb</code></pre>
+        <p>or make the AppImage executable (<code>chmod +x</code>) and run it. Mtrx keeps your sign-in in the
+          system keyring, so it needs GNOME Keyring or KWallet.</p>
+      </details>
     </article>
   </div>
+  <p class="more">The Windows and Linux versions are new: they are built and tested automatically, but have not yet
+    been tried much on real machines. Problems and feedback are welcome as
+    <a href="https://github.com/alex-robinson/Mtrx/issues">issues</a>.</p>
   <p class="more">All versions are on the <a href="https://github.com/alex-robinson/Mtrx/releases">releases page</a>.
     To build it yourself, see the <a href="https://github.com/alex-robinson/Mtrx#readme">README</a>.</p>
 </section>
