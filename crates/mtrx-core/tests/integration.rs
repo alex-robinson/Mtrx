@@ -895,6 +895,64 @@ async fn replies_reactions_edits_typing_receipts() -> Result<()> {
     Ok(())
 }
 
+/// The original of a reply far back in the room is fetched; one that
+/// cannot be fetched shows as such.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs local Synapse (testserver/run.sh)"]
+async fn replies_to_unloaded_messages() -> Result<()> {
+    let (name, alice) = new_user("quote").await?;
+    let room = alice
+        .session
+        .create_room(NewRoom {
+            name: Some("quote".into()),
+            ..Default::default()
+        })
+        .await?;
+    let timeline = alice.session.timeline(&room).await?;
+    let send = |text: String, reply_to: Option<mtrx_core::OwnedEventId>| {
+        let timeline = &timeline;
+        async move {
+            let pending = timeline.send_markdown(&text, reply_to.as_deref()).await?;
+            anyhow::Ok(timeout("send", pending.sent()).await??)
+        }
+    };
+    let original = send("Far back".into(), None).await?;
+    for i in 0..60 {
+        send(format!("Filler {i}"), None).await?;
+    }
+    send("Answer".into(), Some(original.clone())).await?;
+    let missing: mtrx_core::OwnedEventId =
+        format!("$missing:{}", alice.session.user_id().server_name())
+            .try_into()
+            .unwrap();
+    send("Answer to nothing".into(), Some(missing)).await?;
+
+    // A new device loads only the latest messages.
+    let second = login(&name).await?;
+    let list = second.session.room_list().await?;
+    wait_for("room synced", list.updates(), |s| {
+        s.rooms.iter().any(|r| r.id == room)
+    })
+    .await?;
+    let timeline = second.session.timeline(&room).await?;
+    let reply = |entries: &[TimelineEntry], body| {
+        find_message(entries, body).and_then(|ev| message(ev).in_reply_to.clone())
+    };
+    // Back to the answer, not as far as the original.
+    timeline.paginate_back(5).await?;
+    let entries = wait_for("both quotes settled", timeline.updates(), |e| {
+        reply(e, "Answer").is_some_and(|r| r.preview.is_some())
+            && reply(e, "Answer to nothing").is_some_and(|r| r.failed)
+    })
+    .await?;
+    assert!(!has_message(&entries, "Far back"));
+    assert_eq!(
+        reply(&entries, "Answer").unwrap().preview.as_deref(),
+        Some("Far back")
+    );
+    Ok(())
+}
+
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "needs local Synapse (testserver/run.sh)"]
 async fn members_and_notifications() -> Result<()> {
