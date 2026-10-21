@@ -1,0 +1,65 @@
+# iOS app: built on the Rust library for the simulator, unit-tested there,
+# and the simulator app (Mtrx.app, zipped) uploaded. Unsigned.
+name: iOS
+
+on:
+  push:
+    branches: [main, core-cli, mobile, mobile-ios]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ios-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  ios:
+    # Apple silicon: the library's simulator slice is arm64 only.
+    runs-on: macos-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios,aarch64-apple-ios-sim
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ios
+      - name: Build the xcframework and Swift bindings
+        run: scripts/build-ios-ffi.sh
+      - name: Build the app for the simulator
+        working-directory: apps/ios
+        run: |
+          xcodebuild build -project Mtrx.xcodeproj -scheme Mtrx -configuration Release \
+            -destination 'generic/platform=iOS Simulator' -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO -quiet
+      - name: Unit tests
+        working-directory: apps/ios
+        run: |
+          # The first available iPhone simulator, whichever the runner has.
+          device=$(xcrun simctl list devices available -j \
+            | jq -r '[.devices[][] | select(.name | startswith("iPhone"))][0].udid // empty')
+          if [[ -z "$device" ]]; then
+            xcrun simctl list devices available
+            echo "No iPhone simulator" >&2
+            exit 1
+          fi
+          xcodebuild test -project Mtrx.xcodeproj -scheme Mtrx \
+            -destination "platform=iOS Simulator,id=$device" -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO -quiet
+      - name: Package
+        run: |
+          mkdir -p target/mobile
+          ditto -c -k --sequesterRsrc --keepParent \
+            apps/ios/build/Build/Products/Release-iphonesimulator/Mtrx.app \
+            target/mobile/Mtrx-ios-simulator.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Mtrx-ios-simulator
+          path: target/mobile/Mtrx-ios-simulator.zip
+          if-no-files-found: error
