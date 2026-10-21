@@ -1,5 +1,6 @@
 # iOS app: built on the Rust library for the simulator, unit-tested there,
-# and the simulator app (Mtrx.app, zipped) uploaded. Unsigned.
+# and the simulator app (Mtrx.app, zipped) uploaded. Signed ad hoc (the
+# simulator's default): the Keychain refuses an unsigned app.
 name: iOS
 
 on:
@@ -36,12 +37,10 @@ jobs:
         working-directory: apps/ios
         run: |
           xcodebuild build -project Mtrx.xcodeproj -scheme Mtrx -configuration Release \
-            -destination 'generic/platform=iOS Simulator' -derivedDataPath build \
-            CODE_SIGNING_ALLOWED=NO -quiet
-      - name: Unit tests
-        working-directory: apps/ios
+            -destination 'generic/platform=iOS Simulator' -derivedDataPath build -quiet
+      - name: Choose a simulator
+        # The first available iPhone, whichever the runner has.
         run: |
-          # The first available iPhone simulator, whichever the runner has.
           device=$(xcrun simctl list devices available -j \
             | jq -r '[.devices[][] | select(.name | startswith("iPhone"))][0].udid // empty')
           if [[ -z "$device" ]]; then
@@ -49,9 +48,12 @@ jobs:
             echo "No iPhone simulator" >&2
             exit 1
           fi
+          echo "DEVICE=$device" >> "$GITHUB_ENV"
+      - name: Unit tests
+        working-directory: apps/ios
+        run: |
           xcodebuild test -project Mtrx.xcodeproj -scheme Mtrx \
-            -destination "platform=iOS Simulator,id=$device" -derivedDataPath build \
-            CODE_SIGNING_ALLOWED=NO -quiet
+            -destination "platform=iOS Simulator,id=$DEVICE" -derivedDataPath build -quiet
       - name: Package
         run: |
           mkdir -p target/mobile

@@ -117,7 +117,8 @@ deletes it.
 
 ### What exists
 
-SwiftUI, iOS 16, iPhone and iPad, bundle `org.mtrx.Mtrx`, unsigned. Sign in
+SwiftUI, iOS 16, iPhone and iPad, bundle `org.mtrx.Mtrx`; no team (signed
+ad hoc for the simulator). Sign in
 (the homeserver, then a password or the browser, as `supportsOauth` says),
 room list, room timeline with text and images, sending text, sign out.
 
@@ -159,10 +160,15 @@ device, choose a team under Signing. From the command line:
 ```
 cd apps/ios
 xcodebuild build -project Mtrx.xcodeproj -scheme Mtrx \
-  -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO
+  -destination 'generic/platform=iOS Simulator'
 xcodebuild test -project Mtrx.xcodeproj -scheme Mtrx \
-  -destination 'platform=iOS Simulator,name=<an iPhone>' CODE_SIGNING_ALLOWED=NO
+  -destination 'platform=iOS Simulator,name=<an iPhone>'
 ```
+
+Simulator builds are signed ad hoc, Xcode's default there; no team is
+needed. Do not turn signing off (`CODE_SIGNING_ALLOWED=NO`): an unsigned app
+has no application identifier, and the Keychain refuses it ("A required
+entitlement is not present"), so no account can be opened.
 
 CI (`.github/workflows/ios.yml`): builds the package with the script, the
 app (Release) for the simulator, runs the unit tests on the first iPhone
