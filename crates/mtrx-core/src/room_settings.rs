@@ -3,7 +3,6 @@
 
 use std::{path::Path, time::Duration};
 
-use futures_util::StreamExt;
 use matrix_sdk::{
     Room,
     notification_settings::{IsEncrypted, IsOneToOne, RoomNotificationMode},
@@ -11,12 +10,11 @@ use matrix_sdk::{
         OwnedRoomId, RoomId,
         events::{
             StateEventType,
-            push_rules::PushRulesEvent,
             room::join_rules::{AllowRule, JoinRule, RoomJoinRulesEventContent},
         },
-        push::{Action, Ruleset},
     },
 };
+use tokio::sync::broadcast::error::RecvError;
 
 use crate::{
     Error, Result, Session, media::guess_mimetype, permissions::power_levels, rooms::space_children,
@@ -86,25 +84,6 @@ pub struct RoomSettings {
     pub can_change_access: bool,
 }
 
-/// Whether `rules` give `room` the `mode` the SDK sets: an override rule
-/// muting it, or a room rule that notifies (all messages) or not (mentions).
-fn has_mode(rules: &Ruleset, room: &RoomId, mode: NotifyMode) -> bool {
-    let muted = rules
-        .override_
-        .iter()
-        .any(|rule| rule.rule_id == room.as_str() && rule.enabled);
-    let notifies = rules
-        .room
-        .iter()
-        .find(|rule| rule.rule_id == room)
-        .map(|rule| rule.actions.iter().any(Action::should_notify));
-    match mode {
-        NotifyMode::Mute => muted,
-        NotifyMode::Mentions => !muted && notifies == Some(false),
-        NotifyMode::All => !muted && notifies == Some(true),
-    }
-}
-
 impl Session {
     pub async fn room_settings(&self, room_id: &RoomId) -> Result<RoomSettings> {
         let room = self.room(room_id)?;
@@ -142,20 +121,40 @@ impl Session {
             .await
     }
 
-    /// Change when a room notifies, returning once sync brings the change
-    /// back (or after a while): a further change then starts from the
-    /// server's rules, not from older ones still on their way.
+    /// Change when a room notifies, returning once the push rules that sync
+    /// brings back give it that mode (or after a while): a further change
+    /// then starts from the server's rules, not from older ones still on
+    /// their way.
+    ///
+    /// The rules are read from `notification_settings` after it applied a
+    /// sync, not from the synced event itself: it handles the same event
+    /// concurrently, and an older event from midway through the change may
+    /// still arrive after the change was applied locally.
     pub async fn set_notify_mode(&self, room_id: &RoomId, mode: NotifyMode) -> Result<()> {
-        let echoes = self.client.observe_events::<PushRulesEvent, ()>();
-        let mut echoes = echoes.subscribe();
-        self.notification_settings
-            .set_room_notification_mode(room_id, mode.into())
+        let settings = &self.notification_settings;
+        let mode = RoomNotificationMode::from(mode);
+        let has_mode = || async {
+            settings
+                .get_user_defined_room_notification_mode(room_id)
+                .await
+                == Some(mode)
+        };
+        if has_mode().await {
+            // Nothing to change, so nothing comes back.
+            return Ok(());
+        }
+        let mut synced = settings.subscribe_to_changes();
+        settings
+            .set_room_notification_mode(room_id, mode)
             .await
             .map_err(|e| Error::Notifications(e.to_string()))?;
         let confirmed = async {
-            while let Some((event, ())) = echoes.next().await {
-                if has_mode(&event.content.global, room_id, mode) {
-                    return;
+            loop {
+                match synced.recv().await {
+                    Err(RecvError::Closed) => return,
+                    // A change missed while lagging still left its rules.
+                    _ if has_mode().await => return,
+                    _ => {}
                 }
             }
         };
