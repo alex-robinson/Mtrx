@@ -215,7 +215,7 @@ h3 {
 
 .platforms {
   display: grid;
-  grid-template-columns: 2fr 1fr 1fr;
+  grid-template-columns: repeat(3, 1fr);
   gap: 18px;
   text-align: left;
   margin-top: 24px;
@@ -231,8 +231,9 @@ h3 {
   color: var(--muted);
 }
 
-.platform.soon {
-  opacity: 0.6;
+.platform .alt {
+  font-size: 15px;
+  margin-top: 10px;
 }
 
 details {
