@@ -9,6 +9,7 @@ mod actions;
 mod app;
 mod arrange;
 mod avatar;
+mod badge;
 mod calls;
 mod context_menu;
 mod dialog;

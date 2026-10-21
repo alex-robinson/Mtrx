@@ -37,6 +37,8 @@ pub struct Settings {
     pub colored_names: bool,
     /// Show new messages as system notifications.
     pub desktop_notifications: bool,
+    /// The count of unread messages that notify on the app's icon.
+    pub icon_badge: bool,
     /// Services for starting calls; the first is the default.
     pub call_services: Vec<CallService>,
     /// The room list's built-in sections.
@@ -61,6 +63,7 @@ impl Default for Settings {
         Self {
             colored_names: false,
             desktop_notifications: true,
+            icon_badge: true,
             call_services: vec![
                 CallService::jitsi("Jitsi Meet", "https://meet.jit.si").expect("valid"),
             ],
@@ -113,6 +116,7 @@ impl Settings {
 pub enum Message {
     ColoredNames(bool),
     DesktopNotifications(bool),
+    IconBadge(bool),
     RoomList(Grouping),
     RoomPictures(bool),
     PinnedNotes(bool),
@@ -358,6 +362,10 @@ impl Panel {
                 settings.desktop_notifications = on;
                 return Action::Save;
             }
+            Message::IconBadge(on) => {
+                settings.icon_badge = on;
+                return Action::Save;
+            }
             Message::RoomList(grouping) => {
                 settings.room_list = grouping;
                 return Action::Save;
@@ -512,6 +520,14 @@ impl Panel {
                  unless you are looking at the room.",
                 toggler(settings.desktop_notifications)
                     .on_toggle(|on| message(Message::DesktopNotifications(on)))
+                    .into(),
+            ),
+            option(
+                "Unread count on the app icon",
+                "How many unread messages notify by your Matrix notification \
+                 settings, on the app's icon in the Dock.",
+                toggler(settings.icon_badge)
+                    .on_toggle(|on| message(Message::IconBadge(on)))
                     .into(),
             ),
             heading("Room list"),
@@ -952,6 +968,7 @@ mod tests {
         let settings = Settings {
             colored_names: true,
             desktop_notifications: false,
+            icon_badge: false,
             call_services: vec![CallService::fixed("Zoom", "https://zoom.us/j/1").unwrap()],
             room_list: Grouping {
                 unread_first: true,
