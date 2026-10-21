@@ -314,15 +314,7 @@ impl Room {
     /// reader read, so only it says it was sent.
     fn newest_own(&self) -> Option<&str> {
         self.entries.iter().rev().find_map(|entry| match entry {
-            TimelineEntry::Event(event)
-                if event.own
-                    && !matches!(
-                        event.content,
-                        EventContent::Membership { .. }
-                            | EventContent::DisplayNameChange { .. }
-                            | EventContent::OtherState { .. }
-                    ) =>
-            {
+            TimelineEntry::Event(event) if event.own && !event.is_state() => {
                 Some(event.id.as_str())
             }
             _ => None,
@@ -527,7 +519,7 @@ impl Room {
         let mut state: Vec<&Event> = Vec::new();
         for entry in self.visible() {
             if let TimelineEntry::Event(event) = entry
-                && is_state(event)
+                && event.is_state()
             {
                 state.push(event);
                 continue;
@@ -1353,15 +1345,6 @@ fn display_name(event: &Event) -> String {
         .sender_name
         .clone()
         .unwrap_or_else(|| event.sender.localpart().to_owned())
-}
-
-fn is_state(event: &Event) -> bool {
-    matches!(
-        event.content,
-        EventContent::Membership { .. }
-            | EventContent::DisplayNameChange { .. }
-            | EventContent::OtherState { .. }
-    )
 }
 
 fn state_line<'a>(events: &[&Event]) -> Element<'a, Message> {

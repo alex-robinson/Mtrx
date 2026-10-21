@@ -95,6 +95,19 @@ pub struct Reader {
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct EventKey(TimelineEventItemId);
 
+impl Event {
+    /// A state change (membership, name, room settings), shown folded into
+    /// a summary line.
+    pub fn is_state(&self) -> bool {
+        matches!(
+            self.content,
+            EventContent::Membership { .. }
+                | EventContent::DisplayNameChange { .. }
+                | EventContent::OtherState { .. }
+        )
+    }
+}
+
 #[cfg(feature = "test-support")]
 impl Event {
     /// A text message `id` from `sender`, sent, for tests.
@@ -775,7 +788,38 @@ fn timeline_error(e: impl std::fmt::Display) -> Error {
 }
 
 fn flatten(entries: &Vector<Option<TimelineEntry>>) -> Vec<TimelineEntry> {
-    entries.iter().flatten().cloned().collect()
+    let mut entries: Vec<_> = entries.iter().flatten().cloned().collect();
+    receipts_off_state(&mut entries);
+    entries
+}
+
+/// Readers whose receipt is on a state event move to the nearest earlier
+/// event that is not one: state events show as summary lines without
+/// readers, and the readers did read that event. Without an earlier one
+/// they stay.
+fn receipts_off_state(entries: &mut [TimelineEntry]) {
+    let mut target = None;
+    for index in 0..entries.len() {
+        let TimelineEntry::Event(event) = &mut entries[index] else {
+            continue;
+        };
+        if !event.is_state() {
+            target = Some(index);
+            continue;
+        }
+        let Some(target) = target.filter(|_| !event.read_by.is_empty()) else {
+            continue;
+        };
+        let readers = std::mem::take(&mut event.read_by);
+        let TimelineEntry::Event(target) = &mut entries[target] else {
+            unreachable!("the target is an event");
+        };
+        for reader in readers {
+            if !target.read_by.iter().any(|r| r.id == reader.id) {
+                target.read_by.push(reader);
+            }
+        }
+    }
 }
 
 /// Converts SDK timeline items, noting replies whose original must be fetched.
@@ -1087,6 +1131,68 @@ mod tests {
     use matrix_sdk::ruma::owned_user_id;
 
     use super::*;
+
+    fn reader(id: &str) -> Reader {
+        Reader {
+            id: id.try_into().unwrap(),
+            name: None,
+            avatar: None,
+        }
+    }
+
+    fn event(id: &str, state: bool, readers: &[&str]) -> TimelineEntry {
+        let sender = owned_user_id!("@alice:server.org");
+        let mut event = Event::test_message(id, sender.clone(), "hi");
+        if state {
+            event.content = EventContent::Membership {
+                user: sender,
+                name: None,
+                change: MembershipChange::Joined,
+            };
+        }
+        event.read_by = readers.iter().map(|r| reader(r)).collect();
+        TimelineEntry::Event(event)
+    }
+
+    /// Each event's ID and readers.
+    fn readers(entries: &[TimelineEntry]) -> Vec<(&str, Vec<&str>)> {
+        entries
+            .iter()
+            .filter_map(|entry| match entry {
+                TimelineEntry::Event(e) => Some((
+                    e.id.as_str(),
+                    e.read_by.iter().map(|r| r.id.as_str()).collect(),
+                )),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn receipts_on_state_events_move_to_the_message_before() {
+        let (bob, carol, dave) = ("@bob:server.org", "@carol:server.org", "@dave:server.org");
+        let mut entries = vec![
+            // No earlier message: they stay.
+            event("join", true, &[dave]),
+            event("a", false, &[]),
+            event("b", false, &[bob]),
+            TimelineEntry::ReadMarker,
+            TimelineEntry::DayDivider(SystemTime::UNIX_EPOCH),
+            event("join2", true, &[carol, bob]),
+            event("topic", true, &[dave]),
+        ];
+        receipts_off_state(&mut entries);
+        assert_eq!(
+            readers(&entries),
+            [
+                ("join", vec![dave]),
+                ("a", vec![]),
+                ("b", vec![bob, carol, dave]),
+                ("join2", vec![]),
+                ("topic", vec![]),
+            ]
+        );
+    }
 
     #[test]
     fn mentions_by_id_and_by_unique_name() {

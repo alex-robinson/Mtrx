@@ -966,6 +966,57 @@ async fn members_and_notifications() -> Result<()> {
         let notification = wait_for("notified", notifications, |n| n.body == text).await?;
         assert_eq!(notification.highlight, highlight, "{text}");
     }
+
+    // Bob reads up to carol's join: alice sees him on the message before
+    // it, not on the join, which shows without readers.
+    join_synced(&carol, &room, "lab").await?;
+    let carol_id = carol.session.user_id();
+    let is_carols_join = |ev: &mtrx_core::Event| {
+        matches!(
+            &ev.content,
+            EventContent::Membership {
+                user,
+                change: MembershipChange::InvitationAccepted,
+                ..
+            } if *user == carol_id
+        )
+    };
+    wait_for("bob sees carol join", bob_timeline.updates(), |e| {
+        e.iter()
+            .any(|x| matches!(x, TimelineEntry::Event(ev) if is_carols_join(ev)))
+    })
+    .await?;
+    bob_timeline.mark_read().await?;
+    let bob_id = bob.session.user_id();
+    let last = format!(
+        "{} has it, says {}",
+        carol.session.user_id(),
+        alice_id.localpart()
+    );
+    wait_for(
+        "bob's receipt on his message",
+        alice_timeline.updates(),
+        |e| {
+            let joined = e
+                .iter()
+                .any(|x| matches!(x, TimelineEntry::Event(ev) if is_carols_join(ev)));
+            let on_message = e.iter().any(|x| {
+                matches!(x, TimelineEntry::Event(ev)
+                if matches!(&ev.content, EventContent::Message(m) if m.body == last)
+                    && ev.read_by.iter().any(|r| r.id == bob_id))
+            });
+            joined && on_message
+        },
+    )
+    .await?;
+    let entries = alice_timeline.current();
+    assert!(
+        entries.iter().all(|x| match x {
+            TimelineEntry::Event(ev) => !ev.is_state() || ev.read_by.is_empty(),
+            _ => true,
+        }),
+        "no readers on state events"
+    );
     Ok(())
 }
 
