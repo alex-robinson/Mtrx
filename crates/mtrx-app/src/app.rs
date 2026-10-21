@@ -38,7 +38,7 @@ use crate::{
     login::{self, Login},
     math::{self, Math, Rendered},
     media::{self, Previews, Viewer},
-    mention, message, pdf_viewer,
+    members, mention, message, pdf_viewer,
     room::{self, Look, Older, Room},
     selection::{self, Selection},
     send_later,
@@ -242,6 +242,8 @@ struct Main {
     rooms: RoomListState,
     space: Option<OwnedRoomId>,
     room: Option<Room>,
+    /// The member list is shown beside the open room, whichever it is.
+    show_members: bool,
     /// `None` until known.
     verified: Option<bool>,
     recovery_key: String,
@@ -318,6 +320,7 @@ impl Main {
             rooms: RoomListState::default(),
             space: None,
             room: None,
+            show_members: false,
             verified: None,
             recovery_key: String::new(),
             recovery_step: None,
@@ -358,7 +361,11 @@ impl Main {
         let mut wanted = sidebar::avatars(&self.room_list_view(settings));
         wanted.extend(self.info.as_ref().and_then(|c| c.avatar(rooms)));
         if let Some(room) = &self.room {
-            wanted.extend(room.avatars(rooms.iter().find(|r| r.id == room.id), &self.own_user));
+            wanted.extend(room.avatars(
+                rooms.iter().find(|r| r.id == room.id),
+                &self.own_user,
+                self.show_members,
+            ));
         }
         wanted
             .into_iter()
@@ -711,10 +718,17 @@ impl App {
                         let mut room = Room::new(id.clone(), timeline);
                         let paginate = fill(&mut room);
                         let read = mark_read(&room);
+                        // The member list stays open from the last room.
+                        let members = if main.show_members {
+                            load_members(&main.session, &mut room)
+                        } else {
+                            Task::none()
+                        };
                         main.room = Some(room);
                         Task::batch([
                             paginate,
                             read,
+                            members,
                             self.render_math(),
                             self.load_avatars(),
                             self.load_previews(),
@@ -1386,15 +1400,13 @@ impl App {
                 let Screen::Main(main) = &mut self.screen else {
                     return Task::none();
                 };
-                let Some(room) = main.room.as_mut() else {
-                    return Task::none();
-                };
-                room.show_members = !room.show_members;
+                main.show_members = !main.show_members;
                 // Opening it shows the members anew.
-                if room.show_members && !room.loading_members {
-                    load_members(&main.session, room)
-                } else {
-                    Task::none()
+                match main.room.as_mut() {
+                    Some(room) if main.show_members && !room.loading_members => {
+                        load_members(&main.session, room)
+                    }
+                    _ => Task::none(),
                 }
             }
             Message::MembersLoaded(id, result) => {
@@ -2747,9 +2759,24 @@ impl App {
             (Some((id, answering)), _, _) => {
                 invite_view(rooms.iter().find(|r| &r.id == id), id, *answering)
             }
-            (None, Some(_), _) => container(text("Opening…").style(text::secondary))
-                .center(Length::Fill)
-                .into(),
+            (None, Some(id), _) => {
+                let opening =
+                    container(text("Opening…").style(text::secondary)).center(Length::Fill);
+                // The member list stays where it is, loading.
+                if main.show_members {
+                    let name = rooms
+                        .iter()
+                        .find(|r| &r.id == id)
+                        .map_or("", |r| r.name.as_str());
+                    row![
+                        opening,
+                        members::view(None, id, name, &main.own_user, &main.avatars)
+                    ]
+                    .into()
+                } else {
+                    opening.into()
+                }
+            }
             (None, None, Some(room)) => {
                 let summary = rooms.iter().find(|r| r.id == room.id);
                 let scheduled = send_later::Pending {
@@ -2770,6 +2797,7 @@ impl App {
                     call_services: &self.settings.call_services,
                     previews: &main.previews,
                     frequent_emoji: &main.frequent_emoji,
+                    show_members: main.show_members,
                 };
                 room.view(summary, &look, &scheduled)
             }

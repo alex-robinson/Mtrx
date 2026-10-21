@@ -689,8 +689,8 @@ fn composer_keeps_focus(app: &mut App) {
             room(app).error = Some("Not sent".into())
         }),
         ("it goes", |app| room(app).error = None),
-        ("members open", |app| room(app).show_members = true),
-        ("members close", |app| room(app).show_members = false),
+        ("members open", |app| main(app).show_members = true),
+        ("members close", |app| main(app).show_members = false),
         ("mentions offered", |app| {
             let member = person("@ana:example.org", "Ana", mtrx_core::Role::Member);
             room(app).members_loaded(Ok((vec![member], false)));
@@ -1158,6 +1158,15 @@ async fn room_management_screens() {
         })
         .await
         .unwrap();
+    // Switched to with the member list open.
+    let other = alice
+        .create_room(NewRoom {
+            name: Some("firn".into()),
+            parent: Some(space.clone()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
     let list = alice.room_list().await.unwrap();
     let rooms = tokio::time::timeout(TIMEOUT, async {
         let mut updates = std::pin::pin!(list.updates());
@@ -1167,6 +1176,10 @@ async fn room_management_screens() {
                     .rooms
                     .iter()
                     .any(|r| r.id == room && r.parents.contains(&space) && r.name == "ice-sheets")
+                && state
+                    .rooms
+                    .iter()
+                    .any(|r| r.id == other && r.name == "firn")
             {
                 return state;
             }
@@ -1242,12 +1255,31 @@ async fn room_management_screens() {
     snapshot(
         &main_with(&|main| {
             main.filter = "ice".into();
+            main.show_members = true;
             let room = main.room.as_mut().unwrap();
-            room.show_members = true;
             room.members_loaded(Ok((members.clone(), true)));
         }),
         "members-search",
     );
+    // The member list stays open, at its width, while another room opens
+    // and its members load.
+    let mut app = main_with(&|main| {
+        main.show_members = true;
+        let room = main.room.as_mut().unwrap();
+        room.members_loaded(Ok((members.clone(), true)));
+    });
+    let _ = app.update(Message::OpenRoom(other.clone()));
+    snapshot(&app, "members-opening");
+    let opened = Shared(Arc::new(session.timeline(&other).await.unwrap()));
+    let _ = app.update(Message::RoomOpened(other.clone(), Ok(opened)));
+    let Screen::Main(main) = &app.screen else {
+        unreachable!()
+    };
+    let open = main.room.as_ref().unwrap();
+    assert_eq!(open.id, other);
+    assert!(main.show_members);
+    assert!(open.loading_members && open.member_list.is_none());
+    snapshot(&app, "members-switched");
 
     let bob_info = session.user_info(&bob.user_id()).await.unwrap();
     let contacts = session.contacts().await.unwrap();

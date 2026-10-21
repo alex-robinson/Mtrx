@@ -112,8 +112,6 @@ pub struct Room {
     pub confirm_delete: Option<String>,
     /// Names of others typing.
     pub typing: Vec<String>,
-    /// The member list is shown.
-    pub show_members: bool,
     /// The members once loaded, or why loading failed: for the member list
     /// and mentions.
     pub member_list: Option<Result<Vec<Member>, String>>,
@@ -163,7 +161,6 @@ impl Room {
             composer_emoji: None,
             confirm_delete: None,
             typing: Vec::new(),
-            show_members: false,
             member_list: None,
             loading_members: false,
             mentions: Default::default(),
@@ -355,10 +352,12 @@ impl Room {
     }
 
     /// Pictures of the header and the rendered senders, with their sizes.
+    /// `members_shown`: with the member list's.
     pub fn avatars<'a>(
         &'a self,
         summary: Option<&'a RoomSummary>,
         own: &UserId,
+        members_shown: bool,
     ) -> impl Iterator<Item = (&'a MxcUri, f32)> {
         let room = summary.and_then(|s| Some((s.avatar.as_deref()?, HEADER_AVATAR)));
         let senders = self
@@ -380,7 +379,7 @@ impl Room {
                     .chain(actions::reactor_avatars(event, reactors))
             });
         let listed = match &self.member_list {
-            Some(Ok(list)) if self.show_members => list.as_slice(),
+            Some(Ok(list)) if members_shown => list.as_slice(),
             _ => &[],
         };
         let members = members::avatars(listed);
@@ -739,7 +738,7 @@ impl Room {
         let main = column![timeline, bottom].width(Length::Fill);
         // The member list comes after, so it does not move the composer.
         let mut body = row![main];
-        if self.show_members {
+        if look.show_members {
             let name = summary.map_or("", |s| s.name.as_str());
             body = body.push(members::view(
                 self.member_list.as_ref(),
@@ -795,7 +794,7 @@ impl Room {
             Some(RoomKind::Direct) => "Who this is",
             _ => "Room settings and address",
         };
-        let members_tip = if self.show_members {
+        let members_tip = if look.show_members {
             "Hide the member list"
         } else {
             "Show who is in the room"
@@ -807,7 +806,7 @@ impl Room {
                 hint(
                     button(text("Members").size(13))
                         .padding([5, 10])
-                        .style(style::list_item(self.show_members))
+                        .style(style::list_item(look.show_members))
                         .on_press(Message::ToggleMembers),
                     members_tip,
                     Position::Bottom,
@@ -851,6 +850,8 @@ pub struct Look<'a> {
     pub previews: &'a Previews,
     /// The user's most used emoji, for reactions.
     pub frequent_emoji: &'a [String],
+    /// The member list is shown beside the room.
+    pub show_members: bool,
 }
 
 /// What rendering an event needs besides the event.
