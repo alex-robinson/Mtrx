@@ -90,6 +90,8 @@ pub struct Room {
     pub picker: Option<(String, PickerAt)>,
     /// The timeline row whose menu is open, and where.
     pub menu: Option<(String, MenuAt)>,
+    /// The timeline row whose readers are listed.
+    pub readers: Option<String>,
     /// Text selected in the timeline.
     pub selection: Option<Selection>,
     /// All emoji in the reaction picker, while shown.
@@ -140,6 +142,7 @@ impl Room {
             editing: None,
             picker: None,
             menu: None,
+            readers: None,
             selection: None,
             emoji: None,
             composer_emoji: None,
@@ -274,6 +277,7 @@ impl Room {
         self.paginating = false;
         self.reloading = false;
         self.picker = None;
+        self.readers = None;
         self.confirm_delete = None;
         self.error = None;
     }
@@ -323,7 +327,10 @@ impl Room {
             })
             .flat_map(|event| {
                 let sender = event.sender_avatar.as_deref().map(|a| (a, SENDER_AVATAR));
-                sender.into_iter().chain(actions::reader_avatars(event))
+                let listed = self.readers.as_deref() == Some(event.id.as_str());
+                sender
+                    .into_iter()
+                    .chain(actions::reader_avatars(event, listed))
             });
         let listed = match &self.member_list {
             Some(Ok(list)) if self.show_members => list.as_slice(),
@@ -449,6 +456,7 @@ impl Room {
             hovered: self.hovered.as_deref(),
             picker: self.picker.as_ref().map(|(id, at)| (id.as_str(), *at)),
             menu: self.menu.as_ref().map(|(id, at)| (id.as_str(), *at)),
+            readers: self.readers.as_deref(),
             selected,
             dragging: self.selection.as_ref().is_some_and(|s| s.dragging),
             emoji: self.emoji.as_ref(),
@@ -808,6 +816,8 @@ struct Context<'a, 'b> {
     hovered: Option<&'b str>,
     picker: Option<(&'b str, PickerAt)>,
     menu: Option<(&'b str, MenuAt)>,
+    /// The row whose readers are listed.
+    readers: Option<&'b str>,
     /// The selection, with each message's index in the timeline.
     selected: Option<(Bounds, &'b HashMap<&'b str, usize>)>,
     dragging: bool,
@@ -1041,7 +1051,8 @@ fn event_view<'a>(
         .style(style::message_row(hovered));
     // Read markers sit in the free margin at the bottom right, so receipts
     // never change the row's height.
-    let markers = actions::read_markers(event, context.avatars).map(|markers| {
+    let listed = context.readers == Some(event.id.as_str());
+    let markers = actions::read_markers(event, context.avatars, listed).map(|markers| {
         container(markers)
             .align_right(Length::Fill)
             .align_bottom(Length::Fill)

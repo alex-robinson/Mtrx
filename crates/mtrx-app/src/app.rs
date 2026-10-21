@@ -1037,6 +1037,10 @@ impl App {
                 };
                 main.arrange.escape();
                 main.add_menu = false;
+                // Opened from the list of a message's readers, say.
+                if let Some(room) = &mut main.room {
+                    room.readers = None;
+                }
                 let card = info::Card::new(target, &main.rooms.rooms);
                 let load = match card.user() {
                     Some(user) => {
@@ -1325,6 +1329,8 @@ impl App {
                         room.completion = None;
                     } else if let Some(room) = main.room.as_mut().filter(|r| r.menu.is_some()) {
                         room.menu = None;
+                    } else if let Some(room) = main.room.as_mut().filter(|r| r.readers.is_some()) {
+                        room.readers = None;
                     } else if let Some(room) = main.room.as_mut().filter(|r| r.selection.is_some())
                     {
                         room.selection = None;
@@ -2128,6 +2134,14 @@ impl App {
             }
             Act::CloseMenu => {
                 room.menu = None;
+                Task::none()
+            }
+            Act::OpenReaders(id) => {
+                room.readers = Some(id);
+                Task::none()
+            }
+            Act::CloseReaders => {
+                room.readers = None;
                 Task::none()
             }
             Act::Copy(text) => {

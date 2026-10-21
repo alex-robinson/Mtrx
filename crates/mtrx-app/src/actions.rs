@@ -5,7 +5,7 @@
 use iced::{
     Alignment, Element, Length, Theme,
     keyboard::{Key, key::Named},
-    widget::{button, column, container, row, space, text, text_editor},
+    widget::{button, column, container, row, scrollable, space, text, text_editor},
 };
 use mtrx_core::{Event, EventKey, Media, MxcUri, OwnedEventId, Reaction, Reader, Reply};
 use mtrx_format::Document;
@@ -16,7 +16,7 @@ use crate::{
     ellipsis::ellipsis,
     emoji, fonts,
     hint::{Position, hint},
-    icons, mention,
+    icons, info, mention,
     message_menu::MenuAt,
     popover::{Edge, Side, popover},
     style,
@@ -27,6 +27,11 @@ const MAX_READERS: usize = 3;
 const READER_AVATAR: f32 = 16.0;
 /// Readers named in the read markers' hint before "and N others".
 const HINT_NAMES: usize = 5;
+/// The list of everyone who read a message: the size of their pictures,
+/// its width, and its height before it scrolls.
+const LISTED_AVATAR: f32 = 24.0;
+const READERS_WIDTH: f32 = 220.0;
+const READERS_HEIGHT: f32 = 240.0;
 /// Height of the typing line: one line of 12pt text (iced's line height is
 /// 1.3 times the size), kept whether or not anyone types.
 const TYPING_HEIGHT: f32 = 12.0 * 1.3;
@@ -57,6 +62,9 @@ pub enum Message {
     /// Open a timeline row's menu, there.
     OpenMenu(String, MenuAt),
     CloseMenu,
+    /// List everyone who read up to a timeline row's message.
+    OpenReaders(String),
+    CloseReaders,
     /// Put text on the clipboard.
     Copy(String),
     /// Put the text selected in the timeline on the clipboard.
@@ -490,8 +498,13 @@ pub fn confirm_delete<'a>(event: &Event) -> Element<'a, app::Message> {
     .into()
 }
 
-/// Small pictures of who read up to this message.
-pub fn read_markers<'a>(event: &Event, avatars: &Avatars) -> Option<Element<'a, app::Message>> {
+/// Small pictures of who read up to this message; a click lists them all
+/// (`open`, while listed).
+pub fn read_markers<'a>(
+    event: &Event,
+    avatars: &Avatars,
+    open: bool,
+) -> Option<Element<'a, app::Message>> {
     if event.read_by.is_empty() {
         return None;
     }
@@ -512,9 +525,59 @@ pub fn read_markers<'a>(event: &Event, avatars: &Avatars) -> Option<Element<'a, 
                 .style(text::secondary),
         );
     }
+    // While open, a click on them closes the list as any outside click.
+    let markers = button(markers)
+        .padding(0)
+        .style(style::text_button)
+        .on_press_maybe((!open).then(|| act(Message::OpenReaders(event.id.clone()))));
+    if open {
+        let list = readers(event, avatars);
+        return Some(
+            popover(markers, Some(list), Side::Above, Edge::Right)
+                .on_dismiss(act(Message::CloseReaders))
+                .into(),
+        );
+    }
     let names: Vec<_> = event.read_by.iter().map(reader_name).collect();
     // The names show over the pictures.
     Some(hint(markers, read_by(&names), Position::Top))
+}
+
+/// Everyone who read up to this message; a click on one opens their card.
+fn readers<'a>(event: &Event, avatars: &Avatars) -> Element<'a, app::Message> {
+    let rows = event.read_by.iter().map(|reader| {
+        let mut label = column![ellipsis(reader_name(reader).to_owned()).size(13)];
+        if reader.name.is_some() {
+            label = label.push(
+                ellipsis(reader.id.to_string())
+                    .size(11)
+                    .style(text::secondary),
+            );
+        }
+        let picture = avatars.view(
+            reader.id.as_str(),
+            reader_name(reader),
+            reader.avatar.as_deref(),
+            LISTED_AVATAR,
+            Shape::Circle,
+        );
+        button(row![picture, label].spacing(8).align_y(Alignment::Center))
+            .width(Length::Fill)
+            .padding([4, 6])
+            .style(style::list_item(false))
+            .on_press(app::Message::ShowInfo(info::sender(
+                reader.id.clone(),
+                reader.name.clone(),
+                reader.avatar.clone(),
+            )))
+            .into()
+    });
+    container(scrollable(column(rows).spacing(2)))
+        .width(READERS_WIDTH)
+        .max_height(READERS_HEIGHT)
+        .padding(4)
+        .style(style::toolbar)
+        .into()
 }
 
 /// "Read by Alice, Bob and Carol", naming at most `HINT_NAMES` readers:
@@ -539,13 +602,18 @@ fn reader_name(reader: &Reader) -> &str {
     reader.name.as_deref().unwrap_or(reader.id.localpart())
 }
 
-/// Pictures of readers shown, with their sizes.
-pub fn reader_avatars(event: &Event) -> impl Iterator<Item = (&MxcUri, f32)> {
-    event
+/// Pictures of readers shown, with their sizes: in the markers, and of
+/// everyone while `listed`.
+pub fn reader_avatars(event: &Event, listed: bool) -> impl Iterator<Item = (&MxcUri, f32)> {
+    let markers = event
         .read_by
         .iter()
         .take(MAX_READERS)
-        .filter_map(|r| Some((r.avatar.as_deref()?, READER_AVATAR)))
+        .filter_map(|r| Some((r.avatar.as_deref()?, READER_AVATAR)));
+    let list = (event.read_by.iter())
+        .filter(move |_| listed)
+        .filter_map(|r| Some((r.avatar.as_deref()?, LISTED_AVATAR)));
+    markers.chain(list)
 }
 
 /// Others typing, above the composer: a line always there, empty when

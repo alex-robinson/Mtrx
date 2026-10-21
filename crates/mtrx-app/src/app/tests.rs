@@ -531,7 +531,32 @@ async fn main_screen_with_math() {
             "main-light"
         };
         snapshot(&app, name);
-        // A click elsewhere closes the call menu (dark) or link editor (light).
+        if mode == Mode::Light {
+            // Everyone who read up to a message, listed from its markers,
+            // instead of the hovered message's menu.
+            let Screen::Main(main) = &mut app.screen else {
+                unreachable!()
+            };
+            let open = main.room.as_mut().unwrap();
+            let read = (open.entries.iter())
+                .find_map(|e| match e {
+                    TimelineEntry::Event(ev)
+                        if ev.read_by.iter().any(|r| r.id == bob.user_id()) =>
+                    {
+                        Some(ev.id.clone())
+                    }
+                    _ => None,
+                })
+                .unwrap();
+            open.menu = None;
+            open.readers = Some(read);
+            for (mxc, size) in main.avatars_on_screen(&Default::default()) {
+                main.avatars.load_now(&alice, &mxc, size).await;
+            }
+            snapshot(&app, "readers-light");
+        }
+        // A click elsewhere closes the call menu (dark) or link editor and
+        // the list of readers (light).
         let mut ui = Simulator::with_size(fonts::settings(), Size::new(1200.0, 800.0), app.view());
         ui.point_at(iced::Point::new(400.0, 130.0));
         ui.simulate(iced_test::simulator::click());
@@ -543,6 +568,15 @@ async fn main_screen_with_math() {
             "{messages:?}"
         );
         if mode == Mode::Light {
+            assert!(
+                messages
+                    .iter()
+                    .any(|m| matches!(m, Message::Act(actions::Message::CloseReaders))),
+                "{messages:?}"
+            );
+            if let Screen::Main(main) = &mut app.screen {
+                main.room.as_mut().unwrap().readers = None;
+            }
             composer_keeps_focus(&mut app);
         }
     }
