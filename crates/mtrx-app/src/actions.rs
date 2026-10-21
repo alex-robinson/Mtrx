@@ -25,6 +25,9 @@ use crate::{
 /// Read markers shown per message before "+N".
 const MAX_READERS: usize = 3;
 const READER_AVATAR: f32 = 16.0;
+/// Height of the typing line: one line of 12pt text (iced's line height is
+/// 1.3 times the size), kept whether or not anyone types.
+const TYPING_HEIGHT: f32 = 12.0 * 1.3;
 
 #[derive(Debug, Clone)]
 pub enum Message {
@@ -530,15 +533,20 @@ pub fn reader_avatars(event: &Event) -> impl Iterator<Item = (&MxcUri, f32)> {
         .filter_map(|r| Some((r.avatar.as_deref()?, READER_AVATAR)))
 }
 
-/// Others typing, above the composer.
-pub fn typing<'a>(names: &[String]) -> Option<Element<'a, app::Message>> {
+/// Others typing, above the composer: a line always there, empty when
+/// nobody types, so the composer and the timeline above stay put.
+pub fn typing<'a>(names: &[String]) -> Element<'a, app::Message> {
     let line = match names {
-        [] => return None,
-        [one] => format!("{one} is typing…"),
-        [one, two] => format!("{one} and {two} are typing…"),
-        [one, rest @ ..] => format!("{one} and {} others are typing…", rest.len()),
+        [] => None,
+        [one] => Some(format!("{one} is typing…")),
+        [one, two] => Some(format!("{one} and {two} are typing…")),
+        [one, rest @ ..] => Some(format!("{one} and {} others are typing…", rest.len())),
     };
-    Some(text(line).size(12).style(text::secondary).into())
+    let line: Element<'a, app::Message> = match line {
+        Some(line) => text(line).size(12).style(text::secondary).into(),
+        None => space().into(),
+    };
+    container(line).height(TYPING_HEIGHT).into()
 }
 
 pub fn act(message: Message) -> app::Message {

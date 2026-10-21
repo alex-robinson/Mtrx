@@ -661,9 +661,7 @@ impl Room {
                 look.frequent_emoji,
             ));
         }
-        if let Some(typing) = actions::typing(&self.typing) {
-            above = above.push(typing);
-        }
+        above = above.push(actions::typing(&self.typing));
         if let Some(bar) = self.compose.bar() {
             above = above.push(bar);
         }
