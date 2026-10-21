@@ -352,9 +352,24 @@ async fn emoji_self_verification() -> Result<()> {
     let new = login(&name).await?;
     assert!(old.session.is_device_verified().await?);
     assert!(!new.session.is_device_verified().await?);
-    // Both devices must know each other before verifying.
-    old.session.room_list().await?.wait_loaded().await;
-    new.session.room_list().await?.wait_loaded().await;
+    // Both devices must know each other's keys before verifying: a request
+    // from a device not known yet is dropped.
+    for (device, other) in [(&old, &new), (&new, &old)] {
+        let other = other.session.device_id();
+        timeout("devices know each other", async {
+            while !device
+                .session
+                .devices()
+                .await?
+                .iter()
+                .any(|d| d.id == other)
+            {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            anyhow::Ok(())
+        })
+        .await??;
+    }
 
     let mut incoming = std::pin::pin!(old.session.verification_requests());
     let outgoing = new.session.request_self_verification().await?;

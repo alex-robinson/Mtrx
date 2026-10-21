@@ -351,10 +351,20 @@ impl RoomTimeline {
             .map_err(timeline_error)
     }
 
-    /// Send again one of our messages whose sending failed.
+    /// Send again one of our messages whose sending failed. A message sent
+    /// meanwhile keeps its handle until the server's copy replaces it, and
+    /// is not sent twice.
     pub async fn retry(&self, event: &EventKey) -> Result<()> {
-        self.send_handle(event)
-            .await?
+        let item = self.local_echo(event).await?;
+        if !matches!(
+            item.send_state(),
+            Some(EventSendState::SendingFailed { .. })
+        ) {
+            return Err(Error::Timeline(
+                "only a message whose sending failed can be sent again".into(),
+            ));
+        }
+        send_handle(&item)?
             .unwedge()
             .await
             .map_err(timeline_error)?;
@@ -365,9 +375,7 @@ impl RoomTimeline {
     /// Drop one of our messages not sent (yet), e.g. after sending failed.
     /// The messages queued after it are then sent.
     pub async fn discard(&self, event: &EventKey) -> Result<()> {
-        let dropped = self
-            .send_handle(event)
-            .await?
+        let dropped = send_handle(&self.local_echo(event).await?)?
             .abort()
             .await
             .map_err(timeline_error)?;
@@ -385,8 +393,8 @@ impl RoomTimeline {
         self.timeline.room().send_queue().set_enabled(true);
     }
 
-    /// The send queue's handle of a local echo.
-    async fn send_handle(&self, event: &EventKey) -> Result<SendHandle> {
+    /// Our message `event` while it is a local echo.
+    async fn local_echo(&self, event: &EventKey) -> Result<EventTimelineItem> {
         self.timeline
             .items()
             .await
@@ -394,7 +402,8 @@ impl RoomTimeline {
             .rev()
             .filter_map(|item| item.as_event())
             .find(|item| item.identifier() == event.0)
-            .and_then(|item| item.local_echo_send_handle())
+            .filter(|item| item.is_local_echo())
+            .cloned()
             .ok_or_else(|| Error::Timeline("not a message being sent".into()))
     }
 
@@ -790,6 +799,12 @@ async fn member_profile(room: &Room, user: &OwnedUserId) -> Profile {
             (None, None)
         }
     }
+}
+
+/// The send queue's handle of a local echo.
+fn send_handle(item: &EventTimelineItem) -> Result<SendHandle> {
+    item.local_echo_send_handle()
+        .ok_or_else(|| Error::Timeline("not a message being sent".into()))
 }
 
 fn timeline_error(e: impl std::fmt::Display) -> Error {
