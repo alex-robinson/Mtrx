@@ -1,15 +1,17 @@
-use mtrx_format::{Block, Document, Inline, Style, markdown_to_matrix};
+use mtrx_format::{
+    Block, Document, Inline, Mention, MentionTarget, Style, find_mentions, markdown_to_matrix,
+};
 
 #[test]
 fn plain_text_has_no_html() {
-    let f = markdown_to_matrix("just text, 5 < 6");
+    let f = markdown_to_matrix("just text, 5 < 6", &[]);
     assert_eq!(f.body, "just text, 5 < 6");
     assert_eq!(f.html, None);
 }
 
 #[test]
 fn markdown_and_line_breaks() {
-    let f = markdown_to_matrix("**bold** and *it*\nnext line");
+    let f = markdown_to_matrix("**bold** and *it*\nnext line", &[]);
     assert_eq!(
         f.html.as_deref(),
         Some("<p><strong>bold</strong> and <em>it</em><br />\nnext line</p>")
@@ -18,7 +20,7 @@ fn markdown_and_line_breaks() {
 
 #[test]
 fn math_uses_element_format() {
-    let f = markdown_to_matrix(r"Energy $E=mc^2$ and $$\frac{a}{b} < 1$$");
+    let f = markdown_to_matrix(r"Energy $E=mc^2$ and $$\frac{a}{b} < 1$$", &[]);
     let html = f.html.unwrap();
     assert!(
         html.contains(r#"<span data-mx-maths="E=mc^2"><code>E=mc^2</code></span>"#),
@@ -34,12 +36,12 @@ fn math_uses_element_format() {
 
 #[test]
 fn dollar_amounts_are_not_math() {
-    assert_eq!(markdown_to_matrix("it costs $5 and $10").html, None);
+    assert_eq!(markdown_to_matrix("it costs $5 and $10", &[]).html, None);
 }
 
 #[test]
 fn typed_html_is_not_interpreted() {
-    let html = markdown_to_matrix("<b>x</b> **y**").html.unwrap();
+    let html = markdown_to_matrix("<b>x</b> **y**", &[]).html.unwrap();
     assert!(html.contains("&lt;b&gt;x&lt;/b&gt;"), "{html}");
 }
 
@@ -65,7 +67,7 @@ fn parses_element_math() {
 #[test]
 fn markdown_roundtrip_keeps_latex() {
     let text = r"Ratio $\alpha/\beta$ **bold**";
-    let doc = Document::from_html(&markdown_to_matrix(text).html.unwrap());
+    let doc = Document::from_html(&markdown_to_matrix(text, &[]).html.unwrap());
     assert_eq!(doc.to_plain_text(), r"Ratio $\alpha/\beta$ bold");
 }
 
@@ -120,10 +122,24 @@ mod render {
     }
 
     fn doc(markdown: &str) -> Document {
-        let f = markdown_to_matrix(markdown);
+        let f = markdown_to_matrix(markdown, &[]);
         f.html
             .map(|h| Document::from_html(&h))
             .unwrap_or_else(|| Document::from_plain(&f.body))
+    }
+
+    #[test]
+    fn mentions_are_drawn_as_text_leaves() {
+        let renderer = Renderer::new::<Vec<u8>>([]);
+        let document = Document::from_html(
+            r#"Ask <a href="https://matrix.to/#/@nils:server.org">Nils</a> about it"#,
+        );
+        let image = renderer.render(&document, &style(400.0)).unwrap();
+        // The text, the mention, the text after it.
+        let mention: Vec<_> = image.pieces.iter().filter(|p| p.leaf == 1).collect();
+        let covered: usize = mention.iter().map(|p| p.range.clone().unwrap().len()).sum();
+        assert_eq!(covered, "Nils".len());
+        assert_eq!(image.pieces.last().map(|p| p.leaf), Some(2));
     }
 
     #[test]
@@ -268,4 +284,153 @@ fn bare_urls_become_links() {
          <code>https://d.example</code>",
     );
     assert_eq!(doc.links(), ["https://a.example/x", "https://b.example"]);
+}
+
+fn user(text: &str, id: &str, name: &str) -> MentionTarget {
+    MentionTarget {
+        text: text.into(),
+        mention: Mention::User {
+            href: format!("https://matrix.to/#/{id}"),
+            name: name.into(),
+        },
+    }
+}
+
+/// Nils by name and ID, Nils Weitzel (a longer name), and the room.
+fn targets() -> Vec<MentionTarget> {
+    vec![
+        user("Nils", "@nils:server.org", "Nils"),
+        user("nils:server.org", "@nils:server.org", "Nils"),
+        user("Nils Weitzel", "@weitzel:server.org", "Nils Weitzel"),
+        MentionTarget {
+            text: "room".into(),
+            mention: Mention::Room,
+        },
+    ]
+}
+
+#[test]
+fn mention_by_name_with_a_space() {
+    let f = markdown_to_matrix("thanks @Nils Weitzel!", &targets());
+    assert_eq!(
+        f.html.as_deref(),
+        Some(
+            r#"<p>thanks <a href="https://matrix.to/#/@weitzel:server.org">Nils Weitzel</a>!</p>"#
+        )
+    );
+    assert_eq!(f.body, "thanks @Nils Weitzel!");
+    assert_eq!(f.mentions, [2]);
+}
+
+#[test]
+fn mention_by_id() {
+    let f = markdown_to_matrix("ask @nils:server.org.", &targets());
+    assert_eq!(
+        f.html.as_deref(),
+        Some(r#"<p>ask <a href="https://matrix.to/#/@nils:server.org">Nils</a>.</p>"#)
+    );
+    assert_eq!(f.mentions, [1]);
+}
+
+#[test]
+fn mention_of_the_room_stays_plain() {
+    let f = markdown_to_matrix("@room lunch?", &targets());
+    assert_eq!(f.html, None);
+    assert_eq!(f.mentions, [3]);
+    // Not a word that only starts with it.
+    assert!(markdown_to_matrix("@rooms", &targets()).mentions.is_empty());
+}
+
+#[test]
+fn unknown_names_are_text() {
+    let f = markdown_to_matrix("hi @Anna and me@Nils", &targets());
+    assert_eq!(f.html, None);
+    assert!(f.mentions.is_empty());
+}
+
+#[test]
+fn no_mentions_in_code_or_links() {
+    let f = markdown_to_matrix(
+        "`@Nils` [@Nils](https://x.org)\n\n```\n@Nils\n```",
+        &targets(),
+    );
+    assert!(f.mentions.is_empty(), "{:?}", f.html);
+    assert!(!f.html.unwrap().contains("matrix.to"));
+}
+
+#[test]
+fn longest_name_wins() {
+    let f = markdown_to_matrix("@Nils Weitzel and @Nils", &targets());
+    assert_eq!(f.mentions, [2, 0]);
+    let html = f.html.unwrap();
+    assert!(html.contains(r#"<a href="https://matrix.to/#/@weitzel:server.org">Nils Weitzel</a> and <a href="https://matrix.to/#/@nils:server.org">Nils</a>"#), "{html}");
+}
+
+#[test]
+fn mentions_stop_at_word_boundaries() {
+    let f = markdown_to_matrix("@Nilsson and @Nils_x", &targets());
+    assert!(f.mentions.is_empty());
+    assert_eq!(f.html, None);
+}
+
+#[test]
+fn mentions_at_the_start_and_end() {
+    let f = markdown_to_matrix("@Nils see @Nils Weitzel", &targets());
+    assert_eq!(f.mentions, [0, 2]);
+    assert_eq!(
+        f.html.as_deref(),
+        Some(
+            r#"<p><a href="https://matrix.to/#/@nils:server.org">Nils</a> see <a href="https://matrix.to/#/@weitzel:server.org">Nils Weitzel</a></p>"#
+        )
+    );
+}
+
+#[test]
+fn finds_mentions_longest_first() {
+    let targets = ["Nils", "Nils Weitzel", "room"];
+    assert_eq!(
+        find_mentions("@Nils Weitzel, @Nilsson @room @Nils", &targets),
+        [(0..13, 1), (24..29, 2), (30..35, 0)]
+    );
+}
+
+#[test]
+fn matrix_links_to_users_are_mentions() {
+    let doc = Document::from_html(
+        r#"hi <a href="https://matrix.to/#/@nils:server.org">Nils <b>W</b></a>, <a href="matrix:u/anna:server.org">Anna</a> and <a href="https://matrix.to/#/!room:server.org">the room</a>"#,
+    );
+    let mention = |user_id: &str, name: &str| Inline::Mention {
+        user_id: user_id.into(),
+        name: name.into(),
+    };
+    assert_eq!(
+        doc.blocks,
+        vec![Block::Paragraph(vec![
+            Inline::Text("hi ".into()),
+            mention("@nils:server.org", "Nils W"),
+            Inline::Text(", ".into()),
+            mention("@anna:server.org", "Anna"),
+            Inline::Text(" and ".into()),
+            Inline::Link {
+                url: "https://matrix.to/#/!room:server.org".into(),
+                content: vec![Inline::Text("the room".into())],
+            },
+        ])]
+    );
+    assert_eq!(doc.links(), ["https://matrix.to/#/!room:server.org"]);
+    assert_eq!(
+        doc.to_plain_text(),
+        "hi Nils W, Anna and the room (https://matrix.to/#/!room:server.org)"
+    );
+
+    // As sent.
+    let sent = markdown_to_matrix("thanks @Nils Weitzel", &targets());
+    let doc = Document::from_html(&sent.html.unwrap());
+    assert_eq!(
+        doc.blocks,
+        vec![Block::Paragraph(vec![
+            Inline::Text("thanks ".into()),
+            mention("@weitzel:server.org", "Nils Weitzel"),
+        ])]
+    );
 }

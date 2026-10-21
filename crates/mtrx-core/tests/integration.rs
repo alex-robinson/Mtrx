@@ -828,6 +828,8 @@ async fn replies_reactions_edits_typing_receipts() -> Result<()> {
         .key
         .clone();
     alice_timeline.toggle_reaction(&question_key, "👍").await?;
+    // With who reacted, named.
+    let alice_id = alice.session.user_id();
     wait_for("bob sees the reaction", bob_timeline.updates(), |e| {
         find_message(e, "Which dataset?").is_some_and(|ev| {
             message(ev).reactions
@@ -835,6 +837,11 @@ async fn replies_reactions_edits_typing_receipts() -> Result<()> {
                     key: "👍".into(),
                     count: 1,
                     own: false,
+                    by: vec![mtrx_core::Reader {
+                        id: alice_id.clone(),
+                        name: Some(alice_id.localpart().to_owned()),
+                        avatar: None,
+                    }],
                 }]
         })
     })
@@ -941,6 +948,82 @@ async fn members_and_notifications() -> Result<()> {
     let notification = wait_for("notified", notifications, |n| n.room_id == room).await?;
     assert_eq!(notification.body, "Results are in");
     assert_eq!(notification.room_name, "lab");
+    assert!(!notification.highlight);
+
+    // A mention (`m.mentions`) highlights it; a mention of someone else
+    // does not, even with alice's name in the text.
+    let alice_id = alice.session.user_id();
+    for (text, highlight) in [
+        (format!("Thanks {alice_id}!"), true),
+        (
+            format!(
+                "{} has it, says {}",
+                carol.session.user_id(),
+                alice_id.localpart()
+            ),
+            false,
+        ),
+    ] {
+        let notifications = alice.session.notifications();
+        timeout(
+            "send",
+            bob_timeline.send_markdown(&text, None).await?.sent(),
+        )
+        .await??;
+        let notification = wait_for("notified", notifications, |n| n.body == text).await?;
+        assert_eq!(notification.highlight, highlight, "{text}");
+    }
+
+    // Bob reads up to carol's join: alice sees him on the message before
+    // it, not on the join, which shows without readers.
+    join_synced(&carol, &room, "lab").await?;
+    let carol_id = carol.session.user_id();
+    let is_carols_join = |ev: &mtrx_core::Event| {
+        matches!(
+            &ev.content,
+            EventContent::Membership {
+                user,
+                change: MembershipChange::InvitationAccepted,
+                ..
+            } if *user == carol_id
+        )
+    };
+    wait_for("bob sees carol join", bob_timeline.updates(), |e| {
+        e.iter()
+            .any(|x| matches!(x, TimelineEntry::Event(ev) if is_carols_join(ev)))
+    })
+    .await?;
+    bob_timeline.mark_read().await?;
+    let bob_id = bob.session.user_id();
+    let last = format!(
+        "{} has it, says {}",
+        carol.session.user_id(),
+        alice_id.localpart()
+    );
+    wait_for(
+        "bob's receipt on his message",
+        alice_timeline.updates(),
+        |e| {
+            let joined = e
+                .iter()
+                .any(|x| matches!(x, TimelineEntry::Event(ev) if is_carols_join(ev)));
+            let on_message = e.iter().any(|x| {
+                matches!(x, TimelineEntry::Event(ev)
+                if matches!(&ev.content, EventContent::Message(m) if m.body == last)
+                    && ev.read_by.iter().any(|r| r.id == bob_id))
+            });
+            joined && on_message
+        },
+    )
+    .await?;
+    let entries = alice_timeline.current();
+    assert!(
+        entries.iter().all(|x| match x {
+            TimelineEntry::Event(ev) => !ev.is_state() || ev.read_by.is_empty(),
+            _ => true,
+        }),
+        "no readers on state events"
+    );
     Ok(())
 }
 
@@ -1354,5 +1437,51 @@ async fn signed_out_elsewhere() -> Result<()> {
         Session::restore(profile()?).await,
         Err(mtrx_core::Error::NotLoggedIn(_))
     ));
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs local Synapse (testserver/run.sh)"]
+async fn failed_sends_are_retried_or_discarded() -> Result<()> {
+    let (_, alice) = new_user("alice").await?;
+    let room = alice
+        .session
+        .create_room(NewRoom {
+            name: Some("unsent".into()),
+            ..Default::default()
+        })
+        .await?;
+    let timeline = alice.session.timeline(&room).await?;
+    // The server refuses events over 64 KiB, whatever we try.
+    let too_long = "x".repeat(70_000);
+    let failed = |entries: &Vec<TimelineEntry>| {
+        find_message(entries, &too_long)
+            .is_some_and(|ev| matches!(ev.send_state, mtrx_core::SendState::Failed(_)))
+    };
+    let pending = timeline.send_markdown(&too_long, None).await?;
+    assert!(timeout("refused", pending.sent()).await?.is_err());
+    let entries = wait_for("shown as failed", timeline.updates(), failed).await?;
+    let key = find_message(&entries, &too_long).unwrap().key.clone();
+
+    // Sent again: sending, then failed again.
+    let mut updates = std::pin::pin!(timeline.updates());
+    timeline.retry(&key).await?;
+    wait_for("sending again", &mut updates, |entries| {
+        find_message(entries, &too_long)
+            .is_some_and(|ev| ev.send_state == mtrx_core::SendState::Sending)
+    })
+    .await?;
+    wait_for("failed again", &mut updates, failed).await?;
+
+    // What is queued after it waits for it; once it is dropped, it is sent.
+    let later = timeline.send_markdown("after the long one", None).await?;
+    timeline.discard(&key).await?;
+    timeout("sent after discarding", later.sent()).await??;
+    let entries = timeline.current();
+    assert!(find_message(&entries, &too_long).is_none());
+    // A sent message is no longer a local echo.
+    let sent = find_message(&entries, "after the long one").unwrap();
+    assert!(timeline.retry(&sent.key).await.is_err());
+    assert!(timeline.discard(&sent.key).await.is_err());
     Ok(())
 }

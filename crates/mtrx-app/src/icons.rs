@@ -807,3 +807,86 @@ impl<M> canvas::Program<M> for Send {
         vec![frame.into_geometry()]
     }
 }
+
+/// A tick in a circle: sent.
+pub fn check_circle<'a, M: 'a>(size: f32, color: fn(&Theme) -> Color) -> Element<'a, M> {
+    canvas::Canvas::new(CheckCircle { color })
+        .width(size)
+        .height(size)
+        .into()
+}
+
+struct CheckCircle {
+    color: fn(&Theme) -> Color,
+}
+
+impl<M> canvas::Program<M> for CheckCircle {
+    type State = ();
+
+    fn draw(
+        &self,
+        _state: &(),
+        renderer: &Renderer,
+        theme: &Theme,
+        bounds: Rectangle,
+        _cursor: mouse::Cursor,
+    ) -> Vec<Geometry> {
+        let mut frame = Frame::new(renderer, bounds.size());
+        let s = bounds.width;
+        let width = (s / 10.0).max(1.0);
+        let stroke = Stroke::default()
+            .with_color((self.color)(theme))
+            .with_width(width)
+            .with_line_cap(canvas::LineCap::Round)
+            .with_line_join(canvas::LineJoin::Round);
+        let p = |x: f32, y: f32| iced::Point::new(x * s, y * s);
+        frame.stroke(&Path::circle(frame.center(), s / 2.0 - width), stroke);
+        frame.stroke(
+            &Path::new(|path| {
+                path.move_to(p(0.31, 0.52));
+                path.line_to(p(0.45, 0.66));
+                path.line_to(p(0.7, 0.38));
+            }),
+            stroke,
+        );
+        vec![frame.into_geometry()]
+    }
+}
+
+/// A cross in a circle: not sent.
+pub fn x_circle<'a, M: 'a>(size: f32, color: fn(&Theme) -> Color) -> Element<'a, M> {
+    canvas::Canvas::new(XCircle { color })
+        .width(size)
+        .height(size)
+        .into()
+}
+
+struct XCircle {
+    color: fn(&Theme) -> Color,
+}
+
+impl<M> canvas::Program<M> for XCircle {
+    type State = ();
+
+    fn draw(
+        &self,
+        _state: &(),
+        renderer: &Renderer,
+        theme: &Theme,
+        bounds: Rectangle,
+        _cursor: mouse::Cursor,
+    ) -> Vec<Geometry> {
+        let mut frame = Frame::new(renderer, bounds.size());
+        let s = bounds.width;
+        let width = (s / 10.0).max(1.0);
+        let stroke = Stroke::default()
+            .with_color((self.color)(theme))
+            .with_width(width)
+            .with_line_cap(canvas::LineCap::Round);
+        let p = |x: f32, y: f32| iced::Point::new(x * s, y * s);
+        frame.stroke(&Path::circle(frame.center(), s / 2.0 - width), stroke);
+        frame.stroke(&Path::line(p(0.36, 0.36), p(0.64, 0.64)), stroke);
+        frame.stroke(&Path::line(p(0.64, 0.36), p(0.36, 0.64)), stroke);
+        vec![frame.into_geometry()]
+    }
+}

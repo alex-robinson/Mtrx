@@ -269,56 +269,6 @@ pub fn runs(text: &str) -> Vec<(bool, String)> {
     runs
 }
 
-/// Marks the emoji of a text field's lines, so they are drawn with the
-/// emoji font while typing too (see [`runs`]).
-pub struct Highlighter {
-    line: usize,
-}
-
-impl iced::advanced::text::Highlighter for Highlighter {
-    type Settings = ();
-    type Highlight = ();
-    type Iterator<'a> = std::vec::IntoIter<(std::ops::Range<usize>, ())>;
-
-    fn new(_settings: &()) -> Self {
-        Self { line: 0 }
-    }
-
-    fn update(&mut self, _settings: &()) {}
-
-    fn change_line(&mut self, line: usize) {
-        self.line = self.line.min(line);
-    }
-
-    fn highlight_line(&mut self, line: &str) -> Self::Iterator<'_> {
-        self.line += 1;
-        let mut at = 0;
-        let mut emoji = Vec::new();
-        for (is_emoji, run) in runs(line) {
-            if is_emoji {
-                emoji.push((at..at + run.len(), ()));
-            }
-            at += run.len();
-        }
-        emoji.into_iter()
-    }
-
-    fn current_line(&self) -> usize {
-        self.line
-    }
-}
-
-/// How [`Highlighter`]'s emoji are drawn.
-pub fn format(
-    _emoji: &(),
-    _theme: &iced::Theme,
-) -> iced::advanced::text::highlighter::Format<iced::Font> {
-    iced::advanced::text::highlighter::Format {
-        color: None,
-        font: Some(fonts::EMOJI),
-    }
-}
-
 fn drawable(emoji: &emojis::Emoji) -> bool {
     let version = emoji.unicode_version();
     (version.major(), version.minor()) <= MAX_VERSION

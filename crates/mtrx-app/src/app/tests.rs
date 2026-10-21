@@ -42,6 +42,24 @@ async fn user(prefix: &str, dir: &TempDir) -> (String, Session) {
     (name, session)
 }
 
+/// A member of a room, for mentions.
+fn person(id: &str, name: &str, role: mtrx_core::Role) -> Member {
+    Member {
+        id: OwnedUserId::try_from(id).unwrap(),
+        name: Some(name.into()),
+        avatar: None,
+        role,
+        invited: false,
+    }
+}
+
+/// `text` in an editor, the cursor at its end.
+fn typed(text: &str) -> text_editor::Content {
+    let mut content = text_editor::Content::with_text(text);
+    content.perform(text_editor::Action::Move(text_editor::Motion::DocumentEnd));
+    content
+}
+
 /// Show the room's start, as once back-pagination reached it.
 fn with_start(entries: &mut Vec<TimelineEntry>) {
     if !matches!(entries.first(), Some(TimelineEntry::Start)) {
@@ -296,11 +314,16 @@ async fn main_screen_with_math() {
     )
     .await;
     let carol_timeline = carol.timeline(&room).await.unwrap();
-    send(
-        &carol_timeline,
-        "I can run the sensitivity tests tonight. Quick call first? https://meet.google.com/abc-defg-hij",
-    )
-    .await;
+    // Sent with a typo, then edited.
+    let typo = "I can run the sensitivity tests tonite. Quick call first? https://meet.google.com/abc-defg-hij";
+    send(&carol_timeline, typo).await;
+    carol_timeline
+        .edit_markdown(
+            &key_of(&carol_timeline, typo).await,
+            "I can run the sensitivity tests tonight. Quick call first? https://meet.google.com/abc-defg-hij",
+        )
+        .await
+        .unwrap();
     send(
         &carol.timeline(&dm).await.unwrap(),
         "Coffee before the meeting?",
@@ -367,7 +390,8 @@ async fn main_screen_with_math() {
             let reactions = messages().filter(|m| !m.reactions.is_empty()).count() == 2
                 && messages().any(|m| m.reactions.iter().any(|r| r.count == 2));
             let read = events().any(|ev| ev.read_by.iter().any(|r| r.id == bob.user_id()));
-            if from_carol && reply_loaded && reactions && read {
+            let edited = messages().any(|m| m.edited);
+            if from_carol && reply_loaded && reactions && read && edited {
                 return entries;
             }
         }
@@ -507,7 +531,99 @@ async fn main_screen_with_math() {
             "main-light"
         };
         snapshot(&app, name);
-        // A click elsewhere closes the call menu (dark) or link editor (light).
+        if mode == Mode::Light {
+            // Everyone who read up to a message, listed from its markers,
+            // instead of the hovered message's menu.
+            let Screen::Main(main) = &mut app.screen else {
+                unreachable!()
+            };
+            let open = main.room.as_mut().unwrap();
+            let read = (open.entries.iter())
+                .find_map(|e| match e {
+                    TimelineEntry::Event(ev)
+                        if ev.read_by.iter().any(|r| r.id == bob.user_id()) =>
+                    {
+                        Some(ev.id.clone())
+                    }
+                    _ => None,
+                })
+                .unwrap();
+            open.menu = None;
+            open.readers = Some(read);
+            for (mxc, size) in main.avatars_on_screen(&Default::default()) {
+                main.avatars.load_now(&alice, &mxc, size).await;
+            }
+            snapshot(&app, "readers-light");
+            // Everyone who reacted with the reaction of two, listed from its
+            // count, instead of the readers.
+            let Screen::Main(main) = &mut app.screen else {
+                unreachable!()
+            };
+            let open = main.room.as_mut().unwrap();
+            let reacted = (open.entries.iter())
+                .find_map(|e| match e {
+                    TimelineEntry::Event(ev) => match &ev.content {
+                        EventContent::Message(m) => m
+                            .reactions
+                            .iter()
+                            .find(|r| r.count == 2)
+                            .map(|r| (ev.id.clone(), r.key.clone())),
+                        _ => None,
+                    },
+                    _ => None,
+                })
+                .unwrap();
+            let readers = open.readers.take();
+            open.reactors = Some(reacted);
+            for (mxc, size) in main.avatars_on_screen(&Default::default()) {
+                main.avatars.load_now(&alice, &mxc, size).await;
+            }
+            snapshot(&app, "reactors-light");
+            let Screen::Main(main) = &mut app.screen else {
+                unreachable!()
+            };
+            let open = main.room.as_mut().unwrap();
+            open.reactors = None;
+            open.readers = readers;
+            // Alice's first message not sent, offered to retry or delete,
+            // instead of the list of readers.
+            let Screen::Main(main) = &mut app.screen else {
+                unreachable!()
+            };
+            let open = main.room.as_mut().unwrap();
+            let readers = open.readers.take();
+            let unsent = (open.entries.iter_mut())
+                .find_map(|e| match e {
+                    TimelineEntry::Event(ev)
+                        if ev.own && matches!(ev.content, EventContent::Message(_)) =>
+                    {
+                        Some(ev)
+                    }
+                    _ => None,
+                })
+                .unwrap();
+            let sent = std::mem::replace(
+                &mut unsent.send_state,
+                mtrx_core::SendState::Failed("event too large".into()),
+            );
+            open.unsent = Some(unsent.id.clone());
+            snapshot(&app, "unsent-light");
+            let Screen::Main(main) = &mut app.screen else {
+                unreachable!()
+            };
+            let open = main.room.as_mut().unwrap();
+            open.unsent = None;
+            open.readers = readers;
+            for entry in &mut open.entries {
+                if let TimelineEntry::Event(ev) = entry
+                    && matches!(ev.send_state, mtrx_core::SendState::Failed(_))
+                {
+                    ev.send_state = sent.clone();
+                }
+            }
+        }
+        // A click elsewhere closes the call menu (dark) or link editor and
+        // the list of readers (light).
         let mut ui = Simulator::with_size(fonts::settings(), Size::new(1200.0, 800.0), app.view());
         ui.point_at(iced::Point::new(400.0, 130.0));
         ui.simulate(iced_test::simulator::click());
@@ -519,6 +635,15 @@ async fn main_screen_with_math() {
             "{messages:?}"
         );
         if mode == Mode::Light {
+            assert!(
+                messages
+                    .iter()
+                    .any(|m| matches!(m, Message::Act(actions::Message::CloseReaders))),
+                "{messages:?}"
+            );
+            if let Screen::Main(main) = &mut app.screen {
+                main.room.as_mut().unwrap().readers = None;
+            }
             composer_keeps_focus(&mut app);
         }
     }
@@ -557,17 +682,21 @@ fn composer_keeps_focus(app: &mut App) {
     let mut cache = ui.into_cache();
 
     type Change = (&'static str, fn(&mut App));
-    let changes: [Change; 14] = [
+    let changes: [Change; 16] = [
         ("someone types", |app| room(app).typing = vec!["bob".into()]),
         ("they stop", |app| room(app).typing.clear()),
         ("an error below", |app| {
             room(app).error = Some("Not sent".into())
         }),
         ("it goes", |app| room(app).error = None),
-        ("members open", |app| {
-            room(app).members = Some(Default::default())
+        ("members open", |app| main(app).show_members = true),
+        ("members close", |app| main(app).show_members = false),
+        ("mentions offered", |app| {
+            let member = person("@ana:example.org", "Ana", mtrx_core::Role::Member);
+            room(app).members_loaded(Ok((vec![member], false)));
+            room(app).set_composer(typed("Thanks @an"));
         }),
-        ("members close", |app| room(app).members = None),
+        ("one picked", |app| room(app).complete("@Ana")),
         ("offline", |app| main(app).connection = Connection::Offline),
         ("online", |app| main(app).connection = Connection::Online),
         ("a banner", |app| {
@@ -848,6 +977,39 @@ async fn send_later_bar() {
     {
         open.editing = None;
     }
+    // Completing a mention: names starting with "an" first, then those
+    // with it inside; the two people named Ana complete as their IDs.
+    if let Screen::Main(main) = &mut app.screen
+        && let Some(open) = main.room.as_mut()
+    {
+        use mtrx_core::Role::{Admin, Member};
+        open.members_loaded(Ok((
+            vec![
+                person("@anna:example.org", "Anna Lindqvist", Admin),
+                person("@jan:example.org", "Jan Hansen", Member),
+                person("@andreas:example.org", "Andreas Born", Member),
+                person("@ana:example.org", "Ana", Member),
+                person("@ana:other.org", "Ana", Member),
+            ],
+            true,
+        )));
+        open.set_composer(typed(
+            "Thanks @Anna Lindqvist! Who can take the Monday slot? @an",
+        ));
+    }
+    snapshot(&app, "composer-mention");
+    let _ = app.update(Message::Mention(mention::Message::Down));
+    let _ = app.update(Message::Mention(mention::Message::Choose));
+    if let Screen::Main(main) = &mut app.screen
+        && let Some(open) = main.room.as_mut()
+    {
+        assert_eq!(
+            open.composer.text(),
+            "Thanks @Anna Lindqvist! Who can take the Monday slot? @Andreas Born "
+        );
+        assert_eq!(open.completion, None);
+        open.set_composer(typed("Who can take the Monday slot? ❤"));
+    }
     let mut panel = settings::Panel::default();
     panel.room = Some(settings::Access::new(
         room.clone(),
@@ -996,6 +1158,15 @@ async fn room_management_screens() {
         })
         .await
         .unwrap();
+    // Switched to with the member list open.
+    let other = alice
+        .create_room(NewRoom {
+            name: Some("firn".into()),
+            parent: Some(space.clone()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
     let list = alice.room_list().await.unwrap();
     let rooms = tokio::time::timeout(TIMEOUT, async {
         let mut updates = std::pin::pin!(list.updates());
@@ -1005,6 +1176,10 @@ async fn room_management_screens() {
                     .rooms
                     .iter()
                     .any(|r| r.id == room && r.parents.contains(&space) && r.name == "ice-sheets")
+                && state
+                    .rooms
+                    .iter()
+                    .any(|r| r.id == other && r.name == "firn")
             {
                 return state;
             }
@@ -1080,12 +1255,31 @@ async fn room_management_screens() {
     snapshot(
         &main_with(&|main| {
             main.filter = "ice".into();
-            main.room.as_mut().unwrap().members = Some(Members {
-                list: Some(Ok(members.clone())),
-            });
+            main.show_members = true;
+            let room = main.room.as_mut().unwrap();
+            room.members_loaded(Ok((members.clone(), true)));
         }),
         "members-search",
     );
+    // The member list stays open, at its width, while another room opens
+    // and its members load.
+    let mut app = main_with(&|main| {
+        main.show_members = true;
+        let room = main.room.as_mut().unwrap();
+        room.members_loaded(Ok((members.clone(), true)));
+    });
+    let _ = app.update(Message::OpenRoom(other.clone()));
+    snapshot(&app, "members-opening");
+    let opened = Shared(Arc::new(session.timeline(&other).await.unwrap()));
+    let _ = app.update(Message::RoomOpened(other.clone(), Ok(opened)));
+    let Screen::Main(main) = &app.screen else {
+        unreachable!()
+    };
+    let open = main.room.as_ref().unwrap();
+    assert_eq!(open.id, other);
+    assert!(main.show_members);
+    assert!(open.loading_members && open.member_list.is_none());
+    snapshot(&app, "members-switched");
 
     let bob_info = session.user_info(&bob.user_id()).await.unwrap();
     let contacts = session.contacts().await.unwrap();
@@ -1134,6 +1328,94 @@ async fn room_management_screens() {
         }),
         "direct-chat-people",
     );
+}
+
+/// Mentions of the viewer and of someone else in a received message.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs local Synapse (testserver/run.sh)"]
+async fn mention_colours() {
+    let dir = TempDir::new().unwrap();
+    let (_, alice) = user("pill-alice", &dir).await;
+    let (_, bob) = user("pill-bob", &dir).await;
+    let (_, carol) = user("pill-carol", &dir).await;
+    for (session, name) in [
+        (&alice, "Alice Nordin"),
+        (&bob, "Bob Weitzel"),
+        (&carol, "Carol Berg"),
+    ] {
+        session.set_display_name(name).await.unwrap();
+    }
+    let room = alice
+        .create_room(NewRoom {
+            name: Some("ice-sheets".into()),
+            invite: vec![bob.user_id(), carol.user_id()],
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    accept_invite(&bob, &room).await;
+    let bob_timeline = bob.timeline(&room).await.unwrap();
+    let text = "Thanks @Alice Nordin! @Carol Berg, can you check the sign in eq. 2?";
+    send(&bob_timeline, text).await;
+
+    let list = alice.room_list().await.unwrap();
+    let rooms = tokio::time::timeout(TIMEOUT, async {
+        let mut updates = std::pin::pin!(list.updates());
+        while let Some(state) = updates.next().await {
+            if state.loaded
+                && state
+                    .rooms
+                    .iter()
+                    .any(|r| r.id == room && r.name == "ice-sheets")
+            {
+                return state;
+            }
+        }
+        unreachable!()
+    })
+    .await
+    .unwrap();
+    let timeline = Arc::new(alice.timeline(&room).await.unwrap());
+    while !timeline.paginate_back(50).await.unwrap() {}
+    let entries = tokio::time::timeout(TIMEOUT, async {
+        let mut updates = std::pin::pin!(timeline.updates());
+        while let Some(entries) = updates.next().await {
+            let mentioned = entries.iter().any(|e| {
+                matches!(e, TimelineEntry::Event(ev)
+                    if matches!(&ev.content, EventContent::Message(m) if m.body == text))
+            });
+            if mentioned {
+                return entries;
+            }
+        }
+        unreachable!()
+    })
+    .await
+    .unwrap();
+    let message = entries
+        .iter()
+        .find_map(|e| match e {
+            TimelineEntry::Event(ev) => match &ev.content {
+                EventContent::Message(m) if m.body == text => Some(m),
+                _ => None,
+            },
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(
+        message.document.to_plain_text(),
+        "Thanks Alice Nordin! Carol Berg, can you check the sign in eq. 2?"
+    );
+
+    let mut main = Main::new(Arc::new(alice));
+    main.rooms = rooms;
+    main.verified = Some(true);
+    let mut open = Room::new(room.clone(), timeline.clone());
+    open.entries = entries;
+    with_start(&mut open.entries);
+    main.room = Some(open);
+    let app = app(Screen::Main(Box::new(main)), Mode::Light);
+    snapshot(&app, "mention-colours");
 }
 
 #[tokio::test(flavor = "multi_thread")]

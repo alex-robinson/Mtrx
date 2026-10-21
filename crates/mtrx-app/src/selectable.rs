@@ -34,6 +34,9 @@ const CLICK_SLOP: f32 = 4.0;
 
 pub struct Selectable<'a, Message> {
     spans: Vec<Span<'static, String, Font>>,
+    /// The bytes of `spans` that are its text, when spans after them are
+    /// only shown (see [`Selectable::after`]).
+    text_len: Option<usize>,
     /// Its index among the message's units.
     unit: usize,
     size: Option<Pixels>,
@@ -63,6 +66,7 @@ pub fn selectable<'a, Message>(
 ) -> Selectable<'a, Message> {
     Selectable {
         spans,
+        text_len: None,
         unit,
         size: None,
         selected: None,
@@ -86,6 +90,15 @@ impl<'a, Message> Selectable<'a, Message> {
         for span in &mut self.spans {
             span.font = Some(font);
         }
+        self
+    }
+
+    /// Shown after its text, without being part of it: never selected or
+    /// copied, e.g. the "(edited)" of a message.
+    pub fn after(mut self, span: Span<'static, String, Font>) -> Self {
+        let len = self.spans.iter().map(|s| s.text.len()).sum();
+        self.text_len.get_or_insert(len);
+        self.spans.push(span);
         self
     }
 
@@ -126,8 +139,10 @@ impl<'a, Message> Selectable<'a, Message> {
 #[derive(Default)]
 struct State {
     spans: Vec<Span<'static, String, Font>>,
+    text_len: Option<usize>,
     paragraph: Paragraph,
-    /// The spans' text, and where each of its lines starts.
+    /// Its text (the spans' text but what is only shown after it), and where
+    /// each line of the spans' text starts.
     text: String,
     line_starts: Vec<usize>,
     last_click: Option<mouse::Click>,
@@ -142,12 +157,17 @@ struct State {
 }
 
 impl State {
-    fn set_spans(&mut self, spans: &[Span<'static, String, Font>]) {
+    fn set_spans(&mut self, spans: &[Span<'static, String, Font>], text_len: Option<usize>) {
         self.spans = spans.to_vec();
-        self.text = spans.iter().map(|s| s.text.as_ref()).collect();
+        self.text_len = text_len;
+        let mut shown: String = spans.iter().map(|s| s.text.as_ref()).collect();
         self.line_starts = std::iter::once(0)
-            .chain(self.text.match_indices('\n').map(|(i, _)| i + 1))
+            .chain(shown.match_indices('\n').map(|(i, _)| i + 1))
             .collect();
+        if let Some(len) = text_len {
+            shown.truncate(len);
+        }
+        self.text = shown;
     }
 
     fn buffer(&self) -> &Buffer {
@@ -266,9 +286,9 @@ impl<Message> Widget<Message, Theme, Renderer> for Selectable<'_, Message> {
                 shaping: Shaping::Advanced,
                 wrapping: self.wrapping,
             };
-            if state.spans != self.spans {
+            if state.spans != self.spans || state.text_len != self.text_len {
                 state.paragraph = Paragraph::with_spans(text(self.spans.as_slice()));
-                state.set_spans(&self.spans);
+                state.set_spans(&self.spans, self.text_len);
             } else {
                 match state.paragraph.compare(text(&[]).with_content(())) {
                     core_text::Difference::None => {}

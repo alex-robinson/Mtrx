@@ -389,6 +389,7 @@ fn typst_source(
 #show raw: set text(font: {mono}, size: 0.9em)
 #show link: set text(fill: {link})
 #let muted = {muted}
+#let mention = {link}
 #let body = {body}
 #context {{
   let width = measure(body).width
@@ -513,6 +514,11 @@ fn inlines(
                 out.push(')');
             }
             Inline::Math(tex) => marked(out, leaves, true, |out| math(tex, false, out))?,
+            // In the link colour.
+            Inline::Mention { name, .. } => marked(out, leaves, false, |out| {
+                let _ = write!(out, "text(fill: mention, {})", string(name));
+                Ok(())
+            })?,
             Inline::LineBreak => out.push_str("linebreak()"),
         }
         out.push(';');
