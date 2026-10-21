@@ -554,6 +554,42 @@ async fn main_screen_with_math() {
                 main.avatars.load_now(&alice, &mxc, size).await;
             }
             snapshot(&app, "readers-light");
+            // Alice's first message not sent, offered to retry or delete,
+            // instead of the list of readers.
+            let Screen::Main(main) = &mut app.screen else {
+                unreachable!()
+            };
+            let open = main.room.as_mut().unwrap();
+            let readers = open.readers.take();
+            let unsent = (open.entries.iter_mut())
+                .find_map(|e| match e {
+                    TimelineEntry::Event(ev)
+                        if ev.own && matches!(ev.content, EventContent::Message(_)) =>
+                    {
+                        Some(ev)
+                    }
+                    _ => None,
+                })
+                .unwrap();
+            let sent = std::mem::replace(
+                &mut unsent.send_state,
+                mtrx_core::SendState::Failed("event too large".into()),
+            );
+            open.unsent = Some(unsent.id.clone());
+            snapshot(&app, "unsent-light");
+            let Screen::Main(main) = &mut app.screen else {
+                unreachable!()
+            };
+            let open = main.room.as_mut().unwrap();
+            open.unsent = None;
+            open.readers = readers;
+            for entry in &mut open.entries {
+                if let TimelineEntry::Event(ev) = entry
+                    && matches!(ev.send_state, mtrx_core::SendState::Failed(_))
+                {
+                    ev.send_state = sent.clone();
+                }
+            }
         }
         // A click elsewhere closes the call menu (dark) or link editor and
         // the list of readers (light).

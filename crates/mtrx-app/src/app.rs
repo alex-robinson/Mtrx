@@ -1331,6 +1331,8 @@ impl App {
                         room.menu = None;
                     } else if let Some(room) = main.room.as_mut().filter(|r| r.readers.is_some()) {
                         room.readers = None;
+                    } else if let Some(room) = main.room.as_mut().filter(|r| r.unsent.is_some()) {
+                        room.unsent = None;
                     } else if let Some(room) = main.room.as_mut().filter(|r| r.selection.is_some())
                     {
                         room.selection = None;
@@ -2143,6 +2145,22 @@ impl App {
             Act::CloseReaders => {
                 room.readers = None;
                 Task::none()
+            }
+            Act::OpenUnsent(id) => {
+                room.unsent = Some(id);
+                Task::none()
+            }
+            Act::CloseUnsent => {
+                room.unsent = None;
+                Task::none()
+            }
+            Act::Retry(key) => {
+                room.unsent = None;
+                Task::perform(async move { timeline.retry(&key).await }, done)
+            }
+            Act::Discard(key) => {
+                room.unsent = None;
+                Task::perform(async move { timeline.discard(&key).await }, done)
             }
             Act::Copy(text) => {
                 room.menu = None;

@@ -92,6 +92,9 @@ pub struct Room {
     pub menu: Option<(String, MenuAt)>,
     /// The timeline row whose readers are listed.
     pub readers: Option<String>,
+    /// The timeline row whose message was not sent and is offered to retry
+    /// or delete.
+    pub unsent: Option<String>,
     /// Text selected in the timeline.
     pub selection: Option<Selection>,
     /// All emoji in the reaction picker, while shown.
@@ -143,6 +146,7 @@ impl Room {
             picker: None,
             menu: None,
             readers: None,
+            unsent: None,
             selection: None,
             emoji: None,
             composer_emoji: None,
@@ -278,6 +282,7 @@ impl Room {
         self.reloading = false;
         self.picker = None;
         self.readers = None;
+        self.unsent = None;
         self.confirm_delete = None;
         self.error = None;
     }
@@ -457,6 +462,7 @@ impl Room {
             picker: self.picker.as_ref().map(|(id, at)| (id.as_str(), *at)),
             menu: self.menu.as_ref().map(|(id, at)| (id.as_str(), *at)),
             readers: self.readers.as_deref(),
+            unsent: self.unsent.as_deref(),
             selected,
             dragging: self.selection.as_ref().is_some_and(|s| s.dragging),
             emoji: self.emoji.as_ref(),
@@ -818,6 +824,8 @@ struct Context<'a, 'b> {
     menu: Option<(&'b str, MenuAt)>,
     /// The row whose readers are listed.
     readers: Option<&'b str>,
+    /// The row whose unsent message is offered to retry or delete.
+    unsent: Option<&'b str>,
     /// The selection, with each message's index in the timeline.
     selected: Option<(Bounds, &'b HashMap<&'b str, usize>)>,
     dragging: bool,
@@ -1040,7 +1048,7 @@ fn event_view<'a>(
     // the row's height.
     let listed = context.readers == Some(event.id.as_str());
     let markers = actions::read_markers(event, context.avatars, listed)
-        .or_else(|| actions::send_status(event));
+        .or_else(|| actions::send_status(event, context.unsent == Some(event.id.as_str())));
     let markers = markers.map(|markers| {
         container(markers)
             .align_right(Length::Fill)

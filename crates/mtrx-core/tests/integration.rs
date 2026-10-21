@@ -1381,3 +1381,49 @@ async fn signed_out_elsewhere() -> Result<()> {
     ));
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs local Synapse (testserver/run.sh)"]
+async fn failed_sends_are_retried_or_discarded() -> Result<()> {
+    let (_, alice) = new_user("alice").await?;
+    let room = alice
+        .session
+        .create_room(NewRoom {
+            name: Some("unsent".into()),
+            ..Default::default()
+        })
+        .await?;
+    let timeline = alice.session.timeline(&room).await?;
+    // The server refuses events over 64 KiB, whatever we try.
+    let too_long = "x".repeat(70_000);
+    let failed = |entries: &Vec<TimelineEntry>| {
+        find_message(entries, &too_long)
+            .is_some_and(|ev| matches!(ev.send_state, mtrx_core::SendState::Failed(_)))
+    };
+    let pending = timeline.send_markdown(&too_long, None).await?;
+    assert!(timeout("refused", pending.sent()).await?.is_err());
+    let entries = wait_for("shown as failed", timeline.updates(), failed).await?;
+    let key = find_message(&entries, &too_long).unwrap().key.clone();
+
+    // Sent again: sending, then failed again.
+    let mut updates = std::pin::pin!(timeline.updates());
+    timeline.retry(&key).await?;
+    wait_for("sending again", &mut updates, |entries| {
+        find_message(entries, &too_long)
+            .is_some_and(|ev| ev.send_state == mtrx_core::SendState::Sending)
+    })
+    .await?;
+    wait_for("failed again", &mut updates, failed).await?;
+
+    // What is queued after it waits for it; once it is dropped, it is sent.
+    let later = timeline.send_markdown("after the long one", None).await?;
+    timeline.discard(&key).await?;
+    timeout("sent after discarding", later.sent()).await??;
+    let entries = timeline.current();
+    assert!(find_message(&entries, &too_long).is_none());
+    // A sent message is no longer a local echo.
+    let sent = find_message(&entries, "after the long one").unwrap();
+    assert!(timeline.retry(&sent.key).await.is_err());
+    assert!(timeline.discard(&sent.key).await.is_err());
+    Ok(())
+}

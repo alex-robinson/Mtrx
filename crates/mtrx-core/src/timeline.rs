@@ -27,7 +27,7 @@ use matrix_sdk::{
         edit::EditedContent,
         reply::{EnforceThread, Reply as SdkReply},
     },
-    send_queue::RoomSendQueueUpdate,
+    send_queue::{RoomSendQueueUpdate, SendHandle},
 };
 use matrix_sdk_ui::timeline::{
     EventSendState, EventTimelineItem, InReplyToDetails, MembershipChange as SdkMembershipChange,
@@ -303,6 +303,53 @@ impl RoomTimeline {
             .redact(&event.0, None)
             .await
             .map_err(timeline_error)
+    }
+
+    /// Send again one of our messages whose sending failed.
+    pub async fn retry(&self, event: &EventKey) -> Result<()> {
+        self.send_handle(event)
+            .await?
+            .unwedge()
+            .await
+            .map_err(timeline_error)?;
+        self.resume_sending();
+        Ok(())
+    }
+
+    /// Drop one of our messages not sent (yet), e.g. after sending failed.
+    /// The messages queued after it are then sent.
+    pub async fn discard(&self, event: &EventKey) -> Result<()> {
+        let dropped = self
+            .send_handle(event)
+            .await?
+            .abort()
+            .await
+            .map_err(timeline_error)?;
+        if !dropped {
+            return Err(Error::Timeline("the message was sent already".into()));
+        }
+        self.resume_sending();
+        Ok(())
+    }
+
+    /// The room's send queue stops after any failed send, also one that
+    /// cannot succeed; the connection watch resumes it only after network
+    /// errors.
+    fn resume_sending(&self) {
+        self.timeline.room().send_queue().set_enabled(true);
+    }
+
+    /// The send queue's handle of a local echo.
+    async fn send_handle(&self, event: &EventKey) -> Result<SendHandle> {
+        self.timeline
+            .items()
+            .await
+            .iter()
+            .rev()
+            .filter_map(|item| item.as_event())
+            .find(|item| item.identifier() == event.0)
+            .and_then(|item| item.local_echo_send_handle())
+            .ok_or_else(|| Error::Timeline("not a message being sent".into()))
     }
 
     /// Tell others we are typing, or stopped. The SDK sends at most one

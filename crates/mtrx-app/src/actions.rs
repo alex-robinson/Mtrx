@@ -65,6 +65,13 @@ pub enum Message {
     /// List everyone who read up to a timeline row's message.
     OpenReaders(String),
     CloseReaders,
+    /// Offer to retry or delete a timeline row's message that was not sent.
+    OpenUnsent(String),
+    CloseUnsent,
+    /// Send again a message that was not sent.
+    Retry(EventKey),
+    /// Drop a message that was not sent.
+    Discard(EventKey),
     /// Put text on the clipboard.
     Copy(String),
     /// Put the text selected in the timeline on the clipboard.
@@ -545,8 +552,9 @@ pub fn read_markers<'a>(
 
 /// Whether our message is sent, while nobody read it (once someone did, it
 /// was): a clock while it is being sent, a tick once it is, a red cross if
-/// it could not be. The same size as a read marker.
-pub fn send_status<'a>(event: &Event) -> Option<Element<'a, app::Message>> {
+/// it could not be. The same size as a read marker. A click on the cross
+/// offers to retry or delete (`open`, while offered).
+pub fn send_status<'a>(event: &Event, open: bool) -> Option<Element<'a, app::Message>> {
     if !event.own || !event.read_by.is_empty() {
         return None;
     }
@@ -558,12 +566,42 @@ pub fn send_status<'a>(event: &Event) -> Option<Element<'a, app::Message>> {
             "Waiting for connection…".to_owned(),
         ),
         SendState::Sent => (icons::check_circle(READER_AVATAR, grey), "Sent".to_owned()),
-        SendState::Failed(e) => (
-            icons::x_circle(READER_AVATAR, |theme| theme.palette().danger),
-            format!("Not sent: {e}"),
-        ),
+        SendState::Failed(e) => {
+            // While open, a click on it closes the menu as any outside click.
+            let cross = button(icons::x_circle(READER_AVATAR, |theme| {
+                theme.palette().danger
+            }))
+            .padding(0)
+            .style(style::text_button)
+            .on_press_maybe((!open).then(|| act(Message::OpenUnsent(event.id.clone()))));
+            if open {
+                return Some(
+                    popover(cross, Some(unsent_menu(event)), Side::Above, Edge::Right)
+                        .on_dismiss(act(Message::CloseUnsent))
+                        .into(),
+                );
+            }
+            (cross.into(), format!("Not sent: {e}"))
+        }
     };
     Some(hint(icon, label, Position::Top))
+}
+
+/// Retry or delete a message that was not sent.
+fn unsent_menu<'a>(event: &Event) -> Element<'a, app::Message> {
+    let choices = row![
+        button(text("Retry").size(12))
+            .padding([2, 8])
+            .style(style::text_button)
+            .on_press(act(Message::Retry(event.key.clone()))),
+        button(text("Delete").size(12))
+            .padding([2, 8])
+            .style(style::danger_button)
+            .on_press(act(Message::Discard(event.key.clone()))),
+    ]
+    .spacing(4)
+    .align_y(Alignment::Center);
+    container(choices).padding(4).style(style::toolbar).into()
 }
 
 /// Everyone who read up to this message; a click on one opens their card.
