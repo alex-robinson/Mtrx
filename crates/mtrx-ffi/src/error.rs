@@ -1,6 +1,6 @@
 //! The errors the apps see.
 
-/// Why a call failed. Show `message`s (and [`MtrxError::LoginCancelled`]
+/// Why a call failed. Show `reason`s (and [`MtrxError::LoginCancelled`]
 /// not at all); match the others to react.
 #[derive(Debug, thiserror::Error, uniffi::Error)]
 pub enum MtrxError {
@@ -14,20 +14,20 @@ pub enum MtrxError {
     #[error("no room `{room_id}`")]
     RoomNotFound { room_id: String },
     /// An argument that is not a valid ID or URL, or a call made twice.
-    #[error("{message}")]
-    InvalidInput { message: String },
+    #[error("{reason}")]
+    InvalidInput { reason: String },
     /// The app's [`crate::SecretBackend`] failed.
-    #[error("secret storage: {message}")]
-    SecretStorage { message: String },
+    #[error("secret storage: {reason}")]
+    SecretStorage { reason: String },
     /// Anything else, e.g. the server is unreachable or refused the password.
-    #[error("{message}")]
-    Other { message: String },
+    #[error("{reason}")]
+    Other { reason: String },
 }
 
 impl MtrxError {
-    pub(crate) fn invalid(message: impl std::fmt::Display) -> Self {
+    pub(crate) fn invalid(reason: impl std::fmt::Display) -> Self {
         Self::InvalidInput {
-            message: message.to_string(),
+            reason: reason.to_string(),
         }
     }
 }
@@ -40,9 +40,9 @@ impl From<mtrx_core::Error> for MtrxError {
             Error::AlreadyLoggedIn(_) => Self::AlreadyLoggedIn,
             Error::LoginCancelled => Self::LoginCancelled,
             Error::RoomNotFound(room_id) => Self::RoomNotFound { room_id },
-            Error::SecretStorage(message) => Self::SecretStorage { message },
+            Error::SecretStorage(reason) => Self::SecretStorage { reason },
             error => Self::Other {
-                message: error.to_string(),
+                reason: error.to_string(),
             },
         }
     }
@@ -51,7 +51,7 @@ impl From<mtrx_core::Error> for MtrxError {
 impl From<std::io::Error> for MtrxError {
     fn from(error: std::io::Error) -> Self {
         Self::Other {
-            message: error.to_string(),
+            reason: error.to_string(),
         }
     }
 }
@@ -73,11 +73,11 @@ mod tests {
         ));
         assert!(matches!(
             convert(mtrx_core::Error::SecretStorage("locked".into())),
-            MtrxError::SecretStorage { message } if message == "locked"
+            MtrxError::SecretStorage { reason } if reason == "locked"
         ));
         assert!(matches!(
             convert(mtrx_core::Error::Timeline("nothing to send".into())),
-            MtrxError::Other { message } if message == "timeline: nothing to send"
+            MtrxError::Other { reason } if reason == "timeline: nothing to send"
         ));
     }
 }

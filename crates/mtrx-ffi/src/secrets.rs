@@ -20,14 +20,14 @@ pub trait SecretBackend: Send + Sync {
 /// A [`SecretBackend`] failure, e.g. the Keychain is locked.
 #[derive(Debug, thiserror::Error, uniffi::Error)]
 pub enum SecretError {
-    #[error("{message}")]
-    Failed { message: String },
+    #[error("{reason}")]
+    Failed { reason: String },
 }
 
 impl From<uniffi::UnexpectedUniFFICallbackError> for SecretError {
     fn from(error: uniffi::UnexpectedUniFFICallbackError) -> Self {
         Self::Failed {
-            message: error.reason,
+            reason: error.reason,
         }
     }
 }
@@ -76,7 +76,7 @@ pub(crate) mod tests {
         fn delete(&self, key: String) -> Result<(), SecretError> {
             if key.is_empty() {
                 return Err(SecretError::Failed {
-                    message: "no key".into(),
+                    reason: "no key".into(),
                 });
             }
             self.0.lock().unwrap().remove(&key);
