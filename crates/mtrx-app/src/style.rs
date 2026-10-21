@@ -93,6 +93,17 @@ pub fn panel(theme: &Theme) -> container::Style {
     }
 }
 
+/// Hover help: iced's rounded box, rounder.
+pub fn hint(theme: &Theme) -> container::Style {
+    let palette = theme.extended_palette();
+    container::Style {
+        background: Some(Background::Color(palette.background.weak.color)),
+        text_color: Some(palette.background.weak.text),
+        border: Border::default().rounded(6),
+        ..Default::default()
+    }
+}
+
 pub fn space_bar(theme: &Theme) -> container::Style {
     let palette = theme.extended_palette();
     container::Style {
@@ -154,21 +165,21 @@ pub fn separator(theme: &Theme) -> rule::Style {
     }
 }
 
-/// A timeline row; the hovered one is highlighted.
-pub fn message_row(hovered: bool) -> impl Fn(&Theme) -> container::Style {
-    move |theme| container::Style {
-        background: hovered.then(|| {
-            Background::Color(
-                theme
-                    .extended_palette()
-                    .background
-                    .strong
-                    .color
-                    .scale_alpha(0.3),
-            )
-        }),
-        border: Border::default().rounded(6),
-        ..Default::default()
+/// A timeline row; the hovered one is highlighted, one gone to in colour.
+pub fn message_row(hovered: bool, marked: bool) -> impl Fn(&Theme) -> container::Style {
+    move |theme| {
+        let palette = theme.extended_palette();
+        container::Style {
+            background: if marked {
+                Some(Background::Color(
+                    palette.primary.weak.color.scale_alpha(0.3),
+                ))
+            } else {
+                hovered.then(|| Background::Color(palette.background.strong.color.scale_alpha(0.3)))
+            },
+            border: Border::default().rounded(6),
+            ..Default::default()
+        }
     }
 }
 
@@ -390,21 +401,12 @@ pub fn toolbar(theme: &Theme) -> container::Style {
     }
 }
 
-/// A reaction pill; highlighted if it includes ours.
+/// The "add reaction" button after a message's reactions, shaped like a
+/// reaction pill.
 pub fn reaction(own: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
     move |theme, status| {
         let palette = theme.extended_palette();
-        let (background, border) = if own {
-            (
-                palette.primary.weak.color.scale_alpha(0.4),
-                palette.primary.base.color,
-            )
-        } else {
-            (
-                palette.background.weak.color,
-                palette.background.strong.color,
-            )
-        };
+        let (background, border) = reaction_colors(theme, own);
         let background = match status {
             button::Status::Hovered => palette.background.strong.color,
             _ => background,
@@ -412,7 +414,78 @@ pub fn reaction(own: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
         button::Style {
             background: Some(Background::Color(background)),
             text_color: palette.background.base.text,
-            border: Border::default().rounded(10).width(1).color(border),
+            border: Border::default()
+                .rounded(REACTION_RADIUS)
+                .width(1)
+                .color(border),
+            ..Default::default()
+        }
+    }
+}
+
+const REACTION_RADIUS: f32 = 10.0;
+
+/// A reaction pill's background and border; highlighted if it includes
+/// ours.
+fn reaction_colors(theme: &Theme, own: bool) -> (Color, Color) {
+    let palette = theme.extended_palette();
+    if own {
+        (
+            palette.primary.weak.color.scale_alpha(0.4),
+            palette.primary.base.color,
+        )
+    } else {
+        (
+            palette.background.weak.color,
+            palette.background.strong.color,
+        )
+    }
+}
+
+/// A reaction pill, around its two halves (see [`reaction_half`]) inside
+/// its 1px border.
+pub fn reaction_pill(own: bool) -> impl Fn(&Theme) -> container::Style {
+    move |theme| {
+        let (background, border) = reaction_colors(theme, own);
+        container::Style {
+            background: Some(Background::Color(background)),
+            text_color: Some(theme.extended_palette().background.base.text),
+            border: Border::default()
+                .rounded(REACTION_RADIUS)
+                .width(1)
+                .color(border),
+            ..Default::default()
+        }
+    }
+}
+
+/// The line between a reaction pill's halves, in its border's colour.
+pub fn reaction_divider(own: bool) -> impl Fn(&Theme) -> container::Style {
+    move |theme| container::Style {
+        background: Some(Background::Color(reaction_colors(theme, own).1)),
+        ..Default::default()
+    }
+}
+
+/// One half of a reaction pill, the `left` (the emoji) or right (the
+/// count): clear, darker on hover, rounded on its outer side.
+pub fn reaction_half(left: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
+    move |theme, status| {
+        let palette = theme.extended_palette();
+        let inner = REACTION_RADIUS - 1.0;
+        let radius = if left {
+            iced::border::Radius::default().left(inner)
+        } else {
+            iced::border::Radius::default().right(inner)
+        };
+        button::Style {
+            background: matches!(status, button::Status::Hovered)
+                .then_some(Background::Color(palette.background.strong.color)),
+            text_color: palette.background.base.text,
+            border: Border {
+                radius,
+                ..Default::default()
+            },
             ..Default::default()
         }
     }

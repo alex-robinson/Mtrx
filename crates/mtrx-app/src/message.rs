@@ -10,6 +10,7 @@ use iced::{
     Element, Font, Length, Pixels, Theme,
     widget::{column, container, row, rule, span, text, text::Span},
 };
+use mtrx_core::{OwnedUserId, UserId};
 use mtrx_format::{Block, Document, Inline, Style};
 
 use crate::{
@@ -37,19 +38,44 @@ pub struct Select<'a, M> {
     pub on_gesture: Rc<dyn Fn(Gesture) -> M + 'a>,
 }
 
+/// `document`, its mentions of `own` (us) in bold; marked when `edited`.
 pub fn view<'a, M: Clone + 'a>(
     document: &Document,
     theme: &Theme,
+    own: &UserId,
     on_link: fn(String) -> M,
     select: Select<'a, M>,
+    edited: bool,
 ) -> Element<'a, M> {
     let mut walk = Walk {
         theme,
+        own: Some(own),
         on_link: Some(on_link),
         select: Some(select),
+        edited,
         map: TextMap::default(),
     };
-    walk.blocks(&document.blocks, "", "\n\n")
+    let blocks = walk.blocks(&document.blocks, "", "\n\n", true);
+    // Not ending in text (e.g. in a rule): marked on a line of its own.
+    if walk.edited {
+        column![blocks, edited_line()].spacing(6).into()
+    } else {
+        blocks
+    }
+}
+
+/// The mark of an edited message, after its last line of text so that an
+/// edit arriving does not make it taller.
+const EDITED: &str = " (edited)";
+const EDITED_SIZE: f32 = 11.0;
+
+/// The mark of an edited message on a line of its own, for one that does
+/// not end in text, such as a picture.
+pub fn edited_line<'a, M: 'a>() -> Element<'a, M> {
+    text(EDITED.trim_start())
+        .size(EDITED_SIZE)
+        .style(text::secondary)
+        .into()
 }
 
 /// The message's text as shown, in units, and where each text leaf is in
@@ -74,11 +100,13 @@ pub struct Leaf {
 pub fn text_map(document: &Document) -> TextMap {
     let mut walk: Walk<'_, '_, ()> = Walk {
         theme: &Theme::Light,
+        own: None,
         on_link: None,
         select: None,
+        edited: false,
         map: TextMap::default(),
     };
-    let _ = walk.blocks(&document.blocks, "", "\n\n");
+    let _ = walk.blocks(&document.blocks, "", "\n\n", true);
     walk.map
 }
 
@@ -86,32 +114,50 @@ pub fn text_map(document: &Document) -> TextMap {
 /// same order.
 struct Walk<'t, 'a, M> {
     theme: &'t Theme,
+    own: Option<&'t UserId>,
     on_link: Option<fn(String) -> M>,
     select: Option<Select<'a, M>>,
+    /// The message is edited and its mark not yet shown.
+    edited: bool,
     map: TextMap,
 }
 
 impl<'a, M: Clone + 'a> Walk<'_, 'a, M> {
     /// `prefix` goes before each unit's text when copied (quote marks and
-    /// list indents); `gap` between blocks.
-    fn blocks(&mut self, list: &[Block], prefix: &str, gap: &'static str) -> Element<'a, M> {
+    /// list indents); `gap` between blocks. `last` when they end the
+    /// message.
+    fn blocks(
+        &mut self,
+        list: &[Block],
+        prefix: &str,
+        gap: &'static str,
+        last: bool,
+    ) -> Element<'a, M> {
         let mut out = column![].spacing(6);
-        for block in list {
-            out = out.push(self.block(block, prefix, gap));
+        for (i, block) in list.iter().enumerate() {
+            out = out.push(self.block(block, prefix, gap, last && i + 1 == list.len()));
         }
         out.into()
     }
 
-    fn block(&mut self, block: &Block, prefix: &str, gap: &'static str) -> Element<'a, M> {
+    fn block(
+        &mut self,
+        block: &Block,
+        prefix: &str,
+        gap: &'static str,
+        last: bool,
+    ) -> Element<'a, M> {
         match block {
-            Block::Paragraph(content) => self.paragraph(content, None, prefix, gap),
-            Block::Heading { content, .. } => self.paragraph(content, Some(16.0), prefix, gap),
+            Block::Paragraph(content) => self.paragraph(content, None, prefix, gap, last),
+            Block::Heading { content, .. } => {
+                self.paragraph(content, Some(16.0), prefix, gap, last)
+            }
             Block::Quote(inner) => row![
                 container(text(""))
                     .width(3)
                     .height(Length::Fill)
                     .style(style::quote_bar),
-                self.blocks(inner, &format!("{prefix}> "), gap),
+                self.blocks(inner, &format!("{prefix}> "), gap, last),
             ]
             .spacing(8)
             .height(Length::Shrink)
@@ -130,7 +176,7 @@ impl<'a, M: Clone + 'a> Walk<'_, 'a, M> {
                     // indent; items are a line apart.
                     let first = self.map.units.len();
                     let indent = format!("{prefix}{}", " ".repeat(copied.len()));
-                    let content = self.blocks(item, &indent, "\n");
+                    let content = self.blocks(item, &indent, "\n", last && i + 1 == items.len());
                     if let Some(unit) = self.map.units.get_mut(first) {
                         unit.prefix = format!("{prefix}{copied}");
                         unit.gap = if i == 0 { gap } else { "\n" };
@@ -147,6 +193,7 @@ impl<'a, M: Clone + 'a> Walk<'_, 'a, M> {
                     Some(13.0),
                     prefix,
                     gap,
+                    last,
                 ))
                 .padding(8)
                 .width(Length::Fill)
@@ -161,6 +208,7 @@ impl<'a, M: Clone + 'a> Walk<'_, 'a, M> {
                     Some(13.0),
                     prefix,
                     gap,
+                    last,
                 )
             }
             Block::Rule => rule::horizontal(1).into(),
@@ -173,6 +221,7 @@ impl<'a, M: Clone + 'a> Walk<'_, 'a, M> {
         size: Option<f32>,
         prefix: &str,
         gap: &'static str,
+        last: bool,
     ) -> Element<'a, M> {
         let mut out = Vec::new();
         let flags = Flags {
@@ -180,14 +229,18 @@ impl<'a, M: Clone + 'a> Walk<'_, 'a, M> {
             ..Flags::default()
         };
         let mut leaves = Vec::new();
-        spans(content, flags, None, self.theme, &mut out, &mut leaves);
+        let look = Look {
+            theme: self.theme,
+            own: self.own,
+        };
+        spans(content, flags, None, &look, &mut out, &mut leaves);
         let unit = self.map.units.len();
         self.map.leaves.extend(
             leaves
                 .into_iter()
                 .map(|(start, len)| Leaf { unit, start, len }),
         );
-        self.unit(out, size, prefix, gap)
+        self.unit(out, size, prefix, gap, last)
     }
 
     /// A leaf that is all of the next unit's text.
@@ -199,13 +252,15 @@ impl<'a, M: Clone + 'a> Walk<'_, 'a, M> {
         });
     }
 
-    /// One selectable unit of text.
+    /// One selectable unit of text; the mark of an edited message after it
+    /// when `last`.
     fn unit(
         &mut self,
         spans: Vec<Span<'static, String, Font>>,
         size: Option<f32>,
         prefix: &str,
         gap: &'static str,
+        last: bool,
     ) -> Element<'a, M> {
         let index = self.map.units.len();
         let text: String = spans.iter().map(|s| s.text.as_ref()).collect();
@@ -217,6 +272,10 @@ impl<'a, M: Clone + 'a> Walk<'_, 'a, M> {
             gap,
         });
         let mut unit = selectable(spans, index);
+        if last && std::mem::take(&mut self.edited) {
+            let color = text::secondary(self.theme).color;
+            unit = unit.after(span(EDITED).size(EDITED_SIZE).color_maybe(color));
+        }
         if let Some(size) = size {
             unit = unit.size(Pixels(size));
         }
@@ -233,16 +292,24 @@ impl<'a, M: Clone + 'a> Walk<'_, 'a, M> {
     }
 }
 
+/// What spans look like besides their text.
+struct Look<'t> {
+    theme: &'t Theme,
+    /// Us, whose mentions stand out.
+    own: Option<&'t UserId>,
+}
+
 /// Styled spans of `content` into `out`; each leaf's start and length in
 /// their text into `leaves`.
 fn spans(
     content: &[Inline],
     flags: Flags,
     link: Option<&str>,
-    theme: &Theme,
+    look: &Look<'_>,
     out: &mut Vec<Span<'static, String, Font>>,
     leaves: &mut Vec<(usize, usize)>,
 ) {
+    let theme = look.theme;
     for inline in content {
         let start: usize = out.iter().map(|s| s.text.len()).sum();
         match inline {
@@ -267,7 +334,7 @@ fn spans(
                     // No good native equivalent; keep the text.
                     Style::Superscript | Style::Subscript | Style::Spoiler => {}
                 }
-                spans(content, f, link, theme, out, leaves);
+                spans(content, f, link, look, out, leaves);
             }
             Inline::Code(code) => {
                 leaves.push((start, code.len()));
@@ -282,7 +349,20 @@ fn spans(
                 ));
             }
             Inline::Link { url, content } => {
-                spans(content, flags, Some(url), theme, out, leaves);
+                spans(content, flags, Some(url), look, out, leaves);
+            }
+            Inline::Mention { user_id, name } => {
+                leaves.push((start, name.len()));
+                let own = look.own.is_some_and(|own| own.as_str() == user_id);
+                let url = mention_url(user_id);
+                for (is_emoji, run) in emoji::runs(name) {
+                    let run = mention(span(run), flags, own, theme).link(url.clone());
+                    out.push(if is_emoji {
+                        run.font(fonts::EMOJI)
+                    } else {
+                        run
+                    });
+                }
             }
             Inline::Math(tex) => {
                 let shown = format!("${tex}$");
@@ -300,6 +380,31 @@ fn spans(
             Inline::LineBreak => out.push(span("\n".to_owned())),
         }
     }
+}
+
+/// A mention: the name in the link colour, bold when it is us.
+fn mention(
+    s: Span<'static, String, Font>,
+    flags: Flags,
+    own: bool,
+    theme: &Theme,
+) -> Span<'static, String, Font> {
+    s.font(fonts::styled(flags.bold || own, flags.italic))
+        .color(theme.extended_palette().primary.base.color)
+        .strikethrough(flags.strike)
+}
+
+/// What a click on a mention of `user_id` sends: a `matrix.to` link.
+fn mention_url(user_id: &str) -> String {
+    format!("{MATRIX_TO}{user_id}")
+}
+
+const MATRIX_TO: &str = "https://matrix.to/#/";
+
+/// The user a clicked link is to, if it is a mention's (see
+/// [`mention_url`]); links to rooms are not.
+pub fn mentioned_user(url: &str) -> Option<OwnedUserId> {
+    OwnedUserId::try_from(url.strip_prefix(MATRIX_TO)?).ok()
 }
 
 fn styled(
@@ -336,17 +441,21 @@ mod tests {
     use super::*;
     use crate::selection::{Message, Selection, units_text};
 
-    /// Drives `document`'s view, in a scrollable `height` high, with mouse
-    /// `steps` (a position and an event there); returns the selected text.
-    fn select_in(
+    /// Drives `document`'s view (marked if `edited`), in a scrollable
+    /// `height` high, with mouse `steps` (a position and an event there);
+    /// returns the gestures reported.
+    fn gestures(
         document: &Document,
+        edited: bool,
         height: f32,
         dragging: bool,
         steps: &[((f32, f32), mouse::Event)],
-    ) -> String {
+    ) -> Vec<Gesture> {
+        let own = OwnedUserId::try_from("@me:example.org").unwrap();
         let view = view(
             document,
             &Theme::Light,
+            &own,
             |_| Gesture::Drag {
                 unit: usize::MAX,
                 offset: 0,
@@ -356,6 +465,7 @@ mod tests {
                 dragging,
                 on_gesture: Rc::new(|gesture| gesture),
             },
+            edited,
         );
         let view = iced::widget::scrollable(view).height(height);
         let mut ui = Simulator::with_size(fonts::settings(), Size::new(800.0, 400.0), view);
@@ -363,8 +473,18 @@ mod tests {
             ui.point_at(*at);
             let _ = ui.simulate([Event::Mouse(*event)]);
         }
+        ui.into_messages().collect()
+    }
+
+    /// The text selected by `steps` (see [`gestures`]).
+    fn select_in(
+        document: &Document,
+        height: f32,
+        dragging: bool,
+        steps: &[((f32, f32), mouse::Event)],
+    ) -> String {
         let mut selection = None;
-        for gesture in ui.into_messages() {
+        for gesture in gestures(document, false, height, dragging, steps) {
             Selection::update(&mut selection, Message::Gesture("$e".into(), gesture));
         }
         let order = HashMap::from([("$e", 0)]);
@@ -452,6 +572,68 @@ mod tests {
             select(&document, false, &click.repeat(3)),
             "Hello you there"
         );
+    }
+
+    #[test]
+    fn edited_mark_is_not_part_of_the_text() {
+        use mouse::{Button::Left, Event::*};
+        let document = Document::from_html("<p>Hello you there</p>");
+        let len = "Hello you there".len();
+        let press = |x| ((x, 8.0), ButtonPressed(Left));
+        let release = |x| ((x, 8.0), ButtonReleased(Left));
+        let moved = |x| {
+            (
+                (x, 8.0),
+                CursorMoved {
+                    position: iced::Point::new(x, 8.0),
+                },
+            )
+        };
+        // Dragged onto and past the mark, a double click on it, and a
+        // triple click: all within the text.
+        let steps = [
+            vec![press(2.0), moved(130.0), moved(700.0)],
+            vec![press(130.0), release(130.0), press(130.0)],
+            vec![
+                press(2.0),
+                release(2.0),
+                press(2.0),
+                release(2.0),
+                press(2.0),
+            ],
+        ];
+        for steps in steps {
+            let gestures = gestures(&document, true, 400.0, true, &steps);
+            assert!(!gestures.is_empty());
+            for gesture in gestures {
+                match gesture {
+                    Gesture::Press { from, to, .. } => assert!(from <= len && to <= len),
+                    Gesture::Drag { offset, .. } => assert!(offset <= len),
+                }
+            }
+        }
+        // Its text, as copied, is without it.
+        assert_eq!(text_map(&document).units[0].text, "Hello you there");
+    }
+
+    #[test]
+    fn mentions_link_to_their_user() {
+        let url = mention_url("@nils:server.org");
+        assert_eq!(url, "https://matrix.to/#/@nils:server.org");
+        assert_eq!(
+            mentioned_user(&url).as_deref().map(|u| u.as_str()),
+            Some("@nils:server.org")
+        );
+        // Rooms and other links open as before.
+        assert_eq!(mentioned_user("https://matrix.to/#/!room:server.org"), None);
+        assert_eq!(mentioned_user("https://example.org/@nils"), None);
+        // A mention is one leaf of text.
+        let document = Document::from_html(
+            r#"Ask <a href="https://matrix.to/#/@nils:server.org">Nils</a> now"#,
+        );
+        let map = text_map(&document);
+        assert_eq!(map.units[0].text, "Ask Nils now");
+        assert_eq!(map.leaves.len(), 3);
     }
 
     #[test]

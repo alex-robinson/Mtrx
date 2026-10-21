@@ -10,9 +10,10 @@ use std::{
 use eyeball_im::Vector;
 use futures_util::{Stream, StreamExt, stream};
 use matrix_sdk::ruma::{
-    EventId, OwnedEventId, OwnedMxcUri, OwnedRoomId, OwnedTransactionId, OwnedUserId, UInt,
+    EventId, OwnedEventId, OwnedMxcUri, OwnedRoomId, OwnedTransactionId, OwnedUserId, UInt, UserId,
     api::client::receipt::create_receipt::v3::ReceiptType,
     events::{
+        Mentions,
         relation::Reply as ReplyRelation,
         room::{
             MediaSource,
@@ -21,12 +22,12 @@ use matrix_sdk::ruma::{
     },
 };
 use matrix_sdk::{
-    Room,
+    Room, RoomMemberships,
     room::{
         edit::EditedContent,
         reply::{EnforceThread, Reply as SdkReply},
     },
-    send_queue::RoomSendQueueUpdate,
+    send_queue::{RoomSendQueueUpdate, SendHandle},
 };
 use matrix_sdk_ui::timeline::{
     EventSendState, EventTimelineItem, InReplyToDetails, MembershipChange as SdkMembershipChange,
@@ -45,7 +46,7 @@ use crate::{
     media::{self, MediaRef},
     system_time,
 };
-use mtrx_format::{Document, markdown_to_matrix};
+use mtrx_format::{Document, Mention, MentionTarget, markdown_to_matrix};
 
 /// One row of a timeline.
 // Nearly all entries are events, so boxing would only add indirection.
@@ -81,8 +82,8 @@ pub struct Event {
     pub read_by: Vec<Reader>,
 }
 
-/// Someone who read up to an event.
-#[derive(Clone, Debug, PartialEq)]
+/// Someone who read up to an event, or reacted to it.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Reader {
     pub id: OwnedUserId,
     /// Display name and avatar, once known.
@@ -99,6 +100,48 @@ impl EventKey {
     #[cfg(feature = "test-support")]
     pub fn local(transaction_id: &str) -> Self {
         Self(TimelineEventItemId::TransactionId(transaction_id.into()))
+    }
+}
+
+impl Event {
+    /// A state change (membership, name, room settings), shown folded into
+    /// a summary line.
+    pub fn is_state(&self) -> bool {
+        matches!(
+            self.content,
+            EventContent::Membership { .. }
+                | EventContent::DisplayNameChange { .. }
+                | EventContent::OtherState { .. }
+        )
+    }
+}
+
+#[cfg(feature = "test-support")]
+impl Event {
+    /// A text message `id` from `sender`, sent, for tests.
+    pub fn test_message(id: &str, sender: OwnedUserId, body: &str) -> Self {
+        Self {
+            id: id.to_owned(),
+            key: EventKey(TimelineEventItemId::TransactionId(id.into())),
+            event_id: None,
+            sender,
+            sender_name: None,
+            sender_avatar: None,
+            timestamp: SystemTime::UNIX_EPOCH,
+            own: false,
+            editable: false,
+            content: EventContent::Message(Message {
+                kind: MessageKind::Text,
+                body: body.to_owned(),
+                document: Document::from_plain(body),
+                edited: false,
+                in_reply_to: None,
+                reactions: Vec::new(),
+                media: None,
+            }),
+            send_state: SendState::Sent,
+            read_by: Vec::new(),
+        }
     }
 }
 
@@ -183,8 +226,10 @@ pub struct Reply {
     /// `None` until loaded.
     pub sender: Option<OwnedUserId>,
     pub sender_name: Option<String>,
-    /// The start of its text; `None` until loaded.
+    /// Its text, shortened; `None` until loaded.
     pub preview: Option<String>,
+    /// It could not be loaded, e.g. as it is not visible to us.
+    pub failed: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -194,6 +239,8 @@ pub struct Reaction {
     pub count: usize,
     /// We reacted with it.
     pub own: bool,
+    /// Everyone who reacted with it, us included, in the order they did.
+    pub by: Vec<Reader>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -288,7 +335,7 @@ impl RoomTimeline {
 
     /// Replace the text of one of our messages.
     pub async fn edit_markdown(&self, event: &EventKey, text: &str) -> Result<()> {
-        let content = markdown_content(text);
+        let content = markdown_content(self.timeline.room(), text).await;
         self.timeline
             .edit(&event.0, EditedContent::RoomMessage(content.into()))
             .await
@@ -310,6 +357,62 @@ impl RoomTimeline {
             .redact(&event.0, None)
             .await
             .map_err(timeline_error)
+    }
+
+    /// Send again one of our messages whose sending failed. A message sent
+    /// meanwhile keeps its handle until the server's copy replaces it, and
+    /// is not sent twice.
+    pub async fn retry(&self, event: &EventKey) -> Result<()> {
+        let item = self.local_echo(event).await?;
+        if !matches!(
+            item.send_state(),
+            Some(EventSendState::SendingFailed { .. })
+        ) {
+            return Err(Error::Timeline(
+                "only a message whose sending failed can be sent again".into(),
+            ));
+        }
+        send_handle(&item)?
+            .unwedge()
+            .await
+            .map_err(timeline_error)?;
+        self.resume_sending();
+        Ok(())
+    }
+
+    /// Drop one of our messages not sent (yet), e.g. after sending failed.
+    /// The messages queued after it are then sent.
+    pub async fn discard(&self, event: &EventKey) -> Result<()> {
+        let dropped = send_handle(&self.local_echo(event).await?)?
+            .abort()
+            .await
+            .map_err(timeline_error)?;
+        if !dropped {
+            return Err(Error::Timeline("the message was sent already".into()));
+        }
+        self.resume_sending();
+        Ok(())
+    }
+
+    /// The room's send queue stops after any failed send, also one that
+    /// cannot succeed; the connection watch resumes it only after network
+    /// errors.
+    fn resume_sending(&self) {
+        self.timeline.room().send_queue().set_enabled(true);
+    }
+
+    /// Our message `event` while it is a local echo.
+    async fn local_echo(&self, event: &EventKey) -> Result<EventTimelineItem> {
+        self.timeline
+            .items()
+            .await
+            .iter()
+            .rev()
+            .filter_map(|item| item.as_event())
+            .find(|item| item.identifier() == event.0)
+            .filter(|item| item.is_local_echo())
+            .cloned()
+            .ok_or_else(|| Error::Timeline("not a message being sent".into()))
     }
 
     /// Tell others we are typing, or stopped. The SDK sends at most one
@@ -415,13 +518,16 @@ pub(crate) async fn send_message(
         );
     }
     let mut reply_to = reply_to.map(ToOwned::to_owned);
+    let content = match text {
+        Some(text) => Some(markdown_content(room, text).await),
+        None => None,
+    };
 
     let _guard = send_lock.lock().await;
     let queue = room.send_queue();
     let (_, mut updates) = queue.subscribe().await.map_err(timeline_error)?;
     let mut queued = 0;
-    if let Some(text) = text {
-        let mut content = markdown_content(text);
+    if let Some(mut content) = content {
         if let Some(event_id) = reply_to.take() {
             // No reply fallback in the body: Matrix 1.13 dropped it.
             content.relates_to = Some(Relation::Reply(ReplyRelation::with_event_id(event_id)));
@@ -458,12 +564,86 @@ pub(crate) async fn send_message(
     })
 }
 
-fn markdown_content(text: &str) -> RoomMessageEventContent {
-    let formatted = markdown_to_matrix(text);
-    match formatted.html {
+/// `text` as a message to `room`: Markdown, with `@` mentions of its
+/// members and of the room in `m.mentions`.
+///
+/// Mentions resolve against the members in the store, so a message never
+/// waits on the server before its local echo shows. Only text with an `@`
+/// in a room whose member list was never loaded loads it first; when that
+/// fails (e.g. offline), the store's members still resolve mentions.
+async fn markdown_content(room: &Room, text: &str) -> RoomMessageEventContent {
+    let memberships = RoomMemberships::JOIN | RoomMemberships::INVITE;
+    let loaded = if text.contains('@') && !room.are_members_synced() {
+        room.members(memberships)
+            .await
+            .inspect_err(|e| warn!("member list not loaded for mentions: {e}"))
+            .ok()
+    } else {
+        None
+    };
+    let members = match loaded {
+        Some(members) => members,
+        None => room.members_no_sync(memberships).await.unwrap_or_default(),
+    };
+    let (targets, users): (Vec<_>, Vec<_>) =
+        mention_targets(members.iter().map(|m| (m.user_id(), m.display_name())))
+            .into_iter()
+            .unzip();
+    let formatted = markdown_to_matrix(text, &targets);
+    let mut content = match formatted.html {
         Some(html) => RoomMessageEventContent::text_html(formatted.body, html),
         None => RoomMessageEventContent::text_plain(formatted.body),
+    };
+    if !formatted.mentions.is_empty() {
+        let mut mentions = Mentions::new();
+        for index in formatted.mentions {
+            match &users[index] {
+                Some(user) => {
+                    mentions.user_ids.insert(user.clone());
+                }
+                None => mentions.room = true,
+            }
+        }
+        content.mentions = Some(mentions);
     }
+    content
+}
+
+/// What `@` can mention among a room's `members` (ID and display name
+/// each): each member by ID, and by display name when no other member has
+/// it; and the room. With the user each target mentions, `None` for the
+/// room.
+pub fn mention_targets<'a>(
+    members: impl IntoIterator<Item = (&'a UserId, Option<&'a str>)>,
+) -> Vec<(MentionTarget, Option<OwnedUserId>)> {
+    let members: Vec<_> = members.into_iter().collect();
+    let mut names: HashMap<&str, usize> = HashMap::new();
+    for name in members.iter().filter_map(|(_, name)| *name) {
+        *names.entry(name).or_default() += 1;
+    }
+    let mut targets = Vec::new();
+    for (id, name) in members {
+        let user = |text: &str| {
+            let mention = Mention::User {
+                href: id.matrix_to_uri().to_string(),
+                name: name.map_or_else(|| id.to_string(), ToOwned::to_owned),
+            };
+            let text = text.to_owned();
+            (MentionTarget { text, mention }, Some(id.to_owned()))
+        };
+        targets.push(user(&id.as_str()[1..]));
+        if let Some(name) = name.filter(|n| names[n] == 1) {
+            targets.push(user(name));
+        }
+    }
+    targets.push((
+        MentionTarget {
+            text: "room".into(),
+            mention: Mention::Room,
+        },
+        None,
+    ));
+    targets
 }
 
 /// A message in the send queue.
@@ -536,20 +716,21 @@ impl Session {
         let task = tokio::spawn({
             let timeline = timeline.clone();
             async move {
-                // Replies whose original is not loaded, and readers not seen
-                // as senders, are fetched once.
-                let mut requested = HashSet::new();
+                // Readers not seen as senders are fetched once. The original
+                // of a reply is fetched whenever it shows as not loaded: the
+                // SDK marks it pending meanwhile, and an item it makes anew
+                // may lack it again.
                 let mut requested_profiles = HashSet::new();
                 loop {
+                    converter.missing_replies.sort();
+                    converter.missing_replies.dedup();
                     for event_id in converter.missing_replies.drain(..) {
-                        if requested.insert(event_id.clone()) {
-                            let timeline = timeline.clone();
-                            tokio::spawn(async move {
-                                if let Err(e) = timeline.fetch_details_for_event(&event_id).await {
-                                    warn!("could not load the replied-to message: {e}");
-                                }
-                            });
-                        }
+                        let timeline = timeline.clone();
+                        tokio::spawn(async move {
+                            if let Err(e) = timeline.fetch_details_for_event(&event_id).await {
+                                warn!("could not load the replied-to message: {e}");
+                            }
+                        });
                     }
                     for user in converter.missing_profiles.drain(..) {
                         if requested_profiles.insert(user.clone()) {
@@ -573,12 +754,16 @@ impl Session {
                         }
                         Some((user, profile)) = profile_rx.recv() => {
                             converter.profiles.insert(user.clone(), profile);
-                            // Redraw the events this reader is on.
+                            // Redraw the events this person read up to or
+                            // reacted to.
                             for (index, item) in items.iter().enumerate() {
-                                let reads = item
-                                    .as_event()
-                                    .is_some_and(|e| e.read_receipts().contains_key(&user));
-                                if reads {
+                                let shown = item.as_event().is_some_and(|e| {
+                                    e.read_receipts().contains_key(&user)
+                                        || e.content().reactions().is_some_and(|reactions| {
+                                            reactions.values().any(|by| by.contains_key(&user))
+                                        })
+                                });
+                                if shown {
                                     converted.set(index, converter.convert(item));
                                 }
                             }
@@ -624,21 +809,59 @@ async fn member_profile(room: &Room, user: &OwnedUserId) -> Profile {
     }
 }
 
+/// The send queue's handle of a local echo.
+fn send_handle(item: &EventTimelineItem) -> Result<SendHandle> {
+    item.local_echo_send_handle()
+        .ok_or_else(|| Error::Timeline("not a message being sent".into()))
+}
+
 fn timeline_error(e: impl std::fmt::Display) -> Error {
     Error::Timeline(e.to_string())
 }
 
 fn flatten(entries: &Vector<Option<TimelineEntry>>) -> Vec<TimelineEntry> {
-    entries.iter().flatten().cloned().collect()
+    let mut entries: Vec<_> = entries.iter().flatten().cloned().collect();
+    receipts_off_state(&mut entries);
+    entries
+}
+
+/// Readers whose receipt is on a state event move to the nearest earlier
+/// event that is not one: state events show as summary lines without
+/// readers, and the readers did read that event. Without an earlier one
+/// they stay.
+fn receipts_off_state(entries: &mut [TimelineEntry]) {
+    let mut target = None;
+    for index in 0..entries.len() {
+        let TimelineEntry::Event(event) = &mut entries[index] else {
+            continue;
+        };
+        if !event.is_state() {
+            target = Some(index);
+            continue;
+        }
+        let Some(target) = target.filter(|_| !event.read_by.is_empty()) else {
+            continue;
+        };
+        let readers = std::mem::take(&mut event.read_by);
+        let TimelineEntry::Event(target) = &mut entries[target] else {
+            unreachable!("the target is an event");
+        };
+        for reader in readers {
+            if !target.read_by.iter().any(|r| r.id == reader.id) {
+                target.read_by.push(reader);
+            }
+        }
+    }
 }
 
 /// Converts SDK timeline items, noting replies whose original must be fetched.
 struct Converter {
     own: OwnedUserId,
+    /// Replies whose original is not loaded.
     missing_replies: Vec<OwnedEventId>,
-    /// Names and avatars of senders and readers.
+    /// Names and avatars of senders, readers and those who reacted.
     profiles: HashMap<OwnedUserId, Profile>,
-    /// Readers whose profile is not known.
+    /// Readers and those who reacted whose profile is not known.
     missing_profiles: Vec<OwnedUserId>,
 }
 
@@ -674,7 +897,10 @@ impl Converter {
                         None => Document::from_plain(message.body()),
                     },
                     edited: message.is_edited(),
-                    in_reply_to: msg_like.in_reply_to.as_ref().map(|r| self.reply(r)),
+                    in_reply_to: msg_like
+                        .in_reply_to
+                        .as_ref()
+                        .map(|r| self.reply(r, event.event_id())),
                     reactions: msg_like
                         .reactions
                         .iter()
@@ -682,6 +908,7 @@ impl Converter {
                             key: key.clone(),
                             count: senders.len(),
                             own: senders.contains_key(&self.own),
+                            by: senders.keys().map(|user| self.reader(user)).collect(),
                         })
                         .collect(),
                     media: media(message.msgtype()),
@@ -778,12 +1005,15 @@ impl Converter {
         }
     }
 
-    fn reply(&mut self, reply: &InReplyToDetails) -> Reply {
+    /// The message `reply` answers, from the reply `event_id` (`None` while
+    /// it is being sent).
+    fn reply(&mut self, reply: &InReplyToDetails, event_id: Option<&EventId>) -> Reply {
         let mut out = Reply {
             event_id: reply.event_id.clone(),
             sender: None,
             sender_name: None,
             preview: None,
+            failed: false,
         };
         match &reply.event {
             TimelineDetails::Ready(original) => {
@@ -806,24 +1036,26 @@ impl Converter {
                     _ => "…".into(),
                 });
             }
-            TimelineDetails::Unavailable => self.missing_replies.push(reply.event_id.clone()),
-            TimelineDetails::Pending | TimelineDetails::Error(_) => {}
+            // The SDK fetches the original for the reply's ID.
+            TimelineDetails::Unavailable => {
+                self.missing_replies.extend(event_id.map(ToOwned::to_owned))
+            }
+            TimelineDetails::Error(_) => out.failed = true,
+            TimelineDetails::Pending => {}
         }
         out
     }
 }
 
-/// The first line of a message, shortened.
+/// The text of a message on one line, shortened.
 fn preview(body: &str) -> String {
-    const MAX: usize = 120;
-    let line = body
-        .lines()
-        .find(|l| !l.trim().is_empty())
-        .unwrap_or_default();
-    if line.chars().count() > MAX {
-        format!("{}…", line.chars().take(MAX).collect::<String>())
+    // More than a few lines of a wide window.
+    const MAX: usize = 600;
+    let text = body.split_whitespace().collect::<Vec<_>>().join(" ");
+    if text.chars().count() > MAX {
+        format!("{}…", text.chars().take(MAX).collect::<String>())
     } else {
-        line.to_owned()
+        text
     }
 }
 
@@ -933,5 +1165,123 @@ fn membership_change(change: SdkMembershipChange) -> MembershipChange {
         SdkMembershipChange::Unbanned => MembershipChange::Unbanned,
         SdkMembershipChange::Knocked => MembershipChange::Knocked,
         _ => MembershipChange::Other,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use matrix_sdk::ruma::owned_user_id;
+
+    use super::*;
+
+    fn reader(id: &str) -> Reader {
+        Reader {
+            id: id.try_into().unwrap(),
+            name: None,
+            avatar: None,
+        }
+    }
+
+    fn event(id: &str, state: bool, readers: &[&str]) -> TimelineEntry {
+        let sender = owned_user_id!("@alice:server.org");
+        let mut event = Event::test_message(id, sender.clone(), "hi");
+        if state {
+            event.content = EventContent::Membership {
+                user: sender,
+                name: None,
+                change: MembershipChange::Joined,
+            };
+        }
+        event.read_by = readers.iter().map(|r| reader(r)).collect();
+        TimelineEntry::Event(event)
+    }
+
+    /// Each event's ID and readers.
+    fn readers(entries: &[TimelineEntry]) -> Vec<(&str, Vec<&str>)> {
+        entries
+            .iter()
+            .filter_map(|entry| match entry {
+                TimelineEntry::Event(e) => Some((
+                    e.id.as_str(),
+                    e.read_by.iter().map(|r| r.id.as_str()).collect(),
+                )),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn receipts_on_state_events_move_to_the_message_before() {
+        let (bob, carol, dave) = ("@bob:server.org", "@carol:server.org", "@dave:server.org");
+        let mut entries = vec![
+            // No earlier message: they stay.
+            event("join", true, &[dave]),
+            event("a", false, &[]),
+            event("b", false, &[bob]),
+            TimelineEntry::ReadMarker,
+            TimelineEntry::DayDivider(SystemTime::UNIX_EPOCH),
+            event("join2", true, &[carol, bob]),
+            event("topic", true, &[dave]),
+        ];
+        receipts_off_state(&mut entries);
+        assert_eq!(
+            readers(&entries),
+            [
+                ("join", vec![dave]),
+                ("a", vec![]),
+                ("b", vec![bob, carol, dave]),
+                ("join2", vec![]),
+                ("topic", vec![]),
+            ]
+        );
+    }
+
+    #[test]
+    fn mentions_by_id_and_by_unique_name() {
+        let members = [
+            (owned_user_id!("@nils:server.org"), Some("Nils".to_owned())),
+            (owned_user_id!("@anna:server.org"), Some("Anna".to_owned())),
+            (owned_user_id!("@anna:other.org"), Some("Anna".to_owned())),
+            (owned_user_id!("@bot:server.org"), None),
+        ];
+        let targets = mention_targets(members.iter().map(|(id, name)| (&**id, name.as_deref())));
+        let shown: Vec<_> = targets
+            .iter()
+            .map(|(target, user)| {
+                let link = match &target.mention {
+                    Mention::User { href, name } => format!("{href} {name}"),
+                    Mention::Room => "room".to_owned(),
+                };
+                (
+                    target.text.as_str(),
+                    link,
+                    user.as_ref().map(|u| u.as_str()),
+                )
+            })
+            .collect();
+        let nils = "https://matrix.to/#/@nils:server.org Nils";
+        assert_eq!(
+            shown,
+            [
+                ("nils:server.org", nils.to_owned(), Some("@nils:server.org")),
+                ("Nils", nils.to_owned(), Some("@nils:server.org")),
+                (
+                    "anna:server.org",
+                    "https://matrix.to/#/@anna:server.org Anna".to_owned(),
+                    Some("@anna:server.org")
+                ),
+                (
+                    "anna:other.org",
+                    "https://matrix.to/#/@anna:other.org Anna".to_owned(),
+                    Some("@anna:other.org")
+                ),
+                (
+                    "bot:server.org",
+                    "https://matrix.to/#/@bot:server.org @bot:server.org".to_owned(),
+                    Some("@bot:server.org")
+                ),
+                ("room", "room".to_owned(), None),
+            ]
+        );
     }
 }

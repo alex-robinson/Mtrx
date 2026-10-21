@@ -4,6 +4,7 @@
 //! copied back out.
 
 use linkify::{LinkFinder, LinkKind};
+use ruma_common::matrix_uri::MatrixId;
 use ruma_html::{
     Html, NodeData, NodeRef,
     matrix::{AnchorUri, MatrixElement},
@@ -50,6 +51,11 @@ pub enum Inline {
     },
     /// Inline math, as LaTeX.
     Math(String),
+    /// A mention of a user: a `matrix.to` (or `matrix:`) link to them.
+    Mention {
+        user_id: String,
+        name: String,
+    },
     LineBreak,
 }
 
@@ -272,6 +278,7 @@ fn inlines_text(inlines: &[Inline], out: &mut String, prefix: &str) {
                 out.push_str(tex);
                 out.push('$');
             }
+            Inline::Mention { name, .. } => out.push_str(name),
             Inline::LineBreak => {
                 out.push('\n');
                 out.push_str(prefix);
@@ -513,10 +520,16 @@ fn inline_element(node: &NodeRef, element: MatrixElement) -> Vec<Inline> {
         MatrixElement::Sub => styled(Style::Subscript),
         MatrixElement::Code(_) => vec![Inline::Code(text_content(node))],
         MatrixElement::A(data) => match data.href {
-            Some(href) => vec![Inline::Link {
-                url: anchor_url(&href),
-                content: inlines(node),
-            }],
+            Some(href) => match mentioned_user(&href) {
+                Some(user_id) => vec![Inline::Mention {
+                    user_id,
+                    name: text_content(node),
+                }],
+                None => vec![Inline::Link {
+                    url: anchor_url(&href),
+                    content: inlines(node),
+                }],
+            },
             None => inlines(node),
         },
         MatrixElement::Span(data) => match (data.maths, data.spoiler) {
@@ -532,6 +545,19 @@ fn inline_element(node: &NodeRef, element: MatrixElement) -> Vec<Inline> {
             )]
         }
         _ => inlines(node),
+    }
+}
+
+/// The user a link is to, if it is a Matrix link to a user: a mention.
+fn mentioned_user(href: &AnchorUri) -> Option<String> {
+    let id = match href {
+        AnchorUri::Matrix(uri) => uri.id(),
+        AnchorUri::MatrixTo(uri) => uri.id(),
+        _ => return None,
+    };
+    match id {
+        MatrixId::User(user_id) => Some(user_id.to_string()),
+        _ => None,
     }
 }
 

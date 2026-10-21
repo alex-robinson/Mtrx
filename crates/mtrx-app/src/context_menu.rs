@@ -201,6 +201,7 @@ impl<'a, Message: Clone + 'a> Widget<Message, Theme, Renderer> for ContextMenu<'
                 Side::Below,
                 Edge::Left,
                 self.on_dismiss.clone(),
+                false,
             )
         });
         let overlays: Vec<_> = nested.into_iter().chain(menu).collect();

@@ -35,6 +35,12 @@ arboard = { version = "3.7.0", default-features = false, features = ["image-data
 # Same version as iced's: the text layout of its paragraphs, for selecting.
 iced_graphics = "0.14.0"
 
+# The unread count on the Dock icon.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6.5"
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSApplication", "NSDockTile", "NSResponder"] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSString"] }
+
 # Icon and version information in the .exe (build.rs).
 [target.'cfg(windows)'.build-dependencies]
 winresource = "0.1.34"
