@@ -989,9 +989,6 @@ fn event_view<'a>(
     if context.confirm_delete == Some(event.id.as_str()) {
         item = item.push(actions::confirm_delete(event));
     }
-    if let Some(markers) = actions::read_markers(event, context.avatars) {
-        item = item.push(markers);
-    }
     match &event.send_state {
         SendState::Sent => {}
         SendState::Sending => item = item.push(text("sending…").size(11).style(text::secondary)),
@@ -1042,8 +1039,18 @@ fn event_view<'a>(
         .padding(Padding::new(MESSAGE_PADDING).top(top).bottom(1))
         .width(Length::Fill)
         .style(style::message_row(hovered));
-    // Actions float over the top right of a hovered message.
-    let row: Element<'a, Message> = match message {
+    // Read markers sit in the free margin at the bottom right, so receipts
+    // never change the row's height.
+    let markers = actions::read_markers(event, context.avatars).map(|markers| {
+        container(markers)
+            .align_right(Length::Fill)
+            .align_bottom(Length::Fill)
+            .padding(Padding::ZERO.right(MESSAGE_PADDING).bottom(1.0))
+            .into()
+    });
+    // Actions float over the top right of a hovered message, above the
+    // markers of a short one.
+    let toolbar: Option<Element<'a, Message>> = match message {
         // Also while its reaction window is open.
         Some(m)
             if (hovered
@@ -1061,15 +1068,21 @@ fn event_view<'a>(
             let menu = menu_items
                 .is_some()
                 .then(|| actions::Menu(menu_view(MenuAt::Toolbar)));
-            stack![
-                row,
+            Some(
                 container(actions::toolbar(event, target, edit_text, picker, menu))
                     .align_right(Length::Fill)
-                    .padding(Padding::ZERO.top(1.0).right(8.0)),
-            ]
-            .into()
+                    .padding(Padding::ZERO.top(1.0).right(8.0))
+                    .into(),
+            )
         }
-        _ => row.into(),
+        _ => None,
+    };
+    let row: Element<'a, Message> = if markers.is_none() && toolbar.is_none() {
+        row.into()
+    } else {
+        stack![row]
+            .extend(markers.into_iter().chain(toolbar))
+            .into()
     };
     // Right-click opens the menu where the cursor is.
     let row: Element<'a, Message> = if menu_items.is_some() {

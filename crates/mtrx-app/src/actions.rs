@@ -511,13 +511,12 @@ pub fn read_markers<'a>(event: &Event, avatars: &Avatars) -> Option<Element<'a, 
         );
     }
     let names: Vec<_> = event.read_by.iter().map(reader_name).collect();
-    // The names show over the pictures, which sit at the right.
-    let markers = hint(
+    // The names show over the pictures.
+    Some(hint(
         markers,
         format!("Read by {}", names.join(", ")),
         Position::Top,
-    );
-    Some(container(markers).align_right(Length::Fill).into())
+    ))
 }
 
 fn reader_name(reader: &Reader) -> &str {
