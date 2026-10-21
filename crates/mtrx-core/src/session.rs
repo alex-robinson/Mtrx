@@ -301,7 +301,11 @@ fn client_builder(homeserver: &str) -> matrix_sdk::ClientBuilder {
 
 async fn build_client(profile: &Profile, homeserver: &str, passphrase: &str) -> Result<Client> {
     let client = client_builder(homeserver)
-        .sqlite_store(profile.store_dir(), Some(passphrase))
+        .sqlite_store_with_cache_path(
+            profile.store_dir(),
+            profile.cache_store_dir(),
+            Some(passphrase),
+        )
         .handle_refresh_tokens()
         .with_encryption_settings(EncryptionSettings {
             auto_enable_cross_signing: true,

@@ -34,7 +34,7 @@ fn snapshot_dir() -> PathBuf {
 async fn user(prefix: &str, dir: &TempDir) -> (String, Session) {
     let name = unique_name(prefix);
     register(&name).await.unwrap();
-    let profile = Profile::new(prefix, Some(dir.path()), SecretStore::File).unwrap();
+    let profile = Profile::new(prefix, dir.path(), SecretStore::File).unwrap();
     let session = Session::login(profile, &homeserver(), &name, PASSWORD)
         .await
         .unwrap();
@@ -82,7 +82,12 @@ fn snapshot(app: &App, name: &str) {
 
 fn app(screen: Screen, mode: Mode) -> App {
     App {
-        profile: Profile::new("ui", None, SecretStore::File).unwrap(),
+        profile: Profile::new(
+            "ui",
+            &Profile::default_data_root().unwrap(),
+            SecretStore::File,
+        )
+        .unwrap(),
         focused: true,
         google: Arc::new(Google::new(&snapshot_dir(), SecretStore::File)),
         settings: Settings::default(),
@@ -898,7 +903,7 @@ async fn big_room_benchmark() {
 
     // New device, recovered: like a fresh install.
     let dir2 = TempDir::new().unwrap();
-    let profile = Profile::new("second", Some(dir2.path()), SecretStore::File).unwrap();
+    let profile = Profile::new("second", dir2.path(), SecretStore::File).unwrap();
     let second = Session::login(profile, &homeserver(), &name, PASSWORD)
         .await
         .unwrap();

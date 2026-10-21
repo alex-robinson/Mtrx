@@ -22,7 +22,6 @@ serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
-directories.workspace = true
 rand.workspace = true
 chrono.workspace = true
 url.workspace = true
@@ -37,6 +36,8 @@ sha1 = { workspace = true, optional = true }
 # The OS keyring; iOS and Android apps supply their own (`SecretStore::Custom`).
 [target.'cfg(not(any(target_os = "ios", target_os = "android")))'.dependencies]
 keyring.workspace = true
+# The default data root; the mobile apps pass the platform's directories.
+directories.workspace = true
 
 # Secrets on Windows: an encrypted file, its key in Credential Manager.
 [target.'cfg(windows)'.dependencies]

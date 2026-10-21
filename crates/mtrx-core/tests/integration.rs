@@ -42,7 +42,7 @@ struct Device {
 
 async fn login(user: &str) -> Result<Device> {
     let dir = TempDir::new()?;
-    let profile = Profile::new("test", Some(dir.path()), SecretStore::File)?;
+    let profile = Profile::new("test", dir.path(), SecretStore::File)?;
     let session = Session::login(profile, &homeserver(), user, PASSWORD).await?;
     session.start_sync().await;
     Ok(Device { session, _dir: dir })
@@ -94,7 +94,7 @@ async fn login_restore_logout() -> Result<()> {
     let name = unique_name("login");
     register(&name).await?;
     let dir = TempDir::new()?;
-    let profile = || Profile::new("p", Some(dir.path()), SecretStore::File);
+    let profile = || Profile::new("p", dir.path(), SecretStore::File);
 
     let session = Session::login(profile()?, &homeserver(), &name, PASSWORD).await?;
     let device = session.device_id();
@@ -384,7 +384,7 @@ async fn emoji_self_verification() -> Result<()> {
 async fn matrix_org_offers_browser_login() -> Result<()> {
     assert!(Session::supports_oauth("matrix.org").await?);
     let dir = TempDir::new()?;
-    let profile = Profile::new("oauth", Some(dir.path()), SecretStore::File)?;
+    let profile = Profile::new("oauth", dir.path(), SecretStore::File)?;
     let (tx, rx) = tokio::sync::oneshot::channel();
     let login = Session::login_oauth(profile, "matrix.org", move |url| {
         let _ = tx.send(url);
@@ -409,7 +409,7 @@ async fn scheduled_messages() -> Result<()> {
     let name = unique_name("later");
     register(&name).await?;
     let dir = TempDir::new()?;
-    let profile = || Profile::new("p", Some(dir.path()), SecretStore::File);
+    let profile = || Profile::new("p", dir.path(), SecretStore::File);
     let session = Session::login(profile()?, &homeserver(), &name, PASSWORD).await?;
     session.start_sync().await;
     let room = session
@@ -1334,7 +1334,7 @@ async fn signed_out_elsewhere() -> Result<()> {
     let name = unique_name("ended");
     register(&name).await?;
     let dir = TempDir::new()?;
-    let profile = || Profile::new("p", Some(dir.path()), SecretStore::File);
+    let profile = || Profile::new("p", dir.path(), SecretStore::File);
     let session = Session::login(profile()?, &homeserver(), &name, PASSWORD).await?;
     session.start_sync().await;
     // Restoring in a second process works alongside (tokens are shared).
