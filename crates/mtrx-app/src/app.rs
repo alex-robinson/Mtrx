@@ -78,7 +78,8 @@ impl<T> Hash for Shared<T> {
 
 #[derive(Debug, Clone)]
 pub enum Message {
-    Restored(Result<Shared<Session>, String>),
+    /// The saved session, or why there is none to open.
+    Restored(Result<Shared<Session>, Shared<mtrx_core::Error>>),
     Login(login::Message),
     LoggedIn(Result<Shared<Session>, String>),
     Ready(Result<(Shared<RoomList>, bool), String>),
@@ -437,7 +438,7 @@ impl App {
         };
         let restore = Task::perform(
             async move { Session::restore(profile).await.map(|s| Shared(Arc::new(s))) },
-            |result| Message::Restored(result.map_err(|e| e.to_string())),
+            |result| Message::Restored(result.map_err(|e| Shared(Arc::new(e)))),
         );
         let scale = window::oldest().then(|id| match id {
             Some(id) => window::scale_factor(id).map(Message::ScaleFactor),
@@ -551,8 +552,14 @@ impl App {
                 }
                 Task::none()
             }
-            Message::Restored(Err(_)) => {
-                self.screen = Screen::Login(Login::default());
+            Message::Restored(Err(Shared(error))) => {
+                let mut login = Login::default();
+                // Usually nobody is signed in yet. Without a keyring signing
+                // in would fail too, so say so before the user tries.
+                if let mtrx_core::Error::NoSecretStore(_) = *error {
+                    login.error = Some(error.to_string());
+                }
+                self.screen = Screen::Login(login);
                 Task::none()
             }
             Message::Login(message) => {
@@ -1863,8 +1870,13 @@ impl App {
             Calls::Link(link) => state.link = link,
             Calls::CanSetLink(can_set) => state.can_set_link = can_set,
             Calls::SpaceService(service) => state.space_service = service,
-            Calls::ToggleMenu => {
-                state.menu = !state.menu;
+            Calls::OpenMenu => {
+                state.menu = true;
+                state.editor = None;
+                state.error = None;
+            }
+            Calls::Close => {
+                state.menu = false;
                 state.editor = None;
                 state.error = None;
             }
@@ -1884,10 +1896,20 @@ impl App {
                     move |result| reply(Calls::Started(result)),
                 );
             }
-            Calls::Started(result) | Calls::LinkSaved(result) => {
+            Calls::Started(result) => {
+                state.busy = false;
+                // Shown below the composer, like other sending errors.
+                if let Err(e) = result {
+                    room.error = Some(e);
+                }
+            }
+            Calls::LinkSaved(result) => {
                 state.busy = false;
                 match result {
-                    Ok(()) => state.editor = None,
+                    Ok(()) => {
+                        state.menu = false;
+                        state.editor = None;
+                    }
                     Err(e) => state.error = Some(e),
                 }
             }
@@ -1931,10 +1953,6 @@ impl App {
                     },
                     move |result| reply(Calls::LinkSaved(result)),
                 );
-            }
-            Calls::CancelEdit => {
-                state.editor = None;
-                state.error = None;
             }
         }
         Task::none()
@@ -2995,6 +3013,8 @@ async fn notify(notification: Notification) -> bool {
     let shown = tokio::task::spawn_blocking(move || {
         let mut desktop = notify_rust::Notification::new();
         desktop.appname("Mtrx").summary(&title).body(&body);
+        #[cfg(windows)]
+        crate::windows::notification_sender(&mut desktop);
         // Freedesktop servers report clicks only for a "default" action.
         #[cfg(all(unix, not(target_os = "macos")))]
         desktop.action("default", "Open");

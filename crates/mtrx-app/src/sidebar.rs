@@ -21,7 +21,7 @@ use crate::{
     dialog::Kind,
     ellipsis::{ellipsis, followed_by},
     fonts,
-    hint::{Position, hint},
+    hint::{Position, hint, shortcut},
     icons, info,
     style::{self, ROOM_AVATAR, ROOM_ROW, SPACE_AVATAR, SPACE_BAR_WIDTH},
     tint::Tint,
@@ -346,7 +346,7 @@ pub fn room_list<'a>(view: RoomListView<'a>) -> Element<'a, Message> {
     }
     list = list.push(
         container(
-            text_input("Search rooms  (⌘K)", filter)
+            text_input(&format!("Search rooms  ({})", shortcut("K")), filter)
                 .id(SEARCH)
                 .on_input(Message::RoomFilter)
                 .on_submit(Message::OpenFirstMatch)

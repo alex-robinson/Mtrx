@@ -5,7 +5,10 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use crate::Result;
+use crate::{Error, Result};
+
+#[cfg(windows)]
+mod windows;
 
 const KEYRING_SERVICE: &str = "mtrx";
 
@@ -13,7 +16,8 @@ const KEYRING_SERVICE: &str = "mtrx";
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SecretStore {
     /// OS credential store: macOS Keychain, Windows Credential Manager, or
-    /// Secret Service on Linux.
+    /// Secret Service on Linux. On Windows the credential is a key and the
+    /// secret an encrypted file next to it (see `secrets/windows.rs`).
     Keyring,
     /// Plain-text file in the data directory. For tests and development only.
     File,
@@ -34,11 +38,7 @@ impl Secret {
 
     pub(crate) fn load(&self) -> Result<Option<String>> {
         match self.store {
-            SecretStore::Keyring => match self.keyring_entry()?.get_password() {
-                Ok(value) => Ok(Some(value)),
-                Err(keyring::Error::NoEntry) => Ok(None),
-                Err(e) => Err(e.into()),
-            },
+            SecretStore::Keyring => self.keyring_load(),
             SecretStore::File => match fs::read_to_string(&self.file) {
                 Ok(value) => Ok(Some(value)),
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
@@ -49,19 +49,15 @@ impl Secret {
 
     pub(crate) fn save(&self, value: &str) -> Result<()> {
         match self.store {
-            SecretStore::Keyring => self.keyring_entry()?.set_password(value)?,
-            SecretStore::File => write_private(&self.file, value)?,
+            SecretStore::Keyring => self.keyring_save(value),
+            SecretStore::File => Ok(write_private(&self.file, value)?),
         }
-        Ok(())
     }
 
     /// Remove the secret; succeeds if there is none.
     pub(crate) fn delete(&self) -> Result<()> {
         match self.store {
-            SecretStore::Keyring => match self.keyring_entry()?.delete_credential() {
-                Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
-                Err(e) => Err(e.into()),
-            },
+            SecretStore::Keyring => self.keyring_delete(),
             SecretStore::File => match fs::remove_file(&self.file) {
                 Ok(()) => Ok(()),
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -69,11 +65,63 @@ impl Secret {
             },
         }
     }
+}
 
-    fn keyring_entry(&self) -> Result<keyring::Entry> {
-        Ok(keyring::Entry::new(KEYRING_SERVICE, &self.name)?)
+/// The secret itself is the credential.
+#[cfg(not(windows))]
+impl Secret {
+    fn keyring_load(&self) -> Result<Option<String>> {
+        get_credential(&self.name)
+    }
+
+    fn keyring_save(&self, value: &str) -> Result<()> {
+        set_credential(&self.name, value)
+    }
+
+    fn keyring_delete(&self) -> Result<()> {
+        delete_credential(&self.name)
     }
 }
+
+fn get_credential(name: &str) -> Result<Option<String>> {
+    match credential(name)?.get_password() {
+        Ok(value) => Ok(Some(value)),
+        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(e) => Err(e.into()),
+    }
+}
+
+fn set_credential(name: &str, value: &str) -> Result<()> {
+    Ok(credential(name)?.set_password(value)?)
+}
+
+/// Succeeds if there is none.
+fn delete_credential(name: &str) -> Result<()> {
+    match credential(name)?.delete_credential() {
+        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+        Err(e) => Err(e.into()),
+    }
+}
+
+fn credential(name: &str) -> Result<keyring::Entry> {
+    keyring::Entry::new(KEYRING_SERVICE, name).map_err(|e| match e {
+        // The store failed to open; the reason is kept separately.
+        keyring::Error::NoDefaultStore => {
+            Error::NoSecretStore(match keyring::Entry::store_status() {
+                Err(cause) => cause.to_string(),
+                Ok(()) => e.to_string(),
+            })
+        }
+        e => e.into(),
+    })
+}
+
+/// What [`Error::NoSecretStore`] tells the user.
+#[cfg(all(unix, not(target_os = "macos")))]
+pub(crate) const NO_SECRET_STORE: &str = "Mtrx keeps your sign-in in the system keyring, \
+    but no Secret Service is running. Install GNOME Keyring or KWallet and restart Mtrx";
+#[cfg(not(all(unix, not(target_os = "macos"))))]
+pub(crate) const NO_SECRET_STORE: &str = "the system keyring is not available";
 
 fn write_private(path: &Path, contents: &str) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
@@ -86,4 +134,34 @@ fn write_private(path: &Path, contents: &str) -> std::io::Result<()> {
         fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn keyring_secret() -> Secret {
+        let name = format!("mtrx-test-{}", std::process::id());
+        Secret::new(SecretStore::Keyring, name, PathBuf::new())
+    }
+
+    #[test]
+    #[ignore = "uses the OS keyring"]
+    fn keyring_round_trip() {
+        let secret = keyring_secret();
+        secret.save("value").unwrap();
+        assert_eq!(secret.load().unwrap().as_deref(), Some("value"));
+        secret.delete().unwrap();
+        assert_eq!(secret.load().unwrap(), None);
+    }
+
+    /// Run with no Secret Service, e.g. `DBUS_SESSION_BUS_ADDRESS=unix:path=/none`.
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[ignore = "needs a session without a Secret Service"]
+    fn keyring_missing() {
+        let error = keyring_secret().load().unwrap_err();
+        assert!(matches!(error, Error::NoSecretStore(_)), "{error}");
+        assert!(error.to_string().starts_with(NO_SECRET_STORE), "{error}");
+    }
 }

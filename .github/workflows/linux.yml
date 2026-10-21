@@ -1,0 +1,155 @@
+# Linux (Ubuntu): checks, tests against a local Synapse, and the packages
+# (AppImage, .deb).
+name: Linux
+
+on:
+  push:
+    branches: [main, core-cli]
+  workflow_dispatch:
+  # From the release workflow, for the packages.
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: linux-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - name: System packages
+        # Mesa's lavapipe (Vulkan) and llvmpipe (GL): wgpu renders the UI
+        # snapshots on the CPU. GNOME Keyring: a Secret Service for the
+        # keyring tests. Noto Color Emoji: the app's emoji font on Linux.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config libxkbcommon-dev \
+            mesa-vulkan-drivers libvulkan1 libegl1 libgl1-mesa-dri \
+            dbus dbus-x11 gnome-keyring \
+            fonts-noto-color-emoji
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Format
+        run: cargo fmt --all --check
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: File dialogs use the XDG portal
+        run: cargo tree -p mtrx-app -e features -i rfd | grep -q 'rfd feature "xdg-portal"'
+      - name: Tests
+        run: cargo test --workspace
+      - name: Keyring tests (GNOME Keyring)
+        run: |
+          dbus-run-session -- bash -c '
+            echo -n ci | gnome-keyring-daemon --daemonize --unlock --components=secrets >/dev/null
+            cargo test -p mtrx-core --lib -- --ignored keyring_round_trip'
+      - name: Keyring tests (no Secret Service)
+        run: cargo test -p mtrx-core --lib -- --ignored keyring_missing
+        env:
+          DBUS_SESSION_BUS_ADDRESS: unix:path=/nonexistent
+      - name: Synapse
+        run: |
+          # The container runs Synapse as uid 991; it writes to data/.
+          mkdir -p testserver/data
+          chmod 777 testserver/data
+          testserver/run.sh
+      - name: Integration tests (mtrx-core)
+        run: cargo test -p mtrx-core --test integration -- --ignored
+      - name: UI tests (mtrx-app)
+        run: cargo test -p mtrx-app -- --ignored --skip big_room
+      - name: Synapse log
+        if: failure()
+        run: docker logs mtrx-synapse 2>&1 | tail -100
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ui-snapshots
+          path: target/ui-snapshots
+          if-no-files-found: warn
+
+  package:
+    # The oldest Ubuntu we support: the binaries need its glibc (2.35).
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+    env:
+      # appimagetool is itself an AppImage; run it without FUSE.
+      APPIMAGE_EXTRACT_AND_RUN: 1
+    steps:
+      - uses: actions/checkout@v4
+      - name: System packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config libxkbcommon-dev dpkg-dev file desktop-file-utils \
+            xvfb x11-utils imagemagick mesa-vulkan-drivers libvulkan1 libegl1 libgl1-mesa-dri
+      - name: appimagetool and the AppImage runtime (pinned)
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/appimagetool" \
+            https://github.com/AppImage/appimagetool/releases/download/1.9.1/appimagetool-x86_64.AppImage
+          curl -fsSL -o "$RUNNER_TEMP/runtime-x86_64" \
+            https://github.com/AppImage/type2-runtime/releases/download/20251108/runtime-x86_64
+          cd "$RUNNER_TEMP"
+          sha256sum --check <<'EOF'
+          ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0  appimagetool
+          2fca8b443c92510f1483a883f60061ad09b46b978b2631c807cd873a47ec260d  runtime-x86_64
+          EOF
+          sudo install -m 755 appimagetool /usr/local/bin/appimagetool
+          echo "APPIMAGE_RUNTIME=$RUNNER_TEMP/runtime-x86_64" >> "$GITHUB_ENV"
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # Not the 24.04 cache: C objects built against a newer glibc.
+          key: ubuntu-22.04
+      - name: Bundle
+        run: cargo xtask bundle
+      - name: Check the packages
+        run: |
+          dpkg-deb --info target/bundle/mtrx_*_amd64.deb
+          dpkg-deb --contents target/bundle/mtrx_*_amd64.deb
+          sudo apt-get install -y ./target/bundle/mtrx_*_amd64.deb
+          desktop-file-validate /usr/share/applications/org.mtrx.Mtrx.desktop
+          mtrx --help
+          test -x /usr/bin/mtrx-app
+          cd "$RUNNER_TEMP" && "$GITHUB_WORKSPACE"/target/bundle/Mtrx-linux-x86_64.AppImage --appimage-extract >/dev/null
+          ls -la squashfs-root squashfs-root/usr/bin
+      - name: Start the AppImage (X11, no Secret Service)
+        # The window class is the app id, and the sign-in screen says that
+        # there is no keyring. Screenshot as an artifact.
+        env:
+          DBUS_SESSION_BUS_ADDRESS: unix:path=/nonexistent
+          DISPLAY: ":99"
+        run: |
+          export MTRX_DATA_DIR="$RUNNER_TEMP/mtrx-data"
+          Xvfb :99 -screen 0 1280x860x24 &
+          sleep 2
+          target/bundle/Mtrx-linux-x86_64.AppImage &
+          app=$!
+          for _ in $(seq 60); do xprop -name Mtrx WM_CLASS 2>/dev/null && break; sleep 1; done
+          xprop -name Mtrx WM_CLASS | grep -F '"org.mtrx.Mtrx", "org.mtrx.Mtrx"'
+          sleep 5
+          mkdir -p target/smoke
+          import -window root target/smoke/appimage-x11-no-keyring.png
+          kill "$app"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-packages
+          path: |
+            target/bundle/*.AppImage
+            target/bundle/*.deb
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: linux-smoke
+          path: target/smoke
+          if-no-files-found: ignore

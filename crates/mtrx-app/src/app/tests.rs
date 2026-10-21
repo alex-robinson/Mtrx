@@ -50,6 +50,10 @@ fn with_start(entries: &mut Vec<TimelineEntry>) {
 }
 
 fn snapshot(app: &App, name: &str) {
+    // One at a time: renderers drawing at once in parallel tests crashed
+    // on Windows CI (software Direct3D).
+    static RENDERING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _rendering = RENDERING.lock().unwrap_or_else(|e| e.into_inner());
     // Snapshots are for looking at, not regression baselines: always rewrite.
     // iced_test appends the renderer name, e.g. `login-wgpu.png`.
     let path = snapshot_dir().join(name);
@@ -97,6 +101,19 @@ fn app(screen: Screen, mode: Mode) -> App {
 #[test]
 fn login_screen() {
     snapshot(&app(Screen::Login(Login::default()), Mode::Light), "login");
+}
+
+/// Without a keyring (Linux: no Secret Service) the sign-in screen says so.
+#[test]
+fn login_without_keyring() {
+    let mut app = app(Screen::Starting, Mode::Light);
+    let error = mtrx_core::Error::NoSecretStore("no secrets service".into());
+    let _ = app.update(Message::Restored(Err(Shared(Arc::new(error)))));
+    let Screen::Login(login) = &app.screen else {
+        panic!("not the sign-in screen");
+    };
+    assert!(login.error.is_some());
+    snapshot(&app, "login-no-keyring");
 }
 
 /// A diagonal gradient as PNG, for avatars.
@@ -490,6 +507,17 @@ async fn main_screen_with_math() {
             "main-light"
         };
         snapshot(&app, name);
+        // A click elsewhere closes the call menu (dark) or link editor (light).
+        let mut ui = Simulator::with_size(fonts::settings(), Size::new(1200.0, 800.0), app.view());
+        ui.point_at(iced::Point::new(400.0, 130.0));
+        ui.simulate(iced_test::simulator::click());
+        let messages: Vec<_> = ui.into_messages().collect();
+        assert!(
+            messages
+                .iter()
+                .any(|m| matches!(m, Message::Calls(_, calls::Message::Close))),
+            "{messages:?}"
+        );
         if mode == Mode::Light {
             composer_keeps_focus(&mut app);
         }
