@@ -42,7 +42,7 @@ impl Session {
         })
     }
 
-    fn core(&self) -> Arc<core::Session> {
+    pub(crate) fn core(&self) -> Arc<core::Session> {
         Arc::clone(&self.inner)
     }
 }
