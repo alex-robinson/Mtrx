@@ -7,6 +7,7 @@
 
 mod actions;
 mod app;
+mod appearance;
 mod arrange;
 mod avatar;
 mod badge;
@@ -42,6 +43,7 @@ mod send_later;
 mod settings;
 mod sidebar;
 mod style;
+mod text_size;
 mod tint;
 #[cfg(windows)]
 mod windows;
@@ -59,17 +61,24 @@ fn main() -> iced::Result {
     #[cfg(target_os = "macos")]
     logo::notifications_from_bundle();
 
-    iced::application(app::App::boot, app::App::update, app::App::view)
-        .title("Mtrx")
-        .subscription(app::App::subscription)
-        .theme(app::App::theme)
-        .settings(fonts::settings())
-        .window(iced::window::Settings {
-            size: iced::Size::new(1200.0, 800.0),
-            icon: logo::window_icon(),
-            #[cfg(target_os = "linux")]
-            platform_specific: linux::window_settings(),
-            ..Default::default()
-        })
-        .run()
+    let environment = app::Environment::load().expect("valid MTRX_PROFILE and data directory");
+    let size = environment.window_size();
+    iced::application(
+        move || app::App::boot(environment.clone()),
+        app::App::update,
+        app::App::view,
+    )
+    .title("Mtrx")
+    .subscription(app::App::subscription)
+    .theme(app::App::window_theme)
+    .scale_factor(app::App::scale_factor)
+    .settings(fonts::settings())
+    .window(iced::window::Settings {
+        size,
+        icon: logo::window_icon(),
+        #[cfg(target_os = "linux")]
+        platform_specific: linux::window_settings(),
+        ..Default::default()
+    })
+    .run()
 }

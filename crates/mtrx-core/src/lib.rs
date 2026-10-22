@@ -20,7 +20,9 @@ mod notes;
 mod notifications;
 mod people;
 mod permissions;
+mod presence;
 mod profile;
+mod push;
 mod room_colours;
 mod room_settings;
 mod rooms;
@@ -49,7 +51,9 @@ pub use notes::notes_markdown;
 pub use notifications::Notification;
 pub use people::{Contact, UserInfo};
 pub use permissions::{Permissions, SpaceUpdate};
+pub use presence::{Presence, PresenceState, PresenceWatcher, describe_last_active};
 pub use profile::Profile;
+pub use push::{HttpPusher, PushNotification, PusherInfo};
 pub use room_colours::RoomListColours;
 pub use room_settings::{Access, NotifyMode, RoomSettings};
 pub use rooms::{NewRoom, RoomKind, RoomList, RoomListState, RoomSummary, UserSummary};
@@ -58,7 +62,7 @@ pub use secrets::{SecretBackend, SecretStore};
 pub use send_time::{describe_send_time, parse_send_time};
 pub use session::{APP_OAUTH_REDIRECT_URI, OAuthLogin, Session};
 pub use spaces::{
-    RoomsBySpace, SpaceRooms, descendants, home_rooms, space_rooms, top_level_spaces,
+    RoomsBySpace, SpaceMembers, SpaceRooms, descendants, home_rooms, space_rooms, top_level_spaces,
 };
 pub use timeline::{
     Attachment, Event, EventContent, EventKey, Media, MediaKind, MembershipChange, Message,

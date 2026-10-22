@@ -54,6 +54,11 @@ the packages are the run's artifact).
       with XChaCha20-Poly1305 (`secrets.enc` in the profile, `google.enc`)
       and only its random key is in Credential Manager
       (`mtrx-core/src/secrets/windows.rs`). macOS and Linux unchanged.
+- [x] Appearance (Settings > General): Follow system tracks the system's
+      light or dark setting live, as winit reports it on `WM_SETTINGCHANGE`
+      (`mtrx-app/src/appearance.rs`). Light and Dark fix the window's title
+      bar too, though winit returns it to the system's colours when that
+      setting changes. Not yet tried on a real machine.
 
 ## 3. Linux
 
@@ -67,6 +72,9 @@ the packages are the run's artifact).
 - [x] File dialogs (`rfd`) use the XDG portal (its default features; CI
       checks). Not yet tried on a desktop: CI has no portal. Without one,
       rfd falls back to zenity.
+- [x] Appearance: Follow system reads the portal's colour scheme and its
+      changes (iced's `linux-theme-detection`). Without a portal, or with
+      no preference, the app is light. Not yet tried on a desktop.
 
 ## 4. Packages
 
