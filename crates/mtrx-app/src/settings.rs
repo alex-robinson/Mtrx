@@ -24,8 +24,9 @@ use crate::{
     appearance::Appearance,
     dialog::Kind,
     fonts,
-    hint::{Position, hint},
+    hint::{Position, hint, shortcut},
     style,
+    text_size::TextSize,
     tint::Tint,
 };
 
@@ -36,6 +37,8 @@ const FILE: &str = "settings.json";
 pub struct Settings {
     /// Light, dark, or as the system is.
     pub appearance: Appearance,
+    /// The scale of text, pictures and spacing.
+    pub text_size: TextSize,
     /// Senders' names in their colour (as in Element) instead of the text colour.
     pub colored_names: bool,
     /// Show new messages as system notifications.
@@ -65,6 +68,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             appearance: Appearance::default(),
+            text_size: TextSize::default(),
             colored_names: false,
             desktop_notifications: true,
             icon_badge: true,
@@ -119,6 +123,7 @@ impl Settings {
 #[derive(Debug, Clone)]
 pub enum Message {
     Appearance(Appearance),
+    TextSize(TextSize),
     ColoredNames(bool),
     DesktopNotifications(bool),
     IconBadge(bool),
@@ -161,6 +166,8 @@ pub enum Action {
     Save,
     /// The appearance changed; save the settings and draw in it.
     Appearance,
+    /// The text size changed; save the settings and draw at it.
+    TextSize,
     SetSpaceService(OwnedRoomId, Option<CallService>),
     /// Open a room, or a space with its rooms, to every member.
     LetEveryoneEdit {
@@ -365,6 +372,10 @@ impl Panel {
                 settings.appearance = appearance;
                 return Action::Appearance;
             }
+            Message::TextSize(size) => {
+                settings.text_size = size;
+                return Action::TextSize;
+            }
             Message::ColoredNames(colored) => {
                 settings.colored_names = colored;
                 return Action::Save;
@@ -523,6 +534,21 @@ impl Panel {
                 "Light or dark; Follow system changes with your computer's setting.",
                 pick_list(Appearance::ALL, Some(settings.appearance), |a| {
                     message(Message::Appearance(a))
+                })
+                .text_size(13)
+                .padding(6)
+                .into(),
+            ),
+            option(
+                "Text size",
+                format!(
+                    "Text, pictures and spacing together; also {} and {}, and {} for Default.",
+                    shortcut("+"),
+                    shortcut("−"),
+                    shortcut("0"),
+                ),
+                pick_list(TextSize::ALL, Some(settings.text_size), |s| {
+                    message(Message::TextSize(s))
                 })
                 .text_size(13)
                 .padding(6)
@@ -949,7 +975,7 @@ fn room_list_options<'a>(grouping: Grouping) -> Element<'a, app::Message> {
 
 fn option<'a>(
     label: &'a str,
-    description: &'a str,
+    description: impl text::IntoFragment<'a>,
     control: Element<'a, app::Message>,
 ) -> Element<'a, app::Message> {
     row![
@@ -989,6 +1015,7 @@ mod tests {
         assert_eq!(Settings::load(&path), Settings::default(), "missing file");
         let settings = Settings {
             appearance: Appearance::Dark,
+            text_size: TextSize::Larger,
             colored_names: true,
             desktop_notifications: false,
             icon_badge: false,
@@ -1007,6 +1034,7 @@ mod tests {
         assert_eq!(Settings::load(&path), settings);
         let saved = std::fs::read_to_string(&path).unwrap();
         assert!(saved.contains(r#""appearance": "Dark""#), "{saved}");
+        assert!(saved.contains(r#""text_size": "Larger""#), "{saved}");
         std::fs::write(&path, "{}").unwrap();
         assert_eq!(Settings::load(&path), Settings::default(), "older file");
 
@@ -1035,6 +1063,15 @@ mod tests {
         let action = Panel::default().update(&mut settings, Message::Appearance(Appearance::Light));
         assert!(matches!(action, Action::Appearance));
         assert_eq!(settings.appearance, Appearance::Light);
+    }
+
+    #[test]
+    fn chooses_the_text_size() {
+        let mut settings = Settings::default();
+        assert_eq!(settings.text_size, TextSize::Default);
+        let action = Panel::default().update(&mut settings, Message::TextSize(TextSize::Large));
+        assert!(matches!(action, Action::TextSize));
+        assert_eq!(settings.text_size, TextSize::Large);
     }
 
     #[test]
