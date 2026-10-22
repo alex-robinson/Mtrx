@@ -148,6 +148,7 @@ final class FakeSession: Session, @unchecked Sendable {
     var connectionListener: ConnectionListener?
     var verificationRequestListener: VerificationRequestListener?
     var syncStarts = 0
+    var syncStops = 0
     /// What `encryptionState()` returns, and the subscription's first state.
     var encryption = EncryptionState(deviceVerified: false, recovery: .unknown)
     var encryptionRequests = 0
@@ -208,6 +209,10 @@ final class FakeSession: Session, @unchecked Sendable {
 
     override func startSync() async {
         syncStarts += 1
+    }
+
+    override func stopSync() async {
+        syncStops += 1
     }
 
     override func encryptionState() async throws -> EncryptionState {

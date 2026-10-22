@@ -60,7 +60,7 @@ final class SessionModelTests: XCTestCase {
         await eventually { self.model.rooms.count == 1 }
         model.setSyncing(false)
         model.setSyncing(true)
-        await eventually { self.session.syncStarts == 2 }
+        await eventually { self.session.syncStops == 1 && self.session.syncStarts == 2 }
         await settle()
         XCTAssertEqual(session.encryptionRequests, 0)
     }
