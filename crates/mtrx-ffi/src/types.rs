@@ -85,6 +85,27 @@ impl From<&core::RoomSummary> for RoomSummary {
     }
 }
 
+/// Someone's public profile.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct UserProfile {
+    /// `@user:server`.
+    pub user_id: String,
+    /// Display name, if they set one.
+    pub name: Option<String>,
+    /// `mxc://` URI, for `Session.avatar`.
+    pub avatar_url: Option<String>,
+}
+
+impl From<core::UserSummary> for UserProfile {
+    fn from(user: core::UserSummary) -> Self {
+        Self {
+            user_id: user.id.to_string(),
+            name: user.name,
+            avatar_url: user.avatar.map(|uri| uri.to_string()),
+        }
+    }
+}
+
 /// The room list: every joined and invited room (spaces too), most recently
 /// active first, and the rooms by space as the desktop shows them.
 #[derive(Clone, Debug, PartialEq, uniffi::Record)]
@@ -569,6 +590,23 @@ mod tests {
             send_state: core::SendState::Sending,
             read_by: Vec::new(),
         }
+    }
+
+    #[test]
+    fn profiles_keep_what_is_set() {
+        let profile = UserProfile::from(core::UserSummary {
+            id: "@bob:example.org".try_into().unwrap(),
+            name: Some("Bob".into()),
+            avatar: None,
+        });
+        assert_eq!(
+            profile,
+            UserProfile {
+                user_id: "@bob:example.org".into(),
+                name: Some("Bob".into()),
+                avatar_url: None,
+            }
+        );
     }
 
     fn message(document: Document, media: Option<core::Media>) -> core::EventContent {
