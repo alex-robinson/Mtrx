@@ -21,10 +21,12 @@ use mtrx_core::{
     test_support::{PASSWORD, homeserver, register, unique_name},
 };
 use mtrx_ffi::{
-    ConnectionListener, ConnectionState, EncryptionState, EventContent, MediaKind, Mtrx, MtrxError,
-    RecoveryListener, RecoveryStatus, RecoveryStep, RoomKind, RoomListListener, RoomListState,
-    SecretBackend, SecretError, Session, TimelineItem, TimelineItemContent, TimelineListener,
-    Verification, VerificationListener, VerificationRequestListener, VerificationState,
+    ConnectionListener, ConnectionState, EncryptionState, EventContent, MediaKind, Message,
+    MessageKind, Mtrx, MtrxError, QuoteState, Reaction, Reader, RecoveryListener, RecoveryStatus,
+    RecoveryStep, ReplyQuote, RoomKind, RoomListListener, RoomListState, SecretBackend,
+    SecretError, SendState, Session, TimelineEvent, TimelineItem, TimelineItemContent,
+    TimelineListener, TypingListener, Verification, VerificationListener,
+    VerificationRequestListener, VerificationState,
 };
 use tempfile::TempDir;
 
@@ -72,6 +74,12 @@ impl RoomListListener for Forward<RoomListState> {
 impl TimelineListener for Forward<Vec<TimelineItem>> {
     fn on_update(&self, items: Vec<TimelineItem>) {
         self.send(items);
+    }
+}
+
+impl TypingListener for Forward<Vec<String>> {
+    fn on_update(&self, names: Vec<String>) {
+        self.send(names);
     }
 }
 
@@ -686,4 +694,303 @@ fn red_dot_png() -> Vec<u8> {
         0xcf, 0xc0, 0x00, 0x00, 0x03, 0x01, 0x01, 0x00, 0x18, 0xdd, 0x8d, 0xb0, 0x00, 0x00, 0x00,
         0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
     ]
+}
+
+/// A timeline's items as its listener gets them, and the latest.
+struct Items {
+    updates: mpsc::Receiver<Vec<TimelineItem>>,
+    latest: Vec<TimelineItem>,
+    _handle: Arc<mtrx_ffi::TaskHandle>,
+}
+
+impl Items {
+    fn follow(timeline: &mtrx_ffi::Timeline) -> Self {
+        let (items, updates) = forward();
+        Self {
+            _handle: timeline.subscribe(items),
+            updates,
+            latest: Vec::new(),
+        }
+    }
+
+    /// Wait until the items match `pred` (maybe they do already).
+    fn wait(&mut self, what: &str, pred: impl Fn(&[TimelineItem]) -> bool) -> &[TimelineItem] {
+        if !pred(&self.latest) {
+            self.latest = wait_for(what, &self.updates, |items| pred(items));
+        }
+        &self.latest
+    }
+}
+
+/// The row (its ID) and event of the message whose text is `body`.
+fn find<'a>(items: &'a [TimelineItem], body: &str) -> Option<(&'a str, &'a TimelineEvent)> {
+    items.iter().find_map(|item| match &item.content {
+        TimelineItemContent::Event { event } if message_body(item) == Some(body) => {
+            Some((item.id.as_str(), event))
+        }
+        _ => None,
+    })
+}
+
+fn message(event: &TimelineEvent) -> &Message {
+    match &event.content {
+        EventContent::Message { message } => message,
+        other => panic!("not a message: {other:?}"),
+    }
+}
+
+/// The message with `body`, sent (with an event ID).
+fn sent<'a>(items: &'a [TimelineItem], body: &str) -> Option<(&'a str, &'a TimelineEvent)> {
+    find(items, body).filter(|(_, event)| event.event_id.is_some())
+}
+
+/// Wait until the room list has `room_id`.
+fn wait_for_room(session: &Session, room_id: &str) {
+    let (rooms, updates) = forward();
+    let _handle = block_on(session.subscribe_room_list(rooms)).unwrap();
+    wait_for(
+        "the room in the room list",
+        &updates,
+        |s: &RoomListState| s.rooms.iter().any(|r| r.id == room_id && !r.invited),
+    );
+}
+
+/// Users `names` made, and a room made by the first, which the others
+/// joined, all outside the bindings (which cannot make rooms yet).
+fn room_of(core_runtime: &tokio::runtime::Runtime, prefixes: &[&str]) -> (Vec<String>, String) {
+    let names: Vec<String> = prefixes
+        .iter()
+        .map(|prefix| {
+            let name = unique_name(prefix);
+            core_runtime.block_on(register(&name)).unwrap();
+            name
+        })
+        .collect();
+    let dir = tempfile::tempdir().unwrap();
+    let room = core_runtime.block_on(async {
+        let mut sessions = Vec::new();
+        for name in &names {
+            let profile = Profile::new(name, dir.path(), SecretStore::File).unwrap();
+            sessions.push(
+                mtrx_core::Session::login(profile, &homeserver(), name, PASSWORD)
+                    .await
+                    .unwrap(),
+            );
+        }
+        let room = sessions[0]
+            .create_room(NewRoom {
+                name: Some("talk".into()),
+                invite: sessions[1..].iter().map(|s| s.user_id()).collect(),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        for other in &sessions[1..] {
+            other
+                .join(<&mtrx_core::RoomOrAliasId>::from(&*room))
+                .await
+                .unwrap();
+        }
+        for session in sessions {
+            session.logout().await.unwrap();
+        }
+        room.to_string()
+    });
+    (names, room)
+}
+
+#[test]
+#[ignore = "needs the local Synapse (testserver/run.sh)"]
+fn reactions_replies_edits_receipts_and_typing() {
+    let core_runtime = tokio::runtime::Runtime::new().unwrap();
+    let (names, room_id) = room_of(&core_runtime, &["ffi-talk", "ffi-talk-bob"]);
+    let (alice, bob) = (sign_in(&names[0]), sign_in(&names[1]));
+    let (alice_id, bob_id) = (alice.session.user_id(), bob.session.user_id());
+    let reader = |id: &str, name: &str| Reader {
+        user_id: id.into(),
+        name: Some(name.into()),
+        avatar_url: None,
+    };
+    let (alice_reader, bob_reader) = (reader(&alice_id, &names[0]), reader(&bob_id, &names[1]));
+    wait_for_room(&alice.session, &room_id);
+    wait_for_room(&bob.session, &room_id);
+    let alice_timeline = block_on(alice.session.timeline(room_id.clone())).unwrap();
+    let bob_timeline = block_on(bob.session.timeline(room_id.clone())).unwrap();
+    let mut alice_items = Items::follow(&alice_timeline);
+    let mut bob_items = Items::follow(&bob_timeline);
+
+    // Bob asks; Alice replies, quoting him.
+    block_on(bob_timeline.send_text("Which dataset?".into())).unwrap();
+    let items = alice_items.wait("Alice gets the question", |i| {
+        sent(i, "Which dataset?").is_some()
+    });
+    let (question_row, question) = sent(items, "Which dataset?").unwrap();
+    let (question_row, question_id) = (question_row.to_owned(), question.event_id.clone());
+    assert!(!question.editable);
+    block_on(alice_timeline.reply(question_row.clone(), "The **new** one".into())).unwrap();
+    let items = bob_items.wait("Bob sees the reply with its quote", |i| {
+        find(i, "The new one").is_some_and(|(_, e)| {
+            message(e)
+                .reply_to
+                .as_ref()
+                .is_some_and(|q| q.state == QuoteState::Loaded && q.sender_name.is_some())
+        })
+    });
+    let reply = find(items, "The new one").unwrap().1;
+    assert_eq!(
+        message(reply).reply_to,
+        Some(ReplyQuote {
+            event_id: question_id.unwrap(),
+            state: QuoteState::Loaded,
+            sender_id: Some(bob_id.clone()),
+            sender_name: Some(names[1].clone()),
+            kind: Some(MessageKind::Text),
+            body: Some("Which dataset?".into()),
+        })
+    );
+    let bob_question_row = find(items, "Which dataset?").unwrap().0.to_owned();
+
+    // Reactions, counted and named on both sides, toggled on and off.
+    let reactions = |items: &[TimelineItem]| {
+        find(items, "Which dataset?").map(|(_, e)| message(e).reactions.clone())
+    };
+    let thumbs = |count, by_us, senders: &[&Reader]| {
+        Some(vec![Reaction {
+            key: "👍".into(),
+            count,
+            by_us,
+            senders: senders.iter().map(|&r| r.clone()).collect(),
+        }])
+    };
+    block_on(alice_timeline.react(question_row.clone(), "👍".into())).unwrap();
+    bob_items.wait("Bob sees Alice's reaction", |i| {
+        reactions(i) == thumbs(1, false, &[&alice_reader])
+    });
+    block_on(bob_timeline.react(bob_question_row.clone(), "👍".into())).unwrap();
+    alice_items.wait("Alice sees both reactions", |i| {
+        reactions(i) == thumbs(2, true, &[&alice_reader, &bob_reader])
+    });
+    bob_items.wait("Bob sees both reactions", |i| {
+        reactions(i) == thumbs(2, true, &[&alice_reader, &bob_reader])
+    });
+    block_on(alice_timeline.react(question_row, "👍".into())).unwrap();
+    alice_items.wait("Alice sees only Bob's", |i| {
+        reactions(i) == thumbs(1, false, &[&bob_reader])
+    });
+    bob_items.wait("Bob sees only his", |i| {
+        reactions(i) == thumbs(1, true, &[&bob_reader])
+    });
+    block_on(bob_timeline.react(bob_question_row, "👍".into())).unwrap();
+    alice_items.wait("no reactions left", |i| reactions(i) == Some(Vec::new()));
+
+    // Alice edits her reply, then deletes it.
+    let items = alice_items.wait("Alice's reply sent", |i| sent(i, "The new one").is_some());
+    let (reply_row, reply) = sent(items, "The new one").unwrap();
+    assert!(reply.editable);
+    assert_eq!(message(reply).raw_body, "The **new** one");
+    let reply_row = reply_row.to_owned();
+    block_on(alice_timeline.edit(reply_row.clone(), "The *newest* one".into())).unwrap();
+    let items = bob_items.wait("Bob sees the edit", |i| {
+        find(i, "The newest one").is_some_and(|(_, e)| message(e).edited)
+    });
+    let bob_reply_row = find(items, "The newest one").unwrap().0.to_owned();
+    let items = alice_items.wait("Alice sees the edit", |i| {
+        find(i, "The newest one").is_some_and(|(_, e)| message(e).edited)
+    });
+    assert_eq!(
+        message(find(items, "The newest one").unwrap().1).raw_body,
+        "The *newest* one"
+    );
+    block_on(alice_timeline.delete(reply_row)).unwrap();
+    bob_items.wait("Bob sees it deleted", |i| {
+        i.iter().any(|item| {
+            item.id == bob_reply_row
+                && matches!(&item.content, TimelineItemContent::Event { event }
+                    if event.content == EventContent::Redacted)
+        })
+    });
+
+    // Typing, by name.
+    let (typing, names_typing) = forward();
+    let _typing = bob_timeline.subscribe_typing(typing);
+    block_on(alice_timeline.set_typing(true)).unwrap();
+    wait_for("Bob sees Alice typing", &names_typing, |n: &Vec<String>| {
+        *n == [names[0].clone()]
+    });
+    block_on(alice_timeline.set_typing(false)).unwrap();
+    wait_for("Bob sees Alice stop", &names_typing, |n: &Vec<String>| {
+        n.is_empty()
+    });
+
+    // Bob reads Alice's latest message: his receipt moves there, with his
+    // name.
+    block_on(alice_timeline.send_text("Thanks".into())).unwrap();
+    bob_items.wait("Bob gets the thanks", |i| sent(i, "Thanks").is_some());
+    let read_by_bob = |items: &[TimelineItem]| -> Vec<String> {
+        items
+            .iter()
+            .filter(|item| {
+                matches!(&item.content, TimelineItemContent::Event { event }
+                if event.read_by.contains(&bob_reader))
+            })
+            .map(|item| item.id.clone())
+            .collect()
+    };
+    let items = alice_items.wait("the thanks sent", |i| sent(i, "Thanks").is_some());
+    let thanks_row = sent(items, "Thanks").unwrap().0.to_owned();
+    assert!(!read_by_bob(items).contains(&thanks_row));
+    block_on(bob_timeline.mark_read()).unwrap();
+    alice_items.wait("Alice sees Bob's receipt", |i| {
+        read_by_bob(i) == [thanks_row.clone()]
+    });
+}
+
+#[test]
+#[ignore = "needs the local Synapse (testserver/run.sh)"]
+fn failed_sends_are_retried_or_discarded() {
+    let core_runtime = tokio::runtime::Runtime::new().unwrap();
+    let (names, room_id) = room_of(&core_runtime, &["ffi-unsent"]);
+    let device = sign_in(&names[0]);
+    wait_for_room(&device.session, &room_id);
+    let timeline = block_on(device.session.timeline(room_id)).unwrap();
+    let mut items = Items::follow(&timeline);
+
+    // The server refuses events over 64 KiB, whatever we try.
+    let too_long = "x".repeat(70_000);
+    let failed = |i: &[TimelineItem]| {
+        find(i, &too_long).is_some_and(|(_, e)| matches!(e.send_state, SendState::Failed { .. }))
+    };
+    block_on(timeline.send_text(too_long.clone())).unwrap();
+    let row = find(items.wait("shown as failed", failed), &too_long)
+        .unwrap()
+        .0
+        .to_owned();
+
+    // Sent again: sending, then failed again.
+    block_on(timeline.retry(row.clone())).unwrap();
+    items.wait("sending again", |i| {
+        find(i, &too_long).is_some_and(|(_, e)| e.send_state == SendState::Sending)
+    });
+    items.wait("failed again", failed);
+
+    // What is queued after it waits for it; once it is dropped, it is sent.
+    block_on(timeline.send_text("after the long one".into())).unwrap();
+    block_on(timeline.discard(row)).unwrap();
+    let items = items.wait("dropped, and the next one sent", |i| {
+        find(i, &too_long).is_none()
+            && sent(i, "after the long one").is_some_and(|(_, e)| e.send_state == SendState::Sent)
+    });
+    let row = sent(items, "after the long one").unwrap().0.to_owned();
+    assert!(matches!(
+        block_on(timeline.retry(row.clone())),
+        Err(MtrxError::Other { .. })
+    ));
+    assert!(matches!(
+        block_on(timeline.discard(row)),
+        Err(MtrxError::Other { .. })
+    ));
+    assert!(matches!(
+        block_on(timeline.react("no-such-row".into(), "👍".into())),
+        Err(MtrxError::InvalidInput { .. })
+    ));
 }
