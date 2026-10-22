@@ -49,7 +49,7 @@ mtrx-core = { path = ".", features = ["test-support"] }
 mtrx-format.workspace = true
 tempfile.workspace = true
 anyhow.workspace = true
-tokio = { workspace = true, features = ["net", "io-util"] }
+tokio = { workspace = true, features = ["net", "io-util", "test-util"] }
 
 [lints.rust]
 # Used by ruma's `EventContent` derive.

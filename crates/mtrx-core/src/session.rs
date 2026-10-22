@@ -67,6 +67,9 @@ pub struct Session {
     /// Kept for the session: it follows push rule changes, so it knows a
     /// room's mode right after setting it (sync echoes it later).
     pub(crate) notification_settings: matrix_sdk::notification_settings::NotificationSettings,
+    /// Refreshes our presence while it is not offline, see
+    /// [`Session::set_presence`].
+    pub(crate) kept_presence: Mutex<Option<AbortOnDrop>>,
     profile: Profile,
     _connection: AbortOnDrop,
 }
@@ -205,6 +208,7 @@ impl Session {
             colours,
             connection,
             notification_settings,
+            kept_presence: Default::default(),
             profile,
             _connection: watch_connection,
         })

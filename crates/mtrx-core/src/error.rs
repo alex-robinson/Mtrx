@@ -44,6 +44,10 @@ pub enum Error {
     InvalidMediaType(String),
     #[error("notifications: {0}")]
     Notifications(String),
+    /// The server does not share presence: it refuses ours and others'
+    /// (its answer, for logs).
+    #[error("This server does not share presence")]
+    PresenceUnavailable(String),
 
     #[error(transparent)]
     Matrix(#[from] matrix_sdk::Error),
