@@ -9,8 +9,10 @@ signs in and lists rooms, but a new device cannot read encrypted rooms
 without recovery or verification, which stage 1 (section 6) adds; the
 library side of it is done. Stage 2 (section 7) organises the room list by
 space, and stage 3 (section 8) adds reactions, replies, edits, deleting,
-read receipts and typing; their library sides are done too. This is the
-plan, and the contract the apps are built on.
+read receipts and typing; their library sides are done too. Stage 4
+(section 9) polishes what the phone test of stages 1 to 3 found; its
+library side is done. This is the plan, and the contract the apps are
+built on.
 
 ## Decisions
 
@@ -66,10 +68,13 @@ IDs are strings, times `Date`/`Instant`; no Ruma types.
   `subscribeRoomList(listener)`; `timeline(roomId) -> Timeline`;
   `avatar(mxcUri, size) -> Data`, `mediaPreview(media) -> Data`,
   `mediaFile(media) -> path`; `logout`, `forget`. Encryption (section 6):
-  `encryptionState()`, `recoveryStatus()`, `recover(recoveryKey,
+  `encryptionState()`, `subscribeEncryptionState(listener)` (section 9),
+  `recoveryStatus()`, `recover(recoveryKey,
   listener)`, `enableRecovery() -> key`, `isDeviceVerified()`, `devices()`,
   `requestSelfVerification() -> Verification`,
-  `subscribeVerificationRequests(listener)`.
+  `subscribeVerificationRequests(listener)`. People (section 9):
+  `userProfile(userId) -> UserProfile`, `invite(roomId, userId)` (to a
+  room or a space).
 - `Verification`: `otherUser()`, `accept()`, `state()`, `subscribe(listener)`,
   `confirm()`, `mismatch()`, `cancel()`.
 - `Timeline`: `roomId`, `subscribe(listener)`, `paginateBack(events)`,
@@ -82,6 +87,7 @@ IDs are strings, times `Date`/`Instant`; no Ruma types.
   `TimelineListener.onUpdate([TimelineItem])`,
   `TypingListener.onUpdate([String])` (names; on every change only),
   `ConnectionListener.onUpdate(ConnectionState)`,
+  `EncryptionStateListener.onUpdate(EncryptionState)`,
   `VerificationListener.onUpdate(VerificationState)`; each gets the whole
   state, now and after every change. `RecoveryListener.onUpdate(RecoveryStep)`
   gets each step of a recovery; `VerificationRequestListener.onRequest(Verification)`
@@ -99,8 +105,14 @@ IDs are strings, times `Date`/`Instant`; no Ruma types.
   kind, body }`, `QuoteState` (`loading`, `loaded`, `failed`), `Media`,
   `SendState` (`failed(error)`: retry or discard). `TimelineItem.id` is unique and stable (also when a
   local echo becomes the server's event): use it as list identity.
-  `EventContent.unableToDecrypt`: an encrypted event without its key (yet).
-  Encryption: `EncryptionState { deviceVerified, recovery }`,
+  `EventContent.unableToDecrypt`: an encrypted event without its key (yet);
+  `TimelineEvent.utdCause: UtdCause?` says why, as far as the SDK knows
+  (`unknown`, `sentBeforeWeJoined`, `verificationViolation`,
+  `unsignedDevice`, `unknownDevice`, `historicalMessageAndBackupIsDisabled`,
+  `historicalMessageAndDeviceIsUnverified`,
+  `withheldForUnverifiedOrInsecureDevice`, `withheldBySender`; nil for
+  other events). `UserProfile { userId, name, avatarUrl }`.
+  Encryption: `EncryptionState { deviceVerified, recovery, keysArriving }`,
   `RecoveryStatus` (`unknown`, `enabled`, `disabled`, `incomplete`),
   `RecoveryStep` (`checkingKey`, `importingIdentity`,
   `downloadingKeys(done, total)`), `VerificationState` (`waiting`,
@@ -482,7 +494,12 @@ Remaining:
       each, counted and named on both sides, and removed again; an edit,
       marked edited; a deletion; typing, by name; a read receipt moving to
       the message read, with the reader's name); a send the server refuses,
-      retried and then discarded, after which the next message goes: all
+      retried and then discarded, after which the next message goes;
+      stage 4: the encryption state through the listener (the recovering
+      device sees `keysArriving` true, then verified with recovery enabled
+      and no keys arriving; the verified device sees `deviceVerified`
+      turn true), someone's profile, and an invitation to a space, which
+      shows in the invitee's room list: all
       through the bindings against Synapse (`cargo test -p mtrx-ffi --test
       integration -- --ignored`, in the Linux workflow).
 
@@ -493,7 +510,8 @@ nothing readable until the user enters the recovery key or verifies the
 device with another one (the desktop app, say). Both apps add the same four
 things; the library part is done and tested (section 5).
 
-**State and banner.** `Session.encryptionState()` returns
+**State and banner.** (Stage 4 replaces the asking below with a
+subscription, section 9.) `Session.encryptionState()` returns
 `EncryptionState { deviceVerified, recovery }`. There is no subscription
 (the core has no stream for it): ask (a) when the room list first reports
 `loaded == true` after `startSync()`, (b) after `recover` returns, (c) after
@@ -745,6 +763,138 @@ models: which menu entries show for own, others', failed and unsent
 messages; reply and edit state in the composer;
 the quote jump (found at once, after paginating, at the room's start, after
 20 calls); typing line texts; reader overflow ("+N").
+
+## 9. Stage 4: polish
+
+The phone test of stages 1 to 3 went well. This stage fixes what it found
+and adds what the user asked for. The library part (the encryption state
+as a subscription, keys arriving, someone's profile, inviting) is done and
+tested (section 5); the rest is in the apps, which do the same on both.
+
+**Encryption state, pushed.** After the recovery key the banner stayed
+for a while: the apps asked `encryptionState()` right after `recover`
+returned, and parts of the state settle later. Now
+`Session.subscribeEncryptionState(listener) -> TaskHandle` calls
+`EncryptionStateListener.onUpdate(EncryptionState)` with the state now and
+after every change: this device verified (by the recovery key, or a
+verification), the recovery's status (`unknown` until the first sync),
+keys arriving and done. Subscribe right after `startSync()` with the other
+subscriptions (sync must have started once for the state to be known);
+keep the handle for the session and cancel it at sign-out (Kotlin: and
+close it). Keep the last state in the session model and drop the asking
+of section 6 (after the room list loads, after `recover`, after a
+verification, at the foreground, and Android's asking again while
+`unknown`). `encryptionState()` stays for a first read where one is needed
+before the listener's first call. The banner rule is unchanged: `!deviceVerified
+|| recovery == incomplete`, not while `unknown`.
+
+**Decrypting.** After a recovery, rooms showed "Could not decrypt" until
+their keys came from the backup. `EncryptionState.keysArriving` is true
+while message keys are being fetched from the key backup: while the
+backup is turned on (after the recovery key, or a verification that brings
+its key), while `recover` fetches the keys of the 20 most recently active
+encrypted rooms, and while a room's keys are fetched as its timeline
+opens (once per room and session, once the backup is on). Rows of
+`EventContent.unableToDecrypt` say "Decrypting…" while `keysArriving` and
+"Could not decrypt this message." otherwise; both muted and italic, as
+now. The text follows the state in rows already shown, and rows turn into
+their messages by themselves as the keys arrive. The SDK also fetches
+single keys for undecryptable messages in the background without saying
+so, so a row can still become its message after `keysArriving` turned
+false. `TimelineEvent.utdCause` is not used in this stage.
+
+**Bottom bar.** Three items: Chats, Spaces, Settings. "Rooms" is renamed
+"Spaces" (same icon as now; it opens on the spaces page). Settings moves
+into the third item: its screen as now (the account, "Encryption", sign
+out), as the tab's root, with the recovery key and verification screens
+pushed from it. Remove the old way in (iOS: the toolbar button and its
+sheet; Android: the room list menu's Settings). The encryption banner's
+tap selects the Settings tab. The bar hides while a room, the recovery key
+screen or the verification screen is open; each tab keeps its page and
+scroll position.
+
+**Swipe to reply.** Dragging a message bubble to the left starts a reply
+to it, as the menu's Reply does (the composer's reply bar opens and the
+field takes the focus). Only on rows that offer Reply (sent messages:
+`eventId != nil`; not state lines, deleted or undecryptable rows), our
+own and others'. The bubble follows the finger to the left, at most 72
+pt/dp; a reply arrow (iOS `arrowshape.turn.up.left`, Android
+`Icons.AutoMirrored.Filled.Reply`) appears at the row's right edge, fading
+in with the distance. At 56 pt/dp a light haptic tick; releasing beyond it
+replies, releasing before it does nothing; the bubble springs back either
+way. Only a drag that starts mostly horizontal (and to the left) counts:
+vertical scrolling, holding for the menu, tapping a quote, a reaction or
+an image, and the system's back gesture from the left edge work as
+before.
+
+**Direct chat header.** In a direct chat (`kind == direct` with a
+`directUserId` other than ours: not the Notes to self) the room screen's
+title shows the room's avatar (`avatarUrl`, which is the person's when
+the chat has none; initials as in the list), 28 pt/dp and round, left of
+the name. Tapping the avatar or the name opens the person's info sheet.
+
+**The person's info sheet.** At once it shows what the room list knows
+(the chat's name and avatar); `userProfile(directUserId)` then fills in
+the profile's name and avatar where set (a failure keeps the chat's, with
+no message). From the top: the avatar (80 pt/dp, round), the name, the
+user ID (secondary text, selectable) with a copy button beside it (copies
+the ID; iOS: shows "Copied" for 2 s; Android: a "Copied" snackbar unless
+the system shows its own clipboard notice, from Android 13), then "Add to
+space…". That opens a list of the top-level spaces (`RoomListState.spaces`
+in order, each with its `RoomSummary` name and avatar); tapping one calls
+`invite(spaceId, directUserId)`, with a spinner on the row meanwhile: on
+success "Invited to <space name>." and the list closes back to the sheet;
+on failure the error's reason in an alert (iOS) or snackbar (Android),
+the list stays. "Add to space…" is left out while `spaces` is empty. The
+server refuses an invite to someone already in the space; its reason is
+shown as any other.
+
+**Scroll to the latest.** While the newest row of the timeline is not on
+screen, a round button (40 pt/dp, a down arrow: iOS `chevron.down`,
+Android `Icons.Filled.KeyboardArrowDown`; the bar's material or surface
+colour, with a shadow) floats over the timeline's bottom right corner,
+16 pt/dp from the edge and above the composer and typing line. It fades
+in and out. Tapping it scrolls, animated, to the newest row.
+
+**A space's page in two sections.** The page of the selected space's
+rooms (or "Other rooms") shows two sections: "Rooms" (its entries with
+`kind != direct`: rooms, and invites to rooms and spaces) and "People"
+(`kind == direct`: its direct chats, the Notes to self among them). A
+section without entries is left out, with its header ("Other rooms" has
+no direct chats). The page's menu (iOS: a toolbar `Menu` with a "Sort"
+picker; Android: the top bar's overflow menu with radio items) sorts
+both sections:
+- Default: the order of `roomIds`, as now (the SDK's recency).
+- A to Z: by `name`, ignoring case and accents, in the user's locale
+  (iOS `localizedStandardCompare`; Android `java.text.Collator` with
+  strength `PRIMARY`).
+- Z to A: the reverse of A to Z.
+- Most recent: by `lastActivity`, newest first; entries without it (an
+  invite, say) after the others.
+The sorts are stable: ties keep the default order (also in Z to A). One
+choice for all spaces, remembered across launches and kept at sign-out (a
+view preference, not the account's): UserDefaults `spaceRoomsSort` /
+DataStore `view` key `space_rooms_sort`, with `default`, `aToZ`, `zToA`,
+`recent`. A search filters within the sections and keeps the names
+starting with the text first, then the chosen order. Nothing new is
+needed from the library: `RoomSummary` has `name`, `lastActivity` and
+`kind`.
+
+**Errors, threading and tests.** No new `MtrxError` cases. `invite` fails
+with `InvalidInput` (a malformed ID), `RoomNotFound` (not a room we are
+in) or `Other` (the server refused: show the reason); `userProfile` with
+`InvalidInput` or `Other`. Both are async: run them from the model, as
+before. `EncryptionStateListener` is called on the library's threads: hop
+to the main thread. The new record fields have defaults (`keysArriving:
+false`, `utdCause: nil`), so the fakes build unchanged; fakes of
+`Session` override `subscribeEncryptionState` (keep the listener, call
+it), `userProfile` and `invite`. Worth testing in the models: the banner
+following pushed states (without asking); the undecryptable row's text
+for both values of `keysArriving`, changing in a shown row; the sections
+and each sort (case and accents, nil `lastActivity`, ties, Z to A's ties),
+the choice saved and restored; the info sheet (the profile replacing the
+chat's name and avatar, a failure keeping them), an invite succeeding
+and failing; which rows can be swiped to reply.
 
 ## Later
 
