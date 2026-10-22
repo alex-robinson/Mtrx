@@ -9,8 +9,8 @@ use std::{
 
 use iced::{Point, Subscription, Task, event, mouse};
 use mtrx_core::{
-    Grouping, Member, OwnedRoomId, OwnedUserId, RoomCategories, RoomSummary, RoomTag, Section,
-    Session, Sort,
+    Grouping, OwnedRoomId, OwnedUserId, RoomCategories, RoomSummary, RoomTag, Section, Session,
+    Sort,
 };
 
 use tracing::warn;
@@ -28,7 +28,8 @@ const TAG_SYNC: Duration = Duration::from_secs(10);
 #[derive(Debug, Clone)]
 pub enum Message {
     Categories(RoomCategories),
-    SpaceMembers(OwnedRoomId, Result<Vec<Member>, String>),
+    /// A space's joined members.
+    SpaceMembers(OwnedRoomId, Result<HashSet<OwnedUserId>, String>),
     /// The cursor entered (`true`) or left a room row.
     Row(OwnedRoomId, bool),
     /// The cursor entered or left the pinned Notes row, which is not dragged.
@@ -130,7 +131,12 @@ impl Arrange {
         Task::perform(
             {
                 let space = space.clone();
-                async move { session.members(&space).await.map_err(|e| e.to_string()) }
+                async move {
+                    session
+                        .joined_member_ids(&space)
+                        .await
+                        .map_err(|e| e.to_string())
+                }
             },
             move |result| app::Message::Arrange(Message::SpaceMembers(space.clone(), result)),
         )
@@ -169,9 +175,8 @@ impl Arrange {
         let space = context.space.cloned();
         match message {
             Message::Categories(categories) => self.categories = categories,
-            Message::SpaceMembers(space, Ok(members)) => {
-                let joined = members.into_iter().filter(|m| !m.invited).map(|m| m.id);
-                self.space_members.insert(space, joined.collect());
+            Message::SpaceMembers(space, Ok(joined)) => {
+                self.space_members.insert(space, joined);
             }
             Message::SpaceMembers(space, Err(e)) => {
                 warn!(%space, "could not load the space's members: {e}");
