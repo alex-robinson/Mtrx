@@ -9,6 +9,7 @@ use matrix_sdk::{
         error::{OAuthAuthorizationCodeError, OAuthError},
         registration::{ApplicationType, ClientMetadata, Localized, OAuthGrantType},
     },
+    cross_process_lock::CrossProcessLockConfig,
     encryption::{BackupDownloadStrategy, EncryptionSettings, verification::VerificationRequest},
     ruma::{OwnedDeviceId, OwnedUserId, serde::Raw},
     store::RoomLoadSettings,
@@ -158,28 +159,7 @@ impl Session {
 
     /// Reopen the session previously saved in `profile`.
     pub async fn restore(profile: Profile) -> Result<Self> {
-        let stored = profile
-            .load_session()?
-            .ok_or_else(|| Error::NotLoggedIn(profile.name().to_owned()))?;
-        let client = build_client(&profile, &stored.homeserver, &stored.store_passphrase).await?;
-        match stored.auth {
-            StoredAuth::Password(session) => {
-                client
-                    .matrix_auth()
-                    .restore_session(session, RoomLoadSettings::default())
-                    .await?
-            }
-            StoredAuth::OAuth { client_id, session } => {
-                let session = OAuthSession {
-                    client_id: ClientId::new(client_id),
-                    user: session,
-                };
-                client
-                    .oauth()
-                    .restore_session(session, RoomLoadSettings::default())
-                    .await?
-            }
-        }
+        let client = restore_client(&profile, RoomLoadSettings::All, app_encryption()).await?;
         client
             .encryption()
             .wait_for_e2ee_initialization_tasks()
@@ -337,7 +317,7 @@ impl NewLogin {
         // Leftovers from an earlier failed login would not open with a new passphrase.
         profile.wipe()?;
         let store_passphrase = random_passphrase();
-        match build_client(&profile, homeserver, &store_passphrase).await {
+        match build_client(&profile, homeserver, &store_passphrase, app_encryption()).await {
             Ok(client) => Ok(Self {
                 profile,
                 client,
@@ -401,37 +381,93 @@ fn client_builder(homeserver: &str) -> matrix_sdk::ClientBuilder {
     }
 }
 
-async fn build_client(profile: &Profile, homeserver: &str, passphrase: &str) -> Result<Client> {
+/// A client of the session saved in `profile`, signed in, not syncing.
+/// `rooms` limits the rooms loaded from the store (a push needs one).
+pub(crate) async fn restore_client(
+    profile: &Profile,
+    rooms: RoomLoadSettings,
+    encryption: EncryptionSettings,
+) -> Result<Client> {
+    let stored = profile
+        .load_session()?
+        .ok_or_else(|| Error::NotLoggedIn(profile.name().to_owned()))?;
+    let client = build_client(
+        profile,
+        &stored.homeserver,
+        &stored.store_passphrase,
+        encryption,
+    )
+    .await?;
+    match stored.auth {
+        StoredAuth::Password(session) => {
+            client.matrix_auth().restore_session(session, rooms).await?
+        }
+        StoredAuth::OAuth { client_id, session } => {
+            let session = OAuthSession {
+                client_id: ClientId::new(client_id),
+                user: session,
+            };
+            client.oauth().restore_session(session, rooms).await?
+        }
+    }
+    Ok(client)
+}
+
+/// The app's encryption: cross-signing and the key backup set up, keys
+/// fetched from the backup when a message cannot be decrypted.
+fn app_encryption() -> EncryptionSettings {
+    EncryptionSettings {
+        auto_enable_cross_signing: true,
+        backup_download_strategy: BackupDownloadStrategy::AfterDecryptionFailure,
+        auto_enable_backups: true,
+    }
+}
+
+async fn build_client(
+    profile: &Profile,
+    homeserver: &str,
+    passphrase: &str,
+    encryption: EncryptionSettings,
+) -> Result<Client> {
+    let holder = lock_holder();
     let client = client_builder(homeserver)
         .sqlite_store_with_cache_path(
             profile.store_dir(),
             profile.cache_store_dir(),
             Some(passphrase),
         )
+        .cross_process_store_config(CrossProcessLockConfig::multi_process(holder.clone()))
         .handle_refresh_tokens()
-        .with_encryption_settings(EncryptionSettings {
-            auto_enable_cross_signing: true,
-            backup_download_strategy: BackupDownloadStrategy::AfterDecryptionFailure,
-            auto_enable_backups: true,
-        })
+        .with_encryption_settings(encryption)
         .build()
         .await?;
-    share_tokens(&client, profile).await?;
+    share_tokens(&client, profile, holder).await?;
     Ok(client)
 }
 
-/// Every refresh replaces the refresh token, so the processes using a
-/// profile (the app, the CLI) must not refresh at once, nor lose a new
-/// token: refreshes take a lock in the store they share, new tokens are
-/// saved before a refresh completes, and the other processes reload them.
-async fn share_tokens(client: &Client, profile: &Profile) -> Result<()> {
+/// The name under which a client takes the locks in the store it shares
+/// with other clients of the profile: in other processes (the app and the
+/// CLI; a mobile app and its push handler) or in this one (a push handled
+/// next to the app's session). Each needs its own, or the locks would let
+/// them in together.
+fn lock_holder() -> String {
+    static COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let program = std::env::current_exe()
         .ok()
         .and_then(|path| Some(path.file_stem()?.to_string_lossy().into_owned()))
         .unwrap_or_else(|| "mtrx".to_owned());
+    let n = COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    format!("{program}-{}-{n}", std::process::id())
+}
+
+/// Every refresh replaces the refresh token, so the clients using a
+/// profile must not refresh at once, nor lose a new token: refreshes take
+/// a lock in the store they share, new tokens are saved before a refresh
+/// completes, and the other clients reload them.
+async fn share_tokens(client: &Client, profile: &Profile, holder: String) -> Result<()> {
     client
         .oauth()
-        .enable_cross_process_refresh_lock(format!("{program}-{}", std::process::id()))
+        .enable_cross_process_refresh_lock(holder)
         .await?;
     let (saved, to_save) = (profile.clone(), profile.clone());
     client.set_session_callbacks(
@@ -485,6 +521,14 @@ fn random_passphrase() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn each_client_takes_the_store_locks_under_its_own_name() {
+        let (one, two) = (lock_holder(), lock_holder());
+        assert_ne!(one, two);
+        let pid = format!("-{}-", std::process::id());
+        assert!(one.contains(&pid), "{one}");
+    }
 
     #[test]
     fn app_redirect_scheme_is_the_client_uri_host_reversed() {
