@@ -1,0 +1,143 @@
+package org.mtrx.app.settings
+
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.ListItem
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Text
+import androidx.compose.material3.TopAppBar
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import org.mtrx.app.model.Account
+import org.mtrx.app.model.showsEncryptionBanner
+import uniffi.mtrx.EncryptionState
+import uniffi.mtrx.RecoveryStatus
+
+/** What the settings show of the session. */
+data class SessionInfo(val userId: String, val homeserver: String, val deviceId: String)
+
+/** The account, and encryption: its state, recovery and verification. */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun SettingsScreen(
+    account: Account,
+    info: SessionInfo,
+    onBack: () -> Unit,
+    onEnterRecoveryKey: () -> Unit,
+    onVerify: () -> Unit,
+) {
+    val encryption by account.encryption.collectAsStateWithLifecycle()
+    val devices by account.devices.collectAsStateWithLifecycle()
+    LaunchedEffect(account) { account.loadDevices() }
+    // Unknown (not loaded, or failed) counts as having one: the request says.
+    val otherDevice = devices?.any { !it.current } ?: true
+
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text("Settings") },
+                navigationIcon = {
+                    IconButton(onClick = onBack) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                    }
+                },
+            )
+        },
+    ) { padding ->
+        Column(
+            Modifier
+                .padding(padding)
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState()),
+        ) {
+            SectionTitle("Account")
+            Line("User", info.userId)
+            Line("Server", info.homeserver)
+            Line("Device", info.deviceId)
+            HorizontalDivider(Modifier.padding(vertical = 8.dp))
+            SectionTitle("Encryption")
+            EncryptionSection(encryption, otherDevice, onEnterRecoveryKey, onVerify)
+        }
+    }
+}
+
+@Composable
+private fun EncryptionSection(
+    state: EncryptionState?,
+    otherDevice: Boolean,
+    onEnterRecoveryKey: () -> Unit,
+    onVerify: () -> Unit,
+) {
+    if (state == null) {
+        Line("This device", "Checking…")
+        return
+    }
+    Line("This device", if (state.deviceVerified) "Verified" else "Not verified")
+    Line("Recovery", recoveryLabel(state.recovery))
+    if (!showsEncryptionBanner(state)) return
+    Column(Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
+        Text(
+            "Verify this device or enter your recovery key to read encrypted messages.",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        if (state.recovery != RecoveryStatus.DISABLED) {
+            OutlinedButton(onClick = onEnterRecoveryKey, modifier = Modifier.padding(top = 12.dp)) {
+                Text("Enter recovery key")
+            }
+        }
+        if (!state.deviceVerified) {
+            if (otherDevice) {
+                OutlinedButton(onClick = onVerify, modifier = Modifier.padding(top = 8.dp)) {
+                    Text("Verify with another device")
+                }
+            } else {
+                Text(
+                    "Verifying needs another device signed in to this account, such as the desktop app.",
+                    Modifier.padding(top = 12.dp),
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+            }
+        }
+    }
+}
+
+private fun recoveryLabel(status: RecoveryStatus): String = when (status) {
+    RecoveryStatus.ENABLED -> "Set up"
+    RecoveryStatus.DISABLED -> "Not set up"
+    RecoveryStatus.INCOMPLETE -> "Not unlocked on this device"
+    RecoveryStatus.UNKNOWN -> "Not known yet"
+}
+
+@Composable
+private fun SectionTitle(text: String) {
+    Text(
+        text,
+        Modifier.padding(start = 16.dp, end = 16.dp, top = 16.dp, bottom = 4.dp),
+        style = MaterialTheme.typography.titleSmall,
+        color = MaterialTheme.colorScheme.primary,
+    )
+}
+
+@Composable
+private fun Line(label: String, value: String) {
+    ListItem(
+        headlineContent = { Text(value) },
+        overlineContent = { Text(label) },
+    )
+}

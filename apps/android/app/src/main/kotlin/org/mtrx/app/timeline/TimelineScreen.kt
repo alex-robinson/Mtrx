@@ -262,8 +262,9 @@ private fun MessageBody(event: TimelineEvent, name: String, images: Images) {
             }
         }
         EventContent.Redacted -> Text("Message deleted", color = secondary, fontStyle = FontStyle.Italic)
+        // Turns into the message once its key arrives (recovery, verification).
         EventContent.UnableToDecrypt -> Text(
-            "Unable to decrypt this message (waiting for keys)",
+            "Could not decrypt this message.",
             color = secondary,
             fontStyle = FontStyle.Italic,
         )
