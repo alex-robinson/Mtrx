@@ -228,6 +228,8 @@ pub struct Reply {
     pub sender_name: Option<String>,
     /// Its text, shortened; `None` until loaded.
     pub preview: Option<String>,
+    /// Its kind once loaded, if it is a message (not deleted, say).
+    pub kind: Option<MessageKind>,
     /// It could not be loaded, e.g. as it is not visible to us.
     pub failed: bool,
 }
@@ -1013,6 +1015,7 @@ impl Converter {
             sender: None,
             sender_name: None,
             preview: None,
+            kind: None,
             failed: false,
         };
         match &reply.event {
@@ -1025,6 +1028,7 @@ impl Converter {
                     TimelineItemContent::MsgLike(m) => match &m.kind {
                         // The formatted text, without Markdown syntax.
                         MsgLikeKind::Message(message) => {
+                            out.kind = Some(message_kind(message.msgtype()));
                             preview(&match html_body(message.msgtype()) {
                                 Some(html) => Document::from_html(html).to_plain_text(),
                                 None => message.body().to_owned(),
