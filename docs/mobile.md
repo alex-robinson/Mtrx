@@ -242,6 +242,19 @@ and tested by CI only; no Android SDK is used locally.
     `io.github.alex-robinson`; the path `/oauth` is checked in code, as
     Android ignores path filters without a host) calls `finish` and returns
     to `MainActivity`. Back from the browser without the redirect cancels.
+    Encryption (section 6) too: `encryption` (asked when sync starts, once
+    the room list is loaded, and again with its updates while recovery is
+    `unknown`; after a recovery and a verification), `recover` with its
+    steps as a flow (in the account's scope, so leaving the screen does not
+    stop it), our `devices`, and the verification: the request subscription
+    is one of the session's; a request from another user is cancelled, one
+    from our own device is offered (one at a time; declined while a
+    verification runs).
+  - `model/VerificationModel.kt`: a `Verification` and its subscription,
+    held by the `Account` (outgoing or accepted), its state, `confirm`,
+    `mismatch`, `cancel` in the account's scope; `close()` cancels it unless
+    it ended, then closes both. `model/Encryption.kt`: the banner rule and
+    the recovery's state.
   - `model/Images.kt`: avatars and image previews, decoded (downsampled)
     and kept in an in-memory LRU cache.
   - Screens: sign-in (homeserver, then password or "Sign in with browser" as
@@ -252,10 +265,21 @@ and tested by CI only; no Android SDK is used locally.
     marker, grouped bubbles with sender names and avatars, send states,
     images, state events summarised in a line as on the desktop; older
     events near the top; marked read while the newest message shows;
-    composer with `sendText`). Navigation Compose: `rooms`, `room/{roomId}`.
+    composer with `sendText`; "Could not decrypt this message." for an
+    event without its key). Encryption: the banner on the room list (opens
+    Settings); Settings (from the room list's menu) with the account and
+    "Encryption" (status lines, "Enter recovery key", "Verify with another
+    device", or the note that another device is needed); the recovery key
+    screen with its steps and progress; the verification screen (one for
+    both directions; back cancels it while it runs); the prompt for a
+    request, over any screen. Navigation Compose: `rooms`, `room/{roomId}`,
+    `settings`, `settings/recovery`, `settings/verification`.
   - Unit tests (JVM) on fakes of the library's objects (subclasses made with
     `NoHandle`): secrets, the account's sync and sign-out, timeline rows,
-    the timeline's view model.
+    the timeline's view model; the encryption state and banner, the
+    recovery's steps and error, the verification model (states, confirm,
+    mismatch, cancel, close), and verification requests (another user's
+    cancelled, ours accepted or declined).
 - Build locally, with the Android SDK and NDK, Rust's two Android targets
   and cargo-ndk: `scripts/build-android-ffi.sh`, then in `apps/android`
   `gradle :app:assembleDebug` (Gradle 8.11.1 or later, or a wrapper made with
@@ -273,8 +297,9 @@ Remaining:
 - Each CI run signs with a new debug key, so an update needs the previous
   build uninstalled; a shared debug keystore (in the repository or a CI
   secret) fixes that.
-- Run only to the sign-in screen (emulator, CI); signing in, the room list
-  and the timeline are not yet tried on an emulator or device. Not done:
+- Run only to the sign-in screen (emulator, CI); signing in, the room list,
+  the timeline, recovery and verification are not yet tried on an emulator
+  or device (only their models' unit tests). Not done:
   notifications, sending images, opening files, reactions and replies,
   release signing.
 
