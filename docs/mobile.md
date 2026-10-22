@@ -559,8 +559,10 @@ and tested by CI only; no Android SDK is used locally.
     `PushRegistration.onNewEndpoint` (`http://10.0.2.2:9/upTEST?up=1`) and
     listed with `eventIdOnly`; Alice's mention, as the gateway's JSON,
     goes to the app's `PushHandler`; the posted notification (tagged with
-    the room) has her text as typed and her as the person; a push for
-    Bob's own message adds nothing; opening the room clears it.
+    the room) has her text as typed and her as the person; opening the
+    room clears it; then a push for Bob's own message posts nothing (his
+    sending reads the room, which clears a notification while he syncs,
+    so this comes after the clearing).
 - Build locally, with the Android SDK and NDK, Rust's two Android targets
   and cargo-ndk: `scripts/build-android-ffi.sh`, then in `apps/android`
   `gradle :app:assembleDebug` (Gradle 8.11.1 or later, or a wrapper made with

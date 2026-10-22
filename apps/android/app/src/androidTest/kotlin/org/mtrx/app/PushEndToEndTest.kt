@@ -23,6 +23,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -127,21 +128,19 @@ class PushEndToEndTest {
         assertEquals(text, messages.last().text.toString())
         assertEquals(alice, messages.last().person?.name.toString())
 
-        // Bob's own message posts nothing.
-        val own = "own $suffix"
-        val ownEventId = send(bobSession, roomId, own, own)
-        app.pushHandler.handle(gatewayPush(roomId, ownEventId))
-        delay(2_000)
-        val after = roomNotification(roomId)
-        assertNotNull(after)
-        val texts = NotificationCompat.MessagingStyle.extractMessagingStyleFromNotification(after!!.notification)!!
-            .messages.map { it.text.toString() }
-        assertEquals(listOf(text), texts)
-
         // Opening the room clears it.
         withContext(Dispatchers.Main) { account.roomOpened(roomId) }
         waitUntil("the notification to go") { roomNotification(roomId) == null }
         withContext(Dispatchers.Main) { account.roomClosed(roomId) }
+
+        // Bob's own message posts nothing. (Sending reads the room, so his
+        // syncing app would clear a notification anyway: checked after the
+        // clearing, with the room closed again.)
+        val own = "own $suffix"
+        val ownEventId = send(bobSession, roomId, own, own)
+        app.pushHandler.handle(gatewayPush(roomId, ownEventId))
+        delay(3_000)
+        assertNull("no notification for Bob's own message", roomNotification(roomId))
 
         aliceRoomList.cancel()
         aliceRoomList.close()
