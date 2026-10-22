@@ -35,7 +35,7 @@ sealed interface AccountState {
 
     data class SignedOut(val error: String? = null) : AccountState
 
-    data class SignedIn(val session: Session, val images: Images) : AccountState
+    data class SignedIn(val session: Session, val images: Images, val presence: PresenceModel) : AccountState
 }
 
 /** A browser sign-in, from the sign-in page to the redirect. */
@@ -61,7 +61,9 @@ sealed interface BrowserLogin {
  * space selected on the Spaces tab is kept in [selectedSpace] until
  * sign-out; the order of the spaces' rooms in [roomSortStore]. [push] is
  * told when a session opens and before it closes; [notifications] are
- * cleared as rooms are opened or read.
+ * cleared as rooms are opened or read. Each session's [PresenceModel] reads
+ * the direct chats' presence and sets ours around sync, as [sharePresence]
+ * says; [clock] counts milliseconds, for idling.
  */
 class Account(
     private val mtrx: MtrxInterface,
@@ -70,6 +72,8 @@ class Account(
     roomSortStore: RoomSortStore,
     private val push: PushRegistration,
     private val notifications: RoomNotifications,
+    sharePresenceStore: SharePresenceStore,
+    private val clock: () -> Long = { System.nanoTime() / 1_000_000 },
 ) {
     private val _state = MutableStateFlow<AccountState>(AccountState.Loading)
     val state: StateFlow<AccountState> = _state.asStateFlow()
@@ -82,6 +86,9 @@ class Account(
 
     /** The order of a space's rooms and people. */
     val roomSort = RoomSortChoice(roomSortStore, scope)
+
+    /** "Share my presence". */
+    val sharePresence = SharePresence(sharePresenceStore, scope)
 
     private val _connection = MutableStateFlow(ConnectionState.ONLINE)
     val connection: StateFlow<ConnectionState> = _connection.asStateFlow()
@@ -127,6 +134,7 @@ class Account(
     private var session: Session? = null
     private var subscriptions: List<TaskHandle> = emptyList()
     private var encryptionSubscription: TaskHandle? = null
+    private var presence: PresenceModel? = null
     private var syncing = false
 
     // Set at once, followed by sync under the lock; read by pushes too.
@@ -177,6 +185,18 @@ class Account(
     /** [roomId] was marked read: its notification goes. */
     fun roomRead(roomId: String) {
         notifications.clearRoom(roomId)
+    }
+
+    /** A touch or key press in the app: we are not idle. */
+    fun input() {
+        presence?.input()
+    }
+
+    /** Turn "Share my presence" on or off; the session's presence follows at once. */
+    fun setSharePresence(on: Boolean) {
+        if (on == sharePresence.on.value) return
+        sharePresence.set(on)
+        presence?.sharingChanged(on)
     }
 
     /** Open [roomId] (a notification was tapped); signed in, the navigation does. */
@@ -258,6 +278,8 @@ class Account(
     fun forget(): Job = scope.launch {
         lock.withLock {
             val current = session ?: return@withLock
+            // The server no longer accepts the session: nothing to set.
+            presence?.close()
             stopSync()
             push.closing(current)
             try {
@@ -403,7 +425,9 @@ class Account(
             }
         })
         subscriptions = handles
-        _state.value = AccountState.SignedIn(signedIn, Images(signedIn))
+        val sessionPresence = PresenceModel(signedIn, signedIn.userId(), rooms, sharePresence, scope, clock)
+        presence = sessionPresence
+        _state.value = AccountState.SignedIn(signedIn, Images(signedIn), sessionPresence)
         updateSync()
         push.opened(signedIn)
     }
@@ -412,6 +436,8 @@ class Account(
     private suspend fun updateSync() {
         val current = session
         if (current != null && foreground && !syncing) {
+            // Online, or (not sharing, at first) offline before sync can say otherwise.
+            presence?.foreground()
             current.startSync()
             syncing = true
             if (encryptionSubscription == null) encryptionSubscription = followEncryption(current)
@@ -420,9 +446,10 @@ class Account(
         }
     }
 
-    // Under the lock.
+    // Under the lock. Offline (if shared) first, also before a logout.
     private suspend fun stopSync() {
         if (syncing) {
+            presence?.background()
             session?.stopSync()
             syncing = false
         }
@@ -437,6 +464,8 @@ class Account(
         }
         subscriptions = emptyList()
         encryptionSubscription = null
+        presence?.close()
+        presence = null
         recoveryJob?.cancel()
         recoveryJob = null
         _recovery.value = Recovery.Idle

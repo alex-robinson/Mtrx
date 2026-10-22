@@ -113,6 +113,8 @@ import kotlinx.coroutines.launch
 import org.mtrx.app.model.Images
 import org.mtrx.app.ui.Avatar
 import org.mtrx.app.ui.MtrxIcons
+import org.mtrx.app.ui.PresenceLine
+import org.mtrx.app.ui.WithPresenceDot
 import org.mtrx.app.ui.dayLabel
 import org.mtrx.app.ui.identityColor
 import org.mtrx.app.ui.timeOfDay
@@ -120,6 +122,7 @@ import uniffi.mtrx.EventContent
 import uniffi.mtrx.Media
 import uniffi.mtrx.MediaKind
 import uniffi.mtrx.MessageKind
+import uniffi.mtrx.Presence
 import uniffi.mtrx.RoomSummary
 import uniffi.mtrx.SendState
 import uniffi.mtrx.TimelineEvent
@@ -150,7 +153,8 @@ private class RowHandlers(
 /**
  * A room's timeline. [keysArriving] while message keys come from the backup
  * (undecryptable rows say they are decrypting); [spaces], the top-level
- * ones, to invite a direct chat's person to.
+ * ones, to invite a direct chat's person to; [presences], for the header
+ * and the person sheet, and [refreshPresence] when the sheet opens.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -160,6 +164,8 @@ fun TimelineScreen(
     images: Images,
     keysArriving: Boolean,
     spaces: List<RoomSummary>,
+    presences: Map<String, Presence>,
+    refreshPresence: suspend (String) -> Unit,
     onBack: () -> Unit,
 ) {
     val rows by viewModel.rows.collectAsStateWithLifecycle()
@@ -239,7 +245,9 @@ fun TimelineScreen(
         topBar = {
             Column {
                 TopAppBar(
-                    title = { RoomTitle(header, images, onPerson = viewModel::showPersonInfo) },
+                    title = {
+                        RoomTitle(header, header.person?.let { presences[it] }, images, onPerson = viewModel::showPersonInfo)
+                    },
                     navigationIcon = {
                         IconButton(onClick = onBack) {
                             Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
@@ -301,7 +309,9 @@ fun TimelineScreen(
     }
 
     personInfo?.let { model ->
-        PersonInfoSheet(model, header, spaces, images, onDismiss = viewModel::closePersonInfo)
+        // Fresher than the subscription's, and for someone not in it.
+        LaunchedEffect(model) { refreshPresence(model.userId) }
+        PersonInfoSheet(model, header, presences[model.userId], spaces, images, onDismiss = viewModel::closePersonInfo)
     }
 
     val dismiss = { overlay = null }
@@ -376,9 +386,12 @@ fun TimelineScreen(
     }
 }
 
-/** The room's name; a direct chat's with the person's avatar, both tapped for [onPerson]. */
+/**
+ * The room's name; a direct chat's with the person's avatar and [presence]
+ * (the dot, and the line under the name), all tapped for [onPerson].
+ */
 @Composable
-private fun RoomTitle(header: RoomHeader, images: Images, onPerson: (String) -> Unit) {
+private fun RoomTitle(header: RoomHeader, presence: Presence?, images: Images, onPerson: (String) -> Unit) {
     val person = header.person
     if (person == null) {
         Text(header.name, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -390,9 +403,14 @@ private fun RoomTitle(header: RoomHeader, images: Images, onPerson: (String) -> 
             .clickable { onPerson(person) },
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Avatar(header.name, header.avatarUrl, seed = header.seed, images = images, size = 32.dp)
+        WithPresenceDot(presence, avatarSize = 32.dp, dotSize = 10.dp, ring = MaterialTheme.colorScheme.surface) {
+            Avatar(header.name, header.avatarUrl, seed = header.seed, images = images, size = 32.dp)
+        }
         Spacer(Modifier.width(10.dp))
-        Text(header.name, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        Column {
+            Text(header.name, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            PresenceLine(presence, style = MaterialTheme.typography.bodySmall)
+        }
     }
 }
 

@@ -18,6 +18,7 @@ import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material3.BottomSheetDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
@@ -47,18 +48,23 @@ import kotlinx.coroutines.launch
 import org.mtrx.app.model.Images
 import org.mtrx.app.ui.Avatar
 import org.mtrx.app.ui.MtrxIcons
+import org.mtrx.app.ui.PresenceLine
+import org.mtrx.app.ui.WithPresenceDot
+import uniffi.mtrx.Presence
 import uniffi.mtrx.RoomSummary
 
 /**
- * The person of a direct chat ([header]): avatar, name and user ID with a
- * copy button, and "Add to space…", which lists [spaces] (the top-level
- * ones) to invite them to. Messages show in the sheet, over its bottom.
+ * The person of a direct chat ([header]): avatar and name with their
+ * [presence], user ID with a copy button, and "Add to space…", which lists
+ * [spaces] (the top-level ones) to invite them to. Messages show in the
+ * sheet, over its bottom.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun PersonInfoSheet(
     model: PersonInfoModel,
     header: RoomHeader,
+    presence: Presence?,
     spaces: List<RoomSummary>,
     images: Images,
     onDismiss: () -> Unit,
@@ -88,6 +94,7 @@ fun PersonInfoSheet(
             } else {
                 Person(
                     card,
+                    presence,
                     images,
                     canInvite = spaces.isNotEmpty(),
                     onCopy = {
@@ -105,15 +112,31 @@ fun PersonInfoSheet(
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun Person(card: PersonCard, images: Images, canInvite: Boolean, onCopy: () -> Unit, onAddToSpace: () -> Unit) {
+private fun Person(
+    card: PersonCard,
+    presence: Presence?,
+    images: Images,
+    canInvite: Boolean,
+    onCopy: () -> Unit,
+    onAddToSpace: () -> Unit,
+) {
     Column(Modifier.fillMaxWidth().padding(bottom = 16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-        Avatar(card.name, card.avatarUrl, seed = card.userId, images = images, size = 80.dp)
+        WithPresenceDot(presence, avatarSize = 80.dp, dotSize = 20.dp, ring = BottomSheetDefaults.ContainerColor) {
+            Avatar(card.name, card.avatarUrl, seed = card.userId, images = images, size = 80.dp)
+        }
         Spacer(Modifier.height(12.dp))
         Text(
             card.name,
             Modifier.padding(horizontal = 24.dp),
             style = MaterialTheme.typography.titleLarge,
+            textAlign = TextAlign.Center,
+        )
+        PresenceLine(
+            presence,
+            style = MaterialTheme.typography.bodyMedium,
+            modifier = Modifier.padding(horizontal = 24.dp),
             textAlign = TextAlign.Center,
         )
         Row(Modifier.padding(start = 24.dp, end = 8.dp), verticalAlignment = Alignment.CenterVertically) {

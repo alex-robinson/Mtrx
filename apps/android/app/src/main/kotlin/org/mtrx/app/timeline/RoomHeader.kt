@@ -1,6 +1,6 @@
 package org.mtrx.app.timeline
 
-import uniffi.mtrx.RoomKind
+import org.mtrx.app.model.directPerson
 import uniffi.mtrx.RoomSummary
 
 /**
@@ -18,5 +18,5 @@ fun roomHeader(roomId: String, room: RoomSummary?, ownUserId: String): RoomHeade
     name = room?.name ?: roomId,
     avatarUrl = room?.avatarUrl,
     seed = room?.directUserId ?: roomId,
-    person = room?.takeIf { it.kind == RoomKind.DIRECT }?.directUserId?.takeIf { it != ownUserId },
+    person = room?.let { directPerson(it, ownUserId) },
 )

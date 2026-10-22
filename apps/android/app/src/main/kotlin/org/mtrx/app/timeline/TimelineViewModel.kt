@@ -44,12 +44,15 @@ import uniffi.mtrx.TypingListener
  * Actions on a message take its row's id from the latest [rows]. Sends and
  * the other actions (invites too) run in a scope of their own, so leaving
  * the room (which clears this model) does not cancel them. [onRead] follows
- * each successful [markRead] (the room's notifications go).
+ * each successful [markRead] (the room's notifications go); [onInput] each
+ * change of the draft (typing on the keyboard, which the activity does not
+ * see, is not idle).
  */
 class TimelineViewModel(
     roomId: String,
     private val session: Session,
     private val onRead: () -> Unit,
+    private val onInput: () -> Unit = {},
 ) : ViewModel() {
     private val _rows = MutableStateFlow<List<TimelineRow>>(emptyList())
     val rows: StateFlow<List<TimelineRow>> = _rows.asStateFlow()
@@ -179,6 +182,7 @@ class TimelineViewModel(
 
     /** The user changed the text. */
     fun onDraft(value: String) {
+        onInput()
         _draft.value = value
         typed(value.isNotEmpty())
     }

@@ -68,6 +68,7 @@ fun SignedInNavigation(account: Account, push: PushRegistration, signedIn: Accou
                 push,
                 info,
                 signedIn.images,
+                signedIn.presence,
                 onOpenRoom = { roomId -> nav.navigate("room/${Uri.encode(roomId)}") },
                 onEnterRecoveryKey = { nav.navigate(RECOVERY) },
                 onVerify = {
@@ -86,7 +87,7 @@ fun SignedInNavigation(account: Account, push: PushRegistration, signedIn: Accou
             val roomId = entry.arguments?.getString("roomId") ?: return@composable
             // One per visit of the room (the back stack entry's).
             val viewModel: TimelineViewModel = viewModel {
-                TimelineViewModel(roomId, signedIn.session, onRead = { account.roomRead(roomId) })
+                TimelineViewModel(roomId, signedIn.session, onRead = { account.roomRead(roomId) }, onInput = account::input)
             }
             // Its notifications go, and pushes for it post none while it shows.
             DisposableEffect(roomId) {
@@ -95,6 +96,7 @@ fun SignedInNavigation(account: Account, push: PushRegistration, signedIn: Accou
             }
             val rooms by account.rooms.collectAsStateWithLifecycle()
             val encryption by account.encryption.collectAsStateWithLifecycle()
+            val presences by signedIn.presence.presences.collectAsStateWithLifecycle()
             val room = rooms.rooms.firstOrNull { it.id == roomId }
             val spaces = remember(rooms) { topLevelSpaces(rooms) }
             TimelineScreen(
@@ -103,6 +105,8 @@ fun SignedInNavigation(account: Account, push: PushRegistration, signedIn: Accou
                 signedIn.images,
                 keysArriving = encryption?.keysArriving == true,
                 spaces = spaces,
+                presences = presences,
+                refreshPresence = signedIn.presence::refresh,
                 onBack = { nav.popBackStack() },
             )
         }

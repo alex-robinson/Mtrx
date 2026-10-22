@@ -14,6 +14,7 @@ import org.mtrx.app.model.AesGcmSealer
 import org.mtrx.app.model.DataStorePush
 import org.mtrx.app.model.DataStoreRoomSort
 import org.mtrx.app.model.DataStoreSelectedSpace
+import org.mtrx.app.model.DataStoreSharePresence
 import org.mtrx.app.model.FileSecretBackend
 import org.mtrx.app.model.PushRegistration
 import org.mtrx.app.model.PusherDevice
@@ -68,6 +69,7 @@ class MtrxApplication : Application() {
             DataStoreRoomSort(viewPreferences),
             push,
             notifications,
+            DataStoreSharePresence(viewPreferences),
         )
         pushHandler = PushHandler(
             mtrx,
@@ -76,7 +78,7 @@ class MtrxApplication : Application() {
             onSignedOut = { push.signedOut() },
         )
         account.start()
-        // Sync while the app is in the foreground.
+        // Sync, and our presence, while the app is in the foreground.
         ProcessLifecycleOwner.get().lifecycle.addObserver(object : DefaultLifecycleObserver {
             override fun onStart(owner: LifecycleOwner) {
                 account.setForeground(true)

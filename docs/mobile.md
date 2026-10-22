@@ -444,6 +444,32 @@ and tested by CI only; no Android SDK is used locally.
     active last; ties in list order).
   - `model/Images.kt`: avatars and image previews, decoded (downsampled)
     and kept in an in-memory LRU cache.
+  - Presence (section 11), `model/Presence.kt`: `PresenceModel`, one per
+    session, made by the `Account` and in `AccountState.SignedIn`,
+    closed at sign-out. The `Account` runs the lifecycle under its lock:
+    `foreground()` before `startSync()` (`online` if sharing, not waited
+    for; not sharing, the session's first one waits for `offline`), and
+    `background()` before `stopSync()` (waits for `offline` if sharing),
+    which a sign-out also goes through, so `offline` precedes `logout`;
+    `forget` closes it first and sets nothing. Our `setPresence` calls are
+    chained, so they arrive in order. Idle: `MainActivity`'s
+    `dispatchTouchEvent` and `dispatchKeyEvent`, and each change of the
+    composer's draft (the soft keyboard is another window), call
+    `Account.input()`; one timer coroutine waits for the last input + 5
+    minutes (a monotonic clock); input only moves the last input, except
+    when idle (`online` again). Others: the subscription is for the
+    people of the loaded room list's direct chats (`directPeople`; the
+    open direct chat's person is one of them), debounced by 1 s (room
+    lists come in bursts), replaced only when they change, ended in the
+    background and at sign-out; dots only in Chats, not in a space's
+    People section. `refresh(userId)` when the person sheet opens, into
+    the map. Once the server does not share presence, ours is not set
+    either. "Share my presence": `SharePresence` (DataStore `view`, key
+    `share_presence`), the `Account`'s, read before the first sync. The
+    dot (`ui/PresenceViews.kt`): its ring outside its size (12 + 2 + 2
+    dp), centred on the avatar's circle at 45°; 10 dp on the header's 32
+    dp avatar. The line re-renders each minute; `DateUtils` writes "2 hr.
+    ago" in English.
   - Screens: sign-in (homeserver, then password or "Sign in with browser" as
     `supportsOauth` says), the home (`ui/HomeScreen.kt`, section 7: a
     bottom bar with Chats, Spaces and Settings, only on this screen; Chats
@@ -453,8 +479,8 @@ and tested by CI only; no Android SDK is used locally.
     them; a new selection, tapped or restored, pages right; the entry's
     page in two sections, Rooms and People (its direct chats; each left
     out while empty), in the order chosen in the top bar's sort menu, for
-    every space; Settings the account, encryption and "Sign out" (after
-    "Sign out?"); tab, page and scroll positions are the screen's saved
+    every space; Settings the account, privacy ("Share my presence"),
+    encryption and "Sign out" (after "Sign out?"); tab, page and scroll positions are the screen's saved
     state, so they are kept while a room, recovery or verification is
     open; rows with avatars, unread and mention counts, last activity,
     "Invited"; banners for offline and signed out by the server over all
@@ -559,6 +585,18 @@ and tested by CI only; no Android SDK is used locally.
     room on screen only in the foreground; clearing on opening, on
     `markRead` (not when it fails) and when a room's count drops to 0;
     a tapped notification's room; the Settings switch and lines.
+    Presence (section 11): the dot and the line for each state, status
+    message and age; the subscription following the loaded room list's
+    direct chats (not the Notes to self), kept on other changes, replaced
+    when they change (once for a burst), only in the foreground, ended at
+    sign-out; the person sheet's fresh value, kept on a failure; hiding
+    after `onUnavailable` or the error (also from `setPresence`), with
+    nothing read or set after, and shown again in the next session;
+    online alongside sync and offline before it stops and before
+    `logout`, nothing at `forget`, offline before the first sync when not
+    sharing, the switch (saved, kept at sign-out, in the background),
+    idle after five minutes without input and online at the next,
+    failures ignored; the Settings footnote.
   - Instrumented test (`androidTest`, `PushEndToEndTest`), against Synapse
     on the host (`http://10.0.2.2:8008`): registers Bob and Alice with
     the shared-secret admin API, signs Bob in through the app's `Account`
@@ -595,7 +633,8 @@ Remaining:
   or device (only their models' unit tests); nor are the messages'
   menus, sheets and the emoji picker, swiping to reply, the button to the
   newest message, the Settings tab, "Decrypting…", and the person's info
-  sheet with its invites. Push notifications are tested on the emulator
+  sheet with its invites, nor presence (dots, lines, the switch, idling).
+  Push notifications are tested on the emulator
   with the push handler called directly; registering with a real
   distributor (ntfy), the push service, the Settings section, a tapped
   notification and the summary are not yet tried. Not done: sending

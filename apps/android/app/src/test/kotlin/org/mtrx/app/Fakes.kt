@@ -2,7 +2,10 @@ package org.mtrx.app
 
 import java.time.Instant
 import kotlinx.coroutines.CompletableDeferred
+import kotlin.coroutines.ContinuationInterceptor
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.test.TestDispatcher
 import org.mtrx.app.model.Account
 import org.mtrx.app.model.Distributors
 import org.mtrx.app.model.GatewayDiscovery
@@ -13,6 +16,7 @@ import org.mtrx.app.model.RoomNotifications
 import org.mtrx.app.model.RoomSort
 import org.mtrx.app.model.RoomSortStore
 import org.mtrx.app.model.SelectedSpaceStore
+import org.mtrx.app.model.SharePresenceStore
 import org.mtrx.app.model.SpaceEntry
 import org.mtrx.app.model.originGateway
 import org.mtrx.app.push.MessageNotifier
@@ -29,6 +33,9 @@ import uniffi.mtrx.MtrxInterface
 import uniffi.mtrx.NoHandle
 import uniffi.mtrx.NotificationContent
 import uniffi.mtrx.OAuthLogin
+import uniffi.mtrx.Presence
+import uniffi.mtrx.PresenceListener
+import uniffi.mtrx.PresenceState
 import uniffi.mtrx.PusherInfo
 import uniffi.mtrx.Reader
 import uniffi.mtrx.RecoveryListener
@@ -134,12 +141,50 @@ class FakeSession : Session(NoHandle) {
 
     override fun connection(): ConnectionState = ConnectionState.ONLINE
 
+    /** Sync and presence calls in order: "startSync", "stopSync", "presence online". */
+    val calls = mutableListOf<String>()
+
     override suspend fun startSync() {
         syncStarts++
+        calls += "startSync"
     }
 
     override suspend fun stopSync() {
         syncStops++
+        calls += "stopSync"
+    }
+
+    /** Our presence as set, in order; [setPresenceError] fails the calls. */
+    val presenceSets = mutableListOf<PresenceState>()
+    var setPresenceError: MtrxException? = null
+
+    override suspend fun setPresence(state: PresenceState, statusMessage: String?) {
+        presenceSets += state
+        calls += "presence ${state.name.lowercase()}"
+        setPresenceError?.let { throw it }
+    }
+
+    /** [presence] gives these, or offline without more; [presenceError] fails it. */
+    val presences = mutableMapOf<String, Presence>()
+    var presenceError: MtrxException? = null
+    val presenceReads = mutableListOf<String>()
+
+    override suspend fun presence(userId: String): Presence {
+        presenceReads += userId
+        presenceError?.let { throw it }
+        return presences[userId] ?: makePresence(PresenceState.OFFLINE)
+    }
+
+    /** Each subscription's users and handle; the test calls the last [presenceListener]. */
+    val presenceSubscriptions = mutableListOf<Pair<List<String>, FakeHandle>>()
+    var presenceListener: PresenceListener? = null
+
+    override fun subscribePresence(userIds: List<String>, listener: PresenceListener): TaskHandle {
+        presenceListener = listener
+        return FakeHandle().also {
+            handles += it
+            presenceSubscriptions += userIds to it
+        }
     }
 
     override fun subscribeConnection(listener: ConnectionListener): TaskHandle = FakeHandle().also { handles += it }
@@ -294,6 +339,12 @@ class FakeSortStore(var saved: RoomSort? = null) : RoomSortStore {
         saved = sort
     }
 }
+
+fun makePresence(
+    state: PresenceState,
+    lastActive: Instant? = null,
+    statusMessage: String? = null,
+): Presence = Presence(state = state, lastActive = lastActive, currentlyActive = state == PresenceState.ONLINE, statusMessage = statusMessage)
 
 fun summary(
     id: String,
@@ -639,7 +690,23 @@ class FakeNotifier : MessageNotifier {
     }
 }
 
-/** An account on fakes, with push registration and notifications that tests may look at. */
+/** "Share my presence", in memory: one instance across "launches". */
+class FakeSharePresenceStore(var saved: Boolean? = null) : SharePresenceStore {
+    override suspend fun load(): Boolean? = saved
+
+    override suspend fun save(on: Boolean) {
+        saved = on
+    }
+}
+
+/** The virtual time of [scope]'s test dispatcher, in milliseconds; 0 without one. */
+@OptIn(ExperimentalCoroutinesApi::class)
+fun testClock(scope: CoroutineScope): () -> Long {
+    val scheduler = (scope.coroutineContext[ContinuationInterceptor] as? TestDispatcher)?.scheduler ?: return { 0L }
+    return { scheduler.currentTime }
+}
+
+/** An account on fakes, with push registration and notifications that tests may look at; idling in virtual time. */
 fun testAccount(
     mtrx: MtrxInterface,
     scope: CoroutineScope,
@@ -647,4 +714,5 @@ fun testAccount(
     sort: RoomSortStore = FakeSortStore(),
     push: PushRegistration = pushRegistration(scope),
     notifications: RoomNotifications = FakeNotifier(),
-): Account = Account(mtrx, scope, spaces, sort, push, notifications)
+    sharePresence: SharePresenceStore = FakeSharePresenceStore(),
+): Account = Account(mtrx, scope, spaces, sort, push, notifications, sharePresence, testClock(scope))

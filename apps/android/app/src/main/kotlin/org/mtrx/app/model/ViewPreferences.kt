@@ -3,6 +3,7 @@ package org.mtrx.app.model
 import android.content.Context
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
+import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
@@ -54,5 +55,26 @@ class DataStoreRoomSort(private val preferences: DataStore<Preferences>) : RoomS
 
     private companion object {
         val ROOM_SORT = stringPreferencesKey("room_sort")
+    }
+}
+
+/** "Share my presence" in [preferences]. */
+class DataStoreSharePresence(private val preferences: DataStore<Preferences>) : SharePresenceStore {
+    override suspend fun load(): Boolean? = try {
+        preferences.data.first()[SHARE_PRESENCE]
+    } catch (e: IOException) {
+        null
+    }
+
+    override suspend fun save(on: Boolean) {
+        try {
+            preferences.edit { it[SHARE_PRESENCE] = on }
+        } catch (e: IOException) {
+            // Not remembered; the default (on) comes back at the next launch.
+        }
+    }
+
+    private companion object {
+        val SHARE_PRESENCE = booleanPreferencesKey("share_presence")
     }
 }

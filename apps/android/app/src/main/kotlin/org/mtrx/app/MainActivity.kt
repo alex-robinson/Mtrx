@@ -2,6 +2,8 @@ package org.mtrx.app
 
 import android.content.Intent
 import android.os.Bundle
+import android.view.KeyEvent
+import android.view.MotionEvent
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -38,6 +40,17 @@ class MainActivity : ComponentActivity() {
                 MtrxApp(app.account, app.push)
             }
         }
+    }
+
+    // Touches and key presses anywhere in the activity: not idle.
+    override fun dispatchTouchEvent(event: MotionEvent): Boolean {
+        account.input()
+        return super.dispatchTouchEvent(event)
+    }
+
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        account.input()
+        return super.dispatchKeyEvent(event)
     }
 
     override fun onNewIntent(intent: Intent) {

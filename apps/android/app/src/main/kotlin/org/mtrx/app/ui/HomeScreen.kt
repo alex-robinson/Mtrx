@@ -69,9 +69,11 @@ import java.time.LocalDate
 import kotlinx.coroutines.launch
 import org.mtrx.app.model.Account
 import org.mtrx.app.model.Images
+import org.mtrx.app.model.PresenceModel
 import org.mtrx.app.model.PushRegistration
 import org.mtrx.app.model.RoomSort
 import org.mtrx.app.model.SpaceEntry
+import org.mtrx.app.model.directPerson
 import org.mtrx.app.model.showsEncryptionBanner
 import org.mtrx.app.rooms.SpaceRow
 import org.mtrx.app.rooms.SpaceSections
@@ -82,6 +84,7 @@ import org.mtrx.app.rooms.unreadBadge
 import org.mtrx.app.settings.SessionInfo
 import org.mtrx.app.settings.SettingsContent
 import uniffi.mtrx.ConnectionState
+import uniffi.mtrx.Presence
 import uniffi.mtrx.RoomKind
 import uniffi.mtrx.RoomSummary
 
@@ -99,7 +102,8 @@ enum class HomeTab(val label: String, val icon: ImageVector) {
  * positions are kept while a room or another screen is open (the screen's
  * saved state); the selected space and the order of its rooms are the
  * account's ([Account.spaceSelection], [Account.roomSort]). Banners for the
- * connection over all tabs, and for encryption over Chats and Spaces.
+ * connection over all tabs, and for encryption over Chats and Spaces. Chats
+ * shows the people's [presence] on their avatars.
  */
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
@@ -108,11 +112,13 @@ fun HomeScreen(
     push: PushRegistration,
     info: SessionInfo,
     images: Images,
+    presence: PresenceModel,
     onOpenRoom: (String) -> Unit,
     onEnterRecoveryKey: () -> Unit,
     onVerify: () -> Unit,
 ) {
     val list by account.rooms.collectAsStateWithLifecycle()
+    val presences by presence.presences.collectAsStateWithLifecycle()
     val connection by account.connection.collectAsStateWithLifecycle()
     val encryption by account.encryption.collectAsStateWithLifecycle()
     val selected by account.spaceSelection.selected.collectAsStateWithLifecycle()
@@ -204,7 +210,16 @@ fun HomeScreen(
                 EncryptionBanner(onClick = { tab = HomeTab.Settings })
             }
             when (tab) {
-                HomeTab.Chats -> RoomColumn(chatRooms, list.loaded, "No chats", chatsList, images, today, onOpenRoom)
+                HomeTab.Chats -> RoomColumn(
+                    chatRooms,
+                    list.loaded,
+                    "No chats",
+                    chatsList,
+                    images,
+                    today,
+                    onOpenRoom,
+                    presenceOf = { room -> directPerson(room, info.userId)?.let { presences[it] } },
+                )
                 HomeTab.Spaces -> HorizontalPager(pager, Modifier.fillMaxSize()) { page ->
                     if (page == 0) {
                         SpaceColumn(spaceEntries, selected, list.loaded, spacesList, images) { entry ->
@@ -218,7 +233,7 @@ fun HomeScreen(
                         SectionColumn(sections, list.loaded, spaceRoomsList, images, today, onOpenRoom)
                     }
                 }
-                HomeTab.Settings -> SettingsContent(account, push, info, onEnterRecoveryKey, onVerify)
+                HomeTab.Settings -> SettingsContent(account, push, presence, info, onEnterRecoveryKey, onVerify)
             }
         }
     }
@@ -251,7 +266,7 @@ private fun SortMenu(sort: RoomSort, onSort: (RoomSort) -> Unit) {
     }
 }
 
-/** [rooms], or a spinner until the list is loaded, or [empty]. */
+/** [rooms], or a spinner until the list is loaded, or [empty]; the dots of [presenceOf]. */
 @Composable
 private fun RoomColumn(
     rooms: List<RoomSummary>,
@@ -261,13 +276,14 @@ private fun RoomColumn(
     images: Images,
     today: LocalDate,
     onOpenRoom: (String) -> Unit,
+    presenceOf: (RoomSummary) -> Presence?,
 ) {
     when {
         rooms.isEmpty() && !loaded -> Loading()
         rooms.isEmpty() -> Empty(empty)
         else -> LazyColumn(Modifier.fillMaxSize(), state = state) {
             items(rooms, key = { it.id }) { room ->
-                RoomRow(room, images, today, onClick = { onOpenRoom(room.id) })
+                RoomRow(room, images, today, onClick = { onOpenRoom(room.id) }, presence = presenceOf(room))
             }
         }
     }
@@ -456,7 +472,7 @@ private fun EncryptionBanner(onClick: () -> Unit) {
 }
 
 @Composable
-private fun RoomRow(room: RoomSummary, images: Images, today: LocalDate, onClick: () -> Unit) {
+private fun RoomRow(room: RoomSummary, images: Images, today: LocalDate, onClick: () -> Unit, presence: Presence? = null) {
     val badge = unreadBadge(room)
     val unread = room.unreadMessages > 0uL
     val activity = room.lastActivity
@@ -468,15 +484,17 @@ private fun RoomRow(room: RoomSummary, images: Images, today: LocalDate, onClick
     ListItem(
         modifier = Modifier.clickable(onClick = onClick),
         leadingContent = {
-            Avatar(
-                name = room.name,
-                mxcUri = room.avatarUrl,
-                seed = room.directUserId ?: room.id,
-                images = images,
-                size = 44.dp,
-                // Spaces are squares, as on the desktop.
-                shape = if (room.kind == RoomKind.SPACE) RoundedCornerShape(10.dp) else CircleShape,
-            )
+            WithPresenceDot(presence, avatarSize = 44.dp, dotSize = 12.dp, ring = MaterialTheme.colorScheme.surface) {
+                Avatar(
+                    name = room.name,
+                    mxcUri = room.avatarUrl,
+                    seed = room.directUserId ?: room.id,
+                    images = images,
+                    size = 44.dp,
+                    // Spaces are squares, as on the desktop.
+                    shape = if (room.kind == RoomKind.SPACE) RoundedCornerShape(10.dp) else CircleShape,
+                )
+            }
         },
         headlineContent = {
             Text(
