@@ -24,8 +24,9 @@ mod types;
 
 pub use client::{Mtrx, OAuthLogin};
 pub use encryption::{
-    DeviceInfo, EncryptionState, RecoveryListener, RecoveryStatus, RecoveryStep, Verification,
-    VerificationEmoji, VerificationListener, VerificationRequestListener, VerificationState,
+    DeviceInfo, EncryptionState, EncryptionStateListener, RecoveryListener, RecoveryStatus,
+    RecoveryStep, Verification, VerificationEmoji, VerificationListener,
+    VerificationRequestListener, VerificationState,
 };
 pub use error::MtrxError;
 pub use runtime::TaskHandle;

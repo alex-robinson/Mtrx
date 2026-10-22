@@ -21,12 +21,12 @@ use mtrx_core::{
     test_support::{PASSWORD, homeserver, register, unique_name},
 };
 use mtrx_ffi::{
-    ConnectionListener, ConnectionState, EncryptionState, EventContent, MediaKind, Message,
-    MessageKind, Mtrx, MtrxError, QuoteState, Reaction, Reader, RecoveryListener, RecoveryStatus,
-    RecoveryStep, ReplyQuote, RoomKind, RoomListListener, RoomListState, SecretBackend,
-    SecretError, SendState, Session, TimelineEvent, TimelineItem, TimelineItemContent,
-    TimelineListener, TypingListener, Verification, VerificationListener,
-    VerificationRequestListener, VerificationState,
+    ConnectionListener, ConnectionState, EncryptionState, EncryptionStateListener, EventContent,
+    MediaKind, Message, MessageKind, Mtrx, MtrxError, QuoteState, Reaction, Reader,
+    RecoveryListener, RecoveryStatus, RecoveryStep, ReplyQuote, RoomKind, RoomListListener,
+    RoomListState, SecretBackend, SecretError, SendState, Session, TimelineEvent, TimelineItem,
+    TimelineItemContent, TimelineListener, TypingListener, UserProfile, Verification,
+    VerificationListener, VerificationRequestListener, VerificationState,
 };
 use tempfile::TempDir;
 
@@ -85,6 +85,12 @@ impl TypingListener for Forward<Vec<String>> {
 
 impl ConnectionListener for Forward<ConnectionState> {
     fn on_update(&self, state: ConnectionState) {
+        self.send(state);
+    }
+}
+
+impl EncryptionStateListener for Forward<EncryptionState> {
+    fn on_update(&self, state: EncryptionState) {
         self.send(state);
     }
 }
@@ -324,7 +330,7 @@ fn send(session: &Session, room_id: &str, text: &str) {
 
 fn is_undecryptable(item: &TimelineItem) -> bool {
     matches!(&item.content, TimelineItemContent::Event { event }
-        if event.content == EventContent::UnableToDecrypt)
+        if event.content == EventContent::UnableToDecrypt && event.utd_cause.is_some())
 }
 
 /// Load the whole room into `timeline`.
@@ -371,6 +377,7 @@ fn recovery_key_decrypts_history_on_a_new_device() {
         EncryptionState {
             device_verified: true,
             recovery: RecoveryStatus::Disabled,
+            keys_arriving: false,
         }
     );
     let key = block_on(first.session.enable_recovery()).unwrap();
@@ -383,8 +390,19 @@ fn recovery_key_decrypts_history_on_a_new_device() {
         *s == EncryptionState {
             device_verified: false,
             recovery: RecoveryStatus::Incomplete,
+            keys_arriving: false,
         }
     });
+    let (listener, states) = forward();
+    let _states_handle = second.session.subscribe_encryption_state(listener);
+    assert_eq!(
+        states.recv_timeout(TIMEOUT).expect("the state now"),
+        EncryptionState {
+            device_verified: false,
+            recovery: RecoveryStatus::Incomplete,
+            keys_arriving: false,
+        }
+    );
     let timeline = block_on(second.session.timeline(room_id.clone())).unwrap();
     let (items, item_updates) = forward();
     let _timeline_handle = timeline.subscribe(items);
@@ -430,12 +448,23 @@ fn recovery_key_decrypts_history_on_a_new_device() {
             .any(|i| message_body(i) == Some("written before recovery"))
             && !items.iter().any(is_undecryptable)
     });
-    wait_for_encryption(&second.session, "verified, recovery enabled", |s| {
+    // The listener saw keys arriving, then done, without asking.
+    wait_for("keys arriving", &states, |s| s.keys_arriving);
+    wait_for("verified, recovery enabled", &states, |s| {
         *s == EncryptionState {
             device_verified: true,
             recovery: RecoveryStatus::Enabled,
+            keys_arriving: false,
         }
     });
+    assert_eq!(
+        block_on(second.session.encryption_state()).unwrap(),
+        EncryptionState {
+            device_verified: true,
+            recovery: RecoveryStatus::Enabled,
+            keys_arriving: false,
+        }
+    );
 }
 
 #[test]
@@ -452,6 +481,11 @@ fn emoji_verification_between_two_devices() {
     let new = sign_in(&name);
     assert!(block_on(old.session.is_device_verified()).unwrap());
     assert!(!block_on(new.session.is_device_verified()).unwrap());
+    let (listener, new_states) = forward();
+    let _states_handle = new.session.subscribe_encryption_state(listener);
+    wait_for("not verified", &new_states, |s: &EncryptionState| {
+        !s.device_verified
+    });
     // The new device cannot read what was written before it existed.
     wait_for_encrypted_room(&new.session, &room_id);
     let timeline = block_on(new.session.timeline(room_id)).unwrap();
@@ -513,6 +547,9 @@ fn emoji_verification_between_two_devices() {
     wait_for("done (new)", &outgoing_states, done);
     wait_for("done (old)", &accepted_states, done);
     assert!(block_on(new.session.is_device_verified()).unwrap());
+    wait_for("verified, through the listener", &new_states, |s| {
+        s.device_verified
+    });
 
     // Now it can, in the timeline already open.
     wait_for("the message, decrypted", &item_updates, |items| {
@@ -993,4 +1030,79 @@ fn failed_sends_are_retried_or_discarded() {
         block_on(timeline.react("no-such-row".into(), "👍".into())),
         Err(MtrxError::InvalidInput { .. })
     ));
+}
+
+#[test]
+#[ignore = "needs the local Synapse (testserver/run.sh)"]
+fn profiles_and_inviting_to_a_space() {
+    let core_runtime = tokio::runtime::Runtime::new().unwrap();
+    let [alice, bob] = ["ffi-invite", "ffi-invite-bob"].map(|prefix| {
+        let name = unique_name(prefix);
+        core_runtime.block_on(register(&name)).unwrap();
+        name
+    });
+    // Alice's other device makes a space, outside the bindings (which
+    // cannot make rooms yet).
+    let space_id = core_runtime.block_on(async {
+        let dir = tempfile::tempdir().unwrap();
+        let profile = Profile::new("other", dir.path(), SecretStore::File).unwrap();
+        let other = mtrx_core::Session::login(profile, &homeserver(), &alice, PASSWORD)
+            .await
+            .unwrap();
+        let space = other
+            .create_room(NewRoom {
+                name: Some("Group".into()),
+                space: true,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        other.logout().await.unwrap();
+        space.to_string()
+    });
+    let bob_name = bob.clone();
+    let (alice, bob) = (sign_in(&alice), sign_in(&bob));
+    let bob_id = bob.session.user_id();
+    wait_for_room(&alice.session, &space_id);
+
+    // Alice looks Bob up: his name (the server's default), no picture.
+    assert_eq!(
+        block_on(alice.session.user_profile(bob_id.clone())).unwrap(),
+        UserProfile {
+            user_id: bob_id.clone(),
+            name: Some(bob_name),
+            avatar_url: None,
+        }
+    );
+    assert!(matches!(
+        block_on(alice.session.user_profile("bob".into())),
+        Err(MtrxError::InvalidInput { .. })
+    ));
+
+    // She invites him to the space; his room list shows the invite.
+    let (rooms, updates) = forward();
+    let _handle = block_on(bob.session.subscribe_room_list(rooms)).unwrap();
+    block_on(alice.session.invite(space_id.clone(), bob_id.clone())).unwrap();
+    // The invite can show before its state (the space's type and name)
+    // has been read: wait for that too.
+    let deadline = std::time::Instant::now() + TIMEOUT;
+    let mut seen = None;
+    let state = loop {
+        let left = deadline.saturating_duration_since(std::time::Instant::now());
+        let Ok(state) = updates.recv_timeout(left) else {
+            panic!("the space invite, named and a space; last seen: {seen:?}");
+        };
+        seen = state
+            .rooms
+            .iter()
+            .find(|r| r.id == space_id && r.invited)
+            .cloned();
+        if seen
+            .as_ref()
+            .is_some_and(|r| r.kind == RoomKind::Space && r.name == "Group")
+        {
+            break state;
+        }
+    };
+    assert!(state.rooms_outside_spaces.contains(&space_id));
 }

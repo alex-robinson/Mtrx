@@ -30,9 +30,9 @@ use matrix_sdk::{
     send_queue::{RoomSendQueueUpdate, SendHandle},
 };
 use matrix_sdk_ui::timeline::{
-    EventSendState, EventTimelineItem, InReplyToDetails, MembershipChange as SdkMembershipChange,
-    MsgLikeKind, RoomExt, Timeline, TimelineDetails, TimelineEventItemId, TimelineItem,
-    TimelineItemContent, TimelineItemKind, VirtualTimelineItem,
+    EncryptedMessage, EventSendState, EventTimelineItem, InReplyToDetails,
+    MembershipChange as SdkMembershipChange, MsgLikeKind, RoomExt, Timeline, TimelineDetails,
+    TimelineEventItemId, TimelineItem, TimelineItemContent, TimelineItemKind, VirtualTimelineItem,
 };
 use tokio::{
     sync::{Mutex, broadcast, mpsc, watch},
@@ -80,6 +80,56 @@ pub struct Event {
     pub send_state: SendState,
     /// Others whose read receipt is on this event: they read up to here.
     pub read_by: Vec<Reader>,
+    /// Why an [`EventContent::UnableToDecrypt`] could not be decrypted, as
+    /// far as known; `None` for other content.
+    pub utd_cause: Option<UtdCause>,
+}
+
+/// The SDK's best guess why an event could not be decrypted.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UtdCause {
+    /// The key is missing, without a known reason: it may still arrive
+    /// (from the key backup, or the sender's device).
+    Unknown,
+    /// Sent before we joined the room; its key was not shared with us.
+    SentBeforeWeJoined,
+    /// The sender's identity was verified before but has changed since.
+    VerificationViolation,
+    /// The sender's device is not signed by its owner.
+    UnsignedDevice,
+    /// The sender's device is unknown (deleted, say).
+    UnknownDevice,
+    /// Sent before this device existed, and the account has no key backup.
+    HistoricalMessageAndBackupIsDisabled,
+    /// Sent before this device existed; the key backup can be used once this
+    /// device is verified.
+    HistoricalMessageAndDeviceIsUnverified,
+    /// The sender withheld the key from this device as it is not verified
+    /// or insecure.
+    WithheldForUnverifiedOrInsecureDevice,
+    /// The sender did not, or could not, share the key with this device.
+    WithheldBySender,
+}
+
+impl From<matrix_sdk_crypto::types::events::UtdCause> for UtdCause {
+    fn from(cause: matrix_sdk_crypto::types::events::UtdCause) -> Self {
+        use matrix_sdk_crypto::types::events::UtdCause as Sdk;
+        match cause {
+            Sdk::Unknown => Self::Unknown,
+            Sdk::SentBeforeWeJoined => Self::SentBeforeWeJoined,
+            Sdk::VerificationViolation => Self::VerificationViolation,
+            Sdk::UnsignedDevice => Self::UnsignedDevice,
+            Sdk::UnknownDevice => Self::UnknownDevice,
+            Sdk::HistoricalMessageAndBackupIsDisabled => Self::HistoricalMessageAndBackupIsDisabled,
+            Sdk::HistoricalMessageAndDeviceIsUnverified => {
+                Self::HistoricalMessageAndDeviceIsUnverified
+            }
+            Sdk::WithheldForUnverifiedOrInsecureDevice => {
+                Self::WithheldForUnverifiedOrInsecureDevice
+            }
+            Sdk::WithheldBySender => Self::WithheldBySender,
+        }
+    }
 }
 
 /// Someone who read up to an event, or reacted to it.
@@ -141,6 +191,7 @@ impl Event {
             }),
             send_state: SendState::Sent,
             read_by: Vec::new(),
+            utd_cause: None,
         }
     }
 }
@@ -889,6 +940,7 @@ impl Converter {
     }
 
     fn convert_event(&mut self, event: &EventTimelineItem, id: &str) -> Option<Event> {
+        let mut utd_cause = None;
         let content = match event.content() {
             TimelineItemContent::MsgLike(msg_like) => match &msg_like.kind {
                 MsgLikeKind::Message(message) => EventContent::Message(Message {
@@ -916,7 +968,13 @@ impl Converter {
                     media: media(message.msgtype()),
                 }),
                 MsgLikeKind::Redacted => EventContent::Redacted,
-                MsgLikeKind::UnableToDecrypt(_) => EventContent::UnableToDecrypt,
+                MsgLikeKind::UnableToDecrypt(encrypted) => {
+                    utd_cause = Some(match encrypted {
+                        EncryptedMessage::MegolmV1AesSha2 { cause, .. } => (*cause).into(),
+                        _ => UtdCause::Unknown,
+                    });
+                    EventContent::UnableToDecrypt
+                }
                 MsgLikeKind::Sticker(_) => EventContent::Other {
                     description: "sticker".into(),
                 },
@@ -989,6 +1047,7 @@ impl Converter {
             content,
             send_state,
             read_by,
+            utd_cause,
         })
     }
 
