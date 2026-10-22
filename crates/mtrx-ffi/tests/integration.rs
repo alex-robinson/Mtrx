@@ -371,6 +371,7 @@ fn recovery_key_decrypts_history_on_a_new_device() {
         EncryptionState {
             device_verified: true,
             recovery: RecoveryStatus::Disabled,
+            keys_arriving: false,
         }
     );
     let key = block_on(first.session.enable_recovery()).unwrap();
@@ -383,6 +384,7 @@ fn recovery_key_decrypts_history_on_a_new_device() {
         *s == EncryptionState {
             device_verified: false,
             recovery: RecoveryStatus::Incomplete,
+            keys_arriving: false,
         }
     });
     let timeline = block_on(second.session.timeline(room_id.clone())).unwrap();
@@ -434,6 +436,7 @@ fn recovery_key_decrypts_history_on_a_new_device() {
         *s == EncryptionState {
             device_verified: true,
             recovery: RecoveryStatus::Enabled,
+            keys_arriving: false,
         }
     });
 }

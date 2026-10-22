@@ -38,7 +38,8 @@ pub use calls::{CallService, ServiceKind, recognize_call_link};
 pub use categories::{Category, Grouping, Layout, RoomCategories, RoomTag, Section, Sort};
 pub use connection::Connection;
 pub use encryption::{
-    DeviceInfo, RecoveryStatus, RecoveryStep, Verification, VerificationEmoji, VerificationState,
+    DeviceInfo, EncryptionState, RecoveryStatus, RecoveryStep, Verification, VerificationEmoji,
+    VerificationState,
 };
 pub use error::{Error, Result};
 pub use google::{Google, GoogleClient};

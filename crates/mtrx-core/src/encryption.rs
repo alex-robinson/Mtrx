@@ -1,13 +1,14 @@
 //! End-to-end encryption: recovery (key backup + secret storage) and
 //! interactive emoji verification between our own devices.
 
-use std::{collections::HashSet, sync::Arc};
+use std::{collections::HashSet, future::ready, sync::Arc};
 
-use futures_util::{Stream, StreamExt};
+use futures_util::{Stream, StreamExt, stream};
 use matrix_sdk::{
     Client,
     encryption::{
         CrossSigningResetAuthType,
+        backups::BackupState,
         recovery::{RecoveryError, RecoveryState},
         secret_storage::SecretStorageError,
         verification::{
@@ -29,6 +30,19 @@ use tokio_stream::wrappers::{BroadcastStream, WatchStream};
 use tracing::warn;
 
 use crate::{Error, OwnedDeviceId, OwnedRoomId, OwnedUserId, Result, Session};
+
+/// Whether this device can read encrypted messages.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EncryptionState {
+    /// Signed by our cross-signing identity.
+    pub device_verified: bool,
+    pub recovery: RecoveryStatus,
+    /// Message keys are being fetched from the key backup: the backup is
+    /// being turned on (after the recovery key or a verification), or the
+    /// keys of rooms are being downloaded ([`Session::recover`], or a room's
+    /// timeline opening). Undecryptable messages may decrypt meanwhile.
+    pub keys_arriving: bool,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RecoveryStatus {
@@ -311,13 +325,48 @@ pub(crate) fn register_handlers(client: &Client) -> broadcast::Sender<Verificati
 }
 
 impl Session {
+    /// Whether this device is verified, the account's recovery, and whether
+    /// message keys are arriving.
+    pub async fn encryption_state(&self) -> Result<EncryptionState> {
+        encryption_state(&self.client, &self.room_keys).await
+    }
+
+    /// The encryption state now and after every change: of this device's
+    /// verification, the recovery, the key backup and the key downloads.
+    pub fn encryption_states(&self) -> impl Stream<Item = EncryptionState> + use<> {
+        let encryption = self.client.encryption();
+        let changes = stream::select_all([
+            encryption.verification_state().map(|_| ()).boxed(),
+            encryption.recovery().state_stream().map(|_| ()).boxed(),
+            encryption.backups().state_stream().map(|_| ()).boxed(),
+            WatchStream::new(self.room_keys.arriving.subscribe())
+                .map(|_| ())
+                .boxed(),
+        ]);
+        let (client, room_keys) = (self.client.clone(), self.room_keys.clone());
+        stream::once(ready(()))
+            .chain(changes)
+            .then(move |()| {
+                let (client, room_keys) = (client.clone(), room_keys.clone());
+                async move { encryption_state(&client, &room_keys).await }
+            })
+            .filter_map(|state| {
+                ready(
+                    state
+                        .inspect_err(|e| warn!("could not read the encryption state: {e}"))
+                        .ok(),
+                )
+            })
+            .scan(None, |last, state| {
+                let changed = *last != Some(state);
+                *last = Some(state);
+                ready(Some(changed.then_some(state)))
+            })
+            .filter_map(ready)
+    }
+
     pub fn recovery_status(&self) -> RecoveryStatus {
-        match self.client.encryption().recovery().state() {
-            RecoveryState::Unknown => RecoveryStatus::Unknown,
-            RecoveryState::Enabled => RecoveryStatus::Enabled,
-            RecoveryState::Disabled => RecoveryStatus::Disabled,
-            RecoveryState::Incomplete => RecoveryStatus::Incomplete,
-        }
+        recovery_status(&self.client)
     }
 
     /// Set up recovery: back up room keys and store our secrets on the server,
@@ -370,6 +419,9 @@ impl Session {
             .await
             .map_err(recovery_key_error)?;
         progress(RecoveryStep::ImportingIdentity);
+        // Keys arrive from here on: the backup is turned on, then rooms'
+        // keys are downloaded.
+        let _arriving = self.room_keys.arriving();
         encryption.recovery().recover(recovery_key).await?;
 
         let rooms = self.recent_encrypted_rooms(PREFETCH_ROOMS);
@@ -400,13 +452,7 @@ impl Session {
 
     /// Whether this device is verified (signed by our cross-signing identity).
     pub async fn is_device_verified(&self) -> Result<bool> {
-        let device = self
-            .client
-            .encryption()
-            .get_own_device()
-            .await?
-            .ok_or_else(|| Error::Verification("own device not found".into()))?;
-        Ok(device.is_cross_signed_by_owner())
+        is_device_verified(&self.client).await
     }
 
     /// Ask our other devices to verify this one.
@@ -451,6 +497,39 @@ impl Session {
     }
 }
 
+async fn encryption_state(client: &Client, room_keys: &RoomKeys) -> Result<EncryptionState> {
+    let backup = client.encryption().backups().state();
+    Ok(EncryptionState {
+        device_verified: is_device_verified(client).await?,
+        recovery: recovery_status(client),
+        keys_arriving: keys_arriving(backup, room_keys.downloading()),
+    })
+}
+
+/// While the backup is turned on (`Enabling`; `Downloading` only with the
+/// SDK's one-shot download, which we do not use) or rooms' keys download.
+fn keys_arriving(backup: BackupState, downloading: bool) -> bool {
+    downloading || matches!(backup, BackupState::Enabling | BackupState::Downloading)
+}
+
+async fn is_device_verified(client: &Client) -> Result<bool> {
+    let device = client
+        .encryption()
+        .get_own_device()
+        .await?
+        .ok_or_else(|| Error::Verification("own device not found".into()))?;
+    Ok(device.is_cross_signed_by_owner())
+}
+
+fn recovery_status(client: &Client) -> RecoveryStatus {
+    match client.encryption().recovery().state() {
+        RecoveryState::Unknown => RecoveryStatus::Unknown,
+        RecoveryState::Enabled => RecoveryStatus::Enabled,
+        RecoveryState::Disabled => RecoveryStatus::Disabled,
+        RecoveryState::Incomplete => RecoveryStatus::Incomplete,
+    }
+}
+
 /// A key that is not a recovery key (not Base58, the wrong length, prefix or
 /// parity) or not the backup's (the MAC check fails) is the user's mistake;
 /// other failures are not.
@@ -487,22 +566,51 @@ pub enum RecoveryStep {
 /// Fetches a room's message keys from the key backup in one request, once per
 /// session. Without this the SDK fetches keys one by one as decryption fails,
 /// which is slow for rooms with long encrypted history.
-#[derive(Default)]
 pub(crate) struct RoomKeys {
     done: std::sync::Mutex<HashSet<OwnedRoomId>>,
+    /// The number of [`Arriving`] guards alive.
+    arriving: watch::Sender<usize>,
+}
+
+impl Default for RoomKeys {
+    fn default() -> Self {
+        Self {
+            done: Default::default(),
+            arriving: watch::channel(0).0,
+        }
+    }
+}
+
+/// Keys are arriving while one lives.
+pub(crate) struct Arriving(watch::Sender<usize>);
+
+impl Drop for Arriving {
+    fn drop(&mut self) {
+        self.0.send_modify(|n| *n -= 1);
+    }
 }
 
 impl RoomKeys {
+    /// Marks keys as arriving until dropped.
+    pub(crate) fn arriving(&self) -> Arriving {
+        self.arriving.send_modify(|n| *n += 1);
+        Arriving(self.arriving.clone())
+    }
+
+    fn downloading(&self) -> bool {
+        *self.arriving.borrow() > 0
+    }
+
+    /// Without a backup on this device (before the recovery key or a
+    /// verification) there is nothing to fetch: the room is tried again the
+    /// next time.
     pub(crate) async fn download(&self, client: &Client, room: &OwnedRoomId) {
-        if self.done.lock().unwrap().contains(room) {
+        let backups = client.encryption().backups();
+        if self.done.lock().unwrap().contains(room) || !backups.are_enabled().await {
             return;
         }
-        match client
-            .encryption()
-            .backups()
-            .download_room_keys_for_room(room)
-            .await
-        {
+        let _arriving = self.arriving();
+        match backups.download_room_keys_for_room(room).await {
             Ok(()) => {
                 self.done.lock().unwrap().insert(room.clone());
             }
@@ -551,6 +659,38 @@ mod tests {
             Error::InvalidRecoveryKey.to_string(),
             "The recovery key is not valid"
         );
+    }
+
+    #[test]
+    fn keys_arrive_while_the_backup_turns_on_or_rooms_download() {
+        assert!(keys_arriving(BackupState::Enabling, false));
+        assert!(keys_arriving(BackupState::Downloading, false));
+        assert!(keys_arriving(BackupState::Enabled, true));
+        for state in [
+            BackupState::Unknown,
+            BackupState::Creating,
+            BackupState::Resuming,
+            BackupState::Enabled,
+            BackupState::Disabling,
+        ] {
+            assert!(!keys_arriving(state, false), "{state:?}");
+        }
+    }
+
+    #[test]
+    fn keys_arrive_until_the_last_guard_drops() {
+        let keys = RoomKeys::default();
+        let mut changes = keys.arriving.subscribe();
+        assert!(!keys.downloading());
+        let recovering = keys.arriving();
+        let room = keys.arriving();
+        assert!(keys.downloading());
+        drop(room);
+        assert!(keys.downloading());
+        changes.mark_unchanged();
+        drop(recovering);
+        assert!(!keys.downloading());
+        assert!(changes.has_changed().unwrap());
     }
 
     #[test]
