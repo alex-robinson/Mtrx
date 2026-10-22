@@ -1101,6 +1101,169 @@ async fn members_and_notifications() -> Result<()> {
     Ok(())
 }
 
+async fn send_text(
+    timeline: &mtrx_core::RoomTimeline,
+    text: &str,
+) -> Result<mtrx_core::OwnedEventId> {
+    Ok(timeout("send", timeline.send_markdown(text, None).await?.sent()).await??)
+}
+
+/// Collect notifications until one came with each of `bodies`, and those
+/// still on their way then (such as a second copy).
+async fn collect_notifications(
+    what: &str,
+    notifications: impl Stream<Item = mtrx_core::Notification>,
+    bodies: &[String],
+) -> Result<Vec<mtrx_core::Notification>> {
+    let mut notifications = std::pin::pin!(notifications);
+    let mut got: Vec<mtrx_core::Notification> = Vec::new();
+    timeout(what, async {
+        while !bodies.iter().all(|b| got.iter().any(|n| &n.body == b)) {
+            match notifications.next().await {
+                Some(n) => got.push(n),
+                None => break,
+            }
+        }
+    })
+    .await?;
+    let _ = tokio::time::timeout(Duration::from_secs(3), async {
+        while let Some(n) = notifications.next().await {
+            got.push(n);
+        }
+    })
+    .await;
+    Ok(got)
+}
+
+/// Bob is notified of messages in rooms whose messages he never loaded (he
+/// opens no timeline), encrypted or not: live, after being offline while a
+/// room got several messages, and for rooms beyond the room list's first
+/// rooms. Once each, as the rooms' notify modes say, and not for his own.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs local Synapse (testserver/run.sh)"]
+async fn notifications_for_rooms_never_opened() -> Result<()> {
+    let (_, alice) = new_user("unopened").await?;
+    let (_, bob) = new_user("unopened").await?;
+    alice.session.set_display_name("Alice Smith").await?;
+    let bob_id = bob.session.user_id();
+    let joined = |entries: &Vec<TimelineEntry>| {
+        entries
+            .iter()
+            .any(|e| matches!(e, TimelineEntry::Event(ev) if ev.sender == bob_id))
+    };
+
+    // Mentions only: in the encrypted room a mention is told apart from
+    // other messages only once decrypted.
+    let mut rooms = Vec::new();
+    for (name, encrypted) in [("secret", true), ("plain", false)] {
+        let room = alice
+            .session
+            .create_room(NewRoom {
+                name: Some(name.into()),
+                encrypted,
+                invite: vec![bob_id.clone()],
+                ..Default::default()
+            })
+            .await?;
+        join_synced(&bob, &room, name).await?;
+        bob.session
+            .set_notify_mode(&room, NotifyMode::Mentions)
+            .await?;
+        let timeline = alice.session.timeline(&room).await?;
+        wait_for("bob joined", timeline.updates(), joined).await?;
+        rooms.push((name, room, timeline));
+    }
+    let direct = alice.session.direct_chat(&bob_id).await?;
+    join_synced(&bob, &direct, "Alice Smith").await?;
+    let direct_timeline = alice.session.timeline(&direct).await?;
+    wait_for("bob joined", direct_timeline.updates(), joined).await?;
+
+    // Live.
+    for (name, room, timeline) in &rooms {
+        let notifications = bob.session.notifications();
+        let text = format!("{name}: over to you {bob_id}");
+        send_text(timeline, &text).await?;
+        let n = wait_for("notified of a mention", notifications, |n| n.body == text).await?;
+        assert_eq!(&n.room_id, room);
+        assert_eq!(n.room_name, *name);
+        assert_eq!(n.sender_name, "Alice Smith");
+        assert!(n.highlight);
+    }
+    let notifications = bob.session.notifications();
+    send_text(&direct_timeline, "Lunch?").await?;
+    let n = wait_for("notified of a direct message", notifications, |n| {
+        n.body == "Lunch?"
+    })
+    .await?;
+    assert_eq!(n.room_id, direct);
+    assert_eq!(n.sender_name, "Alice Smith");
+    assert!(n.direct);
+
+    // More rooms than the room list syncs first (20).
+    let mut others = Vec::new();
+    for i in 0..22 {
+        let room = alice
+            .session
+            .create_room(NewRoom {
+                name: Some(format!("other {i}")),
+                invite: vec![bob_id.clone()],
+                ..Default::default()
+            })
+            .await?;
+        bob.session
+            .join(<&mtrx_core::RoomOrAliasId>::from(&*room))
+            .await?;
+        others.push(room);
+    }
+    let bob_list = bob.session.room_list().await?;
+    wait_for("bob in all rooms", bob_list.updates(), |s| {
+        others
+            .iter()
+            .all(|room| s.rooms.iter().any(|r| &r.id == room && !r.invited))
+    })
+    .await?;
+
+    // Offline while each room gets a mention and then other messages, and
+    // the other rooms get newer ones.
+    bob.session.stop_sync().await;
+    let mentions: Vec<String> = rooms
+        .iter()
+        .map(|(name, ..)| format!("{name}: back to you {bob_id}"))
+        .collect();
+    for ((name, _, timeline), mention) in rooms.iter().zip(&mentions) {
+        send_text(timeline, mention).await?;
+        send_text(timeline, &format!("{name}: something else")).await?;
+        send_text(timeline, &format!("{name}: and more")).await?;
+    }
+    for room in &others {
+        send_text(&alice.session.timeline(room).await?, "news").await?;
+    }
+    let notifications = bob.session.notifications();
+    bob.session.start_sync().await;
+    let got =
+        collect_notifications("notified after being offline", notifications, &mentions).await?;
+    for ((name, room, _), mention) in rooms.iter().zip(&mentions) {
+        let of_room: Vec<_> = got.iter().filter(|n| &n.room_id == room).collect();
+        assert_eq!(of_room.len(), 1, "{name}: the mention, once: {of_room:?}");
+        assert_eq!(&of_room[0].body, mention);
+        assert_eq!(of_room[0].room_name, *name);
+        assert_eq!(of_room[0].sender_name, "Alice Smith");
+    }
+
+    // Not for his own messages.
+    let (_, plain, alice_plain) = &rooms[1];
+    let notifications = bob.session.notifications();
+    send_text(
+        &bob.session.timeline(plain).await?,
+        &format!("note to self {bob_id}"),
+    )
+    .await?;
+    send_text(alice_plain, &format!("last one {bob_id}")).await?;
+    let n = wait_for("notified", notifications, |n| &n.room_id == plain).await?;
+    assert!(n.body.starts_with("last one"), "{}", n.body);
+    Ok(())
+}
+
 /// The file of the message of `entries` named `filename`.
 fn find_media<'a>(entries: &'a [TimelineEntry], filename: &str) -> Option<&'a mtrx_core::Media> {
     entries.iter().find_map(|e| match e {

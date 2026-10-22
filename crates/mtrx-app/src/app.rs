@@ -46,6 +46,7 @@ use crate::{
     settings::{self, Settings},
     sidebar,
     style::{self, MESSAGE_INSET, SPACE_BAR_WIDTH},
+    text_size::Zoom,
     tint::Tint,
 };
 
@@ -148,6 +149,8 @@ pub enum Message {
     LinkClicked(String),
     WindowResized(Size),
     ScaleFactor(f32),
+    /// Text size, or the PDF viewer's zoom while it is open.
+    Zoom(Zoom),
     ThemeMode(Mode),
     AvatarLoaded(avatar::Key, Option<image::Handle>),
     /// The cursor entered (`true`) or left a timeline event.
@@ -230,8 +233,12 @@ pub struct App {
     /// The settings panel, while open.
     settings_panel: Option<settings::Panel>,
     screen: Screen,
-    mode: Mode,
+    /// Light or dark as iced reports the system (on macOS, the app's
+    /// appearance, see [`crate::appearance`]).
+    system_mode: Mode,
+    /// The window's size in logical pixels, whatever the text size.
     window: Size,
+    /// The display's scale: physical pixels per logical pixel.
     scale: f32,
     math: Math,
     badge: Badge,
@@ -419,38 +426,72 @@ impl Main {
     }
 }
 
-/// Profile and data directory from the same environment variables the CLI reads.
-fn environment() -> Result<(Profile, PathBuf, SecretStore), String> {
-    let name = std::env::var("MTRX_PROFILE").unwrap_or_else(|_| "default".into());
-    let data_root = match std::env::var_os("MTRX_DATA_DIR") {
-        Some(dir) => PathBuf::from(dir),
-        None => Profile::default_data_root().map_err(|e| e.to_string())?,
-    };
-    let secrets = match std::env::var("MTRX_SECRET_STORE").as_deref() {
-        Ok("file") => SecretStore::File,
-        _ => SecretStore::Keyring,
-    };
-    let profile = Profile::new(&name, &data_root, secrets.clone()).map_err(|e| e.to_string())?;
-    Ok((profile, data_root, secrets))
+/// The window's size on opening, in logical pixels.
+const WINDOW: Size = Size::new(1200.0, 800.0);
+
+/// What the app starts with: profile and data directory from the same
+/// environment variables the CLI reads, and the saved settings, read before
+/// the window opens as its size depends on the text size.
+#[derive(Clone)]
+pub struct Environment {
+    profile: Profile,
+    data_root: PathBuf,
+    secrets: SecretStore,
+    settings: Settings,
+}
+
+impl Environment {
+    pub fn load() -> Result<Self, String> {
+        let name = std::env::var("MTRX_PROFILE").unwrap_or_else(|_| "default".into());
+        let data_root = match std::env::var_os("MTRX_DATA_DIR") {
+            Some(dir) => PathBuf::from(dir),
+            None => Profile::default_data_root().map_err(|e| e.to_string())?,
+        };
+        let secrets = match std::env::var("MTRX_SECRET_STORE").as_deref() {
+            Ok("file") => SecretStore::File,
+            _ => SecretStore::Keyring,
+        };
+        let profile =
+            Profile::new(&name, &data_root, secrets.clone()).map_err(|e| e.to_string())?;
+        let settings = Settings::load(&Settings::path(&data_root));
+        Ok(Self {
+            profile,
+            data_root,
+            secrets,
+            settings,
+        })
+    }
+
+    /// The window's size on opening, in layout units, which iced scales by
+    /// the text size: [`WINDOW`] in logical pixels at any text size.
+    pub fn window_size(&self) -> Size {
+        WINDOW / self.settings.text_size.scale()
+    }
 }
 
 impl App {
-    pub fn boot() -> (Self, Task<Message>) {
-        let (profile, data_root, secrets) =
-            environment().expect("valid MTRX_PROFILE and data directory");
+    pub fn boot(environment: Environment) -> (Self, Task<Message>) {
+        let Environment {
+            profile,
+            data_root,
+            secrets,
+            settings,
+        } = environment;
         let settings_file = Settings::path(&data_root);
+        #[cfg(target_os = "macos")]
+        settings.appearance.apply();
         let app = Self {
             profile: profile.clone(),
             focused: true,
             google: Arc::new(Google::new(&data_root, secrets)),
-            settings: Settings::load(&settings_file),
+            settings,
             settings_file: Some(settings_file),
             view_file: Some(LastView::path(&profile)),
             resizing: false,
             settings_panel: None,
             screen: Screen::Starting,
-            mode: Mode::Light,
-            window: Size::new(1200.0, 800.0),
+            system_mode: Mode::Light,
+            window: WINDOW,
             scale: 1.0,
             math: Math::new(),
             badge: Badge::default(),
@@ -467,11 +508,30 @@ impl App {
         (app, Task::batch([restore, scale, mode]))
     }
 
+    /// The theme the app is drawn in.
     pub fn theme(&self) -> Theme {
-        match self.mode {
-            Mode::Dark => Theme::Dark,
-            _ => Theme::Light,
-        }
+        self.settings.appearance.theme(self.system_mode)
+    }
+
+    /// Layout units per logical pixel, which iced applies on top of the
+    /// display's scale (see [`crate::text_size`]).
+    pub fn scale_factor(&self) -> f32 {
+        self.settings.text_size.scale()
+    }
+
+    /// The window's size in layout units.
+    fn viewport(&self) -> Size {
+        self.window / self.scale_factor()
+    }
+
+    /// Physical pixels per layout unit, for drawing images sharp.
+    fn pixel_scale(&self) -> f32 {
+        self.scale * self.scale_factor()
+    }
+
+    /// The theme iced fixes the window to, if any.
+    pub fn window_theme(&self) -> Option<Theme> {
+        self.settings.appearance.window_theme()
     }
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
@@ -639,28 +699,31 @@ impl App {
                     }
                     Err(e) => main.error = Some(e),
                 }
-                Task::batch([self.load_avatars(), self.restore_view()])
+                let members = main
+                    .arrange
+                    .load_space_members(&main.session, &main.rooms.rooms);
+                Task::batch([members, self.load_avatars(), self.restore_view()])
             }
             Message::Rooms(state) => {
-                if let Screen::Main(main) = &mut self.screen {
-                    main.rooms = state;
-                    main.arrange.rooms_updated(&mut main.rooms.rooms);
-                }
-                Task::batch([self.load_avatars(), self.restore_view()])
+                let Screen::Main(main) = &mut self.screen else {
+                    return Task::none();
+                };
+                main.rooms = state;
+                main.arrange.rooms_updated(&mut main.rooms.rooms);
+                let members = main
+                    .arrange
+                    .load_space_members(&main.session, &main.rooms.rooms);
+                Task::batch([members, self.load_avatars(), self.restore_view()])
             }
             Message::SelectSpace(space) => {
                 let Screen::Main(main) = &mut self.screen else {
                     return Task::none();
                 };
-                main.space = space.clone();
+                main.space = space;
                 main.info = None;
                 main.restore = None;
                 main.arrange.escape();
-                let members = match space {
-                    Some(space) => main.arrange.space_selected(&main.session, space),
-                    None => Task::none(),
-                };
-                Task::batch([members, self.load_avatars()])
+                self.load_avatars()
             }
             Message::Arrange(message) => {
                 let Screen::Main(main) = &mut self.screen else {
@@ -1586,15 +1649,30 @@ impl App {
                 }
             },
             Message::WindowResized(size) => {
-                self.window = size;
-                Task::batch([self.render_math(), self.pdf_resized()])
+                // Reported in layout units.
+                self.window = size * self.scale_factor();
+                self.rescaled()
             }
             Message::ScaleFactor(scale) => {
                 self.scale = scale;
-                Task::batch([self.render_math(), self.pdf_resized()])
+                self.rescaled()
+            }
+            Message::Zoom(zoom) => {
+                if let Screen::Main(main) = &mut self.screen
+                    && let Some(pdf) = &mut main.pdf
+                {
+                    return pdf.update(pdf_viewer::Message::Zoom(match zoom {
+                        Zoom::In => pdf_viewer::Zoom::In,
+                        Zoom::Out => pdf_viewer::Zoom::Out,
+                        Zoom::Reset => pdf_viewer::Zoom::Fit,
+                    }));
+                }
+                self.settings.text_size = self.settings.text_size.zoom(zoom);
+                self.save_settings();
+                self.rescaled()
             }
             Message::ThemeMode(mode) => {
-                self.mode = mode;
+                self.system_mode = mode;
                 self.render_math()
             }
             Message::AvatarLoaded(key, handle) => {
@@ -1659,10 +1737,10 @@ impl App {
                 Task::none()
             }
             Message::OpenPdf(media) => {
+                let viewer = pdf_viewer::Viewer::new(media, self.viewport(), self.pixel_scale());
                 let Screen::Main(main) = &mut self.screen else {
                     return Task::none();
                 };
-                let viewer = pdf_viewer::Viewer::new(media, self.window, self.scale);
                 let open = viewer.open(main.session.clone());
                 main.pdf = Some(viewer);
                 open
@@ -1888,6 +1966,18 @@ impl App {
         )
     }
 
+    /// Saves the settings; the open panel says if that failed.
+    fn save_settings(&mut self) {
+        let error = self
+            .settings_file
+            .as_ref()
+            .and_then(|file| self.settings.save(file).err())
+            .map(|e| e.to_string());
+        if let Some(panel) = &mut self.settings_panel {
+            panel.error = error;
+        }
+    }
+
     fn settings_update(&mut self, message: settings::Message) -> Task<Message> {
         let Some(panel) = &mut self.settings_panel else {
             return Task::none();
@@ -1895,12 +1985,18 @@ impl App {
         match panel.update(&mut self.settings, message) {
             settings::Action::None => Task::none(),
             settings::Action::Save => {
-                panel.error = self
-                    .settings_file
-                    .as_ref()
-                    .and_then(|file| self.settings.save(file).err())
-                    .map(|e| e.to_string());
+                self.save_settings();
                 Task::none()
+            }
+            settings::Action::Appearance => {
+                self.save_settings();
+                #[cfg(target_os = "macos")]
+                self.settings.appearance.apply();
+                self.render_math()
+            }
+            settings::Action::TextSize => {
+                self.save_settings();
+                self.rescaled()
             }
             settings::Action::GoogleSignIn(client) => {
                 let google = self.google.clone();
@@ -2494,13 +2590,19 @@ impl App {
         }
     }
 
-    /// The PDF viewer follows the window's size and scale.
+    /// Math and the PDF viewer follow the window's size, the display's
+    /// scale and the text size.
+    fn rescaled(&mut self) -> Task<Message> {
+        Task::batch([self.render_math(), self.pdf_resized()])
+    }
+
     fn pdf_resized(&mut self) -> Task<Message> {
+        let (viewport, scale) = (self.viewport(), self.pixel_scale());
         match &mut self.screen {
             Screen::Main(main) => main
                 .pdf
                 .as_mut()
-                .map_or_else(Task::none, |pdf| pdf.resized(self.window, self.scale)),
+                .map_or_else(Task::none, |pdf| pdf.resized(viewport, scale)),
             _ => Task::none(),
         }
     }
@@ -2517,13 +2619,8 @@ impl App {
         match view.found(&main.rooms.rooms) {
             Some((space, room)) => {
                 main.restore = None;
-                main.space = space.clone();
-                // As on selecting it: the space's members, for its direct chats.
-                let members = match space {
-                    Some(space) => main.arrange.space_selected(&main.session, space),
-                    None => Task::none(),
-                };
-                Task::batch([members, self.update(Message::OpenRoom(room))])
+                main.space = space;
+                self.update(Message::OpenRoom(room))
             }
             None => {
                 if main.rooms.loaded {
@@ -2554,14 +2651,14 @@ impl App {
     fn math_params(&self) -> math::Params {
         let theme = self.theme();
         let palette = theme.extended_palette();
-        let max_width = self.window.width
+        let max_width = self.viewport().width
             - SPACE_BAR_WIDTH
             - self.settings.room_list_width
             - RESIZE_HANDLE
             - MESSAGE_INSET;
         math::Params {
             max_width: max_width.max(200.0),
-            scale: self.scale,
+            scale: self.pixel_scale(),
             text: palette.background.base.text,
             link: palette.primary.base.color,
             muted: style::muted(&theme),
@@ -2622,6 +2719,13 @@ impl App {
         let mut subscriptions = vec![
             window::resize_events().map(|(_, size)| Message::WindowResized(size)),
             iced::system::theme_changes().map(Message::ThemeMode),
+            // Also on the sign-in screen.
+            iced::event::listen_with(|event, _, _| match event {
+                iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
+                    key, modifiers, ..
+                }) => Zoom::from_key(&key, modifiers).map(Message::Zoom),
+                _ => None,
+            }),
         ];
         if let Screen::Main(main) = &self.screen {
             subscriptions.push(
@@ -2779,7 +2883,8 @@ impl App {
     fn main_view<'a>(&'a self, main: &'a Main) -> Element<'a, Message> {
         let theme = self.theme();
         let rooms = &main.rooms.rooms;
-        let space_bar = sidebar::space_bar(rooms, main.space.as_ref(), &main.avatars);
+        let space_bar =
+            sidebar::space_bar(rooms, main.space.as_ref(), &main.arrange, &main.avatars);
         let room_list = sidebar::room_list(main.room_list_view(&self.settings));
 
         // Banners come and go inside a column that is always there, so the
@@ -3159,16 +3264,6 @@ fn shortcuts(
             Key::Character(c) if c == "k" && modifiers.command() => Some(Message::FocusSearch),
             Key::Character(c) if c == "r" && modifiers.command() => Some(Message::Reload),
             Key::Named(Named::Escape) => Some(Message::Escape),
-            // Zoom in the PDF viewer.
-            Key::Character(c) if (c == "=" || c == "+") && modifiers.command() => Some(
-                Message::Pdf(pdf_viewer::Message::Zoom(pdf_viewer::Zoom::In)),
-            ),
-            Key::Character(c) if c == "-" && modifiers.command() => Some(Message::Pdf(
-                pdf_viewer::Message::Zoom(pdf_viewer::Zoom::Out),
-            )),
-            Key::Character(c) if c == "0" && modifiers.command() => Some(Message::Pdf(
-                pdf_viewer::Message::Zoom(pdf_viewer::Zoom::Fit),
-            )),
             _ => None,
         },
         iced::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
