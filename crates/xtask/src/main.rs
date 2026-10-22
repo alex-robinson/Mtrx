@@ -1,10 +1,13 @@
 //! Build tasks, run with `cargo xtask <task>`:
 //!
 //! - `render SVG PNG SIZE`: render an SVG to a square PNG.
+//! - `icons`: make the iOS and Android icons and the website's logo from the
+//!   logo (see [`icons`]); run it after changing the logo.
 //! - `bundle`: build the app and wrap it as `target/bundle/Mtrx.app` (macOS),
 //!   an AppImage and a `.deb` (Linux, see [`linux`]), or a portable zip and
 //!   an installer (Windows, see `windows.rs`).
 
+mod icons;
 #[cfg(target_os = "linux")]
 mod linux;
 
@@ -23,6 +26,9 @@ mod windows;
 const LOGO: &str = "crates/mtrx-app/assets/logo.svg";
 /// Also the Linux desktop file's name and the window's application id.
 const BUNDLE_ID: &str = "org.mtrx.Mtrx";
+/// Around the body of a macOS icon: 100 of 1024 px.
+#[cfg(not(any(target_os = "linux", windows)))]
+const MACOS_ICON_MARGIN: f32 = 100.0 / 1024.0;
 
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -34,13 +40,16 @@ fn main() -> Result<()> {
         .as_slice()
     {
         ["render", svg, png, size] => render(Path::new(svg), Path::new(png), size.parse()?),
+        ["icons"] => icons::icons(&root),
         #[cfg(target_os = "linux")]
         ["bundle"] => linux::bundle(&root),
         #[cfg(windows)]
         ["bundle"] => windows::bundle(&root),
         #[cfg(not(any(target_os = "linux", windows)))]
         ["bundle"] => bundle(&root),
-        _ => bail!("usage: cargo xtask render SVG PNG SIZE | cargo xtask bundle"),
+        _ => {
+            bail!("usage: cargo xtask render SVG PNG SIZE | cargo xtask icons | cargo xtask bundle")
+        }
     }
 }
 
@@ -56,13 +65,20 @@ fn render(svg: &Path, png: &Path, size: u32) -> Result<()> {
 
 /// Render `svg` to `size`×`size` pixels.
 fn rasterize(svg: &Path, size: u32) -> Result<tiny_skia::Pixmap> {
+    rasterize_within(svg, size, 0.0)
+}
+
+/// Render `svg` to `size`×`size` pixels, leaving `margin` (a fraction of
+/// `size`) clear on each side.
+fn rasterize_within(svg: &Path, size: u32, margin: f32) -> Result<tiny_skia::Pixmap> {
     let data = std::fs::read(svg).with_context(|| format!("reading {}", svg.display()))?;
     let tree = usvg::Tree::from_data(&data, &usvg::Options::default())?;
     let mut pixmap = tiny_skia::Pixmap::new(size, size).context("empty size")?;
-    let scale = size as f32 / tree.size().width().max(tree.size().height());
+    let inset = size as f32 * margin;
+    let scale = (size as f32 - 2.0 * inset) / tree.size().width().max(tree.size().height());
     resvg::render(
         &tree,
-        tiny_skia::Transform::from_scale(scale, scale),
+        tiny_skia::Transform::from_scale(scale, scale).post_translate(inset, inset),
         &mut pixmap.as_mut(),
     );
     Ok(pixmap)
@@ -96,24 +112,22 @@ fn bundle(root: &Path) -> Result<()> {
     // The licence travels with the app.
     std::fs::copy(root.join("LICENSE"), contents.join("Resources/LICENSE"))?;
 
-    // The icon set macOS wants: 16–512 pt at 1× and 2×.
+    // The icon set macOS wants: 16–512 pt at 1× and 2×. macOS shows icons
+    // as they are, so the logo, a full-bleed square, sits on Apple's icon
+    // grid: 824 of 1024 px, like other apps' icons.
     let iconset = root.join("target/bundle/Mtrx.iconset");
     if iconset.exists() {
         std::fs::remove_dir_all(&iconset)?;
     }
     std::fs::create_dir_all(&iconset)?;
+    let logo = root.join(LOGO);
+    let icon = |pixels: u32, name: String| {
+        rasterize_within(&logo, pixels, MACOS_ICON_MARGIN)?.save_png(iconset.join(name))?;
+        anyhow::Ok(())
+    };
     for points in [16, 32, 128, 256, 512] {
-        let logo = root.join(LOGO);
-        render(
-            &logo,
-            &iconset.join(format!("icon_{points}x{points}.png")),
-            points,
-        )?;
-        render(
-            &logo,
-            &iconset.join(format!("icon_{points}x{points}@2x.png")),
-            points * 2,
-        )?;
+        icon(points, format!("icon_{points}x{points}.png"))?;
+        icon(points * 2, format!("icon_{points}x{points}@2x.png"))?;
     }
     run(Command::new("iconutil")
         .arg("--convert")

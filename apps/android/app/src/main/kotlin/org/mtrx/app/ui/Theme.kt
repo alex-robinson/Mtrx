@@ -7,13 +7,13 @@ import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
 
-// The logo's colours (crates/mtrx-app/assets/logo.svg).
+// The logo's colour (crates/mtrx-app/assets/logo.svg).
+private val LogoIndigo = Color(0xFF2F3E9E)
 private val Indigo = Color(0xFF5B6CF0)
-private val DeepIndigo = Color(0xFF4A58D6)
 private val Teal = Color(0xFF2BB0C9)
 
 private val Light = lightColorScheme(
-    primary = DeepIndigo,
+    primary = LogoIndigo,
     onPrimary = Color.White,
     primaryContainer = Color(0xFFE0E3FF),
     onPrimaryContainer = Color(0xFF101A6B),
