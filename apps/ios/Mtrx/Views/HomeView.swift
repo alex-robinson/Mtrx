@@ -1,33 +1,30 @@
 import MtrxFFI
 import SwiftUI
 
-/// Two tabs, Chats and Rooms, each a list that opens rooms over it (the
-/// tab bar hidden then); Settings over everything.
+/// Three tabs: Chats and Spaces, each a list that opens rooms over it (the
+/// tab bar hidden then), and Settings. A verification shows over any of
+/// them.
 struct HomeView: View {
     @EnvironmentObject private var app: AppModel
     @EnvironmentObject private var session: SessionModel
     @State private var tab = HomeTab.chats
-    @State private var showSettings = false
 
     var body: some View {
         TabView(selection: $tab) {
-            ChatsTab { showSettings = true }
+            ChatsTab(openSettings: openSettings)
                 .tabItem { Label("Chats", systemImage: "bubble.left.and.bubble.right") }
                 .tag(HomeTab.chats)
-            RoomsTab { showSettings = true }
-                .tabItem { Label("Rooms", systemImage: "square.grid.2x2") }
-                .tag(HomeTab.rooms)
+            SpacesTab(openSettings: openSettings)
+                .tabItem { Label("Spaces", systemImage: "square.stack.3d.up") }
+                .tag(HomeTab.spaces)
+            SettingsView()
+                .tabItem { Label("Settings", systemImage: "gearshape") }
+                .tag(HomeTab.settings)
         }
-        .sheet(item: sheet) { sheet in
-            switch sheet {
-            case .settings:
-                SettingsView()
-                    .environmentObject(app)
-                    .environmentObject(session)
-            case .verification(let model):
-                VerificationView(model: model)
-                    .environmentObject(session)
-            }
+        // Closed by its own buttons, which end the verification.
+        .sheet(item: verification) { model in
+            VerificationView(model: model)
+                .environmentObject(session)
         }
         .alert("Signed out", isPresented: signedOutElsewhere) {
             Button("Sign in again") {
@@ -43,17 +40,13 @@ struct HomeView: View {
         }
     }
 
-    /// A verification shows over everything; Settings returns after it if
-    /// it was open.
-    private var sheet: Binding<HomeSheet?> {
-        Binding(
-            get: {
-                if let verification = session.verification { return .verification(verification) }
-                return showSettings ? .settings : nil
-            },
-            set: {
-                if $0 == nil && session.verification == nil { showSettings = false }
-            })
+    /// The encryption banner leads to Settings.
+    private func openSettings() {
+        tab = .settings
+    }
+
+    private var verification: Binding<VerificationModel?> {
+        Binding(get: { session.verification }, set: { _ in })
     }
 
     private var signedOutElsewhere: Binding<Bool> {
@@ -67,19 +60,8 @@ struct HomeView: View {
 
 enum HomeTab: Hashable {
     case chats
-    case rooms
-}
-
-enum HomeSheet: Identifiable {
+    case spaces
     case settings
-    case verification(VerificationModel)
-
-    var id: ObjectIdentifier? {
-        switch self {
-        case .settings: return nil
-        case .verification(let model): return ObjectIdentifier(model)
-        }
-    }
 }
 
 /// The direct chats, most recently active first.
@@ -90,12 +72,11 @@ struct ChatsTab: View {
 
     var body: some View {
         NavigationStack {
-            RoomList(rooms: RoomLists.search(session.lists.chats, search), searching: !search.isEmpty,
-                     openSettings: openSettings) {
+            RoomList(sections: [RoomSection(title: nil, rooms: RoomLists.search(session.lists.chats, search))],
+                     searching: !search.isEmpty, openSettings: openSettings) {
                 ListPlaceholder(loaded: session.loaded, empty: "No chats yet")
             }
             .navigationTitle("Chats")
-            .toolbar { SettingsButton(open: openSettings) }
             .searchable(text: $search, prompt: "Search chats")
             .opensRooms()
         }
@@ -104,7 +85,7 @@ struct ChatsTab: View {
 
 /// The spaces on the left page, the selected space's rooms on the right,
 /// like the desktop's two columns.
-struct RoomsTab: View {
+struct SpacesTab: View {
     @EnvironmentObject private var session: SessionModel
     let openSettings: () -> Void
     @State private var search = ""
@@ -118,7 +99,7 @@ struct RoomsTab: View {
             TabView(selection: $session.roomsPage) {
                 SpacesPage(search: search, openSettings: openSettings)
                     .tag(RoomsPage.spaces)
-                SpaceRoomsPage(space: space, search: search, openSettings: openSettings)
+                SpaceRoomsPage(space: space, search: search, sort: session.roomSort, openSettings: openSettings)
                     .tag(RoomsPage.rooms)
             }
             .tabViewStyle(.page(indexDisplayMode: .never))
@@ -135,7 +116,11 @@ struct RoomsTab: View {
                         }
                     }
                 }
-                SettingsButton(open: openSettings)
+                if session.roomsPage == .rooms {
+                    ToolbarItem(placement: .navigationBarTrailing) {
+                        SortMenu()
+                    }
+                }
             }
             .searchable(text: $search, prompt: session.roomsPage == .spaces ? "Search spaces" : "Search rooms")
             .onChange(of: session.roomsPage) { _ in search = "" }
@@ -174,16 +159,17 @@ private struct SpacesPage: View {
     }
 }
 
-/// The selected space's rooms, in the order of the room list.
+/// The selected space's rooms, then its direct chats, in the chosen order.
 private struct SpaceRoomsPage: View {
     @EnvironmentObject private var session: SessionModel
     let space: SpaceItem?
     let search: String
+    let sort: RoomSort
     let openSettings: () -> Void
 
     var body: some View {
-        RoomList(rooms: RoomLists.search(space?.rooms ?? [], search), searching: !search.isEmpty,
-                 openSettings: openSettings) {
+        RoomList(sections: RoomLists.sections(space?.rooms ?? [], sort: sort, search: search),
+                 searching: !search.isEmpty, openSettings: openSettings) {
             if space != nil {
                 Text("No rooms in this space").foregroundStyle(.secondary)
             } else if session.selectedSpace != nil && !session.loaded {
@@ -229,10 +215,30 @@ private struct SpaceRow: View {
     }
 }
 
-/// Rooms or chats that open on a tap; invites, answered on the desktop,
-/// do not. The encryption banner above them, unless searching.
+/// The order of the spaces' rooms: a menu of the choices, the current one
+/// checked.
+private struct SortMenu: View {
+    @EnvironmentObject private var session: SessionModel
+
+    var body: some View {
+        Menu {
+            Picker("Sort", selection: Binding(get: { session.roomSort }, set: session.setRoomSort)) {
+                ForEach(RoomSort.allCases) { sort in
+                    Text(sort.title).tag(sort)
+                }
+            }
+        } label: {
+            Image(systemName: "arrow.up.arrow.down")
+        }
+        .accessibilityLabel("Sort")
+    }
+}
+
+/// Rooms or chats, in sections with their titles, that open on a tap;
+/// invites, answered on the desktop, do not. The encryption banner above
+/// them, unless searching.
 struct RoomList<Empty: View>: View {
-    let rooms: [RoomSummary]
+    let sections: [RoomSection]
     let searching: Bool
     let openSettings: () -> Void
     @ViewBuilder let empty: () -> Empty
@@ -242,23 +248,33 @@ struct RoomList<Empty: View>: View {
             if !searching {
                 EncryptionBannerRow(open: openSettings)
             }
-            ForEach(rooms, id: \.id) { room in
-                if room.invited {
-                    RoomRow(room: room)
+            ForEach(sections) { section in
+                if let title = section.title {
+                    Section(title) { rows(section.rooms) }
                 } else {
-                    NavigationLink(value: room.id) {
-                        RoomRow(room: room)
-                    }
+                    rows(section.rooms)
                 }
             }
         }
         .listStyle(.plain)
         .overlay {
-            if rooms.isEmpty && !searching {
+            if sections.allSatisfy(\.rooms.isEmpty) && !searching {
                 empty()
             }
         }
         .safeAreaInset(edge: .bottom) { OfflineBanner() }
+    }
+
+    private func rows(_ rooms: [RoomSummary]) -> some View {
+        ForEach(rooms, id: \.id) { room in
+            if room.invited {
+                RoomRow(room: room)
+            } else {
+                NavigationLink(value: room.id) {
+                    RoomRow(room: room)
+                }
+            }
+        }
     }
 }
 
@@ -272,19 +288,6 @@ private struct ListPlaceholder: View {
             Text(empty).foregroundStyle(.secondary)
         } else {
             ProgressView("Loading…")
-        }
-    }
-}
-
-private struct SettingsButton: ToolbarContent {
-    let open: () -> Void
-
-    var body: some ToolbarContent {
-        ToolbarItem(placement: .navigationBarTrailing) {
-            Button(action: open) {
-                Image(systemName: "person.crop.circle")
-            }
-            .accessibilityLabel("Settings")
         }
     }
 }

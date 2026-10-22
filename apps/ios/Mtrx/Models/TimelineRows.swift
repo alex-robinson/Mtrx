@@ -47,6 +47,11 @@ struct MessageRow: Equatable {
     /// The others who read up to here.
     var readers: [Reader] { event.readBy }
 
+    /// Swiping it to the left answers it, as Reply in its menu.
+    var canSwipeToReply: Bool {
+        actions.contains(.reply)
+    }
+
     /// What holding the message offers, in the menu's order.
     var actions: [MessageAction] {
         var actions: [MessageAction] = []

@@ -15,6 +15,9 @@ final class TimelineModel: ObservableObject {
     static let notFound = "The original message was not found in the room's history"
     /// How long a message gone to stays marked.
     static let highlightTime: UInt64 = 2_000_000_000
+    /// Scrolled up less than this (points), the timeline counts as at the
+    /// bottom.
+    static let bottomTolerance: CGFloat = 40
 
     let roomId: String
     @Published private(set) var rows: [TimelineRow] = []
@@ -40,6 +43,8 @@ final class TimelineModel: ObservableObject {
     @Published private(set) var highlighted: String?
     /// The row to scroll to: a new value for each request.
     @Published private(set) var scrollTarget: ScrollTarget?
+    /// The newest message is in view; else a button leads back to it.
+    @Published private(set) var atBottom = true
     @Published var error: String?
 
     private let session: Session
@@ -134,6 +139,35 @@ final class TimelineModel: ObservableObject {
             self.error = errorMessage(error)
         }
     }
+
+    /// The timeline is scrolled `distance` points up from its bottom
+    /// (negative: pulled past it).
+    func scrolled(distanceFromBottom distance: CGFloat) {
+        setAtBottom(distance <= Self.bottomTolerance)
+    }
+
+    /// Before iOS 18 (no scroll geometry): the end of the timeline is drawn
+    /// (on screen or near it), or no longer.
+    func setBottomDrawn(_ drawn: Bool) {
+        guard #unavailable(iOS 18) else { return }
+        setAtBottom(drawn)
+    }
+
+    private func setAtBottom(_ atBottom: Bool) {
+        if atBottom != self.atBottom {
+            self.atBottom = atBottom
+        }
+    }
+
+    /// The button to the newest message shows: scrolled up, once open.
+    var showsScrollToBottom: Bool {
+        !atBottom && !opening
+    }
+
+    /// A direct chat's header was tapped: the other person's details.
+    /// Nothing yet; the person-info sheet comes with the library's calls
+    /// for it.
+    func showPersonInfo() {}
 
     // MARK: Composing
 

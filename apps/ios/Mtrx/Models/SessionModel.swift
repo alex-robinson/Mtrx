@@ -19,11 +19,14 @@ final class SessionModel: ObservableObject {
     @Published private(set) var loaded = false
     /// The chats, and the rooms by space.
     @Published private(set) var lists = RoomLists()
-    /// The Rooms tab's selected space, remembered across launches (until
+    /// The Spaces tab's selected space, remembered across launches (until
     /// sign-out).
     @Published private(set) var selectedSpace: SpaceEntry?
-    /// The Rooms tab's page: the spaces, or the selected space's rooms.
+    /// The Spaces tab's page: the spaces, or the selected space's rooms.
     @Published var roomsPage = RoomsPage.spaces
+    /// The order of every space's rooms (not of the chats), remembered
+    /// across launches.
+    @Published private(set) var roomSort: RoomSort
     @Published private(set) var connection: ConnectionState = .online
     @Published var error: String?
 
@@ -56,6 +59,7 @@ final class SessionModel: ObservableObject {
     private var verificationRequest: Task<Void, Never>?
     private let defaults: UserDefaults
     private static let selectedSpaceKey = "selectedSpace"
+    private static let roomSortKey = "roomSort"
 
     init(session: Session, defaults: UserDefaults = .standard) {
         self.session = session
@@ -64,6 +68,7 @@ final class SessionModel: ObservableObject {
         userId = session.userId()
         deviceId = session.deviceId()
         homeserver = session.homeserver()
+        roomSort = defaults.string(forKey: Self.roomSortKey).flatMap(RoomSort.init(rawValue:)) ?? .listOrder
         // Opens on the space's rooms, until the room list says it is gone.
         if let saved = defaults.string(forKey: Self.selectedSpaceKey) {
             selectedSpace = SpaceEntry(saved: saved)
@@ -226,6 +231,12 @@ final class SessionModel: ObservableObject {
         }
     }
 
+    /// Order the spaces' rooms by `sort`, from now on.
+    func setRoomSort(_ sort: RoomSort) {
+        roomSort = sort
+        defaults.set(sort.rawValue, forKey: Self.roomSortKey)
+    }
+
     func timeline(for room: RoomSummary) -> TimelineModel {
         TimelineModel(session: session, room: room)
     }
@@ -247,7 +258,7 @@ final class SessionModel: ObservableObject {
     }
 }
 
-/// The pages of the Rooms tab, left to right.
+/// The pages of the Spaces tab, left to right.
 enum RoomsPage: Hashable {
     case spaces
     case rooms

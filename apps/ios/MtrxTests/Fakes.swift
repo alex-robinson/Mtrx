@@ -290,11 +290,11 @@ enum Make {
 
     static func room(
         _ id: String, kind: RoomKind = .room, invited: Bool = false, name: String? = nil, unread: UInt64 = 0,
-        directUser: String? = nil
+        directUser: String? = nil, lastActivity: Date? = nil
     ) -> RoomSummary {
         RoomSummary(
             id: id, name: name ?? id, avatarUrl: nil, topic: nil, kind: kind, invited: invited, encrypted: false,
-            unreadMessages: unread, unreadMentions: 0, unreadNotifications: 0, lastActivity: nil,
+            unreadMessages: unread, unreadMentions: 0, unreadNotifications: 0, lastActivity: lastActivity,
             directUserId: directUser, alias: nil, joinedMembers: 2)
     }
 

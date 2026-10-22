@@ -1,11 +1,11 @@
 import MtrxFFI
 import SwiftUI
 
-/// The account, its encryption on this device, and signing out.
+/// The Settings tab: the account, its encryption on this device, and
+/// signing out.
 struct SettingsView: View {
     @EnvironmentObject private var app: AppModel
     @EnvironmentObject private var session: SessionModel
-    @Environment(\.dismiss) private var dismiss
     @State private var confirmSignOut = false
 
     var body: some View {
@@ -29,12 +29,6 @@ struct SettingsView: View {
                 }
             }
             .navigationTitle("Settings")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Done") { dismiss() }
-                }
-            }
             .overlay {
                 if app.signingOut {
                     ProgressView("Signing out…")

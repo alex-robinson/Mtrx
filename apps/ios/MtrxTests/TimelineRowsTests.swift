@@ -121,6 +121,40 @@ final class TimelineRowsTests: XCTestCase {
         XCTAssertEqual(messageRow(undecryptable)?.actions, [.delete])
     }
 
+    func testOnlyMessagesThatCanBeRepliedToSwipeToReply() {
+        XCTAssertEqual(messageRow(Make.event("bob", Make.text("Hi"), eventId: "$1"))?.canSwipeToReply, true)
+        XCTAssertEqual(messageRow(Make.event("me", Make.text("Hi"), own: true, eventId: "$2"))?.canSwipeToReply, true)
+        // Not sent yet (no event ID), refused, deleted, undecryptable.
+        XCTAssertEqual(messageRow(Make.event("me", Make.text("Hi"), own: true, state: .sending))?.canSwipeToReply, false)
+        let failed = Make.event("me", Make.text("Hi"), own: true, state: .failed(error: "Too large"))
+        XCTAssertEqual(messageRow(failed)?.canSwipeToReply, false)
+        XCTAssertEqual(messageRow(Make.event("bob", .redacted, eventId: "$3"))?.canSwipeToReply, false)
+        XCTAssertEqual(messageRow(Make.event("bob", .unableToDecrypt, eventId: "$4"))?.canSwipeToReply, false)
+    }
+
+    func testSwipeToReplyBeginsLeftwardAndRepliesPastTheThreshold() {
+        XCTAssertTrue(SwipeToReply.begins(velocity: CGPoint(x: -300, y: 40)))
+        // Scrolling, the back gesture, and diagonal drags are left alone.
+        XCTAssertFalse(SwipeToReply.begins(velocity: CGPoint(x: -100, y: 300)))
+        XCTAssertFalse(SwipeToReply.begins(velocity: CGPoint(x: 300, y: 0)))
+        XCTAssertFalse(SwipeToReply.begins(velocity: CGPoint(x: -100, y: -60)))
+
+        var swipe = SwipeToReply()
+        swipe.update(CGPoint(x: -30, y: 5))
+        XCTAssertEqual(swipe.offset, -30)
+        XCTAssertFalse(swipe.triggers)
+        XCTAssertEqual(swipe.progress, 30 / SwipeToReply.threshold)
+        swipe.update(CGPoint(x: -SwipeToReply.threshold, y: 0))
+        XCTAssertTrue(swipe.triggers)
+        XCTAssertEqual(swipe.progress, 1)
+        // The bubble stops at the limit, and does not go right.
+        swipe.update(CGPoint(x: -500, y: 0))
+        XCTAssertEqual(swipe.offset, -SwipeToReply.limit)
+        swipe.update(CGPoint(x: 40, y: 0))
+        XCTAssertEqual(swipe.offset, 0)
+        XCTAssertFalse(swipe.triggers)
+    }
+
     func testReadersBeyondThreeShowAsACount() {
         let readers = ["a", "b", "c", "d", "e"].map { Make.reader($0) }
         let (shown, more) = ReaderAvatars.split(readers)
