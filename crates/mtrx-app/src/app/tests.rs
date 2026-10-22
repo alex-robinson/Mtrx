@@ -148,6 +148,56 @@ fn login_without_keyring() {
     snapshot(&app, "login-no-keyring");
 }
 
+/// The zoom keys step the text size, also on the sign-in screen; the
+/// window keeps its size in logical pixels, and images are drawn for the
+/// display's scale times the text size.
+#[test]
+fn zoom_steps_the_text_size() {
+    use crate::text_size::TextSize;
+
+    let mut app = app(Screen::Login(Login::default()), Mode::Light);
+    let _ = app.update(Message::Zoom(Zoom::In));
+    assert_eq!(app.settings.text_size, TextSize::Large);
+    assert_eq!(app.scale_factor(), 1.1);
+    for _ in 0..5 {
+        let _ = app.update(Message::Zoom(Zoom::In));
+    }
+    assert_eq!(app.settings.text_size, TextSize::Largest);
+    assert_eq!(app.viewport(), Size::new(800.0, 800.0 / 1.5));
+    assert_eq!(app.pixel_scale(), 3.0);
+    // Resizes come in layout units.
+    let _ = app.update(Message::WindowResized(Size::new(600.0, 400.0)));
+    assert_eq!(app.window, Size::new(900.0, 600.0));
+    let _ = app.update(Message::Zoom(Zoom::Out));
+    assert_eq!(app.settings.text_size, TextSize::Larger);
+    let _ = app.update(Message::Zoom(Zoom::Reset));
+    assert_eq!(app.settings.text_size, TextSize::Default);
+    assert_eq!(app.viewport(), Size::new(900.0, 600.0));
+    assert_eq!(app.pixel_scale(), 2.0);
+}
+
+/// The window opens at the same size in logical pixels at any text size.
+#[test]
+fn window_opens_at_one_size() {
+    use crate::text_size::TextSize;
+
+    let profile = app(Screen::Starting, Mode::Light).profile;
+    for text_size in TextSize::ALL {
+        let environment = Environment {
+            profile: profile.clone(),
+            data_root: snapshot_dir(),
+            secrets: SecretStore::File,
+            settings: Settings {
+                text_size,
+                ..Settings::default()
+            },
+        };
+        let opened = environment.window_size() * text_size.scale();
+        assert!((opened.width - WINDOW.width).abs() < 1e-3, "{text_size}");
+        assert!((opened.height - WINDOW.height).abs() < 1e-3, "{text_size}");
+    }
+}
+
 /// [`Event::id`](mtrx_core::Event::id) of message `event` in `entries`.
 fn room_row(entries: &[TimelineEntry], event: &mtrx_core::OwnedEventId) -> Option<String> {
     entries.iter().find_map(|e| match e {

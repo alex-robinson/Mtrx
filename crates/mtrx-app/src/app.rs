@@ -46,6 +46,7 @@ use crate::{
     settings::{self, Settings},
     sidebar,
     style::{self, MESSAGE_INSET, SPACE_BAR_WIDTH},
+    text_size::Zoom,
     tint::Tint,
 };
 
@@ -148,6 +149,8 @@ pub enum Message {
     LinkClicked(String),
     WindowResized(Size),
     ScaleFactor(f32),
+    /// Text size, or the PDF viewer's zoom while it is open.
+    Zoom(Zoom),
     ThemeMode(Mode),
     AvatarLoaded(avatar::Key, Option<image::Handle>),
     /// The cursor entered (`true`) or left a timeline event.
@@ -233,7 +236,9 @@ pub struct App {
     /// Light or dark as iced reports the system (on macOS, the app's
     /// appearance, see [`crate::appearance`]).
     system_mode: Mode,
+    /// The window's size in logical pixels, whatever the text size.
     window: Size,
+    /// The display's scale: physical pixels per logical pixel.
     scale: f32,
     math: Math,
     badge: Badge,
@@ -421,27 +426,58 @@ impl Main {
     }
 }
 
-/// Profile and data directory from the same environment variables the CLI reads.
-fn environment() -> Result<(Profile, PathBuf, SecretStore), String> {
-    let name = std::env::var("MTRX_PROFILE").unwrap_or_else(|_| "default".into());
-    let data_root = match std::env::var_os("MTRX_DATA_DIR") {
-        Some(dir) => PathBuf::from(dir),
-        None => Profile::default_data_root().map_err(|e| e.to_string())?,
-    };
-    let secrets = match std::env::var("MTRX_SECRET_STORE").as_deref() {
-        Ok("file") => SecretStore::File,
-        _ => SecretStore::Keyring,
-    };
-    let profile = Profile::new(&name, &data_root, secrets.clone()).map_err(|e| e.to_string())?;
-    Ok((profile, data_root, secrets))
+/// The window's size on opening, in logical pixels.
+const WINDOW: Size = Size::new(1200.0, 800.0);
+
+/// What the app starts with: profile and data directory from the same
+/// environment variables the CLI reads, and the saved settings, read before
+/// the window opens as its size depends on the text size.
+#[derive(Clone)]
+pub struct Environment {
+    profile: Profile,
+    data_root: PathBuf,
+    secrets: SecretStore,
+    settings: Settings,
+}
+
+impl Environment {
+    pub fn load() -> Result<Self, String> {
+        let name = std::env::var("MTRX_PROFILE").unwrap_or_else(|_| "default".into());
+        let data_root = match std::env::var_os("MTRX_DATA_DIR") {
+            Some(dir) => PathBuf::from(dir),
+            None => Profile::default_data_root().map_err(|e| e.to_string())?,
+        };
+        let secrets = match std::env::var("MTRX_SECRET_STORE").as_deref() {
+            Ok("file") => SecretStore::File,
+            _ => SecretStore::Keyring,
+        };
+        let profile =
+            Profile::new(&name, &data_root, secrets.clone()).map_err(|e| e.to_string())?;
+        let settings = Settings::load(&Settings::path(&data_root));
+        Ok(Self {
+            profile,
+            data_root,
+            secrets,
+            settings,
+        })
+    }
+
+    /// The window's size on opening, in layout units, which iced scales by
+    /// the text size: [`WINDOW`] in logical pixels at any text size.
+    pub fn window_size(&self) -> Size {
+        WINDOW / self.settings.text_size.scale()
+    }
 }
 
 impl App {
-    pub fn boot() -> (Self, Task<Message>) {
-        let (profile, data_root, secrets) =
-            environment().expect("valid MTRX_PROFILE and data directory");
+    pub fn boot(environment: Environment) -> (Self, Task<Message>) {
+        let Environment {
+            profile,
+            data_root,
+            secrets,
+            settings,
+        } = environment;
         let settings_file = Settings::path(&data_root);
-        let settings = Settings::load(&settings_file);
         #[cfg(target_os = "macos")]
         settings.appearance.apply();
         let app = Self {
@@ -455,7 +491,7 @@ impl App {
             settings_panel: None,
             screen: Screen::Starting,
             system_mode: Mode::Light,
-            window: Size::new(1200.0, 800.0),
+            window: WINDOW,
             scale: 1.0,
             math: Math::new(),
             badge: Badge::default(),
@@ -475,6 +511,22 @@ impl App {
     /// The theme the app is drawn in.
     pub fn theme(&self) -> Theme {
         self.settings.appearance.theme(self.system_mode)
+    }
+
+    /// Layout units per logical pixel, which iced applies on top of the
+    /// display's scale (see [`crate::text_size`]).
+    pub fn scale_factor(&self) -> f32 {
+        self.settings.text_size.scale()
+    }
+
+    /// The window's size in layout units.
+    fn viewport(&self) -> Size {
+        self.window / self.scale_factor()
+    }
+
+    /// Physical pixels per layout unit, for drawing images sharp.
+    fn pixel_scale(&self) -> f32 {
+        self.scale * self.scale_factor()
     }
 
     /// The theme iced fixes the window to, if any.
@@ -1594,12 +1646,27 @@ impl App {
                 }
             },
             Message::WindowResized(size) => {
-                self.window = size;
-                Task::batch([self.render_math(), self.pdf_resized()])
+                // Reported in layout units.
+                self.window = size * self.scale_factor();
+                self.rescaled()
             }
             Message::ScaleFactor(scale) => {
                 self.scale = scale;
-                Task::batch([self.render_math(), self.pdf_resized()])
+                self.rescaled()
+            }
+            Message::Zoom(zoom) => {
+                if let Screen::Main(main) = &mut self.screen
+                    && let Some(pdf) = &mut main.pdf
+                {
+                    return pdf.update(pdf_viewer::Message::Zoom(match zoom {
+                        Zoom::In => pdf_viewer::Zoom::In,
+                        Zoom::Out => pdf_viewer::Zoom::Out,
+                        Zoom::Reset => pdf_viewer::Zoom::Fit,
+                    }));
+                }
+                self.settings.text_size = self.settings.text_size.zoom(zoom);
+                self.save_settings();
+                self.rescaled()
             }
             Message::ThemeMode(mode) => {
                 self.system_mode = mode;
@@ -1667,10 +1734,10 @@ impl App {
                 Task::none()
             }
             Message::OpenPdf(media) => {
+                let viewer = pdf_viewer::Viewer::new(media, self.viewport(), self.pixel_scale());
                 let Screen::Main(main) = &mut self.screen else {
                     return Task::none();
                 };
-                let viewer = pdf_viewer::Viewer::new(media, self.window, self.scale);
                 let open = viewer.open(main.session.clone());
                 main.pdf = Some(viewer);
                 open
@@ -1923,6 +1990,10 @@ impl App {
                 #[cfg(target_os = "macos")]
                 self.settings.appearance.apply();
                 self.render_math()
+            }
+            settings::Action::TextSize => {
+                self.save_settings();
+                self.rescaled()
             }
             settings::Action::GoogleSignIn(client) => {
                 let google = self.google.clone();
@@ -2516,13 +2587,19 @@ impl App {
         }
     }
 
-    /// The PDF viewer follows the window's size and scale.
+    /// Math and the PDF viewer follow the window's size, the display's
+    /// scale and the text size.
+    fn rescaled(&mut self) -> Task<Message> {
+        Task::batch([self.render_math(), self.pdf_resized()])
+    }
+
     fn pdf_resized(&mut self) -> Task<Message> {
+        let (viewport, scale) = (self.viewport(), self.pixel_scale());
         match &mut self.screen {
             Screen::Main(main) => main
                 .pdf
                 .as_mut()
-                .map_or_else(Task::none, |pdf| pdf.resized(self.window, self.scale)),
+                .map_or_else(Task::none, |pdf| pdf.resized(viewport, scale)),
             _ => Task::none(),
         }
     }
@@ -2576,14 +2653,14 @@ impl App {
     fn math_params(&self) -> math::Params {
         let theme = self.theme();
         let palette = theme.extended_palette();
-        let max_width = self.window.width
+        let max_width = self.viewport().width
             - SPACE_BAR_WIDTH
             - self.settings.room_list_width
             - RESIZE_HANDLE
             - MESSAGE_INSET;
         math::Params {
             max_width: max_width.max(200.0),
-            scale: self.scale,
+            scale: self.pixel_scale(),
             text: palette.background.base.text,
             link: palette.primary.base.color,
             muted: style::muted(&theme),
@@ -2644,6 +2721,13 @@ impl App {
         let mut subscriptions = vec![
             window::resize_events().map(|(_, size)| Message::WindowResized(size)),
             iced::system::theme_changes().map(Message::ThemeMode),
+            // Also on the sign-in screen.
+            iced::event::listen_with(|event, _, _| match event {
+                iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
+                    key, modifiers, ..
+                }) => Zoom::from_key(&key, modifiers).map(Message::Zoom),
+                _ => None,
+            }),
         ];
         if let Screen::Main(main) = &self.screen {
             subscriptions.push(
@@ -3181,16 +3265,6 @@ fn shortcuts(
             Key::Character(c) if c == "k" && modifiers.command() => Some(Message::FocusSearch),
             Key::Character(c) if c == "r" && modifiers.command() => Some(Message::Reload),
             Key::Named(Named::Escape) => Some(Message::Escape),
-            // Zoom in the PDF viewer.
-            Key::Character(c) if (c == "=" || c == "+") && modifiers.command() => Some(
-                Message::Pdf(pdf_viewer::Message::Zoom(pdf_viewer::Zoom::In)),
-            ),
-            Key::Character(c) if c == "-" && modifiers.command() => Some(Message::Pdf(
-                pdf_viewer::Message::Zoom(pdf_viewer::Zoom::Out),
-            )),
-            Key::Character(c) if c == "0" && modifiers.command() => Some(Message::Pdf(
-                pdf_viewer::Message::Zoom(pdf_viewer::Zoom::Fit),
-            )),
             _ => None,
         },
         iced::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
