@@ -1537,12 +1537,6 @@ async fn mention_colours() {
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "needs local Synapse (testserver/run.sh)"]
 async fn media_messages() {
-    let _ = tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::new(
-            "matrix_sdk_ui::timeline=debug,matrix_sdk::event_cache=debug,matrix_sdk::send_queue=debug",
-        ))
-        .with_test_writer()
-        .try_init();
     let dir = TempDir::new().unwrap();
     let (_, alice) = user("media", &dir).await;
     let room = alice
