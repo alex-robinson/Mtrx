@@ -1591,6 +1591,7 @@ async fn media_messages() {
     // of the local echoes (sent or not) are no longer in the store, and a
     // local echo can still show beside the server's copy until the send
     // queue's answer replaces it.
+    let mut seen = Vec::new();
     let entries = tokio::time::timeout(TIMEOUT, async {
         let mut updates = std::pin::pin!(timeline.updates());
         while let Some(entries) = updates.next().await {
@@ -1612,11 +1613,24 @@ async fn media_messages() {
             if files.len() == 2 && on_server {
                 return entries;
             }
+            seen = files
+                .iter()
+                .map(|(ev, media)| {
+                    format!(
+                        "{} ({}, {:?}, {:?}, {})",
+                        media.filename,
+                        ev.id,
+                        ev.send_state,
+                        ev.event_id,
+                        media.source.uri()
+                    )
+                })
+                .collect();
         }
         unreachable!()
     })
     .await
-    .unwrap();
+    .unwrap_or_else(|_| panic!("the files did not show as the server has them: {seen:#?}"));
     let file = |extension: &str| {
         entries
             .iter()
