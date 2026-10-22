@@ -33,6 +33,10 @@ use crate::{
 };
 
 const DEVICE_DISPLAY_NAME: &str = "Mtrx";
+/// The latest events synced for every room (the SDK's default is 1): a
+/// room's messages since the previous sync, so that each can notify, and
+/// its latest ones before it is opened.
+const ROOM_LIST_TIMELINE_LIMIT: u32 = 10;
 /// Shown by the server's login page as the app's home page.
 const CLIENT_URI: &str = "https://alex-robinson.github.io/";
 /// Where the server sends the browser back to the mobile apps after a
@@ -193,6 +197,7 @@ impl Session {
         let sync = Arc::new(
             SyncService::builder(client.clone())
                 .with_offline_mode()
+                .with_room_list_timeline_limit(ROOM_LIST_TIMELINE_LIMIT)
                 .build()
                 .await
                 .map_err(|e| Error::Sync(e.to_string()))?,
