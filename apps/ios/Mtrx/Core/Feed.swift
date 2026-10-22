@@ -47,6 +47,10 @@ extension Feed: TimelineListener where Value == [TimelineItem] {
     func onUpdate(items: [TimelineItem]) { send(items) }
 }
 
+extension Feed: TypingListener where Value == [String] {
+    func onUpdate(names: [String]) { send(names) }
+}
+
 extension Feed: RecoveryListener where Value == RecoveryStep {
     func onUpdate(step: RecoveryStep) { send(step) }
 }

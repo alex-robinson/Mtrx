@@ -17,12 +17,25 @@ final class FakeTaskHandle: TaskHandle, @unchecked Sendable {
 
 final class FakeTimeline: Timeline, @unchecked Sendable {
     var listener: TimelineListener?
+    var typingListener: TypingListener?
+    var typingSubscription: FakeTaskHandle?
     var sent: [String] = []
     var sendError: Error?
     /// What successive `paginateBack` calls return (then: the start).
     var pages: [Bool] = []
     var paginations = 0
+    /// Called with the number of each `paginateBack` call (from 1), e.g. to
+    /// give the listener older items.
+    var onPaginate: ((Int) -> Void)?
     var markedRead = 0
+    var replies: [(itemId: String, text: String)] = []
+    var edits: [(itemId: String, text: String)] = []
+    var reactions: [(itemId: String, key: String)] = []
+    var deleted: [String] = []
+    var retried: [String] = []
+    var discarded: [String] = []
+    var typing: [Bool] = []
+    var actionError: Error?
 
     override func roomId() -> String { "!room:example.org" }
 
@@ -31,13 +44,55 @@ final class FakeTimeline: Timeline, @unchecked Sendable {
         return FakeTaskHandle(noHandle: .init())
     }
 
+    override func subscribeTyping(listener: TypingListener) -> TaskHandle {
+        typingListener = listener
+        let handle = FakeTaskHandle(noHandle: .init())
+        typingSubscription = handle
+        return handle
+    }
+
     override func sendText(text: String) async throws {
         if let sendError { throw sendError }
         sent.append(text)
     }
 
+    override func reply(itemId: String, text: String) async throws {
+        if let sendError { throw sendError }
+        replies.append((itemId, text))
+    }
+
+    override func edit(itemId: String, text: String) async throws {
+        if let sendError { throw sendError }
+        edits.append((itemId, text))
+    }
+
+    override func react(itemId: String, key: String) async throws {
+        if let actionError { throw actionError }
+        reactions.append((itemId, key))
+    }
+
+    override func delete(itemId: String) async throws {
+        if let actionError { throw actionError }
+        deleted.append(itemId)
+    }
+
+    override func retry(itemId: String) async throws {
+        if let actionError { throw actionError }
+        retried.append(itemId)
+    }
+
+    override func discard(itemId: String) async throws {
+        if let actionError { throw actionError }
+        discarded.append(itemId)
+    }
+
+    override func setTyping(typing: Bool) async throws {
+        self.typing.append(typing)
+    }
+
     override func paginateBack(events: UInt16) async throws -> Bool {
         paginations += 1
+        onPaginate?(paginations)
         return pages.isEmpty ? true : pages.removeFirst()
     }
 
@@ -207,15 +262,26 @@ enum Make {
 
     static func event(
         _ sender: String, _ content: EventContent, at minutes: Double = 0, own: Bool = false,
-        state: SendState = .sent
+        state: SendState = .sent, eventId: String? = nil, editable: Bool = false, readBy: [Reader] = []
     ) -> TimelineEvent {
         TimelineEvent(
-            eventId: nil, senderId: "@\(sender):example.org", senderName: sender.capitalized, senderAvatarUrl: nil,
-            timestamp: start.addingTimeInterval(minutes * 60), own: own, content: content, sendState: state)
+            eventId: eventId, senderId: "@\(sender):example.org", senderName: sender.capitalized,
+            senderAvatarUrl: nil, timestamp: start.addingTimeInterval(minutes * 60), own: own, content: content,
+            sendState: state, editable: editable, readBy: readBy)
     }
 
-    static func text(_ body: String) -> EventContent {
-        .message(message: Message(kind: .text, body: body, edited: false, media: nil))
+    static func text(
+        _ body: String, edited: Bool = false, reactions: [Reaction] = [], replyTo: ReplyQuote? = nil,
+        rawBody: String = ""
+    ) -> EventContent {
+        .message(
+            message: Message(
+                kind: .text, body: body, edited: edited, media: nil, reactions: reactions, replyTo: replyTo,
+                rawBody: rawBody))
+    }
+
+    static func reader(_ name: String, named: Bool = true) -> Reader {
+        Reader(userId: "@\(name):example.org", name: named ? name.capitalized : nil, avatarUrl: nil)
     }
 
     static func item(_ id: String, _ event: TimelineEvent) -> TimelineItem {

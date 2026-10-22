@@ -68,6 +68,103 @@ final class TimelineRowsTests: XCTestCase {
         XCTAssertFalse(message.firstInGroup)
     }
 
+    private func messageRow(_ event: TimelineEvent, showSenders: Bool = true) -> MessageRow? {
+        let rows = TimelineRows.build([Make.item("m", event)], showSenders: showSenders)
+        if case .message(let message) = rows.first?.content { return message }
+        return nil
+    }
+
+    func testRowCarriesReactionsQuoteEditedAndReaders() {
+        let reactions = [
+            Reaction(key: "👍", count: 2, byUs: true, senders: [Make.reader("me"), Make.reader("bob")]),
+            Reaction(key: "🎉", count: 1, byUs: false, senders: [Make.reader("bob")]),
+        ]
+        let quote = ReplyQuote(
+            eventId: "$orig", state: .loaded, senderId: "@bob:example.org", senderName: "Bob", kind: .text,
+            body: "Hello")
+        let event = Make.event(
+            "alice", Make.text("Hi", edited: true, reactions: reactions, replyTo: quote), eventId: "$1",
+            readBy: [Make.reader("bob"), Make.reader("carol")])
+        guard let row = messageRow(event) else { return XCTFail("no message") }
+        XCTAssertEqual(row.reactions, reactions)
+        XCTAssertEqual(row.quote, quote)
+        XCTAssertTrue(row.edited)
+        XCTAssertEqual(row.readers.map(\.userId), ["@bob:example.org", "@carol:example.org"])
+        // Someone else's, in a room: name, avatar and the avatars' column.
+        XCTAssertTrue(row.showSender)
+        XCTAssertTrue(row.avatarColumn)
+    }
+
+    func testAvatarColumnOnlyForOthersInRooms() {
+        XCTAssertEqual(messageRow(Make.event("me", Make.text("Hi"), own: true))?.avatarColumn, false)
+        XCTAssertEqual(messageRow(Make.event("bob", Make.text("Hi")), showSenders: false)?.avatarColumn, false)
+    }
+
+    func testMenuOffersWhatApplies() {
+        let others = Make.event("bob", Make.text("Hi"), eventId: "$1")
+        XCTAssertEqual(messageRow(others)?.actions, [.react, .reply, .copy, .selectText])
+
+        let ours = Make.event("me", Make.text("Hi"), own: true, eventId: "$2", editable: true)
+        XCTAssertEqual(messageRow(ours)?.actions, [.react, .reply, .copy, .selectText, .edit, .delete])
+
+        // Not sent yet: no event ID, so no reaction, reply or deletion.
+        let sending = Make.event("me", Make.text("Hi"), own: true, state: .sending, editable: true)
+        XCTAssertEqual(messageRow(sending)?.actions, [.copy, .selectText, .edit])
+
+        let failed = Make.event("me", Make.text("Hi"), own: true, state: .failed(error: "Too large"))
+        XCTAssertEqual(messageRow(failed)?.actions, [.copy, .selectText, .retry, .discard])
+
+        let deleted = Make.event("me", .redacted, own: true, eventId: "$3")
+        XCTAssertEqual(messageRow(deleted)?.actions, [])
+
+        let undecryptable = Make.event("me", .unableToDecrypt, own: true, eventId: "$4")
+        XCTAssertEqual(messageRow(undecryptable)?.actions, [.delete])
+    }
+
+    func testReadersBeyondThreeShowAsACount() {
+        let readers = ["a", "b", "c", "d", "e"].map { Make.reader($0) }
+        let (shown, more) = ReaderAvatars.split(readers)
+        XCTAssertEqual(shown.map(\.userId), readers.prefix(3).map(\.userId))
+        XCTAssertEqual(more, 2)
+        XCTAssertEqual(ReaderAvatars.split(Array(readers.prefix(2))).more, 0)
+        // A name not known yet: the user ID's local part.
+        XCTAssertEqual(Make.reader("anna", named: false).displayName, "anna")
+        XCTAssertEqual(Make.reader("anna").displayName, "Anna")
+    }
+
+    func testQuoteSaysWhatTheOriginalIs() {
+        func quote(_ state: QuoteState, kind: MessageKind? = .text, body: String? = "Hello", name: String? = "Bob")
+            -> ReplyQuote
+        {
+            ReplyQuote(
+                eventId: "$orig", state: state, senderId: state == .loaded ? "@bob:example.org" : nil,
+                senderName: state == .loaded ? name : nil, kind: kind, body: body)
+        }
+        XCTAssertEqual(quote(.loading, body: nil).preview, "Loading…")
+        XCTAssertFalse(quote(.loading, body: nil).canGoTo)
+        XCTAssertEqual(quote(.failed, body: nil).preview, "Could not load the message")
+        XCTAssertFalse(quote(.failed, body: nil).canGoTo)
+        XCTAssertNil(quote(.failed, body: nil).senderLabel)
+
+        let text = quote(.loaded)
+        XCTAssertEqual(text.senderLabel, "Bob")
+        XCTAssertEqual(text.preview, "Hello")
+        XCTAssertTrue(text.canGoTo)
+        XCTAssertEqual(quote(.loaded, name: nil).senderLabel, "bob")
+        XCTAssertEqual(quote(.loaded, kind: .image, body: "cat.png").preview, "Image: cat.png")
+        XCTAssertEqual(quote(.loaded, kind: .file, body: "").preview, "File")
+        XCTAssertEqual(quote(.loaded, kind: nil, body: "Message deleted").preview, "Message deleted")
+    }
+
+    func testEmojiSearchByName() {
+        XCTAssertTrue(Emoji.all.count > 1000)
+        XCTAssertEqual(Set(Emoji.all.map(\.symbol)).count, Emoji.all.count)
+        XCTAssertEqual(Emoji.all.first?.symbol, "😀")
+        XCTAssertTrue(Emoji.search("tears joy").map(\.symbol).contains("😂"))
+        XCTAssertFalse(Emoji.search("tears joy").map(\.symbol).contains("😀"))
+        XCTAssertEqual(Emoji.search("  ").count, Emoji.all.count)
+    }
+
     func testLocalpart() {
         XCTAssertEqual(localpart("@alice:example.org"), "alice")
         XCTAssertEqual(localpart("bob"), "bob")

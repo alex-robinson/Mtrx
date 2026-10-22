@@ -50,4 +50,201 @@ final class TimelineModelTests: XCTestCase {
         await model.loadOlder()
         XCTAssertEqual(session.fakeTimeline.paginations, 3)
     }
+
+    // MARK: Replying and editing
+
+    private var timeline: FakeTimeline { session.fakeTimeline }
+
+    /// Show `items` and wait until the model has them.
+    private func show(_ items: [TimelineItem]) async {
+        timeline.listener?.onUpdate(items: items)
+        await eventually { self.model.rows.count == TimelineRows.build(items, showSenders: true).count }
+    }
+
+    private let bobsMessage = Make.item("b", Make.event("bob", Make.text("Lunch?\nAt noon"), eventId: "$b"))
+    private let ourMessage = Make.item(
+        "o", Make.event("me", Make.text("Hello world", rawBody: "Hello *world*"), own: true, eventId: "$o", editable: true))
+
+    func testRepliesWithTheDraft() async {
+        await show([bobsMessage])
+        model.startReply(to: "b")
+        XCTAssertEqual(model.compose, .reply(ComposeTarget(itemId: "b", sender: "Bob", preview: "Lunch?")))
+        model.draft = "Sure"
+        await model.send()
+        XCTAssertEqual(timeline.replies.map(\.itemId), ["b"])
+        XCTAssertEqual(timeline.replies.map(\.text), ["Sure"])
+        XCTAssertEqual(timeline.sent, [])
+        XCTAssertNil(model.compose)
+        XCTAssertEqual(model.draft, "")
+    }
+
+    func testEditsFromTheTextAsWritten() async {
+        await show([ourMessage])
+        model.draft = "Half written"
+        model.startEdit("o")
+        XCTAssertEqual(model.compose?.target.itemId, "o")
+        XCTAssertEqual(model.draft, "Hello *world*")
+        model.draft = "Hello *everyone*"
+        await model.send()
+        XCTAssertEqual(timeline.edits.map(\.itemId), ["o"])
+        XCTAssertEqual(timeline.edits.map(\.text), ["Hello *everyone*"])
+        XCTAssertNil(model.compose)
+        // The draft from before the edit is back.
+        XCTAssertEqual(model.draft, "Half written")
+    }
+
+    func testCancellingAnEditBringsBackTheDraft() async {
+        await show([ourMessage])
+        model.draft = "Half written"
+        model.startEdit("o")
+        model.cancelCompose()
+        XCTAssertNil(model.compose)
+        XCTAssertEqual(model.draft, "Half written")
+    }
+
+    func testReplyingAndEditingExcludeEachOther() async {
+        await show([bobsMessage, ourMessage])
+        model.draft = "Draft"
+        model.startEdit("o")
+        model.startReply(to: "b")
+        XCTAssertEqual(model.compose?.target.itemId, "b")
+        if case .edit = model.compose { XCTFail("still editing") }
+        XCTAssertEqual(model.draft, "Draft")
+        model.startEdit("o")
+        XCTAssertEqual(model.compose, .edit(ComposeTarget(itemId: "o", sender: "Me", preview: "Hello world")))
+    }
+
+    func testAFailedReplyKeepsReplying() async {
+        await show([bobsMessage])
+        timeline.sendError = MtrxError.InvalidInput(reason: "no message `b` in the timeline")
+        model.startReply(to: "b")
+        model.draft = "Sure"
+        await model.send()
+        XCTAssertEqual(model.compose?.target.itemId, "b")
+        XCTAssertEqual(model.draft, "Sure")
+        XCTAssertEqual(model.error, "no message `b` in the timeline")
+    }
+
+    // MARK: Typing
+
+    func testTellsWhetherWeType() async {
+        model.draft = "H"
+        model.draft = "Hi"
+        model.draft = ""
+        await eventually { self.timeline.typing == [true, true, false] }
+        model.draft = "Hello"
+        await model.send()
+        await eventually { self.timeline.typing.last == false && self.timeline.typing.count == 5 }
+    }
+
+    func testShowsWhoTypesWhileVisible() async {
+        XCTAssertNil(timeline.typingListener)
+        model.setVisible(true)
+        timeline.typingListener?.onUpdate(names: ["Anna", "Ben"])
+        await eventually { self.model.typing == ["Anna", "Ben"] }
+        model.setVisible(false)
+        XCTAssertEqual(timeline.typingSubscription?.cancelled, true)
+        XCTAssertEqual(model.typing, [])
+        await eventually { self.timeline.typing == [false] }
+    }
+
+    func testTypingLine() {
+        XCTAssertNil(TimelineModel.typingLine([]))
+        XCTAssertEqual(TimelineModel.typingLine(["Anna"]), "Anna is typing…")
+        XCTAssertEqual(TimelineModel.typingLine(["Anna", "Ben"]), "Anna and Ben are typing…")
+        XCTAssertEqual(TimelineModel.typingLine(["Anna", "Ben", "Cleo"]), "Anna, Ben and Cleo are typing…")
+        XCTAssertEqual(TimelineModel.typingLine(["Anna", "Ben", "Cleo", "Dan"]), "Anna, Ben and 2 others are typing…")
+    }
+
+    // MARK: Acting on messages
+
+    func testActionsTakeTheRowsId() async {
+        await show([bobsMessage, ourMessage])
+        await model.react("b", key: "👍").value
+        await model.delete("o").value
+        await model.retry("o").value
+        await model.discard("o").value
+        XCTAssertEqual(timeline.reactions.map(\.itemId), ["b"])
+        XCTAssertEqual(timeline.reactions.map(\.key), ["👍"])
+        XCTAssertEqual(timeline.deleted, ["o"])
+        XCTAssertEqual(timeline.retried, ["o"])
+        XCTAssertEqual(timeline.discarded, ["o"])
+        XCTAssertNil(model.error)
+    }
+
+    func testAFailedActionShowsWhy() async {
+        timeline.actionError = MtrxError.InvalidInput(reason: "no message `gone` in the timeline")
+        await model.react("gone", key: "👍").value
+        XCTAssertEqual(model.error, "no message `gone` in the timeline")
+    }
+
+    // MARK: Going to a quoted message
+
+    private let start = TimelineItem(id: "s", content: .start)
+    private let reply = Make.item(
+        "r",
+        Make.event(
+            "bob",
+            Make.text(
+                "Yes",
+                replyTo: ReplyQuote(
+                    eventId: "$o", state: .loaded, senderId: "@me:example.org", senderName: "Me", kind: .text,
+                    body: "Hello world")),
+            at: 5, eventId: "$r"))
+
+    func testGoesToAQuotedMessageShown() async {
+        await show([ourMessage, reply])
+        await model.goTo(eventId: "$o")
+        XCTAssertEqual(model.scrollTarget?.rowId, "o")
+        XCTAssertEqual(model.highlighted, "o")
+        XCTAssertEqual(timeline.paginations, 0)
+        XCTAssertFalse(model.seeking)
+    }
+
+    func testLoadsOlderMessagesUntilTheQuotedOneIsThere() async {
+        await show([reply])
+        timeline.pages = Array(repeating: false, count: 30)
+        timeline.onPaginate = { [timeline, ourMessage, reply] call in
+            if call == 3 {
+                timeline.listener?.onUpdate(items: [ourMessage, reply])
+            }
+        }
+        await model.goTo(eventId: "$o")
+        await eventually { self.model.scrollTarget?.rowId == "o" }
+        XCTAssertEqual(model.highlighted, "o")
+        XCTAssertGreaterThanOrEqual(timeline.paginations, 3)
+        XCTAssertLessThan(timeline.paginations, TimelineModel.seekPages)
+        XCTAssertFalse(model.seeking)
+        XCTAssertNil(model.error)
+    }
+
+    func testQuotedMessageNotFoundAtTheRoomsStart() async {
+        await show([reply])
+        timeline.pages = [false, true]
+        timeline.onPaginate = { [timeline, start, reply] call in
+            if call == 2 {
+                timeline.listener?.onUpdate(items: [start, reply])
+            }
+        }
+        await model.goTo(eventId: "$o")
+        await eventually { self.model.error == TimelineModel.notFound }
+        XCTAssertEqual(timeline.paginations, 2)
+        XCTAssertFalse(model.seeking)
+        XCTAssertNil(model.scrollTarget)
+
+        // The start is there: nothing more to load.
+        model.error = nil
+        await model.goTo(eventId: "$o")
+        XCTAssertEqual(model.error, TimelineModel.notFound)
+        XCTAssertEqual(timeline.paginations, 2)
+    }
+
+    func testQuotedMessageNotFoundAfterTwentyLoads() async {
+        await show([reply])
+        timeline.pages = Array(repeating: false, count: 30)
+        await model.goTo(eventId: "$o")
+        XCTAssertEqual(timeline.paginations, TimelineModel.seekPages)
+        XCTAssertEqual(model.error, TimelineModel.notFound)
+        XCTAssertFalse(model.seeking)
+    }
 }
