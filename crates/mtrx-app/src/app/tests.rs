@@ -1534,6 +1534,8 @@ async fn media_messages() {
         .await
         .unwrap();
     while !timeline.paginate_back(50).await.unwrap() {}
+    // The files as the server has them: once uploaded, those of the local
+    // echoes (sent or not) are no longer in the store.
     let entries = tokio::time::timeout(TIMEOUT, async {
         let mut updates = std::pin::pin!(timeline.updates());
         while let Some(entries) = updates.next().await {
@@ -1542,7 +1544,11 @@ async fn media_messages() {
                 .filter(|e| match e {
                     TimelineEntry::Event(ev) => {
                         ev.send_state == SendState::Sent
-                            && matches!(&ev.content, EventContent::Message(m) if m.media.is_some())
+                            && matches!(&ev.content, EventContent::Message(m)
+                            if m.media.as_ref().is_some_and(|media| {
+                                media.source.uri().server_name().map(|s| s.as_str())
+                                    != Ok("send-queue.localhost")
+                            }))
                     }
                     _ => false,
                 })
