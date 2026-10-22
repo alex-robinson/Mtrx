@@ -42,6 +42,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.flow.first
 import org.mtrx.app.model.Account
+import org.mtrx.app.model.INVALID_RECOVERY_KEY
 import org.mtrx.app.model.Recovery
 import uniffi.mtrx.RecoveryStep
 
@@ -57,6 +58,7 @@ fun RecoveryScreen(account: Account, onBack: () -> Unit, onDone: () -> Unit) {
     // Not saved with the screen's state: the key is a secret.
     var key by remember { mutableStateOf("") }
     val running = recovery is Recovery.Running
+    val invalidKey = recovery == Recovery.InvalidKey
 
     val currentOnDone by rememberUpdatedState(onDone)
     LaunchedEffect(account) {
@@ -94,10 +96,20 @@ fun RecoveryScreen(account: Account, onBack: () -> Unit, onDone: () -> Unit) {
             )
             OutlinedTextField(
                 value = key,
-                onValueChange = { key = it },
+                onValueChange = {
+                    key = it
+                    // Corrected: the error was about the previous key.
+                    if (invalidKey) account.resetRecovery()
+                },
                 modifier = Modifier.fillMaxWidth(),
                 label = { Text("Recovery key") },
                 enabled = !running,
+                isError = invalidKey,
+                supportingText = if (invalidKey) {
+                    { Text(INVALID_RECOVERY_KEY) }
+                } else {
+                    null
+                },
                 minLines = 3,
                 textStyle = MaterialTheme.typography.bodyLarge.copy(fontFamily = FontFamily.Monospace),
                 keyboardOptions = KeyboardOptions(
@@ -120,7 +132,8 @@ fun RecoveryScreen(account: Account, onBack: () -> Unit, onDone: () -> Unit) {
                         Text(current.reason, style = MaterialTheme.typography.bodySmall)
                     }
                 }
-                Recovery.Idle, Recovery.Done -> {}
+                // Under the field.
+                Recovery.InvalidKey, Recovery.Idle, Recovery.Done -> {}
             }
         }
     }

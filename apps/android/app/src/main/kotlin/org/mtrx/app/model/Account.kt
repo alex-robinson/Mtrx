@@ -237,7 +237,7 @@ class Account(private val mtrx: MtrxInterface, private val scope: CoroutineScope
                     }
                 })
             } catch (e: MtrxException) {
-                _recovery.value = Recovery.Failed(describe(e) ?: "")
+                _recovery.value = recoveryFailure(e)
                 return@launch
             }
             _recovery.value = Recovery.Done

@@ -116,6 +116,20 @@ class EncryptionTest {
     }
 
     @Test
+    fun invalidKeyIsShownUnderTheField() = runTest {
+        val session = FakeSession().apply {
+            recoverySteps = listOf(RecoveryStep.CheckingKey)
+            recoveryError = MtrxException.InvalidInput("The recovery key is not valid")
+        }
+        val account = Account(FakeMtrx(restored = session), CoroutineScope(UnconfinedTestDispatcher(testScheduler)))
+        account.start()
+        account.recover("EsTc not a key")
+        assertEquals(Recovery.InvalidKey, account.recovery.value)
+        assertEquals("The recovery key is not valid.", INVALID_RECOVERY_KEY)
+        assertEquals(0, session.encryptionAsks)
+    }
+
+    @Test
     fun requestFromAnotherUserIsCancelled() = runTest {
         val session = FakeSession()
         val account = Account(FakeMtrx(restored = session), CoroutineScope(UnconfinedTestDispatcher(testScheduler)))
