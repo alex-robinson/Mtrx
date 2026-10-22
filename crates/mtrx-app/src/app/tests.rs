@@ -198,6 +198,49 @@ fn window_opens_at_one_size() {
     }
 }
 
+/// iced drops the app only after its runtime has stopped, when the SDK's
+/// stores can no longer close (dropping a session then panics): closing the
+/// window ends the session first, and one restored meanwhile.
+#[test]
+fn closing_the_window_ends_the_session() {
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let dir = TempDir::new().unwrap();
+    let session = |name: &str| {
+        let profile = Profile::new(name, dir.path(), SecretStore::File).unwrap();
+        let session = runtime
+            .block_on(mtrx_core::test_support::offline_session(profile))
+            .unwrap();
+        Shared(Arc::new(session))
+    };
+    let (open, restored) = (session("open"), session("restored"));
+    let app = {
+        // As iced runs the app.
+        let _runtime = runtime.enter();
+        let mut app = app(Screen::Main(Box::new(Main::new(open.0))), Mode::Light);
+        let close = app.update(Message::CloseWindow(window::Id::unique()));
+        assert!(matches!(app.screen, Screen::Closing));
+        let restored = app.update(Message::Restored(Ok(restored)));
+        drop((close, restored));
+        app
+    };
+    assert!(matches!(app.screen, Screen::Closing));
+    drop(runtime);
+    drop(app);
+}
+
+/// Closing the window cancels a browser sign-in.
+#[test]
+fn closing_the_window_cancels_a_browser_sign_in() {
+    let mut app = app(Screen::Login(Login::default()), Mode::Light);
+    let (_sign_in, handle) = Task::<Message>::none().abortable();
+    let Screen::Login(login) = &mut app.screen else {
+        unreachable!()
+    };
+    login.browser_started(handle.clone());
+    let _ = app.update(Message::CloseWindow(window::Id::unique()));
+    assert!(handle.is_aborted());
+}
+
 /// [`Event::id`](mtrx_core::Event::id) of message `event` in `entries`.
 fn room_row(entries: &[TimelineEntry], event: &mtrx_core::OwnedEventId) -> Option<String> {
     entries.iter().find_map(|e| match e {

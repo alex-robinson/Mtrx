@@ -32,7 +32,7 @@ pub enum Action {
 enum State {
     #[default]
     Idle,
-    /// Browser sign-in running; aborting the handle cancels it.
+    /// Browser sign-in running; aborting or dropping the handle cancels it.
     Browser(Handle),
     Password,
 }
@@ -87,7 +87,7 @@ impl Login {
     }
 
     pub fn browser_started(&mut self, handle: Handle) {
-        self.state = State::Browser(handle);
+        self.state = State::Browser(handle.abort_on_drop());
     }
 
     pub fn failed(&mut self, error: String) {
