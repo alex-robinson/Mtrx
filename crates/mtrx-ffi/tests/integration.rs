@@ -21,10 +21,10 @@ use mtrx_core::{
     test_support::{PASSWORD, homeserver, register, unique_name},
 };
 use mtrx_ffi::{
-    ConnectionListener, ConnectionState, EncryptionState, EventContent, MediaKind, Mtrx,
-    RecoveryListener, RecoveryStatus, RecoveryStep, RoomListListener, RoomListState, SecretBackend,
-    SecretError, Session, TimelineItem, TimelineItemContent, TimelineListener, Verification,
-    VerificationListener, VerificationRequestListener, VerificationState,
+    ConnectionListener, ConnectionState, EncryptionState, EventContent, MediaKind, Mtrx, MtrxError,
+    RecoveryListener, RecoveryStatus, RecoveryStep, RoomKind, RoomListListener, RoomListState,
+    SecretBackend, SecretError, Session, TimelineItem, TimelineItemContent, TimelineListener,
+    Verification, VerificationListener, VerificationRequestListener, VerificationState,
 };
 use tempfile::TempDir;
 
@@ -385,14 +385,21 @@ fn recovery_key_decrypts_history_on_a_new_device() {
         items.iter().any(is_undecryptable)
     });
 
-    // A wrong key fails while checking it.
-    let (steps, step_updates) = forward();
-    let wrong = block_on(second.session.recover("not a recovery key".into(), steps));
-    assert!(wrong.is_err(), "a wrong key is refused");
-    assert_eq!(
-        step_updates.try_iter().collect::<Vec<_>>(),
-        [RecoveryStep::CheckingKey]
-    );
+    // A mistyped key, or another backup's, fails while checking it.
+    let another = matrix_sdk_crypto::secret_storage::SecretStorageKey::new().to_base58();
+    for wrong in ["not a recovery key".to_owned(), another] {
+        let (steps, step_updates) = forward();
+        let refused = block_on(second.session.recover(wrong.clone(), steps));
+        assert!(
+            matches!(&refused, Err(MtrxError::InvalidInput { reason })
+                if reason == "The recovery key is not valid"),
+            "{wrong}: {refused:?}"
+        );
+        assert_eq!(
+            step_updates.try_iter().collect::<Vec<_>>(),
+            [RecoveryStep::CheckingKey]
+        );
+    }
 
     // The key unlocks it; the open timeline shows the message.
     let (steps, step_updates) = forward();
@@ -506,6 +513,168 @@ fn emoji_verification_between_two_devices() {
             .any(|i| message_body(i) == Some("written before verification"))
             && !items.iter().any(is_undecryptable)
     });
+}
+
+/// `ids` are in the order of `state.rooms`.
+fn in_list_order(state: &RoomListState, ids: &[String]) -> bool {
+    let positions: Vec<_> = ids
+        .iter()
+        .map(|id| state.rooms.iter().position(|r| &r.id == id).unwrap())
+        .collect();
+    positions.is_sorted()
+}
+
+#[test]
+#[ignore = "needs the local Synapse (testserver/run.sh)"]
+fn rooms_by_space_with_direct_chats_and_invites() {
+    let core_runtime = tokio::runtime::Runtime::new().unwrap();
+    let [alice, bob, carol] = ["ffi-spaces", "ffi-spaces-bob", "ffi-spaces-carol"].map(|prefix| {
+        let name = unique_name(prefix);
+        core_runtime.block_on(register(&name)).unwrap();
+        name
+    });
+
+    // Alice's other device makes two spaces, rooms in one of them (one
+    // through a nested space) and a room outside; Bob joins the space and
+    // has a direct chat with her. Bob invites her to a room in the space;
+    // Carol, in no space, invites her to a direct chat and a room.
+    let dir = tempfile::tempdir().unwrap();
+    let ids = core_runtime.block_on(async {
+        let login = |name: &str, profile: &str| {
+            let profile = Profile::new(profile, dir.path(), SecretStore::File).unwrap();
+            let name = name.to_owned();
+            async move {
+                mtrx_core::Session::login(profile, &homeserver(), &name, PASSWORD)
+                    .await
+                    .unwrap()
+            }
+        };
+        let (a, b, c) = (
+            login(&alice, "alice").await,
+            login(&bob, "bob").await,
+            login(&carol, "carol").await,
+        );
+        let make = |name: &str, space: bool, parent: Option<&mtrx_core::OwnedRoomId>| NewRoom {
+            name: Some(name.into()),
+            space,
+            parent: parent.cloned(),
+            ..Default::default()
+        };
+        let team = a.create_room(make("Team", true, None)).await.unwrap();
+        let other = a.create_room(make("Other", true, None)).await.unwrap();
+        let lab = a
+            .create_room(make("Lab", false, Some(&team)))
+            .await
+            .unwrap();
+        let sub = a.create_room(make("Sub", true, Some(&team))).await.unwrap();
+        let deep = a
+            .create_room(make("Deep", false, Some(&sub)))
+            .await
+            .unwrap();
+        let loose = a.create_room(make("Loose", false, None)).await.unwrap();
+        a.invite(&team, &b.user_id()).await.unwrap();
+        b.join(<&mtrx_core::RoomOrAliasId>::from(&*team))
+            .await
+            .unwrap();
+        let with_bob = a.direct_chat(&b.user_id()).await.unwrap();
+        b.join(<&mtrx_core::RoomOrAliasId>::from(&*with_bob))
+            .await
+            .unwrap();
+        let offer = b
+            .create_room(NewRoom {
+                name: Some("Offer".into()),
+                invite: vec![a.user_id()],
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        a.add_to_space(&team, &offer).await.unwrap();
+        let with_carol = c.direct_chat(&a.user_id()).await.unwrap();
+        let party = c
+            .create_room(NewRoom {
+                name: Some("Party".into()),
+                invite: vec![a.user_id()],
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        [
+            team, other, lab, sub, deep, loose, with_bob, offer, with_carol, party,
+        ]
+        .map(|id| id.to_string())
+    });
+    let [
+        team,
+        other,
+        lab,
+        sub,
+        deep,
+        loose,
+        with_bob,
+        offer,
+        with_carol,
+        party,
+    ] = ids;
+
+    let device = sign_in(&alice);
+    let (rooms, updates) = forward();
+    let _handle = block_on(device.session.subscribe_room_list(rooms)).unwrap();
+    let state = wait_for("the rooms by space", &updates, |s: &RoomListState| {
+        let team_rooms = s.spaces.iter().find(|space| space.space_id == team);
+        s.loaded
+            && team_rooms.is_some_and(|t| t.room_ids.contains(&with_bob))
+            && [&loose, &party]
+                .iter()
+                .all(|id| s.rooms_outside_spaces.contains(id))
+            && s.rooms.iter().any(|r| r.id == with_carol)
+    });
+
+    // The space column: the two top-level spaces, in list order.
+    let spaces: Vec<_> = state.spaces.iter().map(|s| s.space_id.clone()).collect();
+    assert_eq!(
+        spaces.iter().collect::<std::collections::HashSet<_>>(),
+        [&team, &other]
+            .into_iter()
+            .collect::<std::collections::HashSet<_>>()
+    );
+    assert!(in_list_order(&state, &spaces));
+
+    // Team lists its rooms through the nested space (not the nested space
+    // itself), the invite, and the direct chat with its member Bob.
+    let team_rooms = &state
+        .spaces
+        .iter()
+        .find(|s| s.space_id == team)
+        .unwrap()
+        .room_ids;
+    let mut expected = vec![lab, deep, offer.clone(), with_bob.clone()];
+    expected.sort();
+    let mut listed = team_rooms.clone();
+    listed.sort();
+    assert_eq!(listed, expected, "{state:#?}");
+    assert!(in_list_order(&state, team_rooms));
+    assert!(!team_rooms.contains(&sub));
+    let other_rooms = &state
+        .spaces
+        .iter()
+        .find(|s| s.space_id == other)
+        .unwrap()
+        .room_ids;
+    assert!(other_rooms.is_empty());
+
+    // Outside any space: the room and the invite to a room, in list order.
+    assert_eq!(state.rooms_outside_spaces.len(), 2, "{state:#?}");
+    assert!(in_list_order(&state, &state.rooms_outside_spaces));
+
+    // The Chats tab: both direct chats; Carol's still an invite.
+    let summary = |id: &str| state.rooms.iter().find(|r| r.id == id).unwrap();
+    assert_eq!(summary(&with_bob).kind, RoomKind::Direct);
+    assert_eq!(
+        (summary(&with_carol).kind, summary(&with_carol).invited),
+        (RoomKind::Direct, true)
+    );
+    assert!(summary(&offer).invited);
+    assert_eq!(summary(&sub).kind, RoomKind::Space);
 }
 
 /// A 1×1 PNG, opaque red.

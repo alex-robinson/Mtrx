@@ -13,7 +13,8 @@ pub enum MtrxError {
     LoginCancelled,
     #[error("no room `{room_id}`")]
     RoomNotFound { room_id: String },
-    /// An argument that is not a valid ID or URL, or a call made twice.
+    /// An argument that is not a valid ID, URL or recovery key, or a call
+    /// made twice.
     #[error("{reason}")]
     InvalidInput { reason: String },
     /// The app's [`crate::SecretBackend`] failed.
@@ -41,6 +42,7 @@ impl From<mtrx_core::Error> for MtrxError {
             Error::LoginCancelled => Self::LoginCancelled,
             Error::RoomNotFound(room_id) => Self::RoomNotFound { room_id },
             Error::SecretStorage(reason) => Self::SecretStorage { reason },
+            error @ Error::InvalidRecoveryKey => Self::invalid(error),
             error => Self::Other {
                 reason: error.to_string(),
             },
@@ -74,6 +76,10 @@ mod tests {
         assert!(matches!(
             convert(mtrx_core::Error::SecretStorage("locked".into())),
             MtrxError::SecretStorage { reason } if reason == "locked"
+        ));
+        assert!(matches!(
+            convert(mtrx_core::Error::InvalidRecoveryKey),
+            MtrxError::InvalidInput { reason } if reason == "The recovery key is not valid"
         ));
         assert!(matches!(
             convert(mtrx_core::Error::Timeline("nothing to send".into())),

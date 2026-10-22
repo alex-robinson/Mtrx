@@ -15,6 +15,7 @@ mod android;
 mod client;
 mod encryption;
 mod error;
+mod room_list;
 mod runtime;
 mod secrets;
 mod session;

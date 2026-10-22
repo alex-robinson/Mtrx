@@ -86,20 +86,49 @@ impl From<&core::RoomSummary> for RoomSummary {
 }
 
 /// The room list: every joined and invited room (spaces too), most recently
-/// active first.
+/// active first, and the rooms by space as the desktop shows them.
 #[derive(Clone, Debug, PartialEq, uniffi::Record)]
 pub struct RoomListState {
     pub rooms: Vec<RoomSummary>,
     /// Synced with the server since the list was created. Before that,
     /// `rooms` may be a stale cache, or empty on the first sign-in.
     pub loaded: bool,
+    /// The desktop's space column: joined spaces in no joined space, in the
+    /// order of `rooms`, each with the rooms it lists.
+    #[uniffi(default)]
+    pub spaces: Vec<SpaceRooms>,
+    /// IDs of the rooms no space lists, in the order of `rooms`: rooms and
+    /// invites to spaces; no direct chats, no joined spaces.
+    #[uniffi(default)]
+    pub rooms_outside_spaces: Vec<String>,
 }
 
-impl From<core::RoomListState> for RoomListState {
-    fn from(state: core::RoomListState) -> Self {
+/// A top-level space and what it lists.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct SpaceRooms {
+    /// Its `RoomSummary.id`.
+    pub space_id: String,
+    /// IDs of the rooms it lists, in the order of `RoomListState.rooms`:
+    /// rooms below it (through nested spaces, which are not listed
+    /// themselves), invites to rooms and spaces below it, direct chats with
+    /// its joined members, and rooms put into its categories on the desktop.
+    pub room_ids: Vec<String>,
+}
+
+impl RoomListState {
+    pub(crate) fn new(state: &core::RoomListState, by_space: core::RoomsBySpace) -> Self {
         Self {
             rooms: state.rooms.iter().map(RoomSummary::from).collect(),
             loaded: state.loaded,
+            spaces: by_space
+                .spaces
+                .into_iter()
+                .map(|space| SpaceRooms {
+                    space_id: space.space.to_string(),
+                    room_ids: space.rooms.iter().map(ToString::to_string).collect(),
+                })
+                .collect(),
+            rooms_outside_spaces: by_space.outside.iter().map(ToString::to_string).collect(),
         }
     }
 }
@@ -542,10 +571,18 @@ mod tests {
             alias: None,
             joined_members: 2,
         };
-        let state = RoomListState::from(core::RoomListState {
+        let state = core::RoomListState {
             rooms: vec![room],
             loaded: true,
-        });
+        };
+        let by_space = core::RoomsBySpace {
+            spaces: vec![core::SpaceRooms {
+                space: "!space:example.org".try_into().unwrap(),
+                rooms: vec!["!room:example.org".try_into().unwrap()],
+            }],
+            outside: Vec::new(),
+        };
+        let state = RoomListState::new(&state, by_space);
         assert!(state.loaded);
         let summary = &state.rooms[0];
         assert_eq!(summary.id, "!room:example.org");
@@ -553,6 +590,13 @@ mod tests {
         assert_eq!(summary.direct_user_id.as_deref(), Some("@bob:example.org"));
         assert_eq!(summary.last_activity, Some(at(5)));
         assert_eq!(summary.unread_mentions, 1);
+        assert_eq!(
+            state.spaces,
+            [SpaceRooms {
+                space_id: "!space:example.org".into(),
+                room_ids: vec!["!room:example.org".into()],
+            }]
+        );
     }
 
     #[test]

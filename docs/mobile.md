@@ -7,8 +7,9 @@ sign-in screen in CI, iOS on the simulator (`ios.yml`) and Android on an
 emulator (`android.yml`). Unsigned. The iOS app was tried on a phone: it
 signs in and lists rooms, but a new device cannot read encrypted rooms
 without recovery or verification, which stage 1 (section 6) adds; the
-library side of it is done. This is the plan, and the contract the apps are
-built on.
+library side of it is done. Stage 2 (section 7) organises the room list by
+space; its library side is done too. This is the plan, and the contract the
+apps are built on.
 
 ## Decisions
 
@@ -82,7 +83,8 @@ IDs are strings, times `Date`/`Instant`; no Ruma types.
   `delete` (throws `SecretError.Failed`).
 - `TaskHandle` (from each subscribe): `cancel()`, `isFinished()`; dropping
   it cancels.
-- Records: `RoomListState { rooms, loaded }`, `RoomSummary`, `TimelineItem
+- Records: `RoomListState { rooms, loaded, spaces, roomsOutsideSpaces }`
+  (section 7), `SpaceRooms { spaceId, roomIds }`, `RoomSummary`, `TimelineItem
   { id, content }` (`start`, `event`, `dayDivider`, `readMarker`),
   `TimelineEvent`, `EventContent`, `Message { kind, body, edited, media }`,
   `Media`, `SendState`. `TimelineItem.id` is unique and stable (also when a
@@ -97,6 +99,8 @@ IDs are strings, times `Date`/`Instant`; no Ruma types.
   `DeviceInfo { id, name, verified, current }`.
 - Errors: `MtrxError` (`NotLoggedIn`, `AlreadyLoggedIn`, `LoginCancelled`,
   `RoomNotFound`, `InvalidInput`, `SecretStorage`, `Other(message)`).
+  `InvalidInput(reason)`: a malformed ID or URL, or a recovery key that is
+  not one or not the account's ("The recovery key is not valid").
 - `oauthRedirectUri()`, `initLogging(filter)` (stderr: Xcode's console).
 
 Full snapshots instead of diffs: simpler for the apps, and cheap at our
@@ -305,9 +309,10 @@ Remaining:
       timeline, image, send and sign-out; recovery (a new device reads an
       encrypted message after the recovery key, in its open timeline); and
       emoji verification between two devices, after which the new one reads
-      history, also in its open timeline: all through the bindings against
-      Synapse (`cargo test -p mtrx-ffi --test integration -- --ignored`,
-      in the Linux workflow).
+      history, also in its open timeline; the rooms by space (nested spaces,
+      a direct chat with a space member, invites in and outside spaces): all
+      through the bindings against Synapse (`cargo test -p mtrx-ffi --test
+      integration -- --ignored`, in the Linux workflow).
 
 ## 6. Stage 1: encryption
 
@@ -339,10 +344,12 @@ banner would show:
   `checkingKey` ("Checking the key"), `importingIdentity` ("Verifying this
   device"), then `downloadingKeys(done, total)` once per room (a progress
   bar, "Fetching keys: done of total rooms"; there may be none). It can
-  take a minute with many rooms. Errors are `MtrxError.Other(reason)`:
-  "Could not recover." with the reason below (a mistyped key says e.g.
-  "The Base58 decoded key has an invalid length"). On success go back to
-  Settings and ask `encryptionState()` again.
+  take a minute with many rooms. A mistyped key, or one of another
+  account or an older backup, fails at `checkingKey` with
+  `MtrxError.InvalidInput("The recovery key is not valid")`: show the
+  reason under the field and keep the key for correcting. Other errors are
+  `MtrxError.Other(reason)`: "Could not recover." with the reason below. On
+  success go back to Settings and ask `encryptionState()` again.
 - "Verify with another device" (while `!deviceVerified`):
   `requestSelfVerification()` returns a
   `Verification`; open the verification screen with it. (`devices()` lists
@@ -398,7 +405,84 @@ exhaustively). App tests use fakes as before: subclass `Verification` with
 `init(noHandle:)` / `NoHandle`, and `Session` for `encryptionState`,
 `recover`, `requestSelfVerification` and `subscribeVerificationRequests`.
 
+## 7. Stage 2: organising chats
+
+The room list is one long list today. The desktop organises it by space: a
+column of spaces, then the rooms of the selected space. The apps get the
+same lists from `RoomListState`, computed by the library as the desktop
+computes them (`mtrx_core::RoomsBySpace`); the library part is done and
+tested (section 5).
+
+**Layout.** A bottom bar with two tabs, Chats and Rooms; hidden while a
+room is open. Tapping a room pushes the room screen; the system back
+gesture returns to the list it came from (Chats, or the space's rooms),
+which keeps its tab, page and scroll position.
+
+**Chats.** Direct chats only, newest message first:
+`rooms.filter { kind == direct }`, in the order of `rooms`. Nothing new is
+needed: `rooms` is already ordered by recency (the SDK's: latest message or
+recency stamp, rooms with unsent messages first). Keep that order; do not
+re-sort by `lastActivity`, which is nil for some rooms (an invite, say).
+Show `lastActivity` as the time. Invites to direct chats are there
+(`invited`), and the Notes to self (`directUserId == session.userId()`).
+
+**Rooms.** A horizontal pager of two pages, like the desktop's two columns.
+- Left page, the spaces: `spaces` in order (top-level spaces, most
+  recently active first, as the desktop's space column), each shown by its
+  `RoomSummary` (look up `spaceId` in `rooms` for the name and avatar), with
+  a dot while any of its `roomIds` has `unreadMessages > 0`. Then one entry
+  "Other rooms" for `roomsOutsideSpaces`, left out while that is empty.
+- Tapping an entry selects it and pages to the right; the right page shows
+  the selected entry's rooms: `roomIds` (or `roomsOutsideSpaces`) mapped to
+  their `RoomSummary`s, in that order, under the space's name. Swiping right,
+  or back on Android, returns to the spaces.
+- Remember the selected entry (a space ID, or "other rooms") across
+  launches: in the app's preferences (UserDefaults / DataStore), deleted at
+  sign-out. At start, while it is in `spaces`, select it and open on the
+  right page; the first states may be a cache, so wait until `loaded` before
+  deciding it is gone. If it is gone (the space was left, or it became
+  nested in another), or when it disappears while shown, show the spaces
+  page with nothing selected. Without a saved entry, open on the spaces
+  page. (The desktop saves its space and room in `view.json` the same way.)
+
+**What each list holds** (the desktop's rules, applied by the library):
+- `spaces`: joined spaces in no joined space. Nested spaces are not
+  entries of their own: their rooms are listed in the top-level space.
+- A space's `roomIds`: every room below it, through nested spaces (by the
+  spaces' `m.space.child` events); invites to rooms and spaces below it;
+  direct chats with someone who is a joined member of it; rooms the user put
+  into one of its categories on the desktop. Not the nested spaces
+  themselves. A room can be in several spaces. The Notes to self is a direct
+  chat with a member (the user), so every space lists it, as the desktop
+  shows it in every space.
+- Direct chats join a space's list once the space's members are loaded: an
+  update shortly after the space first appears (a network call per space
+  then, and again when its number of joined members changes).
+- `roomsOutsideSpaces`: rooms no space lists, and invites to spaces outside
+  them. No direct chats (they are all in Chats) and no joined spaces.
+- Invites (`invited`) are in the lists they would belong to once joined;
+  mark them as invites. They are answered on the desktop (no join call yet).
+- Everything is in the order of `rooms`, most recently active first.
+
+Differences from the desktop, by design: its first entry is Home, with all
+rooms, where the apps have "Other rooms"; and it splits a space's rooms into
+sections (invites, favourites, the user's categories, rooms, people, low
+priority), where the apps show one list in the order of `rooms`.
+
+**Updates and tests.** Each `RoomListState` is whole: derive the lists from
+each one (cheap at our sizes); rows are keyed by room ID. The new fields
+have defaults, so `RoomListState(rooms:loaded:)` in the apps' fakes still
+builds; tests of the lists pass `spaces` and `roomsOutsideSpaces`. No new
+`MtrxError` cases.
+
 ## Later
+
+- The room list can show a room before its `m.room.encryption` event has
+  synced (Synapse creates a room's state one event at a time, and sync can
+  deliver the room in between), so a message sent in that window goes out
+  unencrypted. The FFI tests wait for `RoomSummary.encrypted`. A core issue
+  to look at (for the desktop too): sending should wait until the room's
+  encryption state is known, rather than the apps working around it.
 
 - Push notifications (APNs, FCM; a push gateway, notification service
   extension / decryption in the background).
