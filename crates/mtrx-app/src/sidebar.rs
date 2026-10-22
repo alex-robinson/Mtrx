@@ -1307,6 +1307,7 @@ mod tests {
         assert_eq!(people(None, "car", &arrange), ["@carol:x"]);
         let space = space();
         assert!(people(Some(&space), "", &arrange).is_empty());
+        assert_eq!(arrange.space_members.due(&rooms), [(space.clone(), 0)]);
         let bob: OwnedUserId = "@bob:x".try_into().unwrap();
         arrange
             .space_members

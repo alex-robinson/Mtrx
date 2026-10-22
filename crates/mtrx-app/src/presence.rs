@@ -399,10 +399,10 @@ mod tests {
         assert!(activity.may_idle());
         assert_eq!(activity.check(at(3600 + 299)), None);
         // Input over the unfocused window starts the 5 minutes anew.
-        assert_eq!(activity.input(at(3600 + 200)), None);
-        assert_eq!(activity.check(at(3600 + 499)), None);
+        assert_eq!(activity.input(at(3600 + 299)), None);
+        assert_eq!(activity.check(at(3600 + 598)), None);
         assert_eq!(
-            activity.check(at(3600 + 500)),
+            activity.check(at(3600 + 599)),
             Some(PresenceState::Unavailable)
         );
         // Set once, not on every check.
@@ -413,7 +413,8 @@ mod tests {
         // The next input sets online again, once.
         assert_eq!(activity.input(at(4500)), Some(PresenceState::Online));
         assert_eq!(activity.input(at(4501)), None);
-        assert_eq!(activity.check(at(4800)), Some(PresenceState::Unavailable));
+        assert_eq!(activity.check(at(4800)), None);
+        assert_eq!(activity.check(at(4801)), Some(PresenceState::Unavailable));
         // So does the focus.
         assert_eq!(activity.focus(true, at(5000)), Some(PresenceState::Online));
         assert_eq!(activity.check(at(9000)), None);
