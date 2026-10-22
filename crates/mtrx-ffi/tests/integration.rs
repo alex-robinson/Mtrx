@@ -22,10 +22,10 @@ use mtrx_core::{
 };
 use mtrx_ffi::{
     ConnectionListener, ConnectionState, EncryptionState, EncryptionStateListener, EventContent,
-    MediaKind, Message, MessageKind, Mtrx, MtrxError, QuoteState, Reaction, Reader,
-    RecoveryListener, RecoveryStatus, RecoveryStep, ReplyQuote, RoomKind, RoomListListener,
-    RoomListState, SecretBackend, SecretError, SendState, Session, TimelineEvent, TimelineItem,
-    TimelineItemContent, TimelineListener, TypingListener, UserProfile, Verification,
+    MediaKind, Message, MessageKind, Mtrx, MtrxError, NotificationContent, PusherInfo, QuoteState,
+    Reaction, Reader, RecoveryListener, RecoveryStatus, RecoveryStep, ReplyQuote, RoomKind,
+    RoomListListener, RoomListState, SecretBackend, SecretError, SendState, Session, TimelineEvent,
+    TimelineItem, TimelineItemContent, TimelineListener, TypingListener, UserProfile, Verification,
     VerificationListener, VerificationRequestListener, VerificationState,
 };
 use tempfile::TempDir;
@@ -260,21 +260,36 @@ fn sign_in_list_rooms_read_and_send_then_sign_out() {
 /// A signed-in app with its own directories, syncing.
 struct Device {
     session: Arc<Session>,
-    _dirs: (TempDir, TempDir),
+    secrets: Arc<Memory>,
+    dirs: (TempDir, TempDir),
+}
+
+impl Device {
+    /// Another `Mtrx` on this device's data, as the app's push handler
+    /// makes in a process of its own.
+    fn push_handler(&self) -> Arc<Mtrx> {
+        Mtrx::new(
+            self.dirs.0.path().to_string_lossy().into(),
+            self.dirs.1.path().to_string_lossy().into(),
+            self.secrets.clone(),
+        )
+    }
 }
 
 fn sign_in(name: &str) -> Device {
     let (data, cache) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let secrets = Arc::new(Memory::default());
     let mtrx = Mtrx::new(
         data.path().to_string_lossy().into(),
         cache.path().to_string_lossy().into(),
-        Arc::new(Memory::default()),
+        secrets.clone(),
     );
     let session = block_on(mtrx.login(homeserver(), name.into(), PASSWORD.into())).unwrap();
     block_on(session.start_sync());
     Device {
         session,
-        _dirs: (data, cache),
+        secrets,
+        dirs: (data, cache),
     }
 }
 
@@ -795,6 +810,19 @@ fn wait_for_room(session: &Session, room_id: &str) {
 /// Users `names` made, and a room made by the first, which the others
 /// joined, all outside the bindings (which cannot make rooms yet).
 fn room_of(core_runtime: &tokio::runtime::Runtime, prefixes: &[&str]) -> (Vec<String>, String) {
+    let room = NewRoom {
+        name: Some("talk".into()),
+        ..Default::default()
+    };
+    room_like(core_runtime, prefixes, room)
+}
+
+/// As [`room_of`], the room made as `room` says.
+fn room_like(
+    core_runtime: &tokio::runtime::Runtime,
+    prefixes: &[&str],
+    room: NewRoom,
+) -> (Vec<String>, String) {
     let names: Vec<String> = prefixes
         .iter()
         .map(|prefix| {
@@ -816,9 +844,8 @@ fn room_of(core_runtime: &tokio::runtime::Runtime, prefixes: &[&str]) -> (Vec<St
         }
         let room = sessions[0]
             .create_room(NewRoom {
-                name: Some("talk".into()),
                 invite: sessions[1..].iter().map(|s| s.user_id()).collect(),
-                ..Default::default()
+                ..room
             })
             .await
             .unwrap();
@@ -1105,4 +1132,146 @@ fn profiles_and_inviting_to_a_space() {
         }
     };
     assert!(state.rooms_outside_spaces.contains(&space_id));
+}
+
+#[test]
+#[ignore = "needs the local Synapse (testserver/run.sh)"]
+fn pushers_are_set_listed_and_deleted() {
+    let core_runtime = tokio::runtime::Runtime::new().unwrap();
+    let name = unique_name("ffi-pusher");
+    core_runtime.block_on(register(&name)).unwrap();
+    let device = sign_in(&name);
+    let session = &device.session;
+    // Synapse takes any gateway with the notify path; it is never reached.
+    let gateway = "http://127.0.0.1:9/_matrix/push/v1/notify".to_owned();
+    let pushkey = "https://ntfy.example.org/upTEST?up=1".to_owned();
+    let set = |device_name: &str| {
+        block_on(session.set_pusher(
+            gateway.clone(),
+            pushkey.clone(),
+            "org.mtrx.app".into(),
+            "Mtrx".into(),
+            device_name.into(),
+            "en".into(),
+        ))
+    };
+    let pusher = |device_name: &str| PusherInfo {
+        pushkey: pushkey.clone(),
+        app_id: "org.mtrx.app".into(),
+        app_name: "Mtrx".into(),
+        device_name: device_name.into(),
+        lang: "en".into(),
+        gateway_url: Some(gateway.clone()),
+        event_id_only: true,
+    };
+    assert!(block_on(session.pushers()).unwrap().is_empty());
+
+    set("Pixel").unwrap();
+    assert_eq!(block_on(session.pushers()).unwrap(), vec![pusher("Pixel")]);
+    // Again, renamed: still one.
+    set("Pixel 9").unwrap();
+    assert_eq!(
+        block_on(session.pushers()).unwrap(),
+        vec![pusher("Pixel 9")]
+    );
+
+    block_on(session.delete_pusher(pushkey.clone())).unwrap();
+    assert!(block_on(session.pushers()).unwrap().is_empty());
+    // Deleting again is fine.
+    block_on(session.delete_pusher(pushkey.clone())).unwrap();
+
+    assert!(matches!(
+        block_on(session.set_pusher(
+            "not a url".into(),
+            pushkey.clone(),
+            "org.mtrx.app".into(),
+            "Mtrx".into(),
+            "Pixel".into(),
+            "en".into(),
+        )),
+        Err(MtrxError::InvalidInput { .. })
+    ));
+}
+
+/// Send `text` to the room of `timeline` and return its event ID once
+/// `items` (the room's timeline on the sender's side) shows it sent.
+fn send_for_id(timeline: &mtrx_ffi::Timeline, items: &mut Items, text: &str) -> String {
+    block_on(timeline.send_text(text.into())).unwrap();
+    let items = items.wait(text, |items| sent(items, text).is_some());
+    sent(items, text).unwrap().1.event_id.clone().unwrap()
+}
+
+#[test]
+#[ignore = "needs the local Synapse (testserver/run.sh)"]
+fn a_push_handler_reads_messages_while_the_app_syncs() {
+    let core_runtime = tokio::runtime::Runtime::new().unwrap();
+    let room = NewRoom {
+        name: Some("lab".into()),
+        encrypted: true,
+        ..Default::default()
+    };
+    let (names, room_id) = room_like(&core_runtime, &["ffi-push", "ffi-push-bob"], room);
+    let (alice, bob) = (sign_in(&names[0]), sign_in(&names[1]));
+    let bob_id = bob.session.user_id();
+    wait_for_encrypted_room(&alice.session, &room_id);
+    wait_for_encrypted_room(&bob.session, &room_id);
+    let alice_timeline = block_on(alice.session.timeline(room_id.clone())).unwrap();
+    let bob_timeline = block_on(bob.session.timeline(room_id.clone())).unwrap();
+    let mut alice_items = Items::follow(&alice_timeline);
+    let mut bob_items = Items::follow(&bob_timeline);
+
+    // Bob's app syncs on; his push handler reads what Alice sent. The
+    // app has the message's key once it shows the message.
+    let push = bob.push_handler();
+    let fetch = |event_id: &str| -> NotificationContent {
+        block_on(push.notification(room_id.clone(), event_id.into()))
+            .unwrap()
+            .expect("something to show")
+    };
+    let mention = format!("@{} the run finished", &bob_id[1..]);
+    let event_id = send_for_id(&alice_timeline, &mut alice_items, &mention);
+    bob_items.wait("Alice's mention", |items| sent(items, &mention).is_some());
+    let content = fetch(&event_id);
+    assert_eq!(content.room_id, room_id);
+    assert_eq!(content.event_id, event_id);
+    assert_eq!(content.room_name, "lab");
+    assert_eq!(content.sender_id, alice.session.user_id());
+    assert_eq!(content.sender_name, names[0]);
+    assert_eq!(content.body, mention);
+    assert!(content.is_mention, "{content:?}");
+    assert!(content.should_notify, "{content:?}");
+
+    // Without a mention: the room has two members, so it notifies too.
+    let plain = "plots attached";
+    let event_id = send_for_id(&alice_timeline, &mut alice_items, plain);
+    bob_items.wait("Alice's message", |items| sent(items, plain).is_some());
+    let content = fetch(&event_id);
+    assert_eq!(content.body, plain);
+    assert!(!content.is_mention && content.should_notify, "{content:?}");
+
+    // Bob's own message, sent from his app: nothing to show (the push
+    // rules never notify for one's own).
+    let own = "thanks";
+    let event_id = send_for_id(&bob_timeline, &mut bob_items, own);
+    assert_eq!(
+        block_on(push.notification(room_id.clone(), event_id)).unwrap(),
+        None
+    );
+
+    // The app's store is still sound: it decrypts what comes next.
+    let later = "one more";
+    send_for_id(&alice_timeline, &mut alice_items, later);
+    bob_items.wait("Alice's later message", |items| {
+        sent(items, later).is_some()
+    });
+
+    // A malformed ID, and an event that is not there.
+    assert!(matches!(
+        block_on(push.notification(room_id.clone(), "nope".into())),
+        Err(MtrxError::InvalidInput { .. })
+    ));
+    assert!(matches!(
+        block_on(push.notification(room_id.clone(), "$missing:localhost".into())),
+        Err(MtrxError::Other { .. })
+    ));
 }
