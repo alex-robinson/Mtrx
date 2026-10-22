@@ -335,9 +335,11 @@ and tested by CI only; no Android SDK is used locally.
     `io.github.alex-robinson`; the path `/oauth` is checked in code, as
     Android ignores path filters without a host) calls `finish` and returns
     to `MainActivity`. Back from the browser without the redirect cancels.
-    Encryption (section 6) too: `encryption` (asked when sync starts, once
-    the room list is loaded, and again with its updates while recovery is
-    `unknown`; after a recovery and a verification), `recover` with its
+    Encryption (section 6) too: `encryption`, as `subscribeEncryptionState`
+    reports it (section 9; subscribed at the first `startSync`, the handle
+    with the session's other subscriptions, cancelled and closed at
+    sign-out; a state arriving after sign-out is dropped; never asked with
+    `encryptionState()`), `recover` with its
     steps as a flow (in the account's scope, so leaving the screen does not
     stop it), our `devices`, and the verification: the request subscription
     is one of the session's; a request from another user is cancelled, one
@@ -382,13 +384,24 @@ and tested by CI only; no Android SDK is used locally.
     open; rows with avatars, unread and mention counts, last activity,
     "Invited"; banners for offline and signed out by the server over all
     tabs), and a room's timeline (the room's name, and for a direct chat
-    the room's avatar beside it, both tapped for the view model's
-    `showPersonInfo`, which does nothing yet; newest at the bottom, keyed
+    with someone else (not the Notes to self) the room's avatar beside it,
+    both tapped for the person's info sheet, `timeline/PersonInfoSheet.kt`
+    with `PersonInfoModel`, held by the timeline's view model: the chat's
+    name and avatar, then the profile's where set (`userProfile`; a
+    failure keeps the chat's); the user ID, selectable, with a copy button
+    ("Copied" in the sheet's snackbar before Android 13); "Add to space…"
+    while there are top-level spaces (`topLevelSpaces`), listing them with
+    their avatars, back to the person with ← or back; tapping one invites
+    (one at a time, a spinner on its row, in the actions' scope so leaving
+    the room does not cancel it): "Invited to <space>." and back to the
+    person, or the error's reason with the list kept, both in the sheet's
+    snackbar; newest at the bottom, keyed
     by `TimelineItem.id`; day dividers, read marker, grouped bubbles, send
     states, images, state events summarised in a line as on the desktop;
     older events near the top; marked read while the newest message
-    shows; "Could not decrypt this message." for an event without its
-    key; away from the bottom, a round down-arrow button over the
+    shows; for an event without its key "Decrypting…" while
+    `keysArriving`, otherwise "Could not decrypt this message."
+    (`undecryptableText`; `utdCause` not shown); away from the bottom, a round down-arrow button over the
     messages at the bottom right goes to the newest). Messages (section 8): the sender's name in
     the body text size above a group, the avatar beside its first bubble;
     holding a bubble opens a bottom sheet with the six common reactions
@@ -436,7 +449,15 @@ and tested by CI only; no Android SDK is used locally.
     still completes), the typing line's texts, and going to a quote's
     original (loaded already, after paginating, arriving after the call,
     at the room's start, after 20 pages); swiping to reply only to sent
-    messages, and no reply to one not sent; the encryption state and banner, the
+    messages, and no reply to one not sent; the encryption state as
+    pushed (subscribed once sync starts, the banner going after a recovery
+    or a verification without asking, dropped after sign-out) and the
+    banner rule, the undecryptable row's text for both values of
+    `keysArriving`; the person's info sheet (a header's person only for
+    someone else's direct chat, the profile replacing the chat's name and
+    avatar where set, a failure keeping them, closing it stops the
+    loading; an invite succeeding, also after leaving the room, failing
+    with the list kept, one at a time) and the top-level spaces; the
     recovery's steps and errors (an invalid key), the verification model
     (states, confirm, mismatch, cancel, close), and verification requests
     (another user's cancelled, ours accepted or declined); the Chats and
@@ -468,7 +489,8 @@ Remaining:
   the timeline, recovery and verification are not yet tried on an emulator
   or device (only their models' unit tests); nor are the messages'
   menus, sheets and the emoji picker, swiping to reply, the button to the
-  newest message, and the Settings tab. Not done: notifications, sending
+  newest message, the Settings tab, "Decrypting…", and the person's info
+  sheet with its invites. Not done: notifications, sending
   images, opening files, release signing.
 
 ## 5. Builds and CI
