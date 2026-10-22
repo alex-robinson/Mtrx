@@ -1,7 +1,5 @@
 //! Space bar and room list.
 
-use std::collections::{HashMap, HashSet};
-
 use iced::{
     Alignment, Color, Element, Length, Padding, Rectangle, Task, Theme, Vector,
     advanced::widget::{Id, Operation, operation},
@@ -11,7 +9,7 @@ use iced::{
 };
 use mtrx_core::{
     Grouping, Layout, MxcUri, OwnedRoomId, RoomKind, RoomSummary, RoomTag, ScheduledMessage,
-    Section, Sort,
+    Section, Sort, descendants, home_rooms, space_rooms, top_level_spaces,
 };
 
 use crate::{
@@ -29,36 +27,6 @@ use crate::{
 
 /// The room search field, focused by ⌘K / Ctrl+K.
 pub const SEARCH: &str = "room-search";
-
-/// Joined spaces without a joined parent space.
-pub fn top_level_spaces(rooms: &[RoomSummary]) -> Vec<&RoomSummary> {
-    let ids: HashSet<&OwnedRoomId> = rooms.iter().map(|r| &r.id).collect();
-    rooms
-        .iter()
-        .filter(|r| r.kind == RoomKind::Space && !r.invited)
-        .filter(|r| !r.parents.iter().any(|p| ids.contains(p)))
-        .collect()
-}
-
-/// Rooms below `space`, through nested spaces too.
-fn descendants(rooms: &[RoomSummary], space: &OwnedRoomId) -> HashSet<OwnedRoomId> {
-    let mut children: HashMap<&OwnedRoomId, Vec<&OwnedRoomId>> = HashMap::new();
-    for room in rooms {
-        for parent in &room.parents {
-            children.entry(parent).or_default().push(&room.id);
-        }
-    }
-    let mut found = HashSet::new();
-    let mut stack = vec![space];
-    while let Some(id) = stack.pop() {
-        for child in children.get(id).into_iter().flatten() {
-            if found.insert((*child).clone()) {
-                stack.push(child);
-            }
-        }
-    }
-    found
-}
 
 /// Spaces containing `room`, nearest first (through nested spaces too).
 pub fn ancestors(rooms: &[RoomSummary], room: &OwnedRoomId) -> Vec<OwnedRoomId> {
@@ -84,32 +52,21 @@ pub fn ancestors(rooms: &[RoomSummary], room: &OwnedRoomId) -> Vec<OwnedRoomId> 
     found
 }
 
-/// Rooms listed for a space: everything below it, direct chats with its
-/// members, and rooms put into its categories. Home lists all of them.
-/// Invites to spaces are listed too, to be answered.
+/// Rooms listed for a space, or all of them in Home.
 fn scope<'a>(
     rooms: &'a [RoomSummary],
     space: Option<&OwnedRoomId>,
     arrange: &Arrange,
 ) -> Vec<&'a RoomSummary> {
-    let listable = rooms
-        .iter()
-        .filter(|r| r.kind != RoomKind::Space || r.invited);
-    let Some(space) = space else {
-        return listable.collect();
-    };
-    let inside = descendants(rooms, space);
-    let members = arrange.members(space);
-    let layout = arrange.categories.layout(Some(space));
-    listable
-        .filter(|r| {
-            inside.contains(&r.id)
-                || r.direct_user
-                    .as_ref()
-                    .is_some_and(|u| members.is_some_and(|m| m.contains(u)))
-                || layout.category_of(&r.id).is_some()
-        })
-        .collect()
+    match space {
+        None => home_rooms(rooms),
+        Some(space) => space_rooms(
+            rooms,
+            space,
+            arrange.members(space),
+            arrange.categories.layout(Some(space)),
+        ),
+    }
 }
 
 /// The room list's sections and their rooms, in display order; sections

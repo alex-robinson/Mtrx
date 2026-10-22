@@ -1,5 +1,5 @@
-//! The room list by space, as the desktop shows it: a column of top-level
-//! spaces, and the rooms the selected one lists.
+//! The room list by space, as the desktop shows it: a column of Home and the
+//! top-level spaces, and the rooms the selected one lists.
 
 use std::collections::{HashMap, HashSet};
 
@@ -39,6 +39,18 @@ pub fn descendants(rooms: &[RoomSummary], space: &RoomId) -> HashSet<OwnedRoomId
     found
 }
 
+/// Whether a room list may show `room`: rooms and direct chats, and spaces
+/// only when invited to, to be answered.
+fn listed(room: &RoomSummary) -> bool {
+    room.kind != RoomKind::Space || room.invited
+}
+
+/// What Home lists, in the order of `rooms`: every room and direct chat, and
+/// invites to spaces.
+pub fn home_rooms(rooms: &[RoomSummary]) -> Vec<&RoomSummary> {
+    rooms.iter().filter(|r| listed(r)).collect()
+}
+
 /// What a space lists, in the order of `rooms`: everything below it
 /// (through nested spaces), direct chats with its joined `members`, and rooms
 /// the user put into its categories (`layout`). Spaces are not listed, except
@@ -52,7 +64,7 @@ pub fn space_rooms<'a>(
     let inside = descendants(rooms, space);
     rooms
         .iter()
-        .filter(|r| r.kind != RoomKind::Space || r.invited)
+        .filter(|r| listed(r))
         .filter(|r| {
             inside.contains(&r.id)
                 || r.direct_user
@@ -103,11 +115,11 @@ impl RoomsBySpace {
                 .collect(),
             })
             .collect();
-        let listed: HashSet<&OwnedRoomId> = spaces.iter().flat_map(|s| &s.rooms).collect();
+        let in_spaces: HashSet<&OwnedRoomId> = spaces.iter().flat_map(|s| &s.rooms).collect();
         let outside = rooms
             .iter()
-            .filter(|r| r.kind == RoomKind::Room || (r.kind == RoomKind::Space && r.invited))
-            .filter(|r| !listed.contains(&r.id))
+            .filter(|r| listed(r) && r.kind != RoomKind::Direct)
+            .filter(|r| !in_spaces.contains(&r.id))
             .map(|r| r.id.clone())
             .collect();
         Self { spaces, outside }
@@ -201,6 +213,19 @@ mod tests {
         );
         assert_eq!(ids(&by_space.spaces[0].rooms), ["!both:x"]);
         assert_eq!(ids(&by_space.outside), ["!loose:x", "!guild:x"]);
+    }
+
+    #[test]
+    fn home_lists_rooms_chats_and_invites_but_no_joined_spaces() {
+        let rooms = list();
+        let home: Vec<_> = home_rooms(&rooms).iter().map(|r| r.id.as_str()).collect();
+        assert_eq!(
+            home,
+            [
+                "!bob:x", "!lab:x", "!offer:x", "!loose:x", "!deep:x", "!carol:x", "!guild:x",
+                "!club:x", "!both:x"
+            ]
+        );
     }
 
     #[test]
