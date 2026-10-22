@@ -12,9 +12,11 @@ pub const FILES: &[&[u8]] = &[
     include_bytes!("../fonts/Inter-Regular.ttf"),
     include_bytes!("../fonts/Inter-Italic.ttf"),
     include_bytes!("../fonts/Inter-SemiBold.ttf"),
-    include_bytes!("../fonts/Inter-Bold.ttf"),
+    BOLD,
     include_bytes!("../fonts/Inter-BoldItalic.ttf"),
 ];
+/// Also for the count on the taskbar button (Windows).
+pub const BOLD: &[u8] = include_bytes!("../fonts/Inter-Bold.ttf");
 
 pub const FAMILY: &str = "Inter";
 pub const INTER: Font = Font::with_name(FAMILY);

@@ -493,17 +493,17 @@ impl App {
         if remember {
             self.remember_view();
         }
-        self.badge.show(match &self.screen {
+        let badge = self.badge.show(match &self.screen {
             Screen::Main(main) if self.settings.icon_badge => badge::count(&main.rooms.rooms),
             _ => 0,
         });
-        match &self.screen {
-            Screen::Main(main) if moved => Task::batch([
-                task,
-                sidebar::find_out_of_view(&main.rooms.rooms).map(Message::OutOfView),
-            ]),
-            _ => task,
-        }
+        let out_of_view = match &self.screen {
+            Screen::Main(main) if moved => {
+                sidebar::find_out_of_view(&main.rooms.rooms).map(Message::OutOfView)
+            }
+            _ => Task::none(),
+        };
+        Task::batch([task, badge, out_of_view])
     }
 
     fn handle(&mut self, message: Message) -> Task<Message> {

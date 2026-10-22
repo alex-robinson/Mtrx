@@ -42,6 +42,11 @@ the packages are the run's artifact).
       when the shortcut exists (`mtrx-app/src/windows.rs`). The portable
       zip has no shortcut, so its toasts keep notify-rust's default sender
       (PowerShell). Not yet tried on a real machine.
+- [x] Unread count on the taskbar button: an overlay icon
+      (`ITaskbarList3::SetOverlayIcon`) with the count on a red disc,
+      drawn with resvg at the small-icon size for the window's DPI and
+      cleared at zero (`mtrx-app/src/badge.rs`, `windows.rs`). Not yet
+      tried on a real machine.
 - [x] Credential Manager holds at most 2560 bytes (1280 UTF-16 characters)
       per secret. A stored session serializes to about 400 characters
       (password login with Synapse's tokens, OAuth with those of MAS, which
