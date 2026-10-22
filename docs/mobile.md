@@ -8,8 +8,9 @@ emulator (`android.yml`). Unsigned. The iOS app was tried on a phone: it
 signs in and lists rooms, but a new device cannot read encrypted rooms
 without recovery or verification, which stage 1 (section 6) adds; the
 library side of it is done. Stage 2 (section 7) organises the room list by
-space; its library side is done too. This is the plan, and the contract the
-apps are built on.
+space, and stage 3 (section 8) adds reactions, replies, edits, deleting,
+read receipts and typing; their library sides are done too. This is the
+plan, and the contract the apps are built on.
 
 ## Decisions
 
@@ -72,9 +73,14 @@ IDs are strings, times `Date`/`Instant`; no Ruma types.
 - `Verification`: `otherUser()`, `accept()`, `state()`, `subscribe(listener)`,
   `confirm()`, `mismatch()`, `cancel()`.
 - `Timeline`: `roomId`, `subscribe(listener)`, `paginateBack(events)`,
-  `sendText(markdown)`, `markRead`.
+  `sendText(markdown)`, `markRead`. Messages (section 8), each taking the
+  row's `TimelineItem.id`: `reply(itemId, markdown)`, `edit(itemId,
+  markdown)`, `react(itemId, key)` (adds ours, or removes it),
+  `delete(itemId)` (redacts), `retry(itemId)`, `discard(itemId)`; and
+  `setTyping(typing)`, `subscribeTyping(listener)`.
 - Listeners (implemented by the apps): `RoomListListener.onUpdate(RoomListState)`,
   `TimelineListener.onUpdate([TimelineItem])`,
+  `TypingListener.onUpdate([String])` (names; on every change only),
   `ConnectionListener.onUpdate(ConnectionState)`,
   `VerificationListener.onUpdate(VerificationState)`; each gets the whole
   state, now and after every change. `RecoveryListener.onUpdate(RecoveryStep)`
@@ -86,8 +92,12 @@ IDs are strings, times `Date`/`Instant`; no Ruma types.
 - Records: `RoomListState { rooms, loaded, spaces, roomsOutsideSpaces }`
   (section 7), `SpaceRooms { spaceId, roomIds }`, `RoomSummary`, `TimelineItem
   { id, content }` (`start`, `event`, `dayDivider`, `readMarker`),
-  `TimelineEvent`, `EventContent`, `Message { kind, body, edited, media }`,
-  `Media`, `SendState`. `TimelineItem.id` is unique and stable (also when a
+  `TimelineEvent` (with `editable`, `readBy: [Reader]`), `EventContent`,
+  `Message { kind, body, edited, media, reactions, replyTo, rawBody }`,
+  `Reaction { key, count, byUs, senders: [Reader] }`, `Reader { userId,
+  name, avatarUrl }`, `ReplyQuote { eventId, state, senderId, senderName,
+  kind, body }`, `QuoteState` (`loading`, `loaded`, `failed`), `Media`,
+  `SendState` (`failed(error)`: retry or discard). `TimelineItem.id` is unique and stable (also when a
   local echo becomes the server's event): use it as list identity.
   `EventContent.unableToDecrypt`: an encrypted event without its key (yet).
   Encryption: `EncryptionState { deviceVerified, recovery }`,
@@ -300,7 +310,12 @@ Remaining:
       encrypted message after the recovery key, in its open timeline); and
       emoji verification between two devices, after which the new one reads
       history, also in its open timeline; the rooms by space (nested spaces,
-      a direct chat with a space member, invites in and outside spaces): all
+      a direct chat with a space member, invites in and outside spaces);
+      messages between two people (a reply and its quote; a reaction by
+      each, counted and named on both sides, and removed again; an edit,
+      marked edited; a deletion; typing, by name; a read receipt moving to
+      the message read, with the reader's name); a send the server refuses,
+      retried and then discarded, after which the next message goes: all
       through the bindings against Synapse (`cargo test -p mtrx-ffi --test
       integration -- --ignored`, in the Linux workflow).
 
@@ -465,6 +480,105 @@ have defaults, so `RoomListState(rooms:loaded:)` in the apps' fakes still
 builds; tests of the lists pass `spaces` and `roomsOutsideSpaces`. No new
 `MtrxError` cases.
 
+## 8. Stage 3: messages
+
+The timeline shows text and images today. Stage 3 brings what the desktop
+does with messages: reactions, replies, edits, deleting, read receipts,
+typing, and retrying a failed send. The library part is done and tested
+(section 5); everything comes in the timeline's items, whole, as before.
+
+**Rows and actions.** Every action on a message takes its row's
+`TimelineItem.id` (`itemId`), which identifies also a message not sent yet
+(it has no `eventId` until then). Pass the ID of a row from the latest
+items; a row gone meanwhile (or a reply to a message not yet sent) fails
+with `MtrxError.InvalidInput`. Server failures, and `retry` of a message
+that did not fail or `discard` of one already sent, are `MtrxError.Other`:
+show the reason in a short alert or snackbar.
+
+**Messages.**
+- Sender: the name (`senderName`, else the ID's localpart) in the normal
+  text size above the first bubble of a group (it is too small today), and
+  the avatar (`senderAvatarUrl`) beside the bubble, at its side (others'
+  messages on the left), not in a corner of the screen. Not for our own.
+- "(edited)", muted, after the text when `Message.edited`.
+- Deleted (`EventContent.redacted`): a muted, italic "Message deleted".
+
+**Holding a message** opens a menu (iOS: a context menu with a preview;
+Android: a bottom sheet), offering only what applies:
+- React: a row of common emoji (👍 ❤️ 😂 😮 😢 🎉, ours highlighted) and
+  "+" for a full picker → `react(itemId, key)`.
+- Reply → the composer replies (below).
+- Copy (`Message.body`) and Select text (a sheet with the text selectable).
+- Edit, when `TimelineEvent.editable` → the composer edits (below).
+- Delete, when `own && eventId != nil`, after a confirmation ("Delete this
+  message for everyone?") → `delete(itemId)`.
+- For `sendState == failed`: Retry → `retry(itemId)`, Discard →
+  `discard(itemId)`. Later messages wait until it is retried or
+  discarded. `waiting` (offline) needs nothing: it is sent when the server
+  is back.
+React and Reply need a sent message: offer them once `eventId != nil`.
+
+**Reactions** (`Message.reactions`, in the order first given): chips under
+the bubble, each the `key` and its `count`; ours (`byUs`) highlighted with
+the accent colour. Tap → `react(itemId, key)` (adds ours or removes it).
+Long-press → a sheet listing `senders` (avatar and name; `name` may be nil
+until known: show the ID's localpart).
+
+**Replies.** `Message.replyTo` is the quote, drawn above the text inside
+the bubble: a bar in the accent colour, the sender (`senderName`, else
+`senderId`'s localpart) in semibold, and up to three lines of `body`
+(for `kind` image, video, audio or file: "Image", "Video", "Audio" or
+"File" and the name). While `state == loading`: "Loading…" (the library
+fetches the original, also when it is far back; the quote updates by
+itself). `failed`: "Could not load the message", not tappable. Tapping a
+loaded quote goes to the original, as the desktop does: find the row whose
+`event.eventId == quote.eventId`; if it is there, scroll to it and
+highlight it for two seconds; if not, call `paginateBack(50)` and look
+again in each new item list (not only when the call returns: the items
+arrive separately), up to 20 calls, until found. Stop with "The original
+message was not found in the room's history" when `paginateBack` returned
+`true` (the room's start) and the items after it lack it, or after 20
+calls. Keep this in the timeline model; show a spinner while loading.
+
+**Composer.**
+- Reply: a bar above the field, "Replying to <name>" and the first line of
+  the message, with ✕ to cancel; Send → `reply(itemId, text)` instead of
+  `sendText`, then the bar closes.
+- Edit: the field filled with `Message.rawBody` (the Markdown we wrote),
+  a bar "Editing" with ✕ to cancel; Send → `edit(itemId, text)`. Only one of replying and editing at a time.
+- Typing: `setTyping(true)` when the text changes and is not empty,
+  `setTyping(false)` when it is emptied, sent, or the room is left (the
+  library throttles: call it on every change).
+
+**Typing line.** `subscribeTyping(listener)` when the room opens (cancel
+the handle when it closes) gives the names of the others typing, on every
+change (nobody at first). One muted line just above the composer, its
+height kept while empty so the timeline does not jump: "Anna is typing…",
+"Anna and Ben are typing…", "Anna, Ben and 2 others are typing…".
+
+**Read receipts.** `TimelineEvent.readBy`: the others whose receipt is on
+this event, i.e. who read up to here (never us; receipts on state events
+are moved to the message before, so folded state lines lose none). Small
+round avatars (16 pt/dp) at the right margin of that message's row, at most
+three, then "+N"; tap → a sheet listing them (avatar and name). Names and
+avatars may arrive in a later update. `markRead()` as today.
+
+**Threading and errors.** As before: the actions are async, run them from
+the model (iOS: a `Task` the model owns; Android: `viewModelScope`), not
+from a view's lifetime, so leaving the screen does not cancel a send.
+`TypingListener` is called on the library's threads: hop to the main
+thread. No new `MtrxError` cases.
+
+**Tests.** The new record fields have defaults (`reactions: []`, `replyTo:
+nil`, `rawBody: ""`, `editable: false`, `readBy: []`), so the apps' fakes
+build unchanged. Fakes of `Timeline` subclass it (`init(noHandle:)` /
+`NoHandle`) and override the actions to record their calls, and
+`subscribeTyping` to keep the listener and call it. Worth testing in the
+models: which menu entries show for own, others', failed and unsent
+messages; reply and edit state in the composer;
+the quote jump (found at once, after paginating, at the room's start, after
+20 calls); typing line texts; reader overflow ("+N").
+
 ## Later
 
 - The room list can show a room before its `m.room.encryption` event has
@@ -476,7 +590,7 @@ builds; tests of the lists pass `spaces` and `roomsOutsideSpaces`. No new
 
 - Push notifications (APNs, FCM; a push gateway, notification service
   extension / decryption in the background).
-- Replies, reactions, edits, read receipts, typing, sending images.
+- Sending images; mentions with `@` completion; forwarding.
 - Several accounts; Face ID / biometric lock; verifying other people;
   setting up and resetting recovery from the apps.
 - Timeline diffs instead of snapshots; log to OSLog and logcat.
