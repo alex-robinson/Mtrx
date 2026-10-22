@@ -4,8 +4,11 @@ Status: the Rust layer (`crates/mtrx-ffi`) and the first iOS and Android
 apps (sections 3 and 4) are written. The library builds for both in CI
 (`mobile-ffi.yml`); each app builds, passes its unit tests and starts to the
 sign-in screen in CI, iOS on the simulator (`ios.yml`) and Android on an
-emulator (`android.yml`). Unsigned, and not yet tried against a server from
-either app. This is the plan, and the contract the apps are built on.
+emulator (`android.yml`). Unsigned. The iOS app was tried on a phone: it
+signs in and lists rooms, but a new device cannot read encrypted rooms
+without recovery or verification, which stage 1 (section 6) adds; the
+library side of it is done. This is the plan, and the contract the apps are
+built on.
 
 ## Decisions
 
@@ -60,13 +63,22 @@ IDs are strings, times `Date`/`Instant`; no Ruma types.
   `reconnect`; `connection()`, `subscribeConnection(listener)`;
   `subscribeRoomList(listener)`; `timeline(roomId) -> Timeline`;
   `avatar(mxcUri, size) -> Data`, `mediaPreview(media) -> Data`,
-  `mediaFile(media) -> path`; `logout`, `forget`.
+  `mediaFile(media) -> path`; `logout`, `forget`. Encryption (section 6):
+  `encryptionState()`, `recoveryStatus()`, `recover(recoveryKey,
+  listener)`, `enableRecovery() -> key`, `isDeviceVerified()`, `devices()`,
+  `requestSelfVerification() -> Verification`,
+  `subscribeVerificationRequests(listener)`.
+- `Verification`: `otherUser()`, `accept()`, `state()`, `subscribe(listener)`,
+  `confirm()`, `mismatch()`, `cancel()`.
 - `Timeline`: `roomId`, `subscribe(listener)`, `paginateBack(events)`,
   `sendText(markdown)`, `markRead`.
 - Listeners (implemented by the apps): `RoomListListener.onUpdate(RoomListState)`,
   `TimelineListener.onUpdate([TimelineItem])`,
-  `ConnectionListener.onUpdate(ConnectionState)`; each gets the whole
-  state, now and after every change. `SecretBackend`: `load`, `save`,
+  `ConnectionListener.onUpdate(ConnectionState)`,
+  `VerificationListener.onUpdate(VerificationState)`; each gets the whole
+  state, now and after every change. `RecoveryListener.onUpdate(RecoveryStep)`
+  gets each step of a recovery; `VerificationRequestListener.onRequest(Verification)`
+  each incoming request. `SecretBackend`: `load`, `save`,
   `delete` (throws `SecretError.Failed`).
 - `TaskHandle` (from each subscribe): `cancel()`, `isFinished()`; dropping
   it cancels.
@@ -75,6 +87,14 @@ IDs are strings, times `Date`/`Instant`; no Ruma types.
   `TimelineEvent`, `EventContent`, `Message { kind, body, edited, media }`,
   `Media`, `SendState`. `TimelineItem.id` is unique and stable (also when a
   local echo becomes the server's event): use it as list identity.
+  `EventContent.unableToDecrypt`: an encrypted event without its key (yet).
+  Encryption: `EncryptionState { deviceVerified, recovery }`,
+  `RecoveryStatus` (`unknown`, `enabled`, `disabled`, `incomplete`),
+  `RecoveryStep` (`checkingKey`, `importingIdentity`,
+  `downloadingKeys(done, total)`), `VerificationState` (`waiting`,
+  `emojis([VerificationEmoji])`, `confirmed`, `sharingKeys`, `done`,
+  `cancelled(reason)`), `VerificationEmoji { symbol, description }`,
+  `DeviceInfo { id, name, verified, current }`.
 - Errors: `MtrxError` (`NotLoggedIn`, `AlreadyLoggedIn`, `LoginCancelled`,
   `RoomNotFound`, `InvalidInput`, `SecretStorage`, `Other(message)`).
 - `oauthRedirectUri()`, `initLogging(filter)` (stderr: Xcode's console).
@@ -272,15 +292,108 @@ Remaining:
       Android (cargo-ndk with the runner's NDK; checks the JNI entry point).
       Both pass.
 - [x] Tests: conversions and the runtime (unit); sign-in, room list,
-      timeline, image, send and sign-out through the bindings against
+      timeline, image, send and sign-out; recovery (a new device reads an
+      encrypted message after the recovery key, in its open timeline); and
+      emoji verification between two devices, after which the new one reads
+      history, also in its open timeline: all through the bindings against
       Synapse (`cargo test -p mtrx-ffi --test integration -- --ignored`,
       in the Linux workflow).
+
+## 6. Stage 1: encryption
+
+A new device has no keys for earlier messages, so encrypted rooms show
+nothing readable until the user enters the recovery key or verifies the
+device with another one (the desktop app, say). Both apps add the same four
+things; the library part is done and tested (section 5).
+
+**State and banner.** `Session.encryptionState()` returns
+`EncryptionState { deviceVerified, recovery }`. There is no subscription
+(the core has no stream for it): ask (a) when the room list first reports
+`loaded == true` after `startSync()`, (b) after `recover` returns, (c) after
+a verification reaches `done`, (d) when the app returns to the foreground.
+Keep the result in the session model (iOS `SessionModel`, Android
+`Account`). Show a banner at the top of the room list when
+`!deviceVerified || recovery == incomplete`; not while `recovery ==
+unknown` (no sync yet: ask again at the next moment above). Text: "Verify
+this device or enter your recovery key to read encrypted messages."; a tap
+opens the encryption settings.
+
+**Settings, section "Encryption".** Status lines: "This device: verified /
+not verified", "Recovery: set up / not set up / not unlocked on this
+device" (`enabled` / `disabled` / `incomplete`). Two actions while the
+banner would show:
+- "Enter recovery key" (unless `recovery == disabled`): a screen with a
+  multi-line text field (monospaced, no autocorrection or capitalisation;
+  spaces are fine) and a Recover button calling
+  `recover(recoveryKey:listener:)`. The listener's steps, in order:
+  `checkingKey` ("Checking the key"), `importingIdentity` ("Verifying this
+  device"), then `downloadingKeys(done, total)` once per room (a progress
+  bar, "Fetching keys: done of total rooms"; there may be none). It can
+  take a minute with many rooms. Errors are `MtrxError.Other(reason)`:
+  "Could not recover." with the reason below (a mistyped key says e.g.
+  "The Base58 decoded key has an invalid length"). On success go back to
+  Settings and ask `encryptionState()` again.
+- "Verify with another device" (while `!deviceVerified`):
+  `requestSelfVerification()` returns a
+  `Verification`; open the verification screen with it. (`devices()` lists
+  our devices, `current` marking this one; if no other device is listed, say
+  that one is needed and offer only the recovery key.)
+`enableRecovery()` (set up recovery, returns the new key to show once) is
+there, but not part of stage 1's UI: accounts set it up on the desktop.
+
+**Verification screen**, one for both directions, driven by
+`verification.subscribe(listener)` (the whole `VerificationState` each time;
+it ends after `done` or `cancelled`):
+- `waiting`: "Accept the request on your other device." (outgoing) or
+  "Waiting for the other device…" (incoming, after accepting); a Cancel
+  button → `cancel()`.
+- `emojis(emojis)`: the seven emoji in order, in a grid (the `symbol` large,
+  its `description` below), "Do they match the other device?", buttons
+  "They match" → `confirm()` and "They do not match" → `mismatch()`.
+- `confirmed`: "Waiting for the other device to confirm…".
+- `sharingKeys`: "Finishing… keep the app open."
+- `done`: "This device is verified." and a Done button; ask
+  `encryptionState()` again.
+- `cancelled(reason)`: "Verification was cancelled." with the reason; Close.
+`state()` gives the current state without waiting. Keep the `Verification`
+(and its `TaskHandle`) in a model, not a view: dropping it stops following
+the protocol and the other device times out. In Kotlin `close()` both when
+the screen is done.
+
+**Incoming requests.** Right after `startSync()` (with the other
+subscriptions), `subscribeVerificationRequests(listener)`; keep the handle
+for the session and cancel it at sign-out. Requests arrive only while sync
+runs. On `onRequest(verification)`: if `verification.otherUser() !=
+session.userId()` (another person: not in stage 1) call `cancel()`.
+Otherwise show "Another device wants to verify this one." with Accept →
+`accept()`, then the verification screen (it starts at `waiting`; the other
+device starts the comparison), and Decline → `cancel()`.
+
+**Timelines.** Show `EventContent.unableToDecrypt` as a muted, italic row
+"Could not decrypt this message." (grouped like messages; not hidden).
+After a recovery or verification such rows turn into the messages by
+themselves, in timelines already open: the listener gets the new items; the
+apps need not reopen anything.
+
+**Threading.** As for all calls (section 2): async calls are awaited from
+Swift's or Kotlin's executor and listeners run on the library's threads,
+so hop to the main thread before touching UI state. `recover`'s listener
+is called during the call. Cancelling the awaiting Swift `Task` or Kotlin
+coroutine cancels the call, so run `recover` and `confirm` from the model
+(iOS: a `Task` the model owns; Android: `viewModelScope` or the `Account`'s
+scope), not from a view's lifetime.
+
+**Errors and tests.** No new `MtrxError` cases (iOS switches over them
+exhaustively). App tests use fakes as before: subclass `Verification` with
+`init(noHandle:)` / `NoHandle`, and `Session` for `encryptionState`,
+`recover`, `requestSelfVerification` and `subscribeVerificationRequests`.
 
 ## Later
 
 - Push notifications (APNs, FCM; a push gateway, notification service
   extension / decryption in the background).
 - Replies, reactions, edits, read receipts, typing, sending images.
-- Several accounts; Face ID / biometric lock; verification and recovery.
+- Several accounts; Face ID / biometric lock; verifying other people;
+  setting up and resetting recovery from the apps.
 - Timeline diffs instead of snapshots; log to OSLog and logcat.
 - Signing and store distribution (TestFlight, Play internal testing).
