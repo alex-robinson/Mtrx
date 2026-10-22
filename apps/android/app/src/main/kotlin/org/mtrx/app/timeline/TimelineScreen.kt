@@ -1,17 +1,27 @@
 package org.mtrx.app.timeline
 
 import android.graphics.Bitmap
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
@@ -24,10 +34,12 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
@@ -41,24 +53,43 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontStyle
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardCapitalization
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import java.time.LocalDate
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import org.mtrx.app.model.Images
 import org.mtrx.app.ui.Avatar
@@ -75,18 +106,47 @@ import uniffi.mtrx.TimelineEvent
 /** Rows from the top this close load older events. */
 private const val LOAD_MARGIN = 5
 
+/** What shows over the timeline, one at a time; rows by id, as in the latest rows. */
+private sealed interface Overlay {
+    data class Menu(val rowId: String) : Overlay
+    data class EmojiPicker(val rowId: String) : Overlay
+    data class Reactors(val rowId: String, val key: String) : Overlay
+    data class Readers(val rowId: String) : Overlay
+    data class SelectText(val text: String) : Overlay
+    data class ConfirmDelete(val rowId: String) : Overlay
+}
+
+/** What a message's row does when touched. */
+private class RowHandlers(
+    val hold: (EventRow) -> Unit,
+    val goTo: (String) -> Unit,
+    val react: (String, String) -> Unit,
+    val showReactors: (String, String) -> Unit,
+    val showReaders: (String) -> Unit,
+)
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun TimelineScreen(title: String, viewModel: TimelineViewModel, images: Images, onBack: () -> Unit) {
     val rows by viewModel.rows.collectAsStateWithLifecycle()
-    val draft by viewModel.draft.collectAsStateWithLifecycle()
+    // At once, not at the next frame: the field compares its text with it.
+    val draft by viewModel.draft.collectAsStateWithLifecycle(context = Dispatchers.Main.immediate)
+    val composing by viewModel.composing.collectAsStateWithLifecycle(context = Dispatchers.Main.immediate)
+    val typing by viewModel.typing.collectAsStateWithLifecycle()
+    val seeking by viewModel.seeking.collectAsStateWithLifecycle()
+    val highlighted by viewModel.highlighted.collectAsStateWithLifecycle()
     val error by viewModel.error.collectAsStateWithLifecycle()
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
     val snackbar = remember { SnackbarHostState() }
+    val haptics = LocalHapticFeedback.current
+    @Suppress("DEPRECATION") // LocalClipboard's API is suspending; this is a plain copy.
+    val clipboard = LocalClipboardManager.current
+    var overlay by remember { mutableStateOf<Overlay?>(null) }
     // Newest first: the list is reversed, so it starts at the bottom and
     // stays there as messages arrive.
     val newestFirst = remember(rows) { rows.asReversed() }
+    val currentRows by rememberUpdatedState(newestFirst)
     val today = remember(rows) { LocalDate.now() }
 
     LaunchedEffect(error) {
@@ -103,6 +163,14 @@ fun TimelineScreen(title: String, viewModel: TimelineViewModel, images: Images, 
         }.collect { viewModel.onNearTop(it) }
     }
 
+    // A reply's original, once its row is on the list.
+    LaunchedEffect(viewModel) {
+        viewModel.scrollTo.collectLatest { id ->
+            val list = snapshotFlow { currentRows }.first { list -> list.any { it.id == id } }
+            listState.animateScrollToItem(list.indexOfFirst { it.id == id })
+        }
+    }
+
     // Follow new messages while at the bottom.
     val newestId = newestFirst.firstOrNull()?.id
     LaunchedEffect(newestId) {
@@ -116,25 +184,48 @@ fun TimelineScreen(title: String, viewModel: TimelineViewModel, images: Images, 
         if (atBottom && lifecycleState.isAtLeast(Lifecycle.State.RESUMED)) viewModel.markRead()
     }
 
+    val handlers = remember(viewModel) {
+        RowHandlers(
+            hold = { row ->
+                if (row.actions.isNotEmpty()) {
+                    haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                    overlay = Overlay.Menu(row.id)
+                }
+            },
+            goTo = viewModel::goToOriginal,
+            react = viewModel::react,
+            showReactors = { rowId, key -> overlay = Overlay.Reactors(rowId, key) },
+            showReaders = { rowId -> overlay = Overlay.Readers(rowId) },
+        )
+    }
+
     Scaffold(
         topBar = {
-            TopAppBar(
-                title = { Text(title, maxLines = 1, overflow = TextOverflow.Ellipsis) },
-                navigationIcon = {
-                    IconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
-                    }
-                },
-            )
+            Column {
+                TopAppBar(
+                    title = { Text(title, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                    navigationIcon = {
+                        IconButton(onClick = onBack) {
+                            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                        }
+                    },
+                )
+                if (seeking) LinearProgressIndicator(Modifier.fillMaxWidth())
+            }
         },
         bottomBar = {
-            Composer(
-                draft = draft,
-                onDraft = viewModel::onDraft,
-                onSend = {
-                    if (viewModel.send()) scope.launch { listState.scrollToItem(0) }
-                },
-            )
+            Column {
+                TypingLine(typingText(typing))
+                Composer(
+                    draft = draft,
+                    composing = composing,
+                    onDraft = viewModel::onDraft,
+                    onCancel = viewModel::cancelComposing,
+                    onSend = {
+                        if (viewModel.send()) scope.launch { listState.scrollToItem(0) }
+                    },
+                )
+            }
         },
         snackbarHost = { SnackbarHost(snackbar) },
     ) { padding ->
@@ -148,7 +239,7 @@ fun TimelineScreen(title: String, viewModel: TimelineViewModel, images: Images, 
         ) {
             items(newestFirst, key = { it.id }, contentType = { it::class }) { row ->
                 when (row) {
-                    is EventRow -> EventBubble(row, images)
+                    is EventRow -> EventBubble(row, images, highlighted == row.id, handlers)
                     is StateRow -> Notice(row.text)
                     is DayRow -> DayDivider(dayLabel(row.date, today))
                     is ReadMarkerRow -> ReadMarker()
@@ -157,108 +248,377 @@ fun TimelineScreen(title: String, viewModel: TimelineViewModel, images: Images, 
             }
         }
     }
+
+    val dismiss = { overlay = null }
+    // The row as it is now; the overlay closes if it is gone.
+    fun rowOf(id: String): EventRow? = rows.firstOrNull { it.id == id } as? EventRow
+    when (val shown = overlay) {
+        null -> {}
+        is Overlay.Menu -> {
+            val row = rowOf(shown.rowId)
+            if (row == null || row.actions.isEmpty()) {
+                LaunchedEffect(shown) { overlay = null }
+            } else {
+                MessageMenu(
+                    row = row,
+                    onDismiss = dismiss,
+                    onReact = { key ->
+                        overlay = null
+                        viewModel.react(row.id, key)
+                    },
+                    onMoreReactions = { overlay = Overlay.EmojiPicker(row.id) },
+                    onAction = { action ->
+                        overlay = null
+                        when (action) {
+                            MessageAction.REACT -> {
+                                overlay = Overlay.EmojiPicker(row.id)
+                            }
+                            MessageAction.REPLY -> viewModel.startReply(row.id)
+                            MessageAction.COPY -> row.text?.let { clipboard.setText(AnnotatedString(it)) }
+                            MessageAction.SELECT_TEXT -> row.text?.let { overlay = Overlay.SelectText(it) }
+                            MessageAction.EDIT -> viewModel.startEdit(row.id)
+                            MessageAction.DELETE -> {
+                                overlay = Overlay.ConfirmDelete(row.id)
+                            }
+                            MessageAction.RETRY -> viewModel.retry(row.id)
+                            MessageAction.DISCARD -> viewModel.discard(row.id)
+                        }
+                    },
+                )
+            }
+        }
+        is Overlay.EmojiPicker -> EmojiPickerDialog(
+            onPick = { key ->
+                overlay = null
+                viewModel.react(shown.rowId, key)
+            },
+            onDismiss = dismiss,
+        )
+        is Overlay.Reactors -> {
+            val reaction = rowOf(shown.rowId)?.reactions?.firstOrNull { it.key == shown.key }
+            if (reaction == null) {
+                LaunchedEffect(shown) { overlay = null }
+            } else {
+                PeopleSheet("Reacted with ${reaction.key}", reaction.senders, images, onDismiss = dismiss)
+            }
+        }
+        is Overlay.Readers -> {
+            val readers = rowOf(shown.rowId)?.readers?.all.orEmpty()
+            if (readers.isEmpty()) {
+                LaunchedEffect(shown) { overlay = null }
+            } else {
+                PeopleSheet("Read by", readers, images, onDismiss = dismiss)
+            }
+        }
+        is Overlay.SelectText -> SelectTextSheet(shown.text, onDismiss = dismiss)
+        is Overlay.ConfirmDelete -> ConfirmDeleteDialog(
+            onDelete = {
+                overlay = null
+                viewModel.delete(shown.rowId)
+            },
+            onDismiss = dismiss,
+        )
+    }
+}
+
+/** Who else is typing, in a line whose height stays while nobody is. */
+@Composable
+private fun TypingLine(text: String) {
+    Text(
+        text,
+        Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 2.dp),
+        style = MaterialTheme.typography.labelMedium,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        maxLines = 1,
+        minLines = 1,
+        overflow = TextOverflow.Ellipsis,
+    )
 }
 
 @Composable
-private fun Composer(draft: String, onDraft: (String) -> Unit, onSend: () -> Unit) {
+private fun Composer(
+    draft: String,
+    composing: Composing?,
+    onDraft: (String) -> Unit,
+    onCancel: () -> Unit,
+    onSend: () -> Unit,
+) {
+    // Typed here; set from outside (an edit starts, a send clears), the cursor goes to the end.
+    var field by remember { mutableStateOf(TextFieldValue(draft, TextRange(draft.length))) }
+    val shown = if (field.text == draft) field else TextFieldValue(draft, TextRange(draft.length))
+    val focus = remember { FocusRequester() }
+    LaunchedEffect(composing) {
+        if (composing != null) focus.requestFocus()
+    }
     Surface(tonalElevation = 2.dp) {
-        Row(
-            Modifier
-                .fillMaxWidth()
-                .navigationBarsPadding()
-                .imePadding()
-                .padding(horizontal = 8.dp, vertical = 6.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            OutlinedTextField(
-                value = draft,
-                onValueChange = onDraft,
-                modifier = Modifier.weight(1f),
-                placeholder = { Text("Message") },
-                maxLines = 6,
-                keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences),
-            )
-            IconButton(onClick = onSend, enabled = draft.isNotBlank()) {
-                Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Send")
+        Column(Modifier.fillMaxWidth()) {
+            if (composing != null) {
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(start = 16.dp, end = 4.dp, top = 4.dp)
+                        .height(IntrinsicSize.Min),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Box(
+                        Modifier
+                            .width(3.dp)
+                            .fillMaxHeight()
+                            .background(MaterialTheme.colorScheme.primary),
+                    )
+                    Column(
+                        Modifier
+                            .weight(1f)
+                            .padding(start = 8.dp),
+                    ) {
+                        val heading = when (composing) {
+                            is Composing.Replying -> "Replying to ${composing.name}"
+                            is Composing.Editing -> "Editing"
+                        }
+                        Text(heading, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
+                        if (composing is Composing.Replying && composing.preview.isNotEmpty()) {
+                            Text(
+                                composing.preview,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                    }
+                    IconButton(onClick = onCancel) {
+                        Icon(Icons.Filled.Close, contentDescription = "Cancel")
+                    }
+                }
+            }
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .navigationBarsPadding()
+                    .imePadding()
+                    .padding(horizontal = 8.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                OutlinedTextField(
+                    value = shown,
+                    onValueChange = {
+                        field = it
+                        if (it.text != draft) onDraft(it.text)
+                    },
+                    modifier = Modifier
+                        .weight(1f)
+                        .focusRequester(focus),
+                    placeholder = { Text("Message") },
+                    maxLines = 6,
+                    keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences),
+                )
+                IconButton(onClick = onSend, enabled = draft.isNotBlank()) {
+                    Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Send")
+                }
             }
         }
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun EventBubble(row: EventRow, images: Images) {
+private fun EventBubble(row: EventRow, images: Images, highlighted: Boolean, handlers: RowHandlers) {
     val event = row.event
     val own = event.own
     val name = displayName(event)
-    Row(
+    val mark by animateColorAsState(
+        if (highlighted) MaterialTheme.colorScheme.primary.copy(alpha = 0.15f) else Color.Transparent,
+        label = "highlight",
+    )
+    val bubbleShape = RoundedCornerShape(16.dp)
+    Column(
         Modifier
             .fillMaxWidth()
-            .padding(
-                top = if (row.showSender) 8.dp else 2.dp,
-                start = if (own) 48.dp else 0.dp,
-                end = if (own) 0.dp else 48.dp,
-            ),
-        horizontalArrangement = if (own) Arrangement.End else Arrangement.Start,
+            .background(mark, RoundedCornerShape(8.dp))
+            .padding(top = if (row.showSender) 8.dp else 2.dp),
     ) {
-        if (!own) {
-            if (row.showSender) {
-                Avatar(name, event.senderAvatarUrl, seed = event.senderId, images = images, size = 32.dp)
-            } else {
-                Spacer(Modifier.width(32.dp))
-            }
-            Spacer(Modifier.width(8.dp))
+        if (row.showSender) {
+            Text(
+                name,
+                style = MaterialTheme.typography.bodyLarge,
+                fontWeight = FontWeight.SemiBold,
+                color = identityColor(event.senderId),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.padding(start = AVATAR + AVATAR_GAP + 4.dp, end = 48.dp, bottom = 2.dp),
+            )
         }
-        Column(
-            Modifier.weight(1f, fill = false),
-            horizontalAlignment = if (own) Alignment.End else Alignment.Start,
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .padding(start = if (own) 48.dp else 0.dp, end = if (own) 0.dp else 48.dp),
+            horizontalArrangement = if (own) Arrangement.End else Arrangement.Start,
         ) {
-            if (row.showSender) {
+            // Beside the bubble, at the first of a group.
+            if (!own) {
+                if (row.showSender) {
+                    Avatar(name, event.senderAvatarUrl, seed = event.senderId, images = images, size = AVATAR)
+                } else {
+                    Spacer(Modifier.width(AVATAR))
+                }
+                Spacer(Modifier.width(AVATAR_GAP))
+            }
+            Column(
+                Modifier.weight(1f, fill = false),
+                horizontalAlignment = if (own) Alignment.End else Alignment.Start,
+            ) {
+                Surface(
+                    shape = bubbleShape,
+                    color = if (own) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant,
+                    modifier = Modifier
+                        .clip(bubbleShape)
+                        .combinedClickable(onClick = {}, onLongClick = { handlers.hold(row) }),
+                ) {
+                    Column(Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
+                        row.quote?.let { QuoteBlock(it, handlers.goTo) }
+                        MessageBody(event, row.edited, name, images)
+                        Text(
+                            timeOfDay(event.timestamp),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.align(Alignment.End),
+                        )
+                    }
+                }
+                ReactionChips(row, handlers)
+                SendStateLine(event.sendState)
+            }
+        }
+        if (row.readers.all.isNotEmpty()) {
+            ReadersLine(
+                row.readers,
+                images,
+                onClick = { handlers.showReaders(row.id) },
+                modifier = Modifier.align(Alignment.End),
+            )
+        }
+    }
+}
+
+private val AVATAR = 32.dp
+private val AVATAR_GAP = 8.dp
+
+/** The message a reply answers; a loaded one goes to it. */
+@Composable
+private fun QuoteBlock(quote: Quote, onGoTo: (String) -> Unit) {
+    Row(
+        Modifier
+            .padding(bottom = 6.dp)
+            .height(IntrinsicSize.Min)
+            .clip(RoundedCornerShape(4.dp))
+            .then(if (quote.tappable) Modifier.clickable { onGoTo(quote.eventId) } else Modifier),
+    ) {
+        Box(
+            Modifier
+                .width(3.dp)
+                .fillMaxHeight()
+                .background(MaterialTheme.colorScheme.primary),
+        )
+        Column(Modifier.padding(start = 8.dp, end = 4.dp)) {
+            quote.sender?.let {
+                Text(it, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+            Text(
+                quote.text,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 3,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+    }
+}
+
+/** Reactions under the bubble, ours in the accent colour: tap adds or removes ours, hold lists who. */
+@OptIn(ExperimentalLayoutApi::class, ExperimentalFoundationApi::class)
+@Composable
+private fun ReactionChips(row: EventRow, handlers: RowHandlers) {
+    val reactions = row.reactions
+    if (reactions.isEmpty()) return
+    FlowRow(
+        Modifier.padding(top = 4.dp),
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        for (reaction in reactions) {
+            val shape = RoundedCornerShape(12.dp)
+            val ours = reaction.byUs
+            Surface(
+                shape = shape,
+                color = if (ours) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant,
+                border = if (ours) BorderStroke(1.dp, MaterialTheme.colorScheme.primary) else null,
+                modifier = Modifier
+                    .clip(shape)
+                    .combinedClickable(
+                        onClick = { handlers.react(row.id, reaction.key) },
+                        onLongClick = { handlers.showReactors(row.id, reaction.key) },
+                    ),
+            ) {
                 Text(
-                    name,
-                    style = MaterialTheme.typography.labelMedium,
-                    color = identityColor(event.senderId),
-                    modifier = Modifier.padding(start = 4.dp, bottom = 2.dp),
+                    "${reaction.key} ${reaction.count}",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = if (ours) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
                 )
             }
-            Surface(
-                shape = RoundedCornerShape(16.dp),
-                color = if (own) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant,
-            ) {
-                Column(Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
-                    MessageBody(event, name, images)
-                    Text(
-                        timeOfDay(event.timestamp),
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.align(Alignment.End),
-                    )
-                }
-            }
-            SendStateLine(event.sendState)
+        }
+    }
+}
+
+/** Who read up to here, at the row's right margin: tap lists them. */
+@Composable
+private fun ReadersLine(readers: Readers, images: Images, onClick: () -> Unit, modifier: Modifier = Modifier) {
+    Row(
+        modifier
+            .padding(top = 2.dp)
+            .clip(RoundedCornerShape(8.dp))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 4.dp, vertical = 2.dp),
+        horizontalArrangement = Arrangement.spacedBy(2.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        for (reader in readers.shown) {
+            Avatar(personName(reader), reader.avatarUrl, seed = reader.userId, images = images, size = 16.dp)
+        }
+        if (readers.more > 0) {
+            Text(
+                "+${readers.more}",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(start = 2.dp),
+            )
         }
     }
 }
 
 @Composable
-private fun MessageBody(event: TimelineEvent, name: String, images: Images) {
+private fun MessageBody(event: TimelineEvent, edited: Boolean, name: String, images: Images) {
     val secondary = MaterialTheme.colorScheme.onSurfaceVariant
+    // "(edited)", muted, after the text.
+    fun text(body: String) = buildAnnotatedString {
+        append(body)
+        if (edited) withStyle(SpanStyle(color = secondary, fontStyle = FontStyle.Normal)) { append(" (edited)") }
+    }
     when (val content = event.content) {
         is EventContent.Message -> {
             val message = content.message
             val media = message.media
-            val edited = if (message.edited) " (edited)" else ""
             when {
                 media != null && (media.kind == MediaKind.IMAGE || media.kind == MediaKind.VIDEO) -> {
                     MediaPreview(media, images)
-                    // An image's body is its file name unless it has a caption.
-                    if (message.body.isNotBlank() && message.body != media.filename) {
-                        Text(message.body + edited, Modifier.padding(top = 6.dp))
-                    }
+                    messageText(message)?.let { Text(text(it), Modifier.padding(top = 6.dp)) }
                 }
                 media != null -> Text("${media.filename}${fileSize(media)}", fontStyle = FontStyle.Italic)
-                message.kind == MessageKind.EMOTE -> Text("* $name ${message.body}$edited", fontStyle = FontStyle.Italic)
-                message.kind == MessageKind.NOTICE -> Text(message.body + edited, color = secondary)
-                else -> Text(message.body + edited)
+                message.kind == MessageKind.EMOTE -> Text(text("* $name ${message.body}"), fontStyle = FontStyle.Italic)
+                message.kind == MessageKind.NOTICE -> Text(text(message.body), color = secondary)
+                else -> Text(text(message.body))
             }
         }
         EventContent.Redacted -> Text("Message deleted", color = secondary, fontStyle = FontStyle.Italic)

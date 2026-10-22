@@ -361,11 +361,34 @@ and tested by CI only; no Android SDK is used locally.
     "Invited"; banners for offline and signed out by the server over both
     tabs; menu with Settings and sign-out), and a room's timeline
     (newest at the bottom, keyed by `TimelineItem.id`; day dividers, read
-    marker, grouped bubbles with sender names and avatars, send states,
-    images, state events summarised in a line as on the desktop; older
-    events near the top; marked read while the newest message shows;
-    composer with `sendText`; "Could not decrypt this message." for an
-    event without its key). Encryption: the banner on the room list (opens
+    marker, grouped bubbles, send states, images, state events summarised
+    in a line as on the desktop; older events near the top; marked read
+    while the newest message shows; "Could not decrypt this message." for
+    an event without its key). Messages (section 8): the sender's name in
+    the body text size above a group, the avatar beside its first bubble;
+    holding a bubble opens a bottom sheet with the six common reactions
+    (ours marked) and "+" for the full picker (`androidx.emoji2:
+    emoji2-emojipicker`'s `EmojiPickerView` in a dialog, themed with
+    AppCompat's DayNight, which its resources need), then Reply, Copy,
+    Select text, Edit, Delete (after "Delete this message for everyone?"),
+    Retry and Discard, as `timeline/TimelineRows.kt`'s `messageActions`
+    allows; reaction chips under the bubble (tap toggles, hold lists who);
+    the reply's quote in the bubble (tap goes to the original); "(edited)"
+    muted after the text; read receipts as up to three 16 dp avatars and
+    "+N" on a line under the message at the right margin (tap lists
+    them); a typing line above the composer (`subscribeTyping`, its
+    handle cancelled and closed when the room is left); the composer's
+    bar for a reply or an edit with ✕, an edit starting from `rawBody`
+    and giving back the earlier text when it ends; `setTyping` on every
+    change, one call at a time in order, and `false` when the room is
+    left. The timeline's view model takes each action's row from the
+    latest rows; sends and actions run in a scope of the model's own, not
+    `viewModelScope`, which leaving the room cancels (a cancelled call
+    aborts the library's task); the timeline is closed once the last
+    typing notice is sent. Going to a quote's original pages back 50
+    events at a time, at most 20 times, looking in each new list; after
+    the room's start or the last page it waits up to two seconds for
+    their items before saying it was not found. Encryption: the banner on the room list (opens
     Settings); Settings (from the room list's menu) with the account and
     "Encryption" (status lines, "Enter recovery key", "Verify with another
     device", or the note that another device is needed); the recovery key
@@ -375,7 +398,13 @@ and tested by CI only; no Android SDK is used locally.
     `settings`, `settings/recovery`, `settings/verification`.
   - Unit tests (JVM) on fakes of the library's objects (subclasses made with
     `NoHandle`): secrets, the account's sync and sign-out, timeline rows,
-    the timeline's view model; the encryption state and banner, the
+    the timeline's view model; messages (section 8): the rows' reactions,
+    quotes, edits and readers ("+N"), the menu's entries for others',
+    our, unsent and failed messages, replying and editing in the
+    composer, typing both ways and on leaving the room (a send under way
+    still completes), the typing line's texts, and going to a quote's
+    original (loaded already, after paginating, arriving after the call,
+    at the room's start, after 20 pages); the encryption state and banner, the
     recovery's steps and errors (an invalid key), the verification model
     (states, confirm, mismatch, cancel, close), and verification requests
     (another user's cancelled, ours accepted or declined); the Chats and
@@ -402,9 +431,9 @@ Remaining:
   secret) fixes that.
 - Run only to the sign-in screen (emulator, CI); signing in, the room list,
   the timeline, recovery and verification are not yet tried on an emulator
-  or device (only their models' unit tests). Not done:
-  notifications, sending images, opening files, reactions and replies,
-  release signing.
+  or device (only their models' unit tests); nor are the messages'
+  menus, sheets and the emoji picker. Not done: notifications, sending
+  images, opening files, release signing.
 
 ## 5. Builds and CI
 
