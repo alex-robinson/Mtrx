@@ -1,6 +1,7 @@
 package org.mtrx.app
 
 import java.time.Instant
+import kotlinx.coroutines.CompletableDeferred
 import org.mtrx.app.model.SelectedSpaceStore
 import org.mtrx.app.model.SpaceEntry
 import uniffi.mtrx.ConnectionListener
@@ -14,6 +15,7 @@ import uniffi.mtrx.MtrxException
 import uniffi.mtrx.MtrxInterface
 import uniffi.mtrx.NoHandle
 import uniffi.mtrx.OAuthLogin
+import uniffi.mtrx.Reader
 import uniffi.mtrx.RecoveryListener
 import uniffi.mtrx.RecoveryStatus
 import uniffi.mtrx.RecoveryStep
@@ -30,6 +32,7 @@ import uniffi.mtrx.TimelineEvent
 import uniffi.mtrx.TimelineItem
 import uniffi.mtrx.TimelineItemContent
 import uniffi.mtrx.TimelineListener
+import uniffi.mtrx.TypingListener
 import uniffi.mtrx.Verification
 import uniffi.mtrx.VerificationListener
 import uniffi.mtrx.VerificationRequestListener
@@ -214,12 +217,32 @@ class FakeMtrx(private val restored: Session?) : MtrxInterface {
     override suspend fun supportsOauth(homeserver: String): Boolean = false
 }
 
+/**
+ * A room's timeline: the test drives [listener] and [typingListener]; the
+ * actions are recorded. [paginateBack] calls [onPage] with the call's number,
+ * then reports the start at call [pagesUntilStart]; [gate], when set, holds
+ * the sends and actions until completed.
+ */
 class FakeTimeline : Timeline(NoHandle) {
     var listener: TimelineListener? = null
+    var typingListener: TypingListener? = null
+    val typingSubscription = FakeHandle()
     val sent = mutableListOf<String>()
     var sendError: MtrxException? = null
+    var actionError: MtrxException? = null
+    var gate: CompletableDeferred<Unit>? = null
     var pages = 0
+    var pagesUntilStart = 1
+    var onPage: (Int) -> Unit = {}
     var markedRead = 0
+    val replies = mutableListOf<Pair<String, String>>()
+    val edits = mutableListOf<Pair<String, String>>()
+    val reactions = mutableListOf<Pair<String, String>>()
+    val deleted = mutableListOf<String>()
+    val retried = mutableListOf<String>()
+    val discarded = mutableListOf<String>()
+    val typing = mutableListOf<Boolean>()
+    var closed = false
 
     override fun roomId(): String = "!room:example.org"
 
@@ -228,33 +251,95 @@ class FakeTimeline : Timeline(NoHandle) {
         return FakeHandle()
     }
 
+    override fun subscribeTyping(listener: TypingListener): TaskHandle {
+        typingListener = listener
+        return typingSubscription
+    }
+
     override suspend fun paginateBack(events: UShort): Boolean {
         pages++
-        return true
+        onPage(pages)
+        return pages >= pagesUntilStart
+    }
+
+    private suspend fun action(record: () -> Unit) {
+        gate?.await()
+        actionError?.let { throw it }
+        record()
     }
 
     override suspend fun sendText(text: String) {
+        gate?.await()
         sendError?.let { throw it }
         sent += text
+    }
+
+    override suspend fun reply(itemId: String, text: String) = action { replies += itemId to text }
+
+    override suspend fun edit(itemId: String, text: String) = action { edits += itemId to text }
+
+    override suspend fun react(itemId: String, key: String) = action { reactions += itemId to key }
+
+    override suspend fun delete(itemId: String) = action { deleted += itemId }
+
+    override suspend fun retry(itemId: String) = action { retried += itemId }
+
+    override suspend fun discard(itemId: String) = action { discarded += itemId }
+
+    override suspend fun setTyping(typing: Boolean) {
+        this.typing += typing
     }
 
     override suspend fun markRead() {
         markedRead++
     }
+
+    override fun close() {
+        closed = true
+        super.close()
+    }
 }
 
-fun textEvent(id: String, sender: String, body: String, own: Boolean = false, at: Long = 0): TimelineItem = TimelineItem(
+fun textEvent(id: String, sender: String, body: String, own: Boolean = false, at: Long = 0): TimelineItem =
+    messageEvent(id, sender, Message(kind = MessageKind.TEXT, body = body, edited = false, media = null), own = own, at = at)
+
+/** A message's row; [eventId] null while not sent. */
+fun messageEvent(
+    id: String,
+    sender: String,
+    message: Message,
+    own: Boolean = false,
+    at: Long = 0,
+    eventId: String? = "\$$id",
+    sendState: SendState = SendState.Sent,
+    editable: Boolean = false,
+    readBy: List<Reader> = emptyList(),
+): TimelineItem = eventItem(id, sender, EventContent.Message(message), own, at, eventId, sendState, editable, readBy)
+
+fun eventItem(
+    id: String,
+    sender: String,
+    content: EventContent,
+    own: Boolean = false,
+    at: Long = 0,
+    eventId: String? = "\$$id",
+    sendState: SendState = SendState.Sent,
+    editable: Boolean = false,
+    readBy: List<Reader> = emptyList(),
+): TimelineItem = TimelineItem(
     id = id,
     content = TimelineItemContent.Event(
         TimelineEvent(
-            eventId = "\$$id",
+            eventId = eventId,
             senderId = sender,
             senderName = null,
             senderAvatarUrl = null,
             timestamp = Instant.ofEpochSecond(at),
             own = own,
-            content = EventContent.Message(Message(kind = MessageKind.TEXT, body = body, edited = false, media = null)),
-            sendState = SendState.Sent,
+            content = content,
+            sendState = sendState,
+            editable = editable,
+            readBy = readBy,
         ),
     ),
 )
