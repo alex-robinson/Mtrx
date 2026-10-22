@@ -948,7 +948,9 @@ sync for up to about 6 s), applies the account's push rules, and returns:
   rare cases; check it all the same). `body` is the text, or "Image",
   "Video", "Audio", "File", "Location", "Sticker", "Call",
   "Encrypted message" (the key did not come in time), "Invited you",
-  "New message".
+  "New message". Text is the message's plain body as sent: a mention
+  typed in Mtrx reads `@bob:example.org` there, where the timeline shows
+  the name.
 - `MtrxError.NotLoggedIn`: signed out; unregister. `Other(reason)`
   (network, the event not found): post "New message", titled "Mtrx",
   as the room's notification (tag `roomId`), so a push is not lost; a
@@ -1048,7 +1050,10 @@ emulator reaches the host's port as `http://10.0.2.2:8008`, server name
    and whose person is Alice; then that a push for Bob's own message
    posts nothing; then open the room (or `markRead`) and assert the
    notification is gone.
-Unit tests (JVM) on fakes: parsing pushes (with and without
+`FakeMtrx` (it implements `MtrxInterface`) needs `override suspend fun
+notification(roomId: String, eventId: String): NotificationContent?`
+before the unit tests compile again; Android CI on `mobile` fails until
+then. Unit tests (JVM) on fakes: parsing pushes (with and without
 `event_id`, garbage), what to post for each `NotificationContent` (nil,
 `shouldNotify`, silent, the open room skipped, errors as "New message"),
 the endpoint → `setPusher` arguments (gateway from the origin), the
