@@ -1587,10 +1587,9 @@ async fn media_messages() {
         .await
         .unwrap();
     while !timeline.paginate_back(50).await.unwrap() {}
-    // The files as the server has them, and only those: once uploaded, those
-    // of the local echoes (sent or not) are no longer in the store, and a
-    // local echo can still show beside the server's copy until the send
-    // queue's answer replaces it.
+    // Each file as the server has it, and no local echo pointing into the
+    // send queue's store: once uploaded, those files are no longer there, and
+    // such an echo can still show beside the server's copy.
     let mut seen = Vec::new();
     let entries = tokio::time::timeout(TIMEOUT, async {
         let mut updates = std::pin::pin!(timeline.updates());
@@ -1610,7 +1609,8 @@ async fn media_messages() {
                     && media.source.uri().server_name().map(|s| s.as_str())
                         != Ok("send-queue.localhost")
             });
-            if files.len() == 2 && on_server {
+            let shown = |name: &str| files.iter().any(|(_, media)| media.filename == name);
+            if on_server && shown("melt-rate-map.png") && shown("ice-flux-draft.pdf") {
                 return entries;
             }
             seen = files
