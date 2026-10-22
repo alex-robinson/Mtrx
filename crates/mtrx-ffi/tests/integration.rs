@@ -1193,12 +1193,27 @@ fn pushers_are_set_listed_and_deleted() {
     ));
 }
 
+/// The sent message whose text ends with `tail`: a mention's text is
+/// the person's name, not the `@user:server` typed.
+fn sent_ending<'a>(items: &'a [TimelineItem], tail: &str) -> Option<&'a TimelineEvent> {
+    items.iter().find_map(|item| match &item.content {
+        TimelineItemContent::Event { event }
+            if event.event_id.is_some()
+                && message_body(item).is_some_and(|b| b.ends_with(tail)) =>
+        {
+            Some(event)
+        }
+        _ => None,
+    })
+}
+
 /// Send `text` to the room of `timeline` and return its event ID once
-/// `items` (the room's timeline on the sender's side) shows it sent.
-fn send_for_id(timeline: &mtrx_ffi::Timeline, items: &mut Items, text: &str) -> String {
+/// `items` (the room's timeline on the sender's side) shows it sent, as
+/// a message ending with `tail`.
+fn send_for_id(timeline: &mtrx_ffi::Timeline, items: &mut Items, text: &str, tail: &str) -> String {
     block_on(timeline.send_text(text.into())).unwrap();
-    let items = items.wait(text, |items| sent(items, text).is_some());
-    sent(items, text).unwrap().1.event_id.clone().unwrap()
+    let items = items.wait(text, |items| sent_ending(items, tail).is_some());
+    sent_ending(items, tail).unwrap().event_id.clone().unwrap()
 }
 
 #[test]
@@ -1229,21 +1244,34 @@ fn a_push_handler_reads_messages_while_the_app_syncs() {
             .expect("something to show")
     };
     let mention = format!("@{} the run finished", &bob_id[1..]);
-    let event_id = send_for_id(&alice_timeline, &mut alice_items, &mention);
-    bob_items.wait("Alice's mention", |items| sent(items, &mention).is_some());
+    let event_id = send_for_id(
+        &alice_timeline,
+        &mut alice_items,
+        &mention,
+        " the run finished",
+    );
+    bob_items.wait("Alice's mention", |items| {
+        sent_ending(items, " the run finished").is_some()
+    });
     let content = fetch(&event_id);
     assert_eq!(content.room_id, room_id);
     assert_eq!(content.event_id, event_id);
     assert_eq!(content.room_name, "lab");
     assert_eq!(content.sender_id, alice.session.user_id());
     assert_eq!(content.sender_name, names[0]);
-    assert_eq!(content.body, mention);
+    // The mention reads as Bob's name.
+    assert!(
+        content
+            .body
+            .ends_with(&format!("{} the run finished", names[1])),
+        "{content:?}"
+    );
     assert!(content.is_mention, "{content:?}");
     assert!(content.should_notify, "{content:?}");
 
     // Without a mention: the room has two members, so it notifies too.
     let plain = "plots attached";
-    let event_id = send_for_id(&alice_timeline, &mut alice_items, plain);
+    let event_id = send_for_id(&alice_timeline, &mut alice_items, plain, plain);
     bob_items.wait("Alice's message", |items| sent(items, plain).is_some());
     let content = fetch(&event_id);
     assert_eq!(content.body, plain);
@@ -1252,7 +1280,7 @@ fn a_push_handler_reads_messages_while_the_app_syncs() {
     // Bob's own message, sent from his app: nothing to show (the push
     // rules never notify for one's own).
     let own = "thanks";
-    let event_id = send_for_id(&bob_timeline, &mut bob_items, own);
+    let event_id = send_for_id(&bob_timeline, &mut bob_items, own, own);
     assert_eq!(
         block_on(push.notification(room_id.clone(), event_id)).unwrap(),
         None
@@ -1260,7 +1288,7 @@ fn a_push_handler_reads_messages_while_the_app_syncs() {
 
     // The app's store is still sound: it decrypts what comes next.
     let later = "one more";
-    send_for_id(&alice_timeline, &mut alice_items, later);
+    send_for_id(&alice_timeline, &mut alice_items, later, later);
     bob_items.wait("Alice's later message", |items| {
         sent(items, later).is_some()
     });
