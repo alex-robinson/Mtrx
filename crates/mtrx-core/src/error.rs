@@ -28,6 +28,10 @@ pub enum Error {
     Timeline(String),
     #[error("verification: {0}")]
     Verification(String),
+    /// Not a recovery key (mistyped), or not the one of this account's
+    /// backup.
+    #[error("The recovery key is not valid")]
+    InvalidRecoveryKey,
     #[error("no scheduled message `{0}`")]
     ScheduledNotFound(String),
     #[error("the send time is in the past")]

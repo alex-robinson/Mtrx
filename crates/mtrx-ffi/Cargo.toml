@@ -39,4 +39,6 @@ mtrx-core = { path = "../mtrx-core", features = ["test-support"] }
 mtrx-format.workspace = true
 tempfile.workspace = true
 futures-executor = "0.3"
+# A well-formed recovery key that is not the account's.
+matrix-sdk-crypto.workspace = true
 

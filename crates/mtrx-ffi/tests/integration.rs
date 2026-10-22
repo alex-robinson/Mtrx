@@ -21,7 +21,7 @@ use mtrx_core::{
     test_support::{PASSWORD, homeserver, register, unique_name},
 };
 use mtrx_ffi::{
-    ConnectionListener, ConnectionState, EncryptionState, EventContent, MediaKind, Mtrx,
+    ConnectionListener, ConnectionState, EncryptionState, EventContent, MediaKind, Mtrx, MtrxError,
     RecoveryListener, RecoveryStatus, RecoveryStep, RoomListListener, RoomListState, SecretBackend,
     SecretError, Session, TimelineItem, TimelineItemContent, TimelineListener, Verification,
     VerificationListener, VerificationRequestListener, VerificationState,
@@ -385,14 +385,21 @@ fn recovery_key_decrypts_history_on_a_new_device() {
         items.iter().any(is_undecryptable)
     });
 
-    // A wrong key fails while checking it.
-    let (steps, step_updates) = forward();
-    let wrong = block_on(second.session.recover("not a recovery key".into(), steps));
-    assert!(wrong.is_err(), "a wrong key is refused");
-    assert_eq!(
-        step_updates.try_iter().collect::<Vec<_>>(),
-        [RecoveryStep::CheckingKey]
-    );
+    // A mistyped key, or another backup's, fails while checking it.
+    let another = matrix_sdk_crypto::secret_storage::SecretStorageKey::new().to_base58();
+    for wrong in ["not a recovery key".to_owned(), another] {
+        let (steps, step_updates) = forward();
+        let refused = block_on(second.session.recover(wrong.clone(), steps));
+        assert!(
+            matches!(&refused, Err(MtrxError::InvalidInput { reason })
+                if reason == "The recovery key is not valid"),
+            "{wrong}: {refused:?}"
+        );
+        assert_eq!(
+            step_updates.try_iter().collect::<Vec<_>>(),
+            [RecoveryStep::CheckingKey]
+        );
+    }
 
     // The key unlocks it; the open timeline shows the message.
     let (steps, step_updates) = forward();
