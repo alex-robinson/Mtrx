@@ -4,6 +4,7 @@
 #![recursion_limit = "256"]
 
 mod google;
+mod presence;
 mod rooms;
 mod timeline;
 
@@ -167,6 +168,22 @@ enum Command {
     /// Google account for Meet links (app-wide, not per profile).
     #[command(subcommand)]
     Google(google::GoogleCommand),
+    /// Show someone's presence (state, last active, status message), or
+    /// set ours with --set.
+    #[command(
+        override_usage = "mtrx presence USER_ID\n       mtrx presence --set <STATE> [--status TEXT]"
+    )]
+    Presence {
+        /// Whose, e.g. @alice:matrix.org.
+        #[arg(value_name = "USER_ID", required_unless_present = "set")]
+        user: Option<OwnedUserId>,
+        /// Set our presence instead.
+        #[arg(long, value_name = "STATE", conflicts_with = "user")]
+        set: Option<presence::StateArg>,
+        /// Status message to set with --set (none clears it).
+        #[arg(long, value_name = "TEXT", requires = "set")]
+        status: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -517,6 +534,14 @@ async fn main() -> Result<()> {
         }
         Command::Google(command) => {
             google::run(command, &data_root, secrets).await?;
+        }
+        Command::Presence { user, set, status } => {
+            let session = Session::restore(profile).await?;
+            match (user, set) {
+                (_, Some(state)) => presence::set(&session, state, status.as_deref()).await?,
+                (Some(user), None) => presence::show(&session, &user).await?,
+                (None, None) => unreachable!("clap requires a user without --set"),
+            }
         }
     }
     Ok(())

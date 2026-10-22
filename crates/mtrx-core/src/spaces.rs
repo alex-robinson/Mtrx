@@ -93,13 +93,8 @@ pub struct SpaceRooms {
 }
 
 impl RoomsBySpace {
-    /// `members` holds the joined members of the spaces known so far (by
-    /// space); a space without them lists no direct chats yet.
-    pub fn new(
-        rooms: &[RoomSummary],
-        members: &HashMap<OwnedRoomId, HashSet<OwnedUserId>>,
-        categories: &RoomCategories,
-    ) -> Self {
+    /// A space whose `members` are not loaded yet lists no direct chats.
+    pub fn new(rooms: &[RoomSummary], members: &SpaceMembers, categories: &RoomCategories) -> Self {
         let spaces: Vec<SpaceRooms> = top_level_spaces(rooms)
             .into_iter()
             .map(|space| SpaceRooms {
@@ -123,6 +118,52 @@ impl RoomsBySpace {
             .map(|r| r.id.clone())
             .collect();
         Self { spaces, outside }
+    }
+}
+
+/// The joined members of the top-level spaces, for the direct chats they
+/// list. Loaded when a space appears and again when its number of joined
+/// members changes; a failed load is tried again then.
+#[derive(Clone, Debug, Default)]
+pub struct SpaceMembers {
+    known: HashMap<OwnedRoomId, HashSet<OwnedUserId>>,
+    /// The number of joined members each space had when its members were
+    /// last asked for.
+    asked: HashMap<OwnedRoomId, u64>,
+}
+
+impl SpaceMembers {
+    /// Spaces whose members to load now ([`Session::joined_member_ids`]),
+    /// with their number of members, to pass back to [`Self::loaded`].
+    ///
+    /// [`Session::joined_member_ids`]: crate::Session::joined_member_ids
+    pub fn due(&mut self, rooms: &[RoomSummary]) -> Vec<(OwnedRoomId, u64)> {
+        let spaces = top_level_spaces(rooms);
+        self.asked
+            .retain(|id, _| spaces.iter().any(|space| &space.id == id));
+        self.known
+            .retain(|id, _| spaces.iter().any(|space| &space.id == id));
+        spaces
+            .into_iter()
+            .filter(|space| {
+                let count = space.joined_members;
+                self.asked.insert(space.id.clone(), count) != Some(count)
+            })
+            .map(|space| (space.id.clone(), space.joined_members))
+            .collect()
+    }
+
+    /// Members loaded for a space that had `count` joined members; dropped
+    /// if a newer load was started since.
+    pub fn loaded(&mut self, space: OwnedRoomId, count: u64, ids: HashSet<OwnedUserId>) {
+        if self.asked.get(&space) == Some(&count) {
+            self.known.insert(space, ids);
+        }
+    }
+
+    /// The members of `space`, once loaded.
+    pub fn get(&self, space: &RoomId) -> Option<&HashSet<OwnedUserId>> {
+        self.known.get(space)
     }
 }
 
@@ -197,10 +238,20 @@ mod tests {
     #[test]
     fn spaces_list_their_rooms_in_list_order() {
         let rooms = list();
-        let members = HashMap::from([(
+        let mut members = SpaceMembers::default();
+        let due = members.due(&rooms);
+        assert_eq!(
+            due,
+            [
+                (owned_room_id!("!other:x"), 0),
+                (owned_room_id!("!team:x"), 0)
+            ]
+        );
+        members.loaded(
             owned_room_id!("!team:x"),
+            0,
             HashSet::from([owned_user_id!("@bob:x"), owned_user_id!("@me:x")]),
-        )]);
+        );
         let by_space = RoomsBySpace::new(&rooms, &members, &RoomCategories::default());
         let spaces: Vec<_> = by_space.spaces.iter().map(|s| s.space.as_str()).collect();
         assert_eq!(spaces, ["!other:x", "!team:x"]);
@@ -231,7 +282,8 @@ mod tests {
     #[test]
     fn spaces_without_members_list_no_direct_chats() {
         let rooms = list();
-        let by_space = RoomsBySpace::new(&rooms, &HashMap::new(), &RoomCategories::default());
+        let by_space =
+            RoomsBySpace::new(&rooms, &SpaceMembers::default(), &RoomCategories::default());
         assert!(!by_space.spaces[1].rooms.contains(&owned_room_id!("!bob:x")));
         // Direct chats are never outside.
         assert!(!by_space.outside.contains(&owned_room_id!("!bob:x")));
@@ -245,12 +297,38 @@ mod tests {
         let id = layout.add_category("Mine");
         layout.place(&owned_room_id!("!loose:x"), Some(&id));
         layout.place(&owned_room_id!("!carol:x"), Some(&id));
-        let by_space = RoomsBySpace::new(&rooms, &HashMap::new(), &categories);
+        let by_space = RoomsBySpace::new(&rooms, &SpaceMembers::default(), &categories);
         assert_eq!(
             ids(&by_space.spaces[0].rooms),
             ["!loose:x", "!carol:x", "!both:x"]
         );
         assert_eq!(ids(&by_space.outside), ["!guild:x"]);
+    }
+
+    #[test]
+    fn members_load_again_when_their_number_changes() {
+        let mut members = SpaceMembers::default();
+        let space = |joined_members| RoomSummary {
+            joined_members,
+            ..room("!a:x", RoomKind::Space, &[])
+        };
+        let bob = HashSet::from([owned_user_id!("@bob:x")]);
+
+        let rooms = [space(2)];
+        assert_eq!(members.due(&rooms), [(owned_room_id!("!a:x"), 2)]);
+        assert!(members.due(&rooms).is_empty(), "asked once");
+
+        // A load for an older number is stale.
+        let rooms = [space(3)];
+        assert_eq!(members.due(&rooms), [(owned_room_id!("!a:x"), 3)]);
+        members.loaded(owned_room_id!("!a:x"), 2, bob.clone());
+        assert!(members.get(&owned_room_id!("!a:x")).is_none());
+        members.loaded(owned_room_id!("!a:x"), 3, bob.clone());
+        assert_eq!(members.get(&owned_room_id!("!a:x")), Some(&bob));
+
+        // Gone spaces are forgotten.
+        assert!(members.due(&[]).is_empty());
+        assert!(members.known.is_empty() && members.asked.is_empty());
     }
 
     #[test]

@@ -11,9 +11,9 @@ library side of it is done. Stage 2 (section 7) organises the room list by
 space, and stage 3 (section 8) adds reactions, replies, edits, deleting,
 read receipts and typing; their library sides are done too. Stage 4
 (section 9) polishes what the phone test of stages 1 to 3 found; its
-library side is done. Push notifications on Android (section 10) have
-their library side done too. This is the plan, and the contract the apps
-are built on.
+library side is done. Push notifications on Android (section 10) and
+presence (section 11) have their library side done too. This is the plan,
+and the contract the apps are built on.
 
 ## Decisions
 
@@ -79,7 +79,9 @@ IDs are strings, times `Date`/`Instant`; no Ruma types.
   `userProfile(userId) -> UserProfile`, `invite(roomId, userId)` (to a
   room or a space). Push (section 10): `setPusher(gatewayUrl, pushkey,
   appId, appName, deviceName, lang)`, `deletePusher(pushkey)`,
-  `pushers() -> [PusherInfo]`.
+  `pushers() -> [PusherInfo]`. Presence (section 11):
+  `presence(userId) -> Presence`, `setPresence(state, statusMessage?)`,
+  `subscribePresence(userIds, listener) -> TaskHandle`.
 - `Verification`: `otherUser()`, `accept()`, `state()`, `subscribe(listener)`,
   `confirm()`, `mismatch()`, `cancel()`.
 - `Timeline`: `roomId`, `subscribe(listener)`, `paginateBack(events)`,
@@ -94,7 +96,9 @@ IDs are strings, times `Date`/`Instant`; no Ruma types.
   `ConnectionListener.onUpdate(ConnectionState)`,
   `EncryptionStateListener.onUpdate(EncryptionState)`,
   `VerificationListener.onUpdate(VerificationState)`; each gets the whole
-  state, now and after every change. `RecoveryListener.onUpdate(RecoveryStep)`
+  state, now and after every change. `PresenceListener.onUpdate([String:
+  Presence])` gets all presences known after every change, and
+  `onUnavailable()` once if the server does not share presence. `RecoveryListener.onUpdate(RecoveryStep)`
   gets each step of a recovery; `VerificationRequestListener.onRequest(Verification)`
   each incoming request. `SecretBackend`: `load`, `save`,
   `delete` (throws `SecretError.Failed`).
@@ -127,11 +131,15 @@ IDs are strings, times `Date`/`Instant`; no Ruma types.
   pushkey, appId, appName, deviceName, lang, gatewayUrl, eventIdOnly }`,
   `NotificationContent { roomId, eventId, roomName, roomAvatarUrl,
   isDirect, senderId, senderName, senderAvatarUrl, body, isMention,
-  isNoisy, timestamp, shouldNotify }`.
+  isNoisy, timestamp, shouldNotify }`. Presence: `Presence { state,
+  lastActive, currentlyActive, statusMessage }`, `PresenceState`
+  (`online`, `unavailable`, `offline`).
 - Errors: `MtrxError` (`NotLoggedIn`, `AlreadyLoggedIn`, `LoginCancelled`,
   `RoomNotFound`, `InvalidInput`, `SecretStorage`, `Other(message)`).
   `InvalidInput(reason)`: a malformed ID or URL, or a recovery key that is
   not one or not the account's ("The recovery key is not valid").
+  A server that does not share presence: `Other("This server does not
+  share presence")` (section 11).
 - `oauthRedirectUri()`, `initLogging(filter)` (stderr: Xcode's console).
 
 Full snapshots instead of diffs: simpler for the apps, and cheap at our
@@ -626,7 +634,12 @@ Remaining:
       `Mtrx` on Bob's data reading Alice's messages in an encrypted room
       while Bob's app syncs (decrypted, a mention and a plain message
       that notify, Bob's own message nil, a missing event an error, and
-      Bob's app still decrypting afterwards): all
+      Bob's app still decrypting afterwards); presence (section 11):
+      Alice sets online with a status message and Bob reads it, she sets
+      unavailable and Bob's subscription gets the change at its next read
+      (unavailable, not offline: the library kept it past Synapse's 30 s),
+      offline read back, and a user Bob shares no room with refused by
+      Synapse as that user's error, not as presence unavailable: all
       through the bindings against Synapse (`cargo test -p mtrx-ffi --test
       integration -- --ignored`, in the Linux workflow).
 
@@ -1204,6 +1217,105 @@ APNs token as `pushkey` (an optional default payload for
 `Mtrx.notification` from a notification service extension, sharing the
 data directory and Keychain through an app group: the extension is the
 separate process the locks are made for.
+
+## 11. Presence
+
+Whether people are online, idle or away, and sharing ours. The library
+part is done and tested (section 5); the rest is in the apps, which do the
+same on both. The desktop follows later with the same rules.
+
+**How the library gets it.** Sync does not carry presence: simplified
+sliding sync (MSC4186) has no presence extension, and the SDK delivers
+none. So the library reads the presence endpoint: `presence(userId)` once,
+`subscribePresence(userIds, listener)` for a set, reading each user about
+once a minute (all at once at the start, then spread over the minute)
+while the handle lives. `setPresence(state, statusMessage)` sets ours,
+and the library sends it again every 20 s until it is set again, set
+offline, or the `Session` is released: servers drop a presence that no
+client refreshes (Synapse after 30 s, and its sliding sync does not
+count). So a suspended or killed app goes offline by itself about 30 s
+later.
+
+**The dot.** On the avatar's bottom right, with a 2 pt/dp ring in the
+background colour: green for `online`, amber for `unavailable`, none for
+`offline` or unknown. 12 pt/dp on the Chats rows' avatars (44), 9 on the
+direct chat header's (28), 20 on the person sheet's (80). In Chats only on
+direct chats (`kind == direct`, the `directUserId`'s presence; not the
+Notes to self). Accessibility label "Online" or "Idle".
+
+**The line under the name**, in the direct chat header (under the title)
+and on the person sheet (under the name, above the user ID): secondary
+text, one line,
+- the status message, if set;
+- else `online`: "Active now"; `unavailable`: "Idle";
+- else `offline` with `lastActive`: "Last active 2 h ago" (iOS
+  `RelativeDateTimeFormatter`, `.abbreviated`; Android
+  `DateUtils.getRelativeTimeSpanString` with `FORMAT_ABBREV_RELATIVE`;
+  "just now" under a minute);
+- else nothing (the line is left out).
+It follows the presences as they arrive.
+
+**Reading others.** One `subscribePresence` per session, for the
+`directUserId`s of the direct chats in the room list (without our own),
+started after the first loaded `RoomListState`, and replaced (subscribe
+anew, cancel the old handle) only when that set of IDs changes, not on
+every room list update. Cancel it when going to the background and
+subscribe again in the foreground; cancel it at sign-out. Keep the last
+map in the session model: the dots and the header's line come from it.
+The person sheet also calls `presence(userId)` when it opens (fresher, and
+for someone not in the map), keeping the map's value on failure. A user
+missing from the map shows nothing. `PresenceListener` is called on the
+library's threads: hop to the main thread.
+
+**When the server does not share presence**, everything is hidden for the
+rest of the session (until sign-out or the next launch): at the first
+`onUnavailable()`, or the first `presence()` failing with `Other` whose
+reason is exactly "This server does not share presence", drop the map,
+cancel the subscription and show no dots or lines. Other failures concern
+one user (Synapse refuses the presence of someone we share no room with)
+or the network: that user shows nothing, nothing else changes. Synapse
+with presence turned off answers "offline" with nothing else for
+everyone, which the rules above show as nothing.
+
+**Our own presence**, while signed in and "Share my presence" is on:
+- `setPresence(online, nil)` at sign-in, at start, and when the app comes
+  to the foreground (iOS `scenePhase` `.active`; Android
+  `ProcessLifecycleOwner` started).
+- `setPresence(unavailable, nil)` after 5 minutes in the foreground
+  without input (touches and key presses anywhere in the app: iOS a
+  window-level gesture recognizer that does not cancel touches; Android
+  `MainActivity.dispatchTouchEvent` / `dispatchKeyEvent`); the next input
+  sets `online` again. Call only on a change, not per input.
+- `setPresence(offline, nil)` when going to the background (iOS
+  `scenePhase` `.background`, in a `beginBackgroundTask` so that it
+  completes before suspension; Android `ProcessLifecycleOwner` stopped),
+  before `stopSync()`; and before `logout()`.
+
+Failures are logged and otherwise ignored, except the one above (hide
+presence). nil clears a status message set elsewhere (say
+`mtrx presence --set online --status …`): the apps do not set one yet.
+
+**Settings.** A switch "Share my presence" in a "Privacy" section just
+above "Encryption", on by default, a device
+preference kept at sign-out (iOS UserDefaults `sharePresence`; Android
+DataStore `view`, key `share_presence`). Footnote: "Others see when you
+are online or idle." Off: `setPresence(offline, nil)` at once, no
+lifecycle calls while off, and at start `setPresence(offline, nil)` once
+before `startSync()` (so that sync does not report us online either); on:
+`online` at once if in the foreground. Others' presence still shows. When
+the server does not share presence, the footnote reads "This server does
+not share presence." and the switch is disabled.
+
+**Errors, fakes and tests.** No new `MtrxError` cases: `presence` and
+`subscribePresence` fail with `InvalidInput` for a malformed ID;
+`presence` and `setPresence` with `Other` (above). Fakes of `Session`
+implement `presence`, `setPresence` and `subscribePresence` (keep the
+listener, call it). Worth testing in the models: the lifecycle's calls
+(foreground online; 5 minutes idle unavailable, input online again;
+background offline before `stopSync`; the switch off and on; offline
+before `startSync` when off), the line for each case, the subscription
+replaced only when the direct chats' users change, and hiding after
+`onUnavailable` or the error.
 
 ## Later
 

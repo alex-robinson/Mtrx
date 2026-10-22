@@ -15,6 +15,7 @@ mod android;
 mod client;
 mod encryption;
 mod error;
+mod presence;
 mod push;
 mod room_list;
 mod runtime;
@@ -30,6 +31,7 @@ pub use encryption::{
     VerificationRequestListener, VerificationState,
 };
 pub use error::MtrxError;
+pub use presence::{Presence, PresenceListener, PresenceState};
 pub use push::{NotificationContent, PusherInfo};
 pub use runtime::TaskHandle;
 pub use secrets::{SecretBackend, SecretError};
