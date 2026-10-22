@@ -258,13 +258,31 @@ and tested by CI only; no Android SDK is used locally.
     held by the `Account` (outgoing or accepted), its state, `confirm`,
     `mismatch`, `cancel` in the account's scope; `close()` cancels it unless
     it ended, then closes both. `model/Encryption.kt`: the banner rule and
-    the recovery's state.
+    the recovery's state (`InvalidInput` from `recover` is
+    `Recovery.InvalidKey`: "The recovery key is not valid." under the
+    field, the key kept).
+  - `model/Spaces.kt` (section 7): `SpaceEntry` (a space, or "Other
+    rooms") and `SpaceSelection`, held by the `Account`: the selected entry
+    while the room list has it, saved through `SelectedSpaceStore`
+    (`model/ViewPreferences.kt`: Preferences DataStore `view`, key
+    `selected_space`; `androidx.datastore:datastore-preferences`); a saved
+    one waits for a list that has it and is forgotten when a loaded list
+    does not; cleared at sign-out (and `forget`). `rooms/RoomLists.kt`: the
+    tabs' lists from each `RoomListState` (`chats`, `spaceRows` with the
+    unread dot, `roomsOf`).
   - `model/Images.kt`: avatars and image previews, decoded (downsampled)
     and kept in an in-memory LRU cache.
   - Screens: sign-in (homeserver, then password or "Sign in with browser" as
-    `supportsOauth` says), room list (avatars, unread and mention counts,
-    last activity, filters All, People, Rooms, Spaces; banners for offline
-    and signed out by the server; sign-out), and a room's timeline
+    `supportsOauth` says), the room list (section 7: a bottom bar with Chats
+    and Rooms, only on this screen; Chats the direct chats; Rooms a
+    `HorizontalPager` of the spaces, with "Other rooms", and the selected
+    entry's rooms, titled with its name, back or the arrow to the spaces;
+    tapping the Rooms tab again also returns to them; a new selection,
+    tapped or restored, pages right; tab, page and scroll positions are the
+    screen's saved state, so they are kept while a room or Settings is
+    open; rows with avatars, unread and mention counts, last activity,
+    "Invited"; banners for offline and signed out by the server over both
+    tabs; menu with Settings and sign-out), and a room's timeline
     (newest at the bottom, keyed by `TimelineItem.id`; day dividers, read
     marker, grouped bubbles with sender names and avatars, send states,
     images, state events summarised in a line as on the desktop; older
@@ -281,9 +299,13 @@ and tested by CI only; no Android SDK is used locally.
   - Unit tests (JVM) on fakes of the library's objects (subclasses made with
     `NoHandle`): secrets, the account's sync and sign-out, timeline rows,
     the timeline's view model; the encryption state and banner, the
-    recovery's steps and error, the verification model (states, confirm,
-    mismatch, cancel, close), and verification requests (another user's
-    cancelled, ours accepted or declined).
+    recovery's steps and errors (an invalid key), the verification model
+    (states, confirm, mismatch, cancel, close), and verification requests
+    (another user's cancelled, ours accepted or declined); the Chats and
+    Rooms lists from a `RoomListState` like the library's integration test
+    (two top-level spaces, a nested one, direct chats, invites), and the
+    selected space (saved, restored at the next launch, forgotten when gone
+    or at sign-out).
 - Build locally, with the Android SDK and NDK, Rust's two Android targets
   and cargo-ndk: `scripts/build-android-ffi.sh`, then in `apps/android`
   `gradle :app:assembleDebug` (Gradle 8.11.1 or later, or a wrapper made with
