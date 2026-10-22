@@ -62,7 +62,7 @@ pub use spaces::{
 pub use timeline::{
     Attachment, Event, EventContent, EventKey, Media, MediaKind, MembershipChange, Message,
     MessageKind, PendingSend, Reaction, Reader, Reply, RoomTimeline, SendState, TimelineEntry,
-    mention_targets,
+    UtdCause, mention_targets,
 };
 
 pub use url::Url;
