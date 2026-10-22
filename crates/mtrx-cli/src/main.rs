@@ -442,7 +442,7 @@ async fn main() -> Result<()> {
         }
         Command::Devices => {
             let (session, _list) = synced(profile).await?;
-            println!("recovery: {:?}", session.recovery_status());
+            println!("recovery: {:?}", session.recovery_status().await);
             for device in session.devices().await? {
                 println!(
                     "{} {}  {}{}",

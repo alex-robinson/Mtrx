@@ -323,7 +323,10 @@ async fn recovery_decrypts_history_on_new_device() -> Result<()> {
     )
     .await??;
     let key = first.session.enable_recovery().await?;
-    assert_eq!(first.session.recovery_status(), RecoveryStatus::Enabled);
+    assert_eq!(
+        first.session.recovery_status().await,
+        RecoveryStatus::Enabled
+    );
 
     let second = login(&name).await?;
     assert!(!second.session.is_device_verified().await?);
