@@ -11,10 +11,7 @@ struct HomeView: View {
 
     var body: some View {
         NavigationSplitView {
-            RoomListView(selection: $selection)
-                .safeAreaInset(edge: .top) {
-                    EncryptionBanner { showSettings = true }
-                }
+            RoomListView(selection: $selection) { showSettings = true }
                 .navigationTitle("Mtrx")
                 .toolbar {
                     ToolbarItem(placement: .navigationBarTrailing) {
@@ -94,15 +91,22 @@ enum HomeSheet: Identifiable {
     }
 }
 
-/// Rooms by section, or the rooms found by a search.
+/// Rooms by section, or the rooms found by a search; above them, the
+/// encryption banner.
 struct RoomListView: View {
     @EnvironmentObject private var session: SessionModel
     @Binding var selection: String?
+    let openSettings: () -> Void
     @State private var search = ""
 
     var body: some View {
         List(selection: $selection) {
             if search.isEmpty {
+                if session.needsEncryptionSetup {
+                    EncryptionBanner(open: openSettings)
+                        .listRowSeparator(.hidden)
+                        .listRowInsets(EdgeInsets(top: 6, leading: 12, bottom: 6, trailing: 12))
+                }
                 ForEach(RoomSections.group(session.rooms)) { group in
                     Section(group.section.title) {
                         ForEach(group.rooms, id: \.id, content: entry)
@@ -144,31 +148,25 @@ struct RoomListView: View {
 /// While this device cannot read all encrypted messages; a tap opens the
 /// encryption settings.
 struct EncryptionBanner: View {
-    @EnvironmentObject private var session: SessionModel
     let open: () -> Void
 
     var body: some View {
-        if session.needsEncryptionSetup {
-            Button(action: open) {
-                HStack(spacing: 10) {
-                    Image(systemName: "lock.trianglebadge.exclamationmark")
-                        .font(.title3)
-                    Text("Verify this device or enter your recovery key to read encrypted messages.")
-                        .font(.footnote)
-                        .multilineTextAlignment(.leading)
-                    Spacer(minLength: 0)
-                    Image(systemName: "chevron.right")
-                        .font(.footnote.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                }
-                .padding(12)
-                .background(Color.orange.opacity(0.15), in: RoundedRectangle(cornerRadius: 12))
+        Button(action: open) {
+            HStack(spacing: 10) {
+                Image(systemName: "lock.trianglebadge.exclamationmark")
+                    .font(.title3)
+                Text("Verify this device or enter your recovery key to read encrypted messages.")
+                    .font(.footnote)
+                    .multilineTextAlignment(.leading)
+                Spacer(minLength: 0)
+                Image(systemName: "chevron.right")
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(.secondary)
             }
-            .buttonStyle(.plain)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 6)
-            .background(.bar)
+            .padding(12)
+            .background(Color.orange.opacity(0.15), in: RoundedRectangle(cornerRadius: 12))
         }
+        .buttonStyle(.plain)
     }
 }
 
