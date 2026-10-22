@@ -8,6 +8,7 @@ struct RoomView: View {
     @StateObject private var model: TimelineModel
     @EnvironmentObject private var images: ImageCache
     @EnvironmentObject private var session: SessionModel
+    @EnvironmentObject private var presence: PresenceModel
     @State private var sheet: RoomSheet?
     /// The message to delete, once confirmed.
     @State private var deleting: String?
@@ -30,9 +31,9 @@ struct RoomView: View {
         .navigationTitle(room.name)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
-            if model.person != nil {
+            if let person = model.person {
                 ToolbarItem(placement: .principal) {
-                    PersonHeader(room: room, open: model.showPersonInfo)
+                    PersonHeader(room: room, presence: presence.presence(of: person), open: model.showPersonInfo)
                 }
             }
         }
@@ -47,6 +48,7 @@ struct RoomView: View {
             PersonInfoView(model: info)
                 .environmentObject(images)
                 .environmentObject(session)
+                .environmentObject(presence)
         }
         .confirmationDialog("Delete this message for everyone?", isPresented: isDeleting, titleVisibility: .visible) {
             Button("Delete", role: .destructive) {
@@ -94,24 +96,29 @@ struct RoomView: View {
     }
 }
 
-/// A direct chat's title: the person's picture and name; a tap opens their
-/// info sheet.
+/// A direct chat's title: the person's picture and name, with their
+/// presence; a tap opens their info sheet.
 private struct PersonHeader: View {
     let room: RoomSummary
+    let presence: Presence?
     let open: () -> Void
 
     var body: some View {
         Button(action: open) {
             HStack(spacing: 8) {
-                AvatarView(name: room.name, uri: room.avatarUrl, size: 30)
-                Text(room.name)
-                    .font(.headline)
-                    .foregroundColor(.primary)
-                    .lineLimit(1)
+                AvatarView(name: room.name, uri: room.avatarUrl, size: 28)
+                    .presenceDot(presence, size: 9, avatar: 28)
+                VStack(alignment: .leading, spacing: 0) {
+                    Text(room.name)
+                        .font(.headline)
+                        .foregroundColor(.primary)
+                        .lineLimit(1)
+                    PresenceLine(presence: presence, font: .caption)
+                }
             }
         }
         .buttonStyle(.plain)
-        .accessibilityLabel(room.name)
+        .accessibilityElement(children: .combine)
         .accessibilityHint("Shows who this is")
     }
 }

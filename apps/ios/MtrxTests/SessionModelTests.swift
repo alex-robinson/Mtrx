@@ -54,12 +54,12 @@ final class SessionModelTests: XCTestCase {
     }
 
     func testSyncAndTheRoomListDoNotAskForTheEncryptionState() async {
-        model.setSyncing(true)
+        model.setForeground(true)
         await eventually { self.session.syncStarts == 1 }
         session.roomListListener?.onUpdate(state: RoomListState(rooms: [Make.room("!a")], loaded: true))
         await eventually { self.model.rooms.count == 1 }
-        model.setSyncing(false)
-        model.setSyncing(true)
+        model.setForeground(false)
+        model.setForeground(true)
         await eventually { self.session.syncStops == 1 && self.session.syncStarts == 2 }
         await settle()
         XCTAssertEqual(session.encryptionRequests, 0)

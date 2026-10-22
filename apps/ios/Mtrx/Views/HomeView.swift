@@ -7,6 +7,7 @@ import SwiftUI
 struct HomeView: View {
     @EnvironmentObject private var app: AppModel
     @EnvironmentObject private var session: SessionModel
+    @EnvironmentObject private var presence: PresenceModel
     @State private var tab = HomeTab.chats
 
     var body: some View {
@@ -21,6 +22,8 @@ struct HomeView: View {
                 .tabItem { Label("Settings", systemImage: "gearshape") }
                 .tag(HomeTab.settings)
         }
+        // Input anywhere in the app: not idle.
+        .background(InputWatcher(onInput: presence.input))
         // Closed by its own buttons, which end the verification.
         .sheet(item: verification) { model in
             VerificationView(model: model)
@@ -64,16 +67,19 @@ enum HomeTab: Hashable {
     case settings
 }
 
-/// The direct chats, most recently active first.
+/// The direct chats, most recently active first, with their people's
+/// presence.
 struct ChatsTab: View {
     @EnvironmentObject private var session: SessionModel
+    @EnvironmentObject private var presence: PresenceModel
     let openSettings: () -> Void
     @State private var search = ""
 
     var body: some View {
         NavigationStack {
             RoomList(sections: [RoomSection(title: nil, rooms: RoomLists.search(session.lists.chats, search))],
-                     searching: !search.isEmpty, openSettings: openSettings) {
+                     searching: !search.isEmpty, openSettings: openSettings,
+                     presence: presence.presence(of:)) {
                 ListPlaceholder(loaded: session.loaded, empty: "No chats yet")
             }
             .navigationTitle("Chats")
@@ -241,6 +247,8 @@ struct RoomList<Empty: View>: View {
     let sections: [RoomSection]
     let searching: Bool
     let openSettings: () -> Void
+    /// The presence to show on a room's picture (Chats).
+    var presence: (RoomSummary) -> Presence? = { _ in nil }
     @ViewBuilder let empty: () -> Empty
 
     var body: some View {
@@ -268,10 +276,10 @@ struct RoomList<Empty: View>: View {
     private func rows(_ rooms: [RoomSummary]) -> some View {
         ForEach(rooms, id: \.id) { room in
             if room.invited {
-                RoomRow(room: room)
+                RoomRow(room: room, presence: presence(room))
             } else {
                 NavigationLink(value: room.id) {
-                    RoomRow(room: room)
+                    RoomRow(room: room, presence: presence(room))
                 }
             }
         }

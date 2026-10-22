@@ -2,13 +2,14 @@ import Combine
 import MtrxFFI
 import UIKit
 
-/// A signed-in account: its room lists, connection and pictures, sync,
-/// which runs while the app is in the foreground, and whether this device
-/// can read encrypted messages.
+/// A signed-in account: its room lists, connection, pictures and presence,
+/// sync, which runs while the app is in the foreground, and whether this
+/// device can read encrypted messages.
 @MainActor
 final class SessionModel: ObservableObject {
     let session: Session
     let images: ImageCache
+    let presence: PresenceModel
     let userId: String
     let deviceId: String
     let homeserver: String
@@ -46,7 +47,10 @@ final class SessionModel: ObservableObject {
     private(set) lazy var recovery = RecoveryModel(session: session)
 
     private let subscriptions = Subscriptions()
-    private var syncing = false
+    /// The app is in the foreground: sync runs.
+    private var foreground = false
+    /// Sync has started once.
+    private var started = false
     /// The last start or stop of sync; the next waits for it.
     private var syncChange: Task<Void, Never>?
     private var verificationRequest: Task<Void, Never>?
@@ -54,10 +58,11 @@ final class SessionModel: ObservableObject {
     private static let selectedSpaceKey = "selectedSpace"
     private static let roomSortKey = "roomSort"
 
-    init(session: Session, defaults: UserDefaults = .standard) {
+    init(session: Session, defaults: UserDefaults = .standard, idleTime: TimeInterval = PresenceModel.idleTime) {
         self.session = session
         self.defaults = defaults
         images = ImageCache(session: session)
+        presence = PresenceModel(session: session, defaults: defaults, idleTime: idleTime)
         userId = session.userId()
         deviceId = session.deviceId()
         homeserver = session.homeserver()
@@ -105,6 +110,9 @@ final class SessionModel: ObservableObject {
         rooms = state.rooms
         loaded = state.loaded
         lists = RoomLists(state)
+        if state.loaded {
+            presence.follow(lists.chats)
+        }
         // The first states may be a cache: the space may come with sync.
         if let selectedSpace, state.loaded, lists.space(selectedSpace) == nil {
             selectSpace(nil)
@@ -115,22 +123,29 @@ final class SessionModel: ObservableObject {
         rooms.first { $0.id == id }
     }
 
-    /// Sync while the app is in the foreground; when it goes to the
-    /// background, stop and save the sync position before iOS suspends it.
-    func setSyncing(_ on: Bool) {
-        guard on != syncing else { return }
-        syncing = on
+    /// Sync while the app is in the foreground, and set our presence;
+    /// when it goes to the background, go offline, then stop and save the
+    /// sync position, before iOS suspends it. Not sharing our presence,
+    /// offline before sync first starts.
+    func setForeground(_ on: Bool) {
+        guard on != foreground else { return }
+        foreground = on
         let previous = syncChange
         let session = self.session
         if on {
+            let offline = presence.enterForeground(first: !started)
+            started = true
             syncChange = Task {
                 await previous?.value
+                await offline?.value
                 await session.startSync()
             }
         } else {
             let background = BackgroundTask(name: "Stop sync")
+            let offline = presence.enterBackground()
             syncChange = Task {
                 await previous?.value
+                await offline?.value
                 await session.stopSync()
                 background.end()
             }
@@ -228,6 +243,7 @@ final class SessionModel: ObservableObject {
     func logout() async throws {
         subscriptions.cancelAll()
         verification = nil
+        await presence.signOut()?.value
         try await session.logout()
         defaults.removeObject(forKey: Self.selectedSpaceKey)
     }
@@ -236,6 +252,8 @@ final class SessionModel: ObservableObject {
     func forget() async throws {
         subscriptions.cancelAll()
         verification = nil
+        // The server no longer accepts the session: nothing to set.
+        presence.forget()
         try await session.forget()
         defaults.removeObject(forKey: Self.selectedSpaceKey)
     }

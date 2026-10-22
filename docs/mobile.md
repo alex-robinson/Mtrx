@@ -200,20 +200,23 @@ named Spaces, a space's rooms in Rooms and People sections with a sort
 menu, swiping a message to reply, the person's picture in a direct
 chat's header, and a button to the newest message. Stage 4, the library's
 part: the encryption state pushed, "Decrypting…" while keys arrive, and
-the person's info sheet.
+the person's info sheet. Presence (section 11): the dots, the line under
+the name, "Share my presence" and ours from the lifecycle.
 
 ```
 apps/ios/
   Mtrx.xcodeproj      app target Mtrx, tests MtrxTests, local package MtrxFFI;
                       folders are synchronized groups (no per-file entries)
   Mtrx/
-    MtrxApp.swift     entry; scene phase -> sync
+    MtrxApp.swift     entry; scene phase -> sync and our presence
     Core/             Keychain backend, Feed (listeners -> AsyncStream),
-                      browser sign-in, error messages
+                      browser sign-in, error messages, InputWatcher
+                      (touches and typing, for idle)
     Models/           AppModel (phase: starting, signed out, signed in),
                       SignInModel, SessionModel (room lists, selected space,
                       sort, connection, sync, encryption state,
-                      verification requests), RecoveryModel,
+                      verification requests), PresenceModel (others'
+                      presences, ours, the switch), RecoveryModel,
                       VerificationModel, TimelineModel (also composing,
                       actions, typing, going to a quote, at the bottom),
                       PersonInfoModel, ImageCache, TimelineRows (rows,
@@ -333,6 +336,29 @@ apps/ios/
   creates; sending, replying and editing in `send()`. Back-paginations
   are chained, so loading older messages and looking for a quote do not
   overlap.
+- Presence (section 11): `PresenceModel`, owned by `SessionModel` and an
+  environment object of its own. `SessionModel.setForeground` (from the
+  scene phase) runs the lifecycle: in the foreground `online` (sharing)
+  alongside `startSync()`, or, not sharing, `offline` before the
+  session's first `startSync()`; to the background, a `beginBackgroundTask`,
+  then `offline`, then `stopSync()`. `logout` sets `offline` first;
+  `forget` sets nothing. Our `setPresence` calls are chained, so they
+  arrive in order. Idle: `InputWatcher`, behind the tabs, puts a
+  recognizer on the window that reports each touch or press and fails at
+  once (it cancels and delays nothing; sheets are in the same window), and
+  counts text changing (`UITextField`/`UITextView` notifications) as
+  input, as the keyboard is a window of its own. One timer task waits for
+  `lastInput` + 5 minutes; input only moves `lastInput`, except when idle
+  (`online` again). Others: the subscription is for the Chats tab's
+  people, which include the open direct chat's (it is in the room list);
+  dots only in Chats, not in a space's People section. The dot's ring is
+  outside its size (12 + 2 + 2 pt), centred on the avatar's circle at
+  45°. The line re-renders each minute (`TimelineView(.everyMinute)`);
+  `RelativeDateTimeFormatter` `.abbreviated` writes "2h ago" in US
+  English, "2 hr ago" in British. The person sheet calls `presence` from
+  its `.task`, into the map (the subscription's next update replaces
+  it). Once the server does not share presence, our own presence is not
+  set either (every call would fail).
 - Images: avatars and `mediaPreview`s decoded off the main thread, kept in
   an `NSCache` (the library caches the downloads).
 - Tests: fakes subclass the generated classes (`init(noHandle:)`), so the
@@ -351,7 +377,15 @@ apps/ios/
   open; the person sheet (the profile replacing the chat's name and
   picture, a partial profile, a failure; copying; an invite succeeding,
   failing, one at a time; none in the Notes to self or a room); the
-  top-level spaces.
+  top-level spaces. Presence: the dot and the line for each state, status
+  message and age; the subscription following the loaded room list's
+  direct chats (not the Notes to self), kept on other changes, replaced
+  when they change, only in the foreground, ended at sign-out; the
+  person sheet's fresh value, kept on a failure; hiding after
+  `onUnavailable` or the error, with nothing read or set after; online
+  and offline around sync, offline before the first sync when not
+  sharing, the switch (on by default, in the background), idle after no
+  input and online at the next, failures ignored.
 
 Locally: run `scripts/build-ios-ffi.sh` once (or unzip CI's `MtrxFFI-ios`
 into `apps/ios`), open `apps/ios/Mtrx.xcodeproj`, run on a simulator; for a

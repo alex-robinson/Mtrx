@@ -1,11 +1,12 @@
 import MtrxFFI
 import SwiftUI
 
-/// The other person of a direct chat: their picture, name and user ID (to
-/// copy), and inviting them to one of our spaces.
+/// The other person of a direct chat: their picture, name, presence and
+/// user ID (to copy), and inviting them to one of our spaces.
 struct PersonInfoView: View {
     @ObservedObject var model: PersonInfoModel
     @EnvironmentObject private var session: SessionModel
+    @EnvironmentObject private var presence: PresenceModel
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
@@ -42,6 +43,8 @@ struct PersonInfoView: View {
             }
         }
         .presentationDetents([.medium, .large])
+        // Fresher than the subscription's, and for someone not in it.
+        .task { await presence.refresh(model.userId) }
         .alert("Could not invite", isPresented: hasError) {
             Button("OK") { model.inviteError = nil }
         } message: {
@@ -51,10 +54,13 @@ struct PersonInfoView: View {
 
     private var header: some View {
         VStack(spacing: 10) {
+            let shown = presence.presence(of: model.userId)
             AvatarView(name: model.name, uri: model.avatarUrl, size: 80)
+                .presenceDot(shown, size: 20, avatar: 80, ring: Color(.systemGroupedBackground))
             Text(model.name)
                 .font(.title2.weight(.semibold))
                 .multilineTextAlignment(.center)
+            PresenceLine(presence: shown)
             HStack(spacing: 8) {
                 Text(model.userId)
                     .font(.subheadline)

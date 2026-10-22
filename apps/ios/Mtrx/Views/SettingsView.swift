@@ -1,8 +1,8 @@
 import MtrxFFI
 import SwiftUI
 
-/// The Settings tab: the account, its encryption on this device, and
-/// signing out.
+/// The Settings tab: the account, sharing our presence, its encryption on
+/// this device, and signing out.
 struct SettingsView: View {
     @EnvironmentObject private var app: AppModel
     @EnvironmentObject private var session: SessionModel
@@ -17,6 +17,7 @@ struct SettingsView: View {
                     LabeledContent("Device", value: session.deviceId)
                 }
                 .textSelection(.enabled)
+                PrivacySection()
                 EncryptionSection()
                 Section {
                     Button("Sign out…", role: .destructive) {
@@ -51,6 +52,22 @@ struct SettingsView: View {
         let short = info?["CFBundleShortVersionString"] as? String ?? "?"
         let build = info?["CFBundleVersion"] as? String ?? "?"
         return "\(short) (\(build))"
+    }
+}
+
+/// Whether others see when we are online or idle.
+private struct PrivacySection: View {
+    @EnvironmentObject private var presence: PresenceModel
+
+    var body: some View {
+        Section {
+            Toggle("Share my presence", isOn: Binding(get: { presence.sharing }, set: presence.setSharing))
+                .disabled(!presence.available)
+        } header: {
+            Text("Privacy")
+        } footer: {
+            Text(presence.available ? "Others see when you are online or idle." : "This server does not share presence.")
+        }
     }
 }
 
