@@ -10,6 +10,7 @@ use matrix_sdk::{
         registration::{ApplicationType, ClientMetadata, Localized, OAuthGrantType},
     },
     encryption::{BackupDownloadStrategy, EncryptionSettings, verification::VerificationRequest},
+    event_handler::EventHandlerDropGuard,
     ruma::{OwnedDeviceId, OwnedUserId, serde::Raw},
     store::RoomLoadSettings,
     utils::{
@@ -32,6 +33,10 @@ use crate::{
 };
 
 const DEVICE_DISPLAY_NAME: &str = "Mtrx";
+/// The latest events synced for every room (the SDK's default is 1): a
+/// room's messages since the previous sync, so that each can notify, and
+/// its latest ones before it is opened.
+const ROOM_LIST_TIMELINE_LIMIT: u32 = 10;
 /// Shown by the server's login page as the app's home page.
 const CLIENT_URI: &str = "https://alex-robinson.github.io/";
 /// Where the server sends the browser back to the mobile apps after a
@@ -54,6 +59,7 @@ pub struct Session {
     /// Set once [`Session::start_scheduler`] ran.
     pub(crate) scheduler: std::sync::Mutex<Option<AbortOnDrop>>,
     pub(crate) notifications: broadcast::Sender<crate::Notification>,
+    _notifier: EventHandlerDropGuard,
     pub(crate) categories: crate::account_data::Synced<crate::RoomCategories>,
     pub(crate) colours: crate::account_data::Synced<crate::RoomListColours>,
     pub(crate) connection: tokio::sync::watch::Receiver<crate::Connection>,
@@ -191,18 +197,20 @@ impl Session {
         let sync = Arc::new(
             SyncService::builder(client.clone())
                 .with_offline_mode()
+                .with_room_list_timeline_limit(ROOM_LIST_TIMELINE_LIMIT)
                 .build()
                 .await
                 .map_err(|e| Error::Sync(e.to_string()))?,
         );
         let (connection, watch_connection) = crate::connection::watch(client.clone(), sync.clone());
         let verification_tx = crate::encryption::register_handlers(&client);
-        let notifications = crate::notifications::register(&client).await;
+        let notification_settings = client.notification_settings().await;
+        let (notifications, notifier) =
+            crate::notifications::register(&client, sync.clone(), notification_settings.clone());
         let send_lock = Arc::new(Mutex::new(()));
         let schedule = Arc::new(Schedule::load(client.clone(), send_lock.clone()).await?);
         let categories = crate::account_data::Synced::load(client.clone()).await;
         let colours = crate::account_data::Synced::load(client.clone()).await;
-        let notification_settings = client.notification_settings().await;
         Ok(Self {
             client,
             sync,
@@ -212,6 +220,7 @@ impl Session {
             schedule,
             scheduler: Default::default(),
             notifications,
+            _notifier: notifier,
             categories,
             colours,
             connection,
