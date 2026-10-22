@@ -1,7 +1,7 @@
 import MtrxFFI
 import UIKit
 
-/// A signed-in account: its room list, connection and pictures, sync,
+/// A signed-in account: its room lists, connection and pictures, sync,
 /// which runs while the app is in the foreground, and whether this device
 /// can read encrypted messages.
 @MainActor
@@ -17,6 +17,13 @@ final class SessionModel: ObservableObject {
     /// Synced with the server since start; before, `rooms` may be a stale
     /// cache, or empty on the first sign-in.
     @Published private(set) var loaded = false
+    /// The chats, and the rooms by space.
+    @Published private(set) var lists = RoomLists()
+    /// The Rooms tab's selected space, remembered across launches (until
+    /// sign-out).
+    @Published private(set) var selectedSpace: SpaceEntry?
+    /// The Rooms tab's page: the spaces, or the selected space's rooms.
+    @Published var roomsPage = RoomsPage.spaces
     @Published private(set) var connection: ConnectionState = .online
     @Published var error: String?
 
@@ -47,13 +54,21 @@ final class SessionModel: ObservableObject {
     /// answer is kept.
     private var encryptionRequest = 0
     private var verificationRequest: Task<Void, Never>?
+    private let defaults: UserDefaults
+    private static let selectedSpaceKey = "selectedSpace"
 
-    init(session: Session) {
+    init(session: Session, defaults: UserDefaults = .standard) {
         self.session = session
+        self.defaults = defaults
         images = ImageCache(session: session)
         userId = session.userId()
         deviceId = session.deviceId()
         homeserver = session.homeserver()
+        // Opens on the space's rooms, until the room list says it is gone.
+        if let saved = defaults.string(forKey: Self.selectedSpaceKey) {
+            selectedSpace = SpaceEntry(saved: saved)
+            roomsPage = .rooms
+        }
     }
 
     /// Follow the connection, the room list and verification requests.
@@ -84,6 +99,11 @@ final class SessionModel: ObservableObject {
     private func apply(_ state: RoomListState) {
         rooms = state.rooms
         loaded = state.loaded
+        lists = RoomLists(state)
+        // The first states may be a cache: the space may come with sync.
+        if let selectedSpace, state.loaded, lists.space(selectedSpace) == nil {
+            selectSpace(nil)
+        }
         if state.loaded && encryptionOnLoad {
             encryptionOnLoad = false
             refreshEncryption()
@@ -194,6 +214,18 @@ final class SessionModel: ObservableObject {
 
     // MARK: Rooms
 
+    /// Show `entry`'s rooms (and remember it), or the spaces with none
+    /// selected.
+    func selectSpace(_ entry: SpaceEntry?) {
+        selectedSpace = entry
+        roomsPage = entry == nil ? .spaces : .rooms
+        if let entry {
+            defaults.set(entry.saved, forKey: Self.selectedSpaceKey)
+        } else {
+            defaults.removeObject(forKey: Self.selectedSpaceKey)
+        }
+    }
+
     func timeline(for room: RoomSummary) -> TimelineModel {
         TimelineModel(session: session, room: room)
     }
@@ -203,6 +235,7 @@ final class SessionModel: ObservableObject {
         subscriptions.cancelAll()
         verification = nil
         try await session.logout()
+        defaults.removeObject(forKey: Self.selectedSpaceKey)
     }
 
     /// Delete the data of a session the server no longer accepts.
@@ -210,7 +243,14 @@ final class SessionModel: ObservableObject {
         subscriptions.cancelAll()
         verification = nil
         try await session.forget()
+        defaults.removeObject(forKey: Self.selectedSpaceKey)
     }
+}
+
+/// The pages of the Rooms tab, left to right.
+enum RoomsPage: Hashable {
+    case spaces
+    case rooms
 }
 
 /// Time iOS grants to finish work after the app went to the background.

@@ -146,6 +146,10 @@ final class FakeSession: Session, @unchecked Sendable {
     override func requestSelfVerification() async throws -> Verification {
         selfVerification
     }
+
+    override func logout() async throws {}
+
+    override func forget() async throws {}
 }
 
 final class FakeOAuthLogin: OAuthLogin, @unchecked Sendable {
@@ -219,11 +223,39 @@ enum Make {
     }
 
     static func room(
-        _ id: String, kind: RoomKind = .room, invited: Bool = false, name: String? = nil
+        _ id: String, kind: RoomKind = .room, invited: Bool = false, name: String? = nil, unread: UInt64 = 0,
+        directUser: String? = nil
     ) -> RoomSummary {
         RoomSummary(
             id: id, name: name ?? id, avatarUrl: nil, topic: nil, kind: kind, invited: invited, encrypted: false,
-            unreadMessages: 0, unreadMentions: 0, unreadNotifications: 0, lastActivity: nil, directUserId: nil,
-            alias: nil, joinedMembers: 2)
+            unreadMessages: unread, unreadMentions: 0, unreadNotifications: 0, lastActivity: nil,
+            directUserId: directUser, alias: nil, joinedMembers: 2)
+    }
+
+    /// The rooms by space as the library's integration test makes them, most
+    /// recently active first: spaces Team and Other; Lab in Team, Deep in
+    /// Team's nested space Sub; Loose in no space; a direct chat with Bob, a
+    /// member of Team (unread); invites to Offer, in Team, and from Carol,
+    /// in no space, to a direct chat and Party. Loose is unread.
+    static func roomsBySpace(loaded: Bool = true) -> RoomListState {
+        RoomListState(
+            rooms: [
+                room("!carol", kind: .direct, invited: true, name: "Carol", directUser: "@carol:example.org"),
+                room("!party", invited: true, name: "Party"),
+                room("!offer", invited: true, name: "Offer"),
+                room("!bob", kind: .direct, name: "Bob", unread: 2, directUser: "@bob:example.org"),
+                room("!loose", name: "Loose", unread: 1),
+                room("!deep", name: "Deep"),
+                room("!sub", kind: .space, name: "Sub"),
+                room("!lab", name: "Lab"),
+                room("!team", kind: .space, name: "Team"),
+                room("!other", kind: .space, name: "Other"),
+            ],
+            loaded: loaded,
+            spaces: [
+                SpaceRooms(spaceId: "!team", roomIds: ["!offer", "!bob", "!deep", "!lab"]),
+                SpaceRooms(spaceId: "!other", roomIds: []),
+            ],
+            roomsOutsideSpaces: ["!party", "!loose"])
     }
 }
