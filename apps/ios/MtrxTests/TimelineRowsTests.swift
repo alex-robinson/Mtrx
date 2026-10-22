@@ -56,6 +56,18 @@ final class TimelineRowsTests: XCTestCase {
             rows[0].content, .summary("Alice created and configured the room · Alice invited Bob · Bob joined"))
     }
 
+    func testUndecryptableMessagesShowGroupedLikeMessages() {
+        let items = [
+            Make.item("1", Make.event("alice", Make.text("Hi"), at: 0)),
+            Make.item("2", Make.event("alice", .unableToDecrypt, at: 1)),
+        ]
+        let rows = TimelineRows.build(items, showSenders: true)
+        XCTAssertEqual(rows.map(\.id), ["1", "2"])
+        guard case .message(let message) = rows[1].content else { return XCTFail("no message") }
+        XCTAssertEqual(message.event.content, .unableToDecrypt)
+        XCTAssertFalse(message.firstInGroup)
+    }
+
     func testLocalpart() {
         XCTAssertEqual(localpart("@alice:example.org"), "alice")
         XCTAssertEqual(localpart("bob"), "bob")
