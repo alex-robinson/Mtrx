@@ -357,19 +357,19 @@ fn number(x: f32) -> String {
 mod tests {
     use super::*;
 
-    /// Images may differ by a bit between platforms; text must not.
+    /// Images may differ by a bit between platforms; text must not, but
+    /// for line endings, which checkouts may change (in the logo too).
     #[test]
     fn committed_text_files_are_current() {
         let root = crate::workspace_root();
+        let lines = |text: &str| text.replace("\r\n", "\n");
         for (path, contents) in outputs(&root).unwrap() {
             let Contents::Text(made) = contents else {
                 continue;
             };
-            let committed = std::fs::read_to_string(root.join(path))
-                .unwrap()
-                .replace('\r', "");
+            let committed = std::fs::read_to_string(root.join(path)).unwrap();
             assert!(
-                committed == made,
+                lines(&committed) == lines(&made),
                 "{path} differs from what `cargo xtask icons` makes"
             );
         }
