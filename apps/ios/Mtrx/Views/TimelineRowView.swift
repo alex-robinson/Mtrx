@@ -101,7 +101,9 @@ struct MessageView: View {
         case .redacted:
             bubble(Text("Message deleted").italic().foregroundColor(.secondary))
         case .unableToDecrypt:
-            bubble(Text("Unable to decrypt this message (waiting for keys)").italic().foregroundColor(.secondary))
+            // Turns into the message by itself once its key arrives (after a
+            // recovery or verification).
+            bubble(Text("Could not decrypt this message.").italic().foregroundColor(.secondary))
         case .other(let description):
             bubble(Text("sent a \(description)").italic().foregroundColor(.secondary))
         case .membership, .displayNameChange, .otherState:

@@ -46,10 +46,60 @@ final class FakeTimeline: Timeline, @unchecked Sendable {
     }
 }
 
+final class FakeVerification: Verification, @unchecked Sendable {
+    var user = "@me:example.org"
+    var initialState = VerificationState.waiting
+    var listener: VerificationListener?
+    var subscription: FakeTaskHandle?
+    var accepted = 0
+    var confirmed = 0
+    var mismatched = 0
+    var cancelled = 0
+    var answerError: Error?
+
+    override func otherUser() -> String { user }
+    override func state() -> VerificationState { initialState }
+
+    override func subscribe(listener: VerificationListener) -> TaskHandle {
+        self.listener = listener
+        let handle = FakeTaskHandle(noHandle: .init())
+        subscription = handle
+        return handle
+    }
+
+    override func accept() async throws {
+        if let answerError { throw answerError }
+        accepted += 1
+    }
+
+    override func confirm() async throws {
+        if let answerError { throw answerError }
+        confirmed += 1
+    }
+
+    override func mismatch() async throws {
+        mismatched += 1
+    }
+
+    override func cancel() async throws {
+        cancelled += 1
+    }
+}
+
 final class FakeSession: Session, @unchecked Sendable {
     let fakeTimeline = FakeTimeline(noHandle: .init())
     var roomListListener: RoomListListener?
     var connectionListener: ConnectionListener?
+    var verificationRequestListener: VerificationRequestListener?
+    var syncStarts = 0
+    var encryption = EncryptionState(deviceVerified: false, recovery: .unknown)
+    var encryptionRequests = 0
+    var deviceList: [DeviceInfo] = []
+    /// What `recover` reports, then its outcome.
+    var recoverySteps: [RecoveryStep] = []
+    var recoverError: Error?
+    var recoveredWith: String?
+    var selfVerification = FakeVerification(noHandle: .init())
 
     override func userId() -> String { "@me:example.org" }
     override func deviceId() -> String { "DEVICE" }
@@ -67,6 +117,34 @@ final class FakeSession: Session, @unchecked Sendable {
     override func subscribeConnection(listener: ConnectionListener) -> TaskHandle {
         connectionListener = listener
         return FakeTaskHandle(noHandle: .init())
+    }
+
+    override func subscribeVerificationRequests(listener: VerificationRequestListener) -> TaskHandle {
+        verificationRequestListener = listener
+        return FakeTaskHandle(noHandle: .init())
+    }
+
+    override func startSync() async {
+        syncStarts += 1
+    }
+
+    override func encryptionState() async throws -> EncryptionState {
+        encryptionRequests += 1
+        return encryption
+    }
+
+    override func devices() async throws -> [DeviceInfo] { deviceList }
+
+    override func recover(recoveryKey: String, listener: RecoveryListener) async throws {
+        recoveredWith = recoveryKey
+        for step in recoverySteps {
+            listener.onUpdate(step: step)
+        }
+        if let recoverError { throw recoverError }
+    }
+
+    override func requestSelfVerification() async throws -> Verification {
+        selfVerification
     }
 }
 

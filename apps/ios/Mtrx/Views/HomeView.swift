@@ -12,6 +12,9 @@ struct HomeView: View {
     var body: some View {
         NavigationSplitView {
             RoomListView(selection: $selection)
+                .safeAreaInset(edge: .top) {
+                    EncryptionBanner { showSettings = true }
+                }
                 .navigationTitle("Mtrx")
                 .toolbar {
                     ToolbarItem(placement: .navigationBarTrailing) {
@@ -32,10 +35,16 @@ struct HomeView: View {
                     .foregroundStyle(.secondary)
             }
         }
-        .sheet(isPresented: $showSettings) {
-            SettingsView()
-                .environmentObject(app)
-                .environmentObject(session)
+        .sheet(item: sheet) { sheet in
+            switch sheet {
+            case .settings:
+                SettingsView()
+                    .environmentObject(app)
+                    .environmentObject(session)
+            case .verification(let model):
+                VerificationView(model: model)
+                    .environmentObject(session)
+            }
         }
         .alert("Signed out", isPresented: signedOutElsewhere) {
             Button("Sign in again") {
@@ -51,12 +60,37 @@ struct HomeView: View {
         }
     }
 
+    /// A verification shows over everything; Settings returns after it if
+    /// it was open.
+    private var sheet: Binding<HomeSheet?> {
+        Binding(
+            get: {
+                if let verification = session.verification { return .verification(verification) }
+                return showSettings ? .settings : nil
+            },
+            set: {
+                if $0 == nil && session.verification == nil { showSettings = false }
+            })
+    }
+
     private var signedOutElsewhere: Binding<Bool> {
         Binding(get: { session.connection == .signedOut }, set: { _ in })
     }
 
     private var hasError: Binding<Bool> {
         Binding(get: { session.error != nil }, set: { if !$0 { session.error = nil } })
+    }
+}
+
+enum HomeSheet: Identifiable {
+    case settings
+    case verification(VerificationModel)
+
+    var id: ObjectIdentifier? {
+        switch self {
+        case .settings: return nil
+        case .verification(let model): return ObjectIdentifier(model)
+        }
     }
 }
 
@@ -103,6 +137,37 @@ struct RoomListView: View {
             NavigationLink(value: room.id) {
                 RoomRow(room: room)
             }
+        }
+    }
+}
+
+/// While this device cannot read all encrypted messages; a tap opens the
+/// encryption settings.
+struct EncryptionBanner: View {
+    @EnvironmentObject private var session: SessionModel
+    let open: () -> Void
+
+    var body: some View {
+        if session.needsEncryptionSetup {
+            Button(action: open) {
+                HStack(spacing: 10) {
+                    Image(systemName: "lock.trianglebadge.exclamationmark")
+                        .font(.title3)
+                    Text("Verify this device or enter your recovery key to read encrypted messages.")
+                        .font(.footnote)
+                        .multilineTextAlignment(.leading)
+                    Spacer(minLength: 0)
+                    Image(systemName: "chevron.right")
+                        .font(.footnote.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                }
+                .padding(12)
+                .background(Color.orange.opacity(0.15), in: RoundedRectangle(cornerRadius: 12))
+            }
+            .buttonStyle(.plain)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            .background(.bar)
         }
     }
 }
