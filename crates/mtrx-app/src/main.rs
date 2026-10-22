@@ -7,6 +7,7 @@
 
 mod actions;
 mod app;
+mod appearance;
 mod arrange;
 mod avatar;
 mod badge;
@@ -62,7 +63,7 @@ fn main() -> iced::Result {
     iced::application(app::App::boot, app::App::update, app::App::view)
         .title("Mtrx")
         .subscription(app::App::subscription)
-        .theme(app::App::theme)
+        .theme(app::App::window_theme)
         .settings(fonts::settings())
         .window(iced::window::Settings {
             size: iced::Size::new(1200.0, 800.0),
