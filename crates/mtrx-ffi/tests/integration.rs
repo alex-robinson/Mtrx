@@ -1083,13 +1083,26 @@ fn profiles_and_inviting_to_a_space() {
     let (rooms, updates) = forward();
     let _handle = block_on(bob.session.subscribe_room_list(rooms)).unwrap();
     block_on(alice.session.invite(space_id.clone(), bob_id.clone())).unwrap();
-    let state = wait_for("the space invite", &updates, |s: &RoomListState| {
-        s.rooms.iter().any(|r| r.id == space_id && r.invited)
-    });
-    let space = state.rooms.iter().find(|r| r.id == space_id).unwrap();
-    assert_eq!(
-        (space.kind, space.name.as_str()),
-        (RoomKind::Space, "Group")
-    );
+    // The invite can show before its state (the space's type and name)
+    // has been read: wait for that too.
+    let deadline = std::time::Instant::now() + TIMEOUT;
+    let mut seen = None;
+    let state = loop {
+        let left = deadline.saturating_duration_since(std::time::Instant::now());
+        let Ok(state) = updates.recv_timeout(left) else {
+            panic!("the space invite, named and a space; last seen: {seen:?}");
+        };
+        seen = state
+            .rooms
+            .iter()
+            .find(|r| r.id == space_id && r.invited)
+            .cloned();
+        if seen
+            .as_ref()
+            .is_some_and(|r| r.kind == RoomKind::Space && r.name == "Group")
+        {
+            break state;
+        }
+    };
     assert!(state.rooms_outside_spaces.contains(&space_id));
 }
