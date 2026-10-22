@@ -11,8 +11,9 @@ library side of it is done. Stage 2 (section 7) organises the room list by
 space, and stage 3 (section 8) adds reactions, replies, edits, deleting,
 read receipts and typing; their library sides are done too. Stage 4
 (section 9) polishes what the phone test of stages 1 to 3 found; its
-library side is done. This is the plan, and the contract the apps are
-built on.
+library side is done. Push notifications on Android (section 10) have
+their library side done too. This is the plan, and the contract the apps
+are built on.
 
 ## Decisions
 
@@ -61,7 +62,9 @@ IDs are strings, times `Date`/`Instant`; no Ruma types.
 
 - `Mtrx(dataDir, cacheDir, secrets)`: one per app. `restore() -> Session?`,
   `login(homeserver, user, password)`, `supportsOauth(homeserver)`,
-  `startOauthLogin(homeserver) -> OAuthLogin`.
+  `startOauthLogin(homeserver) -> OAuthLogin`. Push (section 10):
+  `notification(roomId, eventId) -> NotificationContent?`, from the
+  process that receives a push, with or without the app's session.
 - `OAuthLogin`: `url()`, `finish(redirectUrl) -> Session`.
 - `Session`: `userId`, `deviceId`, `homeserver`; `startSync`, `stopSync`,
   `reconnect`; `connection()`, `subscribeConnection(listener)`;
@@ -74,7 +77,9 @@ IDs are strings, times `Date`/`Instant`; no Ruma types.
   `requestSelfVerification() -> Verification`,
   `subscribeVerificationRequests(listener)`. People (section 9):
   `userProfile(userId) -> UserProfile`, `invite(roomId, userId)` (to a
-  room or a space).
+  room or a space). Push (section 10): `setPusher(gatewayUrl, pushkey,
+  appId, appName, deviceName, lang)`, `deletePusher(pushkey)`,
+  `pushers() -> [PusherInfo]`.
 - `Verification`: `otherUser()`, `accept()`, `state()`, `subscribe(listener)`,
   `confirm()`, `mismatch()`, `cancel()`.
 - `Timeline`: `roomId`, `subscribe(listener)`, `paginateBack(events)`,
@@ -118,7 +123,11 @@ IDs are strings, times `Date`/`Instant`; no Ruma types.
   `downloadingKeys(done, total)`), `VerificationState` (`waiting`,
   `emojis([VerificationEmoji])`, `confirmed`, `sharingKeys`, `done`,
   `cancelled(reason)`), `VerificationEmoji { symbol, description }`,
-  `DeviceInfo { id, name, verified, current }`.
+  `DeviceInfo { id, name, verified, current }`. Push: `PusherInfo {
+  pushkey, appId, appName, deviceName, lang, gatewayUrl, eventIdOnly }`,
+  `NotificationContent { roomId, eventId, roomName, roomAvatarUrl,
+  isDirect, senderId, senderName, senderAvatarUrl, body, isMention,
+  isNoisy, timestamp, shouldNotify }`.
 - Errors: `MtrxError` (`NotLoggedIn`, `AlreadyLoggedIn`, `LoginCancelled`,
   `RoomNotFound`, `InvalidInput`, `SecretStorage`, `Other(message)`).
   `InvalidInput(reason)`: a malformed ID or URL, or a recovery key that is
@@ -475,7 +484,12 @@ Remaining:
       device sees `keysArriving` true, then verified with recovery enabled
       and no keys arriving; the verified device sees `deviceVerified`
       turn true), someone's profile, and an invitation to a space, which
-      shows in the invitee's room list: all
+      shows in the invitee's room list; push (section 10): a pusher set,
+      listed, set again (replaced) and deleted (twice), and a second
+      `Mtrx` on Bob's data reading Alice's messages in an encrypted room
+      while Bob's app syncs (decrypted, a mention and a plain message
+      that notify, Bob's own message nil, a missing event an error, and
+      Bob's app still decrypting afterwards): all
       through the bindings against Synapse (`cargo test -p mtrx-ffi --test
       integration -- --ignored`, in the Linux workflow).
 
@@ -872,6 +886,181 @@ the choice saved and restored; the info sheet (the profile replacing the
 chat's name and avatar, a failure keeping them), an invite succeeding
 and failing; which rows can be swiped to reply.
 
+## 10. Push notifications (Android)
+
+The apps notify only while they sync. Push brings notifications while the
+app is in the background or not running, through UnifiedPush: the user
+installs a distributor (ntfy), which holds one connection for all apps;
+the homeserver posts to a Matrix push gateway (ntfy.sh or a self-hosted
+ntfy, at `<ntfy>/_matrix/push/v1/notify`), which hands the post to the
+distributor, which wakes the app. No Google services. The library part is
+done and tested (section 5); iOS (APNs) waits for an Apple developer
+account and uses the same calls (below).
+
+**Registering.** Library `org.unifiedpush.android:connector` (the current
+3.x; check its docs for the exact names, which changed from 2.x). At
+start, once signed in and with notifications on: pick the distributor
+(the saved one, else the only or default one; several → let the user
+choose, see Settings) and `register`. The connector calls back on the
+app's thread:
+- New endpoint (`onNewEndpoint`; at the first registration and whenever
+  the distributor changes it): `session.setPusher(gatewayUrl, pushkey,
+  appId, appName, deviceName, lang)` with `pushkey` = the endpoint URL
+  (`https://ntfy.sh/upAbC…?up=1`), `gatewayUrl` = the endpoint's origin
+  + `/_matrix/push/v1/notify` (UnifiedPush's discovery: a `GET` on it
+  answers `{"unifiedpush":{"gateway":"matrix"}}` when that server is a
+  gateway; otherwise use `https://matrix.gateway.unifiedpush.org/_matrix/push/v1/notify`),
+  `appId` = `org.mtrx.app`, `appName` = "Mtrx", `deviceName` =
+  `Build.MODEL`, `lang` = `Locale.getDefault().toLanguageTag()`. The
+  library asks for the `event_id_only` format: the server sends no
+  message text through the gateway. Save the endpoint (DataStore `push`,
+  key `endpoint`); call `setPusher` again at each start while signed in
+  (it replaces the pusher, so it is safe to repeat) and after a sign-in.
+- Unregistered (`onUnregistered`) or turned off: `deletePusher(endpoint)`
+  (succeeds if there is none), forget the endpoint.
+- Registration failed: the Settings state below; retry at the next start.
+- Signing out: `deletePusher`, then the connector's `unregister`, then
+  `logout` (the server also drops a signed-out device's pushers).
+`pushers()` lists the account's pushers (all devices), for Settings and
+tests.
+
+**The push.** The distributor delivers the gateway's body, the Matrix
+push notification (bytes of UTF-8 JSON), for example:
+```json
+{"notification": {"event_id": "$x7…", "room_id": "!abc:example.org",
+  "counts": {"unread": 2}, "prio": "high",
+  "devices": [{"app_id": "org.mtrx.app", "pushkey": "https://ntfy.sh/upAbC…?up=1",
+               "data": {"format": "event_id_only"}}]}}
+```
+Read `notification.room_id` and `notification.event_id`. A push without
+`event_id` only updates the count (the server sends one when the user
+reads on another device): when `counts.unread` is 0, cancel all of the
+app's message notifications. Ignore what does not parse.
+
+**The receiver.** For each push: `mtrx.notification(roomId, eventId)`.
+It restores the saved session from the data directory and the secrets
+without syncing, fetches the event (a short sliding sync, else
+`/context`), decrypts it (if the key is missing, it runs the encryption
+sync for up to about 6 s), applies the account's push rules, and returns:
+- nil: nothing to show (our own message, a muted room, push rules that do
+  not notify, an ignored sender, a deleted event). Post nothing.
+- `NotificationContent`: post it if `shouldNotify` (true for all but
+  rare cases; check it all the same). `body` is the text, or "Image",
+  "Video", "Audio", "File", "Location", "Sticker", "Call",
+  "Encrypted message" (the key did not come in time), "Invited you",
+  "New message".
+- `MtrxError.NotLoggedIn`: signed out; unregister. `Other(reason)`
+  (network, the event not found): post "New message", titled "Mtrx",
+  as the room's notification (tag `roomId`), so a push is not lost; a
+  later push for the room that works replaces it.
+It takes from a fraction of a second to about 10 s. Run it in a
+coroutine the push service owns (connector 3.x delivers in a `Service`;
+a 2.x `BroadcastReceiver` needs `goAsync()` and stays under 10 s), not on
+the main thread, with a timeout of 20 s.
+
+**Posting.**
+- Channel "Messages" (`messages`, importance high), created at start;
+  category `CATEGORY_MESSAGE`. `isNoisy` false (the push rules ask for
+  no sound) → `setSilent(true)`. `isMention` is there for showing a
+  mention apart; not needed now.
+- One notification per room: tag = `roomId`, id = 0, `MessagingStyle`
+  with the room's messages so far (keep the last few per room in memory
+  or a small file; a new process starts from the one at hand), the
+  sender as `Person` (`senderName`; an avatar only when the app's
+  `Session` is open: `session.avatar(senderAvatarUrl, 96)`), the
+  conversation title `roomName` unless `isDirect`, `timestamp` as `when`.
+  Grouped (`setGroup("messages")`) with a summary notification from two
+  rooms on.
+- Tap: a `PendingIntent` to `MainActivity` with the room ID, which
+  navigates to `room/{roomId}` (signed in) and cancels the notification.
+- Not for the room open in the foreground: the `Account` keeps the open
+  room's ID (set by the room screen, cleared when it leaves); skip
+  posting when it matches and the app is in the foreground
+  (`ProcessLifecycleOwner` started).
+- Cleared when the room is read: when the room screen calls `markRead`,
+  and when a room's `unreadNotifications` drops to 0 in a
+  `RoomListState` (read on another device, while the app syncs), and on
+  a count push with `unread` 0 (above).
+- Android 13+: `POST_NOTIFICATIONS`, asked when the user turns
+  notifications on (and once after the first sign-in).
+
+**Settings.** A "Notifications" section above "Encryption":
+- A switch "Push notifications" (DataStore `push`, key `enabled`, on by
+  default; kept at sign-out). On → register as above; off → unregister
+  and `deletePusher`.
+- Under it, the state: "Via ntfy" (the distributor's app label) when
+  registered; "Several apps can deliver notifications" with a choice
+  (`getDistributors`, `saveDistributor`, then register) when more than
+  one is installed and none chosen; "Install a UnifiedPush app, such as
+  ntfy, to get notifications while Mtrx is closed." with a button to
+  ntfy's store page when none is installed (`getDistributors` empty;
+  look again at each start and when Settings shows); "Notifications are
+  off in Android's settings" with a button to them when the permission
+  or the channel is off; "Registration failed: <reason>" after a
+  failure.
+
+**Processes and threads.** Android starts the connector's service in the
+app's process, starting the process if it is not running;
+`MtrxApplication.onCreate` runs first, so `AndroidPlatform.initialize`
+and the one `Mtrx` are there (do not declare `android:process`; the
+library would also work in a process of its own, but the app's start-up
+runs in every process). `Mtrx.notification` uses a client of its own on
+the same store as the app's `Session`, which may be open in this process
+(syncing or not) or in no process; the SDK's cross-process locks keep
+their writes apart (each client takes them under its own name). Do not
+start sync for a push. Calls run one at a time in a process (the library
+queues them), on the library's threads; hop to the main thread only for
+UI state, and post notifications from any thread. The `SecretBackend`
+is called from the push too: the Keystore key must be usable while the
+device is locked (it is: the app's key needs no user authentication), so
+pushes work on a locked phone after the first unlock.
+
+**Testing in CI.** No real transport is available there, so the test
+plays distributor and gateway. An instrumented test (`androidTest`, run
+by `android.yml` on the emulator after the smoke test) with Synapse
+started on the runner as in `linux.yml` (`testserver/run.sh`; the
+emulator reaches the host's port as `http://10.0.2.2:8008`, server name
+`localhost`):
+1. Register two users with Synapse's shared-secret admin API (HMAC-SHA1
+   of `nonce\0name\0password\0notadmin` with `mtrx-test-shared-secret`, as
+   `mtrx_core::test_support::register`).
+2. Sign Bob in through the app's `Account` (the app's data directory, so
+   the push handler finds the session); sign Alice in with a second
+   `Mtrx` on a temporary directory.
+3. Make the room with the client-server API (the bindings cannot make
+   rooms): Alice logs in over HTTP, creates a room inviting Bob, Bob
+   joins over HTTP with a token of his own (another login).
+4. Register a pusher the way the app does, with a fake endpoint
+   (`http://10.0.2.2:9/upTEST?up=1`), and check `pushers()` lists it with
+   `eventIdOnly`.
+5. Alice sends `@bob:localhost …` (`Timeline.sendText`, which adds
+   `m.mentions`); take its event ID from her timeline.
+6. Deliver the push: send the connector's message intent to the app,
+   with the JSON above (`room_id`, `event_id`, the fake `pushkey`) as the
+   message bytes. The connector checks the token it saved when
+   registering, so either register first with a stub distributor (a
+   test app or component answering the connector's registration
+   broadcast with the fake endpoint) or, if that proves brittle, call
+   the handler that the connector's callback delegates to with the same
+   bytes (keep that handler a plain class for this reason).
+7. Assert within 30 s that `NotificationManager.activeNotifications`
+   has a notification tagged with the room ID whose text is the message
+   and whose person is Alice; then that a push for Bob's own message
+   posts nothing; then open the room (or `markRead`) and assert the
+   notification is gone.
+Unit tests (JVM) on fakes: parsing pushes (with and without
+`event_id`, garbage), what to post for each `NotificationContent` (nil,
+`shouldNotify`, silent, the open room skipped, errors as "New message"),
+the endpoint → `setPusher` arguments (gateway from the origin), the
+Settings states, and clearing on read.
+
+**iOS later.** The same calls: `setPusher` with a Sygnal gateway and the
+APNs token as `pushkey` (an optional default payload for
+`mutable-content` will be added as a defaulted argument), and
+`Mtrx.notification` from a notification service extension, sharing the
+data directory and Keychain through an app group: the extension is the
+separate process the locks are made for.
+
 ## Later
 
 - The room list can show a room before its `m.room.encryption` event has
@@ -881,8 +1070,9 @@ and failing; which rows can be swiped to reply.
   to look at (for the desktop too): sending should wait until the room's
   encryption state is known, rather than the apps working around it.
 
-- Push notifications (APNs, FCM; a push gateway, notification service
-  extension / decryption in the background).
+- Push notifications on iOS (APNs through a Sygnal gateway, a
+  notification service extension calling `Mtrx.notification`; needs an
+  Apple developer account).
 - Sending images; mentions with `@` completion; forwarding.
 - Several accounts; Face ID / biometric lock; verifying other people;
   setting up and resetting recovery from the apps.
