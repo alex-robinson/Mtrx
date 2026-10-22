@@ -152,7 +152,9 @@ Stage 1 (section 6): the banner, Settings' "Encryption" section, the
 recovery key screen with its steps, emoji verification in both directions
 (one sheet over everything, Settings returns after it; a request that
 comes while another is unanswered replaces it, one during a verification
-is cancelled), and "Could not decrypt this message." rows.
+is cancelled), "The recovery key is not valid." under the field, and
+"Could not decrypt this message." rows. Stage 2 (section 7): the Chats
+and Rooms tabs.
 
 ```
 apps/ios/
@@ -163,13 +165,13 @@ apps/ios/
     Core/             Keychain backend, Feed (listeners -> AsyncStream),
                       browser sign-in, error messages
     Models/           AppModel (phase: starting, signed out, signed in),
-                      SignInModel, SessionModel (room list, connection, sync,
-                      encryption state, verification requests),
-                      RecoveryModel, VerificationModel, TimelineModel,
-                      ImageCache, TimelineRows, RoomSections
-    Views/            sign-in, room list (encryption banner), room
-                      (timeline, composer), settings, recovery key,
-                      verification
+                      SignInModel, SessionModel (room lists, selected space,
+                      connection, sync, encryption state, verification
+                      requests), RecoveryModel, VerificationModel,
+                      TimelineModel, ImageCache, TimelineRows, RoomLists
+    Views/            sign-in, home (Chats and Rooms tabs, encryption
+                      banner), room (timeline, composer), settings,
+                      recovery key, verification
     Assets.xcassets   icon (logo.svg, full-bleed), logo, accent colour
   MtrxTests/          models with fakes of the FFI classes
 ```
@@ -177,9 +179,17 @@ apps/ios/
 - Threading: listeners yield into an `AsyncStream` that keeps only the
   newest state; a main-actor task applies it. Models are `@MainActor`
   `ObservableObject`s; views only read them.
-- Room list: invites, direct messages, rooms (joined spaces left out, as on
-  the desktop), most recently active first; search by name. Invites are
-  listed but answered on the desktop (no join call in the FFI yet).
+- Home: a `TabView` with Chats and Rooms, each a `NavigationStack` (also on
+  iPad) whose rooms open with the tab bar hidden (`.toolbar(.hidden, for:
+  .tabBar)`); Settings is a sheet. `RoomLists` derives the chats and the
+  spaces (with their rooms and unread dots, then "Other rooms") from each
+  `RoomListState`. Rooms is a paged `TabView` (spaces, the selected space's
+  rooms; a "Spaces" button goes back too); the page and the selected space
+  live in `SessionModel`, the space in UserDefaults (`selectedSpace`: a
+  space ID or `other-rooms`), removed at sign-out. The encryption banner
+  is the first row of each list; each list has a search by name, names
+  starting with it first. Invites are listed but answered on the desktop
+  (no join call in the FFI yet).
 - Timeline: rows keyed by `TimelineItem.id`; runs of state events folded
   into one line (as the desktop writes them); messages grouped by sender.
   Bottom-anchored (`defaultScrollAnchor`) on iOS 17+, a flipped scroll view
