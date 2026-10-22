@@ -43,11 +43,13 @@ import uniffi.mtrx.TypingListener
  *
  * Actions on a message take its row's id from the latest [rows]. Sends and
  * the other actions (invites too) run in a scope of their own, so leaving
- * the room (which clears this model) does not cancel them.
+ * the room (which clears this model) does not cancel them. [onRead] follows
+ * each successful [markRead] (the room's notifications go).
  */
 class TimelineViewModel(
     roomId: String,
     private val session: Session,
+    private val onRead: () -> Unit,
 ) : ViewModel() {
     private val _rows = MutableStateFlow<List<TimelineRow>>(emptyList())
     val rows: StateFlow<List<TimelineRow>> = _rows.asStateFlow()
@@ -169,7 +171,9 @@ class TimelineViewModel(
                 current.markRead()
             } catch (e: MtrxException) {
                 markedRead = null
+                return@launch
             }
+            onRead()
         }
     }
 

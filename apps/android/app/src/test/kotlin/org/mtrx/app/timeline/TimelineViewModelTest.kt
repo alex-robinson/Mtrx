@@ -48,7 +48,9 @@ class TimelineViewModelTest {
         Dispatchers.resetMain()
     }
 
-    private fun viewModel() = TimelineViewModel("!room:example.org", session)
+    private var reads = 0
+
+    private fun viewModel() = TimelineViewModel("!room:example.org", session, onRead = { reads++ })
 
     @Test
     fun personInfoOpensOnceAndCloses() = runTest {
@@ -104,6 +106,17 @@ class TimelineViewModelTest {
         viewModel.markRead()
         viewModel.markRead()
         assertEquals(1, timeline.markedRead)
+        // The room's notifications go once it is read.
+        assertEquals(1, reads)
+    }
+
+    @Test
+    fun aFailedMarkReadKeepsTheNotifications() = runTest {
+        val viewModel = viewModel()
+        timeline.markReadError = MtrxException.Other("offline")
+        timeline.listener!!.onUpdate(listOf(textEvent("1", "@alice:example.org", "hi")))
+        viewModel.markRead()
+        assertEquals(0, reads)
     }
 
     private val alice = "@alice:example.org"
@@ -229,7 +242,7 @@ class TimelineViewModelTest {
     @Test
     fun leavingTheRoomStopsTypingButNotSending() = runTest {
         val store = ViewModelStore()
-        val factory = viewModelFactory { initializer { TimelineViewModel("!room:example.org", session) } }
+        val factory = viewModelFactory { initializer { TimelineViewModel("!room:example.org", session, onRead = {}) } }
         val viewModel = ViewModelProvider(store, factory)[TimelineViewModel::class.java]
         val gate = CompletableDeferred<Unit>()
         timeline.gate = gate

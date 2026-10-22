@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The logo's speech bubble with its mark cut out, in one colour, for the
+     status bar (Android tints it). -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="1024"
+    android:viewportHeight="1024">
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:fillType="evenOdd"
+        android:pathData="M360,270H664A110,110 0,0 1,774,380V580A110,110 0,0 1,664,690H450L318,790L340,690A110,110 0,0 1,250,580V380A110,110 0,0 1,360,270Z M622,332H405A33,33 0,0 0,383,390L485,480L383,570A33,33 0,0 0,405,628H622A33,33 0,0 0,622,562H492L557,505A33,33 0,0 0,557,455L492,398H622A33,33 0,0 0,622,332Z" />
+</vector>

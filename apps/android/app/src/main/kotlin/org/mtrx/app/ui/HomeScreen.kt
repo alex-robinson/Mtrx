@@ -69,6 +69,7 @@ import java.time.LocalDate
 import kotlinx.coroutines.launch
 import org.mtrx.app.model.Account
 import org.mtrx.app.model.Images
+import org.mtrx.app.model.PushRegistration
 import org.mtrx.app.model.RoomSort
 import org.mtrx.app.model.SpaceEntry
 import org.mtrx.app.model.showsEncryptionBanner
@@ -104,6 +105,7 @@ enum class HomeTab(val label: String, val icon: ImageVector) {
 @Composable
 fun HomeScreen(
     account: Account,
+    push: PushRegistration,
     info: SessionInfo,
     images: Images,
     onOpenRoom: (String) -> Unit,
@@ -216,7 +218,7 @@ fun HomeScreen(
                         SectionColumn(sections, list.loaded, spaceRoomsList, images, today, onOpenRoom)
                     }
                 }
-                HomeTab.Settings -> SettingsContent(account, info, onEnterRecoveryKey, onVerify)
+                HomeTab.Settings -> SettingsContent(account, push, info, onEnterRecoveryKey, onVerify)
             }
         }
     }

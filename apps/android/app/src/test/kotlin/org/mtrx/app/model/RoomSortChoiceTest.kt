@@ -12,6 +12,7 @@ import org.mtrx.app.FakeMtrx
 import org.mtrx.app.FakeSession
 import org.mtrx.app.FakeSortStore
 import org.mtrx.app.FakeSpaceStore
+import org.mtrx.app.testAccount
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class RoomSortChoiceTest {
@@ -46,7 +47,7 @@ class RoomSortChoiceTest {
     @Test
     fun signingOutKeepsTheOrder() = runTest {
         val store = FakeSortStore(RoomSort.RECENT)
-        val account = Account(FakeMtrx(restored = FakeSession()), scope(), FakeSpaceStore(), store)
+        val account = testAccount(FakeMtrx(restored = FakeSession()), scope(), FakeSpaceStore(), store)
         account.start()
         account.signOut()
         assertEquals(RoomSort.RECENT, account.roomSort.sort.value)

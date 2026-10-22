@@ -23,6 +23,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import org.mtrx.app.model.Account
+import org.mtrx.app.model.PushRegistration
 import org.mtrx.app.model.showsEncryptionBanner
 import uniffi.mtrx.EncryptionState
 import uniffi.mtrx.RecoveryStatus
@@ -31,12 +32,13 @@ import uniffi.mtrx.RecoveryStatus
 data class SessionInfo(val userId: String, val homeserver: String, val deviceId: String)
 
 /**
- * The Settings tab: the account, encryption (its state, recovery and
- * verification), and signing out.
+ * The Settings tab: the account, notifications, encryption (its state,
+ * recovery and verification), and signing out.
  */
 @Composable
 fun SettingsContent(
     account: Account,
+    push: PushRegistration,
     info: SessionInfo,
     onEnterRecoveryKey: () -> Unit,
     onVerify: () -> Unit,
@@ -58,6 +60,9 @@ fun SettingsContent(
         Line("User", info.userId)
         Line("Server", info.homeserver)
         Line("Device", info.deviceId)
+        HorizontalDivider(Modifier.padding(vertical = 8.dp))
+        SectionTitle("Notifications")
+        NotificationsSection(push)
         HorizontalDivider(Modifier.padding(vertical = 8.dp))
         SectionTitle("Encryption")
         EncryptionSection(encryption, otherDevice, onEnterRecoveryKey, onVerify)

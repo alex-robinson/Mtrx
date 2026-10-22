@@ -2,6 +2,8 @@ package org.mtrx.app.ui
 
 import android.net.Uri
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -13,7 +15,9 @@ import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import org.mtrx.app.model.Account
 import org.mtrx.app.model.AccountState
+import org.mtrx.app.model.PushRegistration
 import org.mtrx.app.rooms.topLevelSpaces
+import org.mtrx.app.settings.AskNotificationPermissionOnce
 import org.mtrx.app.settings.RecoveryScreen
 import org.mtrx.app.settings.SessionInfo
 import org.mtrx.app.settings.VerificationRequestDialog
@@ -33,7 +37,7 @@ private const val VERIFICATION = "settings/verification"
  * for a verification request from another device, over any of them.
  */
 @Composable
-fun SignedInNavigation(account: Account, signedIn: AccountState.SignedIn) {
+fun SignedInNavigation(account: Account, push: PushRegistration, signedIn: AccountState.SignedIn) {
     val nav = rememberNavController()
     val info = remember(signedIn.session) {
         val session = signedIn.session
@@ -44,6 +48,8 @@ fun SignedInNavigation(account: Account, signedIn: AccountState.SignedIn) {
     val openVerification = {
         nav.navigate(VERIFICATION) { popUpTo(VERIFICATION) { inclusive = true } }
     }
+    AskNotificationPermissionOnce(push)
+
     val request by account.verificationRequest.collectAsStateWithLifecycle()
     if (request != null) {
         VerificationRequestDialog(
@@ -59,6 +65,7 @@ fun SignedInNavigation(account: Account, signedIn: AccountState.SignedIn) {
         composable(HOME) {
             HomeScreen(
                 account,
+                push,
                 info,
                 signedIn.images,
                 onOpenRoom = { roomId -> nav.navigate("room/${Uri.encode(roomId)}") },
@@ -78,7 +85,14 @@ fun SignedInNavigation(account: Account, signedIn: AccountState.SignedIn) {
         composable(ROOM, arguments = listOf(navArgument("roomId") { type = NavType.StringType })) { entry ->
             val roomId = entry.arguments?.getString("roomId") ?: return@composable
             // One per visit of the room (the back stack entry's).
-            val viewModel: TimelineViewModel = viewModel { TimelineViewModel(roomId, signedIn.session) }
+            val viewModel: TimelineViewModel = viewModel {
+                TimelineViewModel(roomId, signedIn.session, onRead = { account.roomRead(roomId) })
+            }
+            // Its notifications go, and pushes for it post none while it shows.
+            DisposableEffect(roomId) {
+                account.roomOpened(roomId)
+                onDispose { account.roomClosed(roomId) }
+            }
             val rooms by account.rooms.collectAsStateWithLifecycle()
             val encryption by account.encryption.collectAsStateWithLifecycle()
             val room = rooms.rooms.firstOrNull { it.id == roomId }
@@ -92,5 +106,13 @@ fun SignedInNavigation(account: Account, signedIn: AccountState.SignedIn) {
                 onBack = { nav.popBackStack() },
             )
         }
+    }
+
+    // A tapped notification's room, over whatever shows (after the graph is set).
+    val roomRequest by account.roomRequest.collectAsStateWithLifecycle()
+    LaunchedEffect(roomRequest) {
+        val roomId = roomRequest ?: return@LaunchedEffect
+        nav.navigate("room/${Uri.encode(roomId)}") { popUpTo(HOME) }
+        account.roomRequestHandled()
     }
 }

@@ -59,13 +59,17 @@ sealed interface BrowserLogin {
  * the process; [scope] runs on the main thread. Listener callbacks arrive on
  * the library's threads and only set flows or launch into [scope]. The
  * space selected on the Spaces tab is kept in [selectedSpace] until
- * sign-out; the order of the spaces' rooms in [roomSortStore].
+ * sign-out; the order of the spaces' rooms in [roomSortStore]. [push] is
+ * told when a session opens and before it closes; [notifications] are
+ * cleared as rooms are opened or read.
  */
 class Account(
     private val mtrx: MtrxInterface,
     private val scope: CoroutineScope,
     selectedSpace: SelectedSpaceStore,
     roomSortStore: RoomSortStore,
+    private val push: PushRegistration,
+    private val notifications: RoomNotifications,
 ) {
     private val _state = MutableStateFlow<AccountState>(AccountState.Loading)
     val state: StateFlow<AccountState> = _state.asStateFlow()
@@ -107,6 +111,13 @@ class Account(
     private val _verificationRequest = MutableStateFlow<Verification?>(null)
     val verificationRequest: StateFlow<Verification?> = _verificationRequest.asStateFlow()
 
+    /** A room to open, from a tapped notification; cleared once shown. */
+    private val _roomRequest = MutableStateFlow<String?>(null)
+    val roomRequest: StateFlow<String?> = _roomRequest.asStateFlow()
+
+    // The room on screen: read by pushes.
+    @Volatile private var openRoom: String? = null
+
     /** Errors of background work, to show briefly. */
     private val _messages = MutableSharedFlow<String>(extraBufferCapacity = 8)
     val messages: SharedFlow<String> = _messages.asSharedFlow()
@@ -116,8 +127,10 @@ class Account(
     private var session: Session? = null
     private var subscriptions: List<TaskHandle> = emptyList()
     private var encryptionSubscription: TaskHandle? = null
-    private var foreground = false
     private var syncing = false
+
+    // Set at once, followed by sync under the lock; read by pushes too.
+    @Volatile private var foreground = false
 
     // On the main thread.
     private var recoveryJob: Job? = null
@@ -140,11 +153,40 @@ class Account(
     }
 
     /** The app came to the foreground (sync) or went to the background (stop). */
-    fun setForeground(value: Boolean): Job = scope.launch {
-        lock.withLock {
-            foreground = value
-            updateSync()
+    fun setForeground(value: Boolean): Job {
+        foreground = value
+        return scope.launch {
+            lock.withLock { updateSync() }
         }
+    }
+
+    /** The room open on screen while the app is in the foreground; from any thread. */
+    fun foregroundRoom(): String? = if (foreground) openRoom else null
+
+    /** The room screen shows [roomId]: its notification goes. */
+    fun roomOpened(roomId: String) {
+        openRoom = roomId
+        notifications.clearRoom(roomId)
+    }
+
+    /** The room screen left [roomId]. */
+    fun roomClosed(roomId: String) {
+        if (openRoom == roomId) openRoom = null
+    }
+
+    /** [roomId] was marked read: its notification goes. */
+    fun roomRead(roomId: String) {
+        notifications.clearRoom(roomId)
+    }
+
+    /** Open [roomId] (a notification was tapped); signed in, the navigation does. */
+    fun requestRoom(roomId: String) {
+        _roomRequest.value = roomId
+    }
+
+    /** The navigation opened the requested room. */
+    fun roomRequestHandled() {
+        _roomRequest.value = null
     }
 
     /** Throws [MtrxException]. */
@@ -195,11 +237,14 @@ class Account(
         lock.withLock {
             val current = session ?: return@withLock
             stopSync()
+            // No more pushes to this device: on the server, then at the distributor.
+            push.closing(current)
             try {
                 current.logout()
             } catch (e: MtrxException) {
                 _messages.tryEmit("Could not sign out: ${describe(e)}")
                 updateSync()
+                push.opened(current)
                 return@withLock
             }
             close()
@@ -214,6 +259,7 @@ class Account(
         lock.withLock {
             val current = session ?: return@withLock
             stopSync()
+            push.closing(current)
             try {
                 current.forget()
             } catch (e: MtrxException) {
@@ -342,7 +388,9 @@ class Account(
         try {
             handles += signedIn.subscribeRoomList(object : RoomListListener {
                 override fun onUpdate(state: RoomListState) {
+                    val previous = _rooms.value
                     _rooms.value = state
+                    roomsRead(previous, state).forEach(notifications::clearRoom)
                 }
             })
         } catch (e: MtrxException) {
@@ -357,6 +405,7 @@ class Account(
         subscriptions = handles
         _state.value = AccountState.SignedIn(signedIn, Images(signedIn))
         updateSync()
+        push.opened(signedIn)
     }
 
     // Under the lock.
@@ -400,6 +449,8 @@ class Account(
         _rooms.value = NO_ROOMS
         _connection.value = ConnectionState.ONLINE
         spaceSelection.clear()
+        _roomRequest.value = null
+        notifications.clearAll()
     }
 
     private companion object {

@@ -1,5 +1,6 @@
 package org.mtrx.app
 
+import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -17,26 +18,47 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import org.mtrx.app.model.Account
 import org.mtrx.app.model.AccountState
+import org.mtrx.app.model.PushRegistration
 import org.mtrx.app.signin.SignInScreen
 import org.mtrx.app.signin.SignInViewModel
 import org.mtrx.app.ui.MtrxTheme
 import org.mtrx.app.ui.SignedInNavigation
 
 class MainActivity : ComponentActivity() {
+    private val account get() = (application as MtrxApplication).account
+
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
-        val account = (application as MtrxApplication).account
+        // A recreated activity has handled its intent already.
+        if (savedInstanceState == null) openRoomOf(intent)
+        val app = application as MtrxApplication
         setContent {
             MtrxTheme {
-                MtrxApp(account)
+                MtrxApp(app.account, app.push)
             }
         }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        openRoomOf(intent)
+    }
+
+    /** A tapped notification opens its room. */
+    private fun openRoomOf(intent: Intent?) {
+        intent?.getStringExtra(EXTRA_ROOM_ID)?.let { account.requestRoom(it) }
+    }
+
+    companion object {
+        /** The room a notification opens. */
+        const val EXTRA_ROOM_ID = "org.mtrx.app.ROOM_ID"
     }
 }
 
 @Composable
-private fun MtrxApp(account: Account) {
+private fun MtrxApp(account: Account, push: PushRegistration) {
     val state by account.state.collectAsStateWithLifecycle()
     when (val current = state) {
         AccountState.Loading -> Surface(Modifier.fillMaxSize()) {
@@ -48,7 +70,7 @@ private fun MtrxApp(account: Account) {
         }
         // A new navigation (and new screens) for each session.
         is AccountState.SignedIn -> key(current.session) {
-            SignedInNavigation(account, current)
+            SignedInNavigation(account, push, current)
         }
     }
 }

@@ -13,6 +13,7 @@ import org.mtrx.app.FakeMtrx
 import org.mtrx.app.FakeSession
 import org.mtrx.app.FakeSortStore
 import org.mtrx.app.FakeSpaceStore
+import org.mtrx.app.testAccount
 import org.mtrx.app.SpacesFixture
 import org.mtrx.app.SpacesFixture.TEAM
 import uniffi.mtrx.RoomListState
@@ -82,7 +83,7 @@ class SpaceSelectionTest {
     fun signingOutForgetsTheSelectedSpace() = runTest {
         val store = FakeSpaceStore(SpaceEntry.Space(TEAM))
         val session = FakeSession()
-        val account = Account(FakeMtrx(restored = session), scope(), store, FakeSortStore())
+        val account = testAccount(FakeMtrx(restored = session), scope(), store, FakeSortStore())
         account.start()
         session.roomListListener!!.onUpdate(SpacesFixture.state())
         assertEquals("restored", SpaceEntry.Space(TEAM), account.spaceSelection.selected.value)
