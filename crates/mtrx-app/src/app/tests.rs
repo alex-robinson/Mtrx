@@ -267,14 +267,17 @@ async fn send_reply(
     .unwrap()
 }
 
-/// The key of the message with `body`, once the timeline has it.
+/// The key of the message with `body`, once the timeline shows it sent: a
+/// message [`send`] waited for can still show as being sent, and an edit
+/// then goes to the send queue, which sent it already.
 async fn key_of(timeline: &RoomTimeline, body: &str) -> mtrx_core::EventKey {
     tokio::time::timeout(TIMEOUT, async {
         let mut updates = std::pin::pin!(timeline.updates());
         while let Some(entries) = updates.next().await {
             let found = entries.iter().find_map(|e| match e {
                 TimelineEntry::Event(ev)
-                    if matches!(&ev.content, EventContent::Message(m) if m.body == body) =>
+                    if ev.send_state == SendState::Sent
+                        && matches!(&ev.content, EventContent::Message(m) if m.body == body) =>
                 {
                     Some(ev.key.clone())
                 }
