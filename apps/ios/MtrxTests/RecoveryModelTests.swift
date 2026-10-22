@@ -6,13 +6,11 @@ import XCTest
 @MainActor
 final class RecoveryModelTests: XCTestCase {
     private var session: FakeSession!
-    private var recovered = 0
     private var model: RecoveryModel!
 
     override func setUp() async throws {
         session = FakeSession(noHandle: .init())
-        recovered = 0
-        model = RecoveryModel(session: session) { [unowned self] in self.recovered += 1 }
+        model = RecoveryModel(session: session)
     }
 
     func testShowsEachStepInOrder() async {
@@ -38,7 +36,6 @@ final class RecoveryModelTests: XCTestCase {
         XCTAssertNil(model.step)
         XCTAssertNil(model.error)
         XCTAssertEqual(model.key, "")
-        XCTAssertEqual(recovered, 1)
     }
 
     func testAnInvalidKeySaysSoUnderTheField() async {
@@ -54,7 +51,6 @@ final class RecoveryModelTests: XCTestCase {
         XCTAssertNil(model.step)
         // The key stays, to correct it.
         XCTAssertEqual(model.key, "EsTc")
-        XCTAssertEqual(recovered, 0)
 
         // A new attempt clears the message.
         session.recoverError = nil
@@ -73,7 +69,6 @@ final class RecoveryModelTests: XCTestCase {
         XCTAssertEqual(model.error, "The backup could not be downloaded")
         XCTAssertNil(model.keyError)
         XCTAssertEqual(model.key, "EsTc abcd")
-        XCTAssertEqual(recovered, 0)
     }
 
     func testNothingWithoutAKey() {

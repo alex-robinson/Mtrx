@@ -1,4 +1,5 @@
 import AuthenticationServices
+import Combine
 import Foundation
 import MtrxFFI
 import XCTest
@@ -147,8 +148,16 @@ final class FakeSession: Session, @unchecked Sendable {
     var connectionListener: ConnectionListener?
     var verificationRequestListener: VerificationRequestListener?
     var syncStarts = 0
+    /// What `encryptionState()` returns, and the subscription's first state.
     var encryption = EncryptionState(deviceVerified: false, recovery: .unknown)
     var encryptionRequests = 0
+    var encryptionListener: EncryptionStateListener?
+    var encryptionSubscription: FakeTaskHandle?
+    /// What `userProfile` returns, and for whom it was asked.
+    var profile: Result<UserProfile, Error> = .failure(MtrxError.Other(reason: "No connection"))
+    var profileRequests: [String] = []
+    var invites: [(roomId: String, userId: String)] = []
+    var inviteError: Error?
     var deviceList: [DeviceInfo] = []
     /// What `recover` reports, then its outcome.
     var recoverySteps: [RecoveryStep] = []
@@ -177,6 +186,24 @@ final class FakeSession: Session, @unchecked Sendable {
     override func subscribeVerificationRequests(listener: VerificationRequestListener) -> TaskHandle {
         verificationRequestListener = listener
         return FakeTaskHandle(noHandle: .init())
+    }
+
+    override func subscribeEncryptionState(listener: EncryptionStateListener) -> TaskHandle {
+        encryptionListener = listener
+        listener.onUpdate(state: encryption)
+        let handle = FakeTaskHandle(noHandle: .init())
+        encryptionSubscription = handle
+        return handle
+    }
+
+    override func userProfile(userId: String) async throws -> UserProfile {
+        profileRequests.append(userId)
+        return try profile.get()
+    }
+
+    override func invite(roomId: String, userId: String) async throws {
+        if let inviteError { throw inviteError }
+        invites.append((roomId, userId))
     }
 
     override func startSync() async {
@@ -259,6 +286,8 @@ func eventually(_ condition: @MainActor () -> Bool, file: StaticString = #filePa
 
 enum Make {
     static let start = Date(timeIntervalSince1970: 1_700_000_000)
+    /// For timelines: no message keys arriving, ever.
+    static let noKeysArriving = Just(false).eraseToAnyPublisher()
 
     static func event(
         _ sender: String, _ content: EventContent, at minutes: Double = 0, own: Bool = false,
@@ -290,10 +319,10 @@ enum Make {
 
     static func room(
         _ id: String, kind: RoomKind = .room, invited: Bool = false, name: String? = nil, unread: UInt64 = 0,
-        directUser: String? = nil, lastActivity: Date? = nil
+        directUser: String? = nil, lastActivity: Date? = nil, avatarUrl: String? = nil
     ) -> RoomSummary {
         RoomSummary(
-            id: id, name: name ?? id, avatarUrl: nil, topic: nil, kind: kind, invited: invited, encrypted: false,
+            id: id, name: name ?? id, avatarUrl: avatarUrl, topic: nil, kind: kind, invited: invited, encrypted: false,
             unreadMessages: unread, unreadMentions: 0, unreadNotifications: 0, lastActivity: lastActivity,
             directUserId: directUser, alias: nil, joinedMembers: 2)
     }

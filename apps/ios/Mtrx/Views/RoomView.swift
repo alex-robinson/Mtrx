@@ -7,6 +7,7 @@ struct RoomView: View {
     let room: RoomSummary
     @StateObject private var model: TimelineModel
     @EnvironmentObject private var images: ImageCache
+    @EnvironmentObject private var session: SessionModel
     @State private var sheet: RoomSheet?
     /// The message to delete, once confirmed.
     @State private var deleting: String?
@@ -29,7 +30,7 @@ struct RoomView: View {
         .navigationTitle(room.name)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
-            if room.kind == .direct {
+            if model.person != nil {
                 ToolbarItem(placement: .principal) {
                     PersonHeader(room: room, open: model.showPersonInfo)
                 }
@@ -41,6 +42,11 @@ struct RoomView: View {
         .sheet(item: $sheet) { sheet in
             RoomSheetView(sheet: sheet, model: model)
                 .environmentObject(images)
+        }
+        .sheet(item: $model.personInfo) { info in
+            PersonInfoView(model: info)
+                .environmentObject(images)
+                .environmentObject(session)
         }
         .confirmationDialog("Delete this message for everyone?", isPresented: isDeleting, titleVisibility: .visible) {
             Button("Delete", role: .destructive) {
@@ -88,8 +94,8 @@ struct RoomView: View {
     }
 }
 
-/// A direct chat's title: the person's picture and name; a tap shows who
-/// they are.
+/// A direct chat's title: the person's picture and name; a tap opens their
+/// info sheet.
 private struct PersonHeader: View {
     let room: RoomSummary
     let open: () -> Void

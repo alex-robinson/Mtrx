@@ -26,6 +26,11 @@ final class RoomListsTests: XCTestCase {
         XCTAssertNil(lists.space(.space("!sub")))
     }
 
+    func testTheTopLevelSpacesToInviteTo() {
+        XCTAssertEqual(lists.topLevelSpaces.map(\.id), ["!team", "!other"])
+        XCTAssertEqual(lists.topLevelSpaces.map(\.name), ["Team", "Other"])
+    }
+
     func testOtherRoomsLeftOutWhileEmpty() {
         var state = Make.roomsBySpace()
         state.roomsOutsideSpaces = []

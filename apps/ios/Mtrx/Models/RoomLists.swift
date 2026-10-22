@@ -62,6 +62,12 @@ struct RoomLists: Equatable {
         }
     }
 
+    /// The top-level spaces (not Other rooms), in order: where someone
+    /// can be invited.
+    var topLevelSpaces: [RoomSummary] {
+        spaces.compactMap(\.space)
+    }
+
     func space(_ entry: SpaceEntry) -> SpaceItem? {
         spaces.first { $0.entry == entry }
     }

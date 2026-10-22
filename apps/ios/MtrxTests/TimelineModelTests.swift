@@ -9,7 +9,7 @@ final class TimelineModelTests: XCTestCase {
 
     override func setUp() async throws {
         session = FakeSession(noHandle: .init())
-        model = TimelineModel(session: session, room: Make.room("!room:example.org"))
+        model = TimelineModel(session: session, room: Make.room("!room:example.org"), keysArriving: Make.noKeysArriving)
         await model.open()
     }
 
@@ -67,7 +67,7 @@ final class TimelineModelTests: XCTestCase {
     }
 
     func testNoButtonWhileOpening() async {
-        let opening = TimelineModel(session: session, room: Make.room("!other:example.org"))
+        let opening = TimelineModel(session: session, room: Make.room("!other:example.org"), keysArriving: Make.noKeysArriving)
         opening.scrolled(distanceFromBottom: 300)
         XCTAssertFalse(opening.showsScrollToBottom)
         await opening.open()

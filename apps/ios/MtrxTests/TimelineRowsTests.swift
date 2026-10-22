@@ -68,8 +68,18 @@ final class TimelineRowsTests: XCTestCase {
         XCTAssertFalse(message.firstInGroup)
     }
 
-    private func messageRow(_ event: TimelineEvent, showSenders: Bool = true) -> MessageRow? {
-        let rows = TimelineRows.build([Make.item("m", event)], showSenders: showSenders)
+    func testUndecryptableMessagesSayDecryptingWhileKeysArrive() {
+        let undecryptable = Make.event("alice", .unableToDecrypt, eventId: "$1")
+        XCTAssertEqual(messageRow(undecryptable)?.undecryptableText, "Could not decrypt this message.")
+        XCTAssertEqual(messageRow(undecryptable, keysArriving: true)?.undecryptableText, "Decrypting…")
+        // Other rows are the same either way.
+        let text = Make.event("alice", Make.text("Hi"), eventId: "$2")
+        XCTAssertNil(messageRow(text, keysArriving: true)?.undecryptableText)
+        XCTAssertEqual(messageRow(text, keysArriving: true), messageRow(text))
+    }
+
+    private func messageRow(_ event: TimelineEvent, showSenders: Bool = true, keysArriving: Bool = false) -> MessageRow? {
+        let rows = TimelineRows.build([Make.item("m", event)], showSenders: showSenders, keysArriving: keysArriving)
         if case .message(let message) = rows.first?.content { return message }
         return nil
     }

@@ -1,3 +1,4 @@
+import Combine
 import Foundation
 import MtrxFFI
 
@@ -20,6 +21,9 @@ final class TimelineModel: ObservableObject {
     static let bottomTolerance: CGFloat = 40
 
     let roomId: String
+    /// The other person of a direct chat (not the Notes to self), whose
+    /// picture and name the header shows, opening their info sheet.
+    let person: String?
     @Published private(set) var rows: [TimelineRow] = []
     /// Not opened yet.
     @Published private(set) var opening = true
@@ -45,10 +49,18 @@ final class TimelineModel: ObservableObject {
     @Published private(set) var scrollTarget: ScrollTarget?
     /// The newest message is in view; else a button leads back to it.
     @Published private(set) var atBottom = true
+    /// The other person's info sheet, while open (direct chats).
+    @Published var personInfo: PersonInfoModel?
     @Published var error: String?
 
     private let session: Session
+    private let room: RoomSummary
     private let showSenders: Bool
+    /// The library's items, as last given.
+    private var items: [TimelineItem] = []
+    /// Message keys are arriving: undecryptable messages say so.
+    private var keysArriving = false
+    private var keysArrivingSubscription: AnyCancellable?
     private var timeline: Timeline?
     private let subscriptions = Subscriptions()
     /// Who types, while the room is on screen.
@@ -67,10 +79,18 @@ final class TimelineModel: ObservableObject {
     private var pagination: Task<Bool, Error>?
     private var seek: Seek?
 
-    init(session: Session, room: RoomSummary) {
+    /// `keysArriving`: whether message keys are arriving from the backup,
+    /// now and on every change (`SessionModel.keysArriving`).
+    init(session: Session, room: RoomSummary, keysArriving: AnyPublisher<Bool, Never>) {
         self.session = session
+        self.room = room
         roomId = room.id
         showSenders = room.kind != .direct
+        let ours = session.userId()
+        person = room.kind == .direct ? room.directUserId.flatMap { $0 == ours ? nil : $0 } : nil
+        keysArrivingSubscription = keysArriving.sink { [weak self] arriving in
+            MainActor.assumeIsolated { self?.setKeysArriving(arriving) }
+        }
     }
 
     func open() async {
@@ -94,12 +114,20 @@ final class TimelineModel: ObservableObject {
     }
 
     func apply(_ items: [TimelineItem]) {
-        rows = TimelineRows.build(items, showSenders: showSenders)
+        self.items = items
+        rows = TimelineRows.build(items, showSenders: showSenders, keysArriving: keysArriving)
         if items.contains(where: { $0.content == .start }) {
             reachedStart = true
         }
         checkSeek()
         markRead()
+    }
+
+    /// Undecryptable rows already shown change their text too.
+    private func setKeysArriving(_ arriving: Bool) {
+        guard arriving != keysArriving else { return }
+        keysArriving = arriving
+        rows = TimelineRows.build(items, showSenders: showSenders, keysArriving: arriving)
     }
 
     /// The timeline is on screen (or not): mark it read and show who types
@@ -164,10 +192,13 @@ final class TimelineModel: ObservableObject {
         !atBottom && !opening
     }
 
-    /// A direct chat's header was tapped: the other person's details.
-    /// Nothing yet; the person-info sheet comes with the library's calls
-    /// for it.
-    func showPersonInfo() {}
+    /// A direct chat's header was tapped: the other person's info sheet.
+    func showPersonInfo() {
+        guard let person, personInfo == nil else { return }
+        let info = PersonInfoModel(session: session, userId: person, room: room)
+        info.load()
+        personInfo = info
+    }
 
     // MARK: Composing
 

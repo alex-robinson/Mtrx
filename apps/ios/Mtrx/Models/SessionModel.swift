@@ -1,3 +1,4 @@
+import Combine
 import MtrxFFI
 import UIKit
 
@@ -30,10 +31,9 @@ final class SessionModel: ObservableObject {
     @Published private(set) var connection: ConnectionState = .online
     @Published var error: String?
 
-    /// Whether this device is verified, and the account's recovery; nil
-    /// until first asked. Not pushed by the library: asked again when the
-    /// room list loads after sync starts, after a recovery or verification,
-    /// and when the app returns to the foreground.
+    /// Whether this device is verified, the account's recovery, and
+    /// whether message keys are arriving, as the library pushes it; nil
+    /// until its first update.
     @Published private(set) var encryption: EncryptionState?
     /// Whether another of our devices is signed in (to verify with); nil
     /// until known.
@@ -43,19 +43,12 @@ final class SessionModel: ObservableObject {
     @Published private(set) var requestingVerification = false
     /// Why asking another device to verify failed.
     @Published var verificationError: String?
-    private(set) lazy var recovery = RecoveryModel(session: session) { [weak self] in
-        self?.refreshEncryption()
-    }
+    private(set) lazy var recovery = RecoveryModel(session: session)
 
     private let subscriptions = Subscriptions()
     private var syncing = false
     /// The last start or stop of sync; the next waits for it.
     private var syncChange: Task<Void, Never>?
-    /// Sync started and the room list has not reported being loaded since.
-    private var encryptionOnLoad = false
-    /// Counts requests of the encryption state; only the latest one's
-    /// answer is kept.
-    private var encryptionRequest = 0
     private var verificationRequest: Task<Void, Never>?
     private let defaults: UserDefaults
     private static let selectedSpaceKey = "selectedSpace"
@@ -76,11 +69,18 @@ final class SessionModel: ObservableObject {
         }
     }
 
-    /// Follow the connection, the room list and verification requests.
+    /// Follow the connection, the room list, the encryption state and
+    /// verification requests, for the session (sync starts right after).
+    /// The encryption state is pushed now and on every change: its recovery
+    /// is `unknown` until sync has run.
     func start() {
         let connection = Feed<ConnectionState>()
         subscriptions.add(session.subscribeConnection(listener: connection), connection) { [weak self] in
             self?.connection = $0
+        }
+        let encryption = Feed<EncryptionState>()
+        subscriptions.add(session.subscribeEncryptionState(listener: encryption), encryption) { [weak self] in
+            self?.encryption = $0
         }
         let roomList = Feed<RoomListState>()
         let session = self.session
@@ -109,10 +109,6 @@ final class SessionModel: ObservableObject {
         if let selectedSpace, state.loaded, lists.space(selectedSpace) == nil {
             selectSpace(nil)
         }
-        if state.loaded && encryptionOnLoad {
-            encryptionOnLoad = false
-            refreshEncryption()
-        }
     }
 
     func room(_ id: String) -> RoomSummary? {
@@ -131,10 +127,6 @@ final class SessionModel: ObservableObject {
                 await previous?.value
                 await session.startSync()
             }
-            // Back in the foreground: other devices may have verified this
-            // one meanwhile. Asked again once the room list has loaded.
-            encryptionOnLoad = true
-            refreshEncryption()
         } else {
             let background = BackgroundTask(name: "Stop sync")
             syncChange = Task {
@@ -153,19 +145,6 @@ final class SessionModel: ObservableObject {
     var needsEncryptionSetup: Bool {
         guard let encryption, encryption.recovery != .unknown else { return false }
         return !encryption.deviceVerified || encryption.recovery == .incomplete
-    }
-
-    /// Ask the library for the encryption state again.
-    func refreshEncryption() {
-        encryptionRequest += 1
-        let request = encryptionRequest
-        let session = self.session
-        Task {
-            // A failure (e.g. no connection) keeps the last answer; the
-            // next moment asks again.
-            guard let state = try? await session.encryptionState(), request == encryptionRequest else { return }
-            encryption = state
-        }
     }
 
     /// Learn whether another device can verify this one.
@@ -212,9 +191,7 @@ final class SessionModel: ObservableObject {
     }
 
     private func show(_ verification: Verification, incoming: Bool) {
-        self.verification = VerificationModel(verification: verification, incoming: incoming) { [weak self] in
-            self?.refreshEncryption()
-        }
+        self.verification = VerificationModel(verification: verification, incoming: incoming)
     }
 
     // MARK: Rooms
@@ -238,7 +215,13 @@ final class SessionModel: ObservableObject {
     }
 
     func timeline(for room: RoomSummary) -> TimelineModel {
-        TimelineModel(session: session, room: room)
+        TimelineModel(session: session, room: room, keysArriving: keysArriving)
+    }
+
+    /// Message keys are arriving from the backup, now and on every change:
+    /// undecryptable messages say they are being decrypted meanwhile.
+    var keysArriving: AnyPublisher<Bool, Never> {
+        $encryption.map { $0?.keysArriving ?? false }.removeDuplicates().eraseToAnyPublisher()
     }
 
     /// Sign out on the server and delete the account's data here.

@@ -191,7 +191,7 @@ struct MessageView: View {
         case .unableToDecrypt:
             // Turns into the message by itself once its key arrives (after a
             // recovery or verification).
-            bubble(Text("Could not decrypt this message.").italic().foregroundColor(.secondary), quote: nil)
+            bubble(Text(row.undecryptableText ?? "").italic().foregroundColor(.secondary), quote: nil)
         case .other(let description):
             bubble(Text("sent a \(description)").italic().foregroundColor(.secondary), quote: nil)
         case .membership, .displayNameChange, .otherState:
