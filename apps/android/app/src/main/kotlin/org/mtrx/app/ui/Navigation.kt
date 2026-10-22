@@ -13,6 +13,7 @@ import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import org.mtrx.app.model.Account
 import org.mtrx.app.model.AccountState
+import org.mtrx.app.rooms.topLevelSpaces
 import org.mtrx.app.settings.RecoveryScreen
 import org.mtrx.app.settings.SessionInfo
 import org.mtrx.app.settings.VerificationRequestDialog
@@ -77,12 +78,19 @@ fun SignedInNavigation(account: Account, signedIn: AccountState.SignedIn) {
         composable(ROOM, arguments = listOf(navArgument("roomId") { type = NavType.StringType })) { entry ->
             val roomId = entry.arguments?.getString("roomId") ?: return@composable
             // One per visit of the room (the back stack entry's).
-            val viewModel: TimelineViewModel = viewModel {
-                TimelineViewModel(roomId) { signedIn.session.timeline(it) }
-            }
+            val viewModel: TimelineViewModel = viewModel { TimelineViewModel(roomId, signedIn.session) }
             val rooms by account.rooms.collectAsStateWithLifecycle()
+            val encryption by account.encryption.collectAsStateWithLifecycle()
             val room = rooms.rooms.firstOrNull { it.id == roomId }
-            TimelineScreen(roomHeader(roomId, room), viewModel, signedIn.images, onBack = { nav.popBackStack() })
+            val spaces = remember(rooms) { topLevelSpaces(rooms) }
+            TimelineScreen(
+                roomHeader(roomId, room, info.userId),
+                viewModel,
+                signedIn.images,
+                keysArriving = encryption?.keysArriving == true,
+                spaces = spaces,
+                onBack = { nav.popBackStack() },
+            )
         }
     }
 }

@@ -208,4 +208,13 @@ class TimelineRowsTest {
         assertNull(imageRow.text)
         assertEquals("Image · ice.png", preview(imageRow))
     }
+
+    @Test
+    fun undecryptableRowSaysDecryptingWhileKeysArrive() {
+        val row = timelineRows(listOf(eventItem("1", bob, EventContent.UnableToDecrypt))).single()
+        assertTrue(row is EventRow)
+        // The row stays; its text follows the state.
+        assertEquals("Decrypting…", undecryptableText(keysArriving = true))
+        assertEquals("Could not decrypt this message.", undecryptableText(keysArriving = false))
+    }
 }

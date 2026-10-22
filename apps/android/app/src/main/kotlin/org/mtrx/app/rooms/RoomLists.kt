@@ -38,6 +38,12 @@ fun spaceRows(state: RoomListState): List<SpaceRow> {
     return spaces + listOfNotNull(other)
 }
 
+/** The top-level spaces, in the list's order: those to invite someone to. */
+fun topLevelSpaces(state: RoomListState): List<RoomSummary> {
+    val byId = state.rooms.associateBy { it.id }
+    return state.spaces.mapNotNull { byId[it.spaceId] }
+}
+
 /** The rooms [entry] lists, for the page right of the spaces; empty while it is not listed. */
 fun roomsOf(state: RoomListState, entry: SpaceEntry): List<RoomSummary> {
     val ids = state.roomIdsOf(entry) ?: return emptyList()

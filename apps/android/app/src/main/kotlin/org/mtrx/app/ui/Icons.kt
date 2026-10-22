@@ -18,6 +18,11 @@ object MtrxIcons {
     )
 
     val Sort: ImageVector = icon("Sort", "M3,18h6v-2H3v2zM3,6v2h18V6H3zM3,13h12v-2H3v2z")
+
+    val Copy: ImageVector = icon(
+        "Copy",
+        "M16,1H4c-1.1,0 -2,0.9 -2,2v14h2V3h12V1zM19,5H8c-1.1,0 -2,0.9 -2,2v14c0,1.1 0.9,2 2,2h11c1.1,0 2,-0.9 2,-2V7c0,-1.1 -0.9,-2 -2,-2zM19,21H8V7h11v14z",
+    )
 }
 
 private fun icon(name: String, path: String, autoMirror: Boolean = false): ImageVector = ImageVector.Builder(

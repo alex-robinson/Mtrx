@@ -33,6 +33,15 @@ class RoomListsTest {
     }
 
     @Test
+    fun topLevelSpacesInListOrderWithTheirSummaries() {
+        val spaces = topLevelSpaces(state)
+        assertEquals(listOf(OTHER, TEAM), spaces.map { it.id })
+        assertEquals(listOf("other", "team"), spaces.map { it.name })
+        // A space not (yet) in the rooms is left out.
+        assertEquals(listOf(TEAM), topLevelSpaces(state.copy(rooms = state.rooms.filter { it.id != OTHER })).map { it.id })
+    }
+
+    @Test
     fun spacesPageListsTopLevelSpacesWithUnreadDotsThenOtherRooms() {
         val rows = spaceRows(state)
         assertEquals(

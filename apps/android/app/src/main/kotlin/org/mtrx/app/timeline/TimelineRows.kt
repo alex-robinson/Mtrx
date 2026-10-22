@@ -102,6 +102,13 @@ fun messageText(message: Message): String? {
     return message.body.takeIf { it.isNotBlank() && (media == null || it != media.filename) }
 }
 
+/**
+ * What a message without its key says: while keys arrive from the backup
+ * ([uniffi.mtrx.EncryptionState.keysArriving]) it may still decrypt.
+ */
+fun undecryptableText(keysArriving: Boolean): String =
+    if (keysArriving) "Decrypting…" else "Could not decrypt this message."
+
 /** The emoji offered first for a reaction. */
 val COMMON_REACTIONS = listOf("👍", "❤️", "😂", "😮", "😢", "🎉")
 

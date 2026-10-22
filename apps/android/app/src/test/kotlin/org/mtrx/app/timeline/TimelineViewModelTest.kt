@@ -20,6 +20,7 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
+import org.mtrx.app.FakeSession
 import org.mtrx.app.FakeTimeline
 import org.mtrx.app.messageEvent
 import org.mtrx.app.textEvent
@@ -30,10 +31,12 @@ import uniffi.mtrx.QuoteState
 import uniffi.mtrx.ReplyQuote
 import uniffi.mtrx.TimelineItem
 import uniffi.mtrx.TimelineItemContent
+import uniffi.mtrx.UserProfile
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class TimelineViewModelTest {
     private val timeline = FakeTimeline()
+    private val session = FakeSession().apply { roomTimeline = timeline }
 
     @Before
     fun mainDispatcher() {
@@ -45,7 +48,22 @@ class TimelineViewModelTest {
         Dispatchers.resetMain()
     }
 
-    private fun viewModel() = TimelineViewModel("!room:example.org") { timeline }
+    private fun viewModel() = TimelineViewModel("!room:example.org", session)
+
+    @Test
+    fun personInfoOpensOnceAndCloses() = runTest {
+        session.profile = UserProfile(userId = "@bob:x", name = "Bob", avatarUrl = null)
+        val viewModel = viewModel()
+        viewModel.showPersonInfo("@bob:x")
+        val model = viewModel.personInfo.value!!
+        assertEquals("@bob:x", model.userId)
+        assertEquals("Bob", model.profile.value?.name)
+        // Tapped again while open: the same sheet.
+        viewModel.showPersonInfo("@bob:x")
+        assertTrue(viewModel.personInfo.value === model)
+        viewModel.closePersonInfo()
+        assertNull(viewModel.personInfo.value)
+    }
 
     @Test
     fun updatesBecomeRows() = runTest {
@@ -211,7 +229,7 @@ class TimelineViewModelTest {
     @Test
     fun leavingTheRoomStopsTypingButNotSending() = runTest {
         val store = ViewModelStore()
-        val factory = viewModelFactory { initializer { TimelineViewModel("!room:example.org") { timeline } } }
+        val factory = viewModelFactory { initializer { TimelineViewModel("!room:example.org", session) } }
         val viewModel = ViewModelProvider(store, factory)[TimelineViewModel::class.java]
         val gate = CompletableDeferred<Unit>()
         timeline.gate = gate

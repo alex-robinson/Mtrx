@@ -120,6 +120,7 @@ import uniffi.mtrx.EventContent
 import uniffi.mtrx.Media
 import uniffi.mtrx.MediaKind
 import uniffi.mtrx.MessageKind
+import uniffi.mtrx.RoomSummary
 import uniffi.mtrx.SendState
 import uniffi.mtrx.TimelineEvent
 
@@ -146,9 +147,21 @@ private class RowHandlers(
     val showReaders: (String) -> Unit,
 )
 
+/**
+ * A room's timeline. [keysArriving] while message keys come from the backup
+ * (undecryptable rows say they are decrypting); [spaces], the top-level
+ * ones, to invite a direct chat's person to.
+ */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun TimelineScreen(header: RoomHeader, viewModel: TimelineViewModel, images: Images, onBack: () -> Unit) {
+fun TimelineScreen(
+    header: RoomHeader,
+    viewModel: TimelineViewModel,
+    images: Images,
+    keysArriving: Boolean,
+    spaces: List<RoomSummary>,
+    onBack: () -> Unit,
+) {
     val rows by viewModel.rows.collectAsStateWithLifecycle()
     // At once, not at the next frame: the field compares its text with it.
     val draft by viewModel.draft.collectAsStateWithLifecycle(context = Dispatchers.Main.immediate)
@@ -157,6 +170,7 @@ fun TimelineScreen(header: RoomHeader, viewModel: TimelineViewModel, images: Ima
     val seeking by viewModel.seeking.collectAsStateWithLifecycle()
     val highlighted by viewModel.highlighted.collectAsStateWithLifecycle()
     val error by viewModel.error.collectAsStateWithLifecycle()
+    val personInfo by viewModel.personInfo.collectAsStateWithLifecycle()
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
     val snackbar = remember { SnackbarHostState() }
@@ -276,7 +290,7 @@ fun TimelineScreen(header: RoomHeader, viewModel: TimelineViewModel, images: Ima
         ) {
             items(newestFirst, key = { it.id }, contentType = { it::class }) { row ->
                 when (row) {
-                    is EventRow -> EventBubble(row, images, highlighted == row.id, handlers)
+                    is EventRow -> EventBubble(row, images, highlighted == row.id, keysArriving, handlers)
                     is StateRow -> Notice(row.text)
                     is DayRow -> DayDivider(dayLabel(row.date, today))
                     is ReadMarkerRow -> ReadMarker()
@@ -284,6 +298,10 @@ fun TimelineScreen(header: RoomHeader, viewModel: TimelineViewModel, images: Ima
                 }
             }
         }
+    }
+
+    personInfo?.let { model ->
+        PersonInfoSheet(model, header, spaces, images, onDismiss = viewModel::closePersonInfo)
     }
 
     val dismiss = { overlay = null }
@@ -360,15 +378,16 @@ fun TimelineScreen(header: RoomHeader, viewModel: TimelineViewModel, images: Ima
 
 /** The room's name; a direct chat's with the person's avatar, both tapped for [onPerson]. */
 @Composable
-private fun RoomTitle(header: RoomHeader, images: Images, onPerson: () -> Unit) {
-    if (!header.direct) {
+private fun RoomTitle(header: RoomHeader, images: Images, onPerson: (String) -> Unit) {
+    val person = header.person
+    if (person == null) {
         Text(header.name, maxLines = 1, overflow = TextOverflow.Ellipsis)
         return
     }
     Row(
         Modifier
             .clip(RoundedCornerShape(8.dp))
-            .clickable(onClick = onPerson),
+            .clickable { onPerson(person) },
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Avatar(header.name, header.avatarUrl, seed = header.seed, images = images, size = 32.dp)
@@ -480,7 +499,7 @@ private fun Composer(
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun EventBubble(row: EventRow, images: Images, highlighted: Boolean, handlers: RowHandlers) {
+private fun EventBubble(row: EventRow, images: Images, highlighted: Boolean, keysArriving: Boolean, handlers: RowHandlers) {
     val event = row.event
     val own = event.own
     val name = displayName(event)
@@ -535,7 +554,7 @@ private fun EventBubble(row: EventRow, images: Images, highlighted: Boolean, han
                     ) {
                         Column(Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
                             row.quote?.let { QuoteBlock(it, handlers.goTo) }
-                            MessageBody(event, row.edited, name, images)
+                            MessageBody(event, row.edited, name, images, keysArriving)
                             Text(
                                 timeOfDay(event.timestamp),
                                 style = MaterialTheme.typography.labelSmall,
@@ -715,7 +734,7 @@ private fun ReadersLine(readers: Readers, images: Images, onClick: () -> Unit, m
 }
 
 @Composable
-private fun MessageBody(event: TimelineEvent, edited: Boolean, name: String, images: Images) {
+private fun MessageBody(event: TimelineEvent, edited: Boolean, name: String, images: Images, keysArriving: Boolean) {
     val secondary = MaterialTheme.colorScheme.onSurfaceVariant
     // "(edited)", muted, after the text.
     fun text(body: String) = buildAnnotatedString {
@@ -738,9 +757,9 @@ private fun MessageBody(event: TimelineEvent, edited: Boolean, name: String, ima
             }
         }
         EventContent.Redacted -> Text("Message deleted", color = secondary, fontStyle = FontStyle.Italic)
-        // Turns into the message once its key arrives (recovery, verification).
+        // Turns into the message once its key arrives (recovery, verification, the backup).
         EventContent.UnableToDecrypt -> Text(
-            "Could not decrypt this message.",
+            undecryptableText(keysArriving),
             color = secondary,
             fontStyle = FontStyle.Italic,
         )
