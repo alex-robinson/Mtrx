@@ -8,7 +8,7 @@ use std::{
 use mtrx_core::{self as core, Profile, SecretStore, Url};
 
 use crate::{
-    MtrxError, SecretBackend, Session,
+    MtrxError, NotificationContent, SecretBackend, Session,
     runtime::{InRuntime, run},
     secrets::AppSecrets,
 };
@@ -72,6 +72,23 @@ impl Mtrx {
     /// Whether the server offers browser sign-in ([`Mtrx::start_oauth_login`]).
     pub async fn supports_oauth(&self, homeserver: String) -> Result<bool, MtrxError> {
         run(async move { Ok(core::Session::supports_oauth(&homeserver).await?) }).await
+    }
+
+    /// What the push for `event_id` in `room_id` is about, read with the
+    /// saved session without syncing: the event, decrypted, as the push
+    /// rules judge it. For the process that receives the push, which may
+    /// run next to the app's session (syncing in this process or another)
+    /// or alone; the store's locks keep them apart. Calls in a process run
+    /// one at a time. `None` if there is nothing to show (our own message,
+    /// a muted room, an ignored sender, a deleted event); otherwise post a
+    /// notification if `shouldNotify`. Fails with `NotLoggedIn` without a
+    /// saved session, `Other` when the event cannot be fetched.
+    pub async fn notification(
+        &self,
+        room_id: String,
+        event_id: String,
+    ) -> Result<Option<NotificationContent>, MtrxError> {
+        crate::push::notification(self.profile()?, room_id, event_id).await
     }
 
     /// Start a browser sign-in (OAuth 2.0): open [`OAuthLogin::url`] in a
@@ -149,6 +166,29 @@ mod tests {
             Arc::new(Memory::default()),
         );
         assert!(block_on(mtrx.restore()).unwrap().is_none());
+    }
+
+    #[test]
+    fn a_push_without_a_session_is_not_logged_in() {
+        let (data, cache) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let mtrx = Mtrx::new(
+            data.path().to_string_lossy().into(),
+            cache.path().to_string_lossy().into(),
+            Arc::new(Memory::default()),
+        );
+        let push = |room: &str, event: &str| block_on(mtrx.notification(room.into(), event.into()));
+        assert!(matches!(
+            push("!r:example.org", "$e:example.org"),
+            Err(MtrxError::NotLoggedIn)
+        ));
+        assert!(matches!(
+            push("r", "$e:example.org"),
+            Err(MtrxError::InvalidInput { .. })
+        ));
+        assert!(matches!(
+            push("!r:example.org", "e"),
+            Err(MtrxError::InvalidInput { .. })
+        ));
     }
 
     #[test]
