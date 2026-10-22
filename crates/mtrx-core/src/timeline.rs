@@ -91,9 +91,23 @@ pub struct Reader {
     pub avatar: Option<OwnedMxcUri>,
 }
 
-/// Identifies a timeline event for actions on it.
+/// Identifies a timeline event for actions on it: its event ID once the
+/// server accepted it, also while the local echo still shows; before that,
+/// the local echo's transaction ID.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct EventKey(TimelineEventItemId);
+
+impl EventKey {
+    /// The event ID, which still finds the event once the server's copy
+    /// replaced the local echo: the transaction ID does not, as the
+    /// server's copy does not always carry it.
+    fn of(event: &EventTimelineItem) -> Self {
+        Self(match event.event_id() {
+            Some(id) => TimelineEventItemId::EventId(id.to_owned()),
+            None => event.identifier(),
+        })
+    }
+}
 
 impl EventKey {
     /// The key of a local echo, for tests of frontends.
@@ -411,7 +425,7 @@ impl RoomTimeline {
             .iter()
             .rev()
             .filter_map(|item| item.as_event())
-            .find(|item| item.identifier() == event.0)
+            .find(|item| EventKey::of(item) == *event)
             .filter(|item| item.is_local_echo())
             .cloned()
             .ok_or_else(|| Error::Timeline("not a message being sent".into()))
@@ -978,7 +992,7 @@ impl Converter {
 
         Some(Event {
             id: id.to_owned(),
-            key: EventKey(event.identifier()),
+            key: EventKey::of(event),
             event_id: event.event_id().map(ToOwned::to_owned),
             sender: event.sender().to_owned(),
             sender_name,
