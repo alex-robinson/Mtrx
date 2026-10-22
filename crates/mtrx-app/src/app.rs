@@ -230,7 +230,9 @@ pub struct App {
     /// The settings panel, while open.
     settings_panel: Option<settings::Panel>,
     screen: Screen,
-    mode: Mode,
+    /// Light or dark as iced reports the system (on macOS, the app's
+    /// appearance, see [`crate::appearance`]).
+    system_mode: Mode,
     window: Size,
     scale: f32,
     math: Math,
@@ -439,17 +441,20 @@ impl App {
         let (profile, data_root, secrets) =
             environment().expect("valid MTRX_PROFILE and data directory");
         let settings_file = Settings::path(&data_root);
+        let settings = Settings::load(&settings_file);
+        #[cfg(target_os = "macos")]
+        settings.appearance.apply();
         let app = Self {
             profile: profile.clone(),
             focused: true,
             google: Arc::new(Google::new(&data_root, secrets)),
-            settings: Settings::load(&settings_file),
+            settings,
             settings_file: Some(settings_file),
             view_file: Some(LastView::path(&profile)),
             resizing: false,
             settings_panel: None,
             screen: Screen::Starting,
-            mode: Mode::Light,
+            system_mode: Mode::Light,
             window: Size::new(1200.0, 800.0),
             scale: 1.0,
             math: Math::new(),
@@ -467,11 +472,14 @@ impl App {
         (app, Task::batch([restore, scale, mode]))
     }
 
+    /// The theme the app is drawn in.
     pub fn theme(&self) -> Theme {
-        match self.mode {
-            Mode::Dark => Theme::Dark,
-            _ => Theme::Light,
-        }
+        self.settings.appearance.theme(self.system_mode)
+    }
+
+    /// The theme iced fixes the window to, if any.
+    pub fn window_theme(&self) -> Option<Theme> {
+        self.settings.appearance.window_theme()
     }
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
@@ -1594,7 +1602,7 @@ impl App {
                 Task::batch([self.render_math(), self.pdf_resized()])
             }
             Message::ThemeMode(mode) => {
-                self.mode = mode;
+                self.system_mode = mode;
                 self.render_math()
             }
             Message::AvatarLoaded(key, handle) => {
@@ -1888,6 +1896,18 @@ impl App {
         )
     }
 
+    /// Saves the settings; the open panel says if that failed.
+    fn save_settings(&mut self) {
+        let error = self
+            .settings_file
+            .as_ref()
+            .and_then(|file| self.settings.save(file).err())
+            .map(|e| e.to_string());
+        if let Some(panel) = &mut self.settings_panel {
+            panel.error = error;
+        }
+    }
+
     fn settings_update(&mut self, message: settings::Message) -> Task<Message> {
         let Some(panel) = &mut self.settings_panel else {
             return Task::none();
@@ -1895,12 +1915,14 @@ impl App {
         match panel.update(&mut self.settings, message) {
             settings::Action::None => Task::none(),
             settings::Action::Save => {
-                panel.error = self
-                    .settings_file
-                    .as_ref()
-                    .and_then(|file| self.settings.save(file).err())
-                    .map(|e| e.to_string());
+                self.save_settings();
                 Task::none()
+            }
+            settings::Action::Appearance => {
+                self.save_settings();
+                #[cfg(target_os = "macos")]
+                self.settings.appearance.apply();
+                self.render_math()
             }
             settings::Action::GoogleSignIn(client) => {
                 let google = self.google.clone();

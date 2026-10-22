@@ -122,7 +122,7 @@ fn app(screen: Screen, mode: Mode) -> App {
         resizing: false,
         settings_panel: None,
         screen,
-        mode,
+        system_mode: mode,
         window: Size::new(1200.0, 800.0),
         scale: 2.0,
         math: Math::new(),
