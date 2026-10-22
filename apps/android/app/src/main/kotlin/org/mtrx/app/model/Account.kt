@@ -9,18 +9,27 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.filter
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import uniffi.mtrx.ConnectionListener
 import uniffi.mtrx.ConnectionState
+import uniffi.mtrx.DeviceInfo
+import uniffi.mtrx.EncryptionState
 import uniffi.mtrx.MtrxException
 import uniffi.mtrx.MtrxInterface
 import uniffi.mtrx.OAuthLogin
+import uniffi.mtrx.RecoveryListener
+import uniffi.mtrx.RecoveryStatus
+import uniffi.mtrx.RecoveryStep
 import uniffi.mtrx.RoomListListener
 import uniffi.mtrx.RoomListState
 import uniffi.mtrx.Session
 import uniffi.mtrx.TaskHandle
+import uniffi.mtrx.Verification
+import uniffi.mtrx.VerificationRequestListener
 
 sealed interface AccountState {
     /** Restoring the saved session. */
@@ -46,23 +55,51 @@ sealed interface BrowserLogin {
 
 /**
  * The app's one account: signs in, restores and signs out the session, syncs
- * it while the app is in the foreground, and keeps its room list and
- * connection state as flows. Lives as long as the process; [scope] runs on
- * the main thread. Listener callbacks arrive on the library's threads and
- * only set flows.
+ * it while the app is in the foreground, and keeps its room list,
+ * connection and encryption state as flows. Recovery and verification run
+ * here too, so leaving their screens does not stop them. Lives as long as
+ * the process; [scope] runs on the main thread. Listener callbacks arrive on
+ * the library's threads and only set flows or launch into [scope]. The
+ * space selected on the Rooms tab is kept in [selectedSpace] until sign-out.
  */
-class Account(private val mtrx: MtrxInterface, private val scope: CoroutineScope) {
+class Account(
+    private val mtrx: MtrxInterface,
+    private val scope: CoroutineScope,
+    selectedSpace: SelectedSpaceStore,
+) {
     private val _state = MutableStateFlow<AccountState>(AccountState.Loading)
     val state: StateFlow<AccountState> = _state.asStateFlow()
 
     private val _rooms = MutableStateFlow(NO_ROOMS)
     val rooms: StateFlow<RoomListState> = _rooms.asStateFlow()
 
+    /** The space selected on the Rooms tab. */
+    val spaceSelection = SpaceSelection(selectedSpace, rooms, scope)
+
     private val _connection = MutableStateFlow(ConnectionState.ONLINE)
     val connection: StateFlow<ConnectionState> = _connection.asStateFlow()
 
     private val _browserLogin = MutableStateFlow<BrowserLogin>(BrowserLogin.Idle)
     val browserLogin: StateFlow<BrowserLogin> = _browserLogin.asStateFlow()
+
+    /** Whether this device can read encrypted messages; null until asked. */
+    private val _encryption = MutableStateFlow<EncryptionState?>(null)
+    val encryption: StateFlow<EncryptionState?> = _encryption.asStateFlow()
+
+    /** Our devices, this one included; null until [loadDevices] gets them. */
+    private val _devices = MutableStateFlow<List<DeviceInfo>?>(null)
+    val devices: StateFlow<List<DeviceInfo>?> = _devices.asStateFlow()
+
+    private val _recovery = MutableStateFlow<Recovery>(Recovery.Idle)
+    val recovery: StateFlow<Recovery> = _recovery.asStateFlow()
+
+    /** The verification on the verification screen, if any. */
+    private val _verification = MutableStateFlow<VerificationModel?>(null)
+    val verification: StateFlow<VerificationModel?> = _verification.asStateFlow()
+
+    /** A request from another of our devices, to accept or decline. */
+    private val _verificationRequest = MutableStateFlow<Verification?>(null)
+    val verificationRequest: StateFlow<Verification?> = _verificationRequest.asStateFlow()
 
     /** Errors of background work, to show briefly. */
     private val _messages = MutableSharedFlow<String>(extraBufferCapacity = 8)
@@ -74,6 +111,10 @@ class Account(private val mtrx: MtrxInterface, private val scope: CoroutineScope
     private var subscriptions: List<TaskHandle> = emptyList()
     private var foreground = false
     private var syncing = false
+
+    // On the main thread.
+    private var encryptionWatch: Job? = null
+    private var recoveryJob: Job? = null
 
     private val pendingLogin = AtomicReference<OAuthLogin?>(null)
 
@@ -176,6 +217,133 @@ class Account(private val mtrx: MtrxInterface, private val scope: CoroutineScope
         }
     }
 
+    /** Get our devices into [devices] (for the encryption settings). */
+    fun loadDevices(): Job = scope.launch {
+        val current = session ?: return@launch
+        val list = try {
+            current.devices()
+        } catch (e: MtrxException) {
+            return@launch
+        }
+        if (session === current) _devices.value = list
+    }
+
+    /**
+     * Unlock encryption with the recovery key; [recovery] follows its steps.
+     * Ignored while one runs.
+     */
+    fun recover(recoveryKey: String) {
+        val current = session ?: return
+        if (_recovery.value is Recovery.Running) return
+        _recovery.value = Recovery.Running(step = null)
+        recoveryJob = scope.launch {
+            try {
+                current.recover(recoveryKey, object : RecoveryListener {
+                    // On a library thread, during the call.
+                    override fun onUpdate(step: RecoveryStep) {
+                        _recovery.value = Recovery.Running(step)
+                    }
+                })
+            } catch (e: MtrxException) {
+                _recovery.value = recoveryFailure(e)
+                return@launch
+            }
+            _recovery.value = Recovery.Done
+            askEncryption(current)
+        }
+    }
+
+    /** Forget a recovery's result (failed or done), to show the form again. */
+    fun resetRecovery() {
+        if (_recovery.value !is Recovery.Running) _recovery.value = Recovery.Idle
+    }
+
+    /** Ask our other devices to verify this one; then [verification] has it. */
+    fun verifyWithAnotherDevice() {
+        val current = session ?: return
+        replaceVerification(VerificationModel.request(scope, onDone = { refreshEncryption(current) }) {
+            current.requestSelfVerification()
+        })
+    }
+
+    /** Accept [verificationRequest]; then [verification] has it. */
+    fun acceptVerificationRequest() {
+        val current = session ?: return
+        val request = _verificationRequest.value ?: return
+        _verificationRequest.value = null
+        replaceVerification(VerificationModel.accept(scope, onDone = { refreshEncryption(current) }, request))
+    }
+
+    fun declineVerificationRequest() {
+        val request = _verificationRequest.value ?: return
+        _verificationRequest.value = null
+        decline(request)
+    }
+
+    /** The verification screen is done with [model]. */
+    fun closeVerification(model: VerificationModel) {
+        if (_verification.value === model) replaceVerification(null) else model.close()
+    }
+
+    private fun replaceVerification(model: VerificationModel?) {
+        _verification.value?.close()
+        _verification.value = model
+    }
+
+    // On the main thread.
+    private fun onVerificationRequest(current: Session, request: Verification) {
+        val busy = _verification.value?.ended == false
+        // Verifying other people is not in this app yet.
+        if (session !== current || request.otherUser() != current.userId() || busy) {
+            decline(request)
+            return
+        }
+        // A newer request replaces one not answered yet.
+        _verificationRequest.value?.let { decline(it) }
+        _verificationRequest.value = request
+    }
+
+    private fun decline(request: Verification) {
+        scope.launch {
+            try {
+                request.cancel()
+            } catch (e: MtrxException) {
+                // Already ended.
+            } finally {
+                request.close()
+            }
+        }
+    }
+
+    // Asked when sync starts: once the room list is loaded (at once if it
+    // already is, coming back to the foreground), and again with its updates
+    // while recovery is not known yet (before the first sync's response).
+    private fun watchEncryption(current: Session) {
+        encryptionWatch?.cancel()
+        encryptionWatch = scope.launch {
+            _rooms.filter { it.loaded }.first {
+                val status = askEncryption(current)?.recovery
+                status != null && status != RecoveryStatus.UNKNOWN
+            }
+        }
+    }
+
+    private fun refreshEncryption(current: Session) {
+        scope.launch { askEncryption(current) }
+    }
+
+    /** The state, also in [encryption]; null on failure or after sign-out. */
+    private suspend fun askEncryption(current: Session): EncryptionState? {
+        val state = try {
+            current.encryptionState()
+        } catch (e: MtrxException) {
+            return null
+        }
+        if (session !== current) return null
+        _encryption.value = state
+        return state
+    }
+
     // Under the lock.
     private suspend fun open(signedIn: Session) {
         check(session == null) { "already signed in" }
@@ -196,6 +364,12 @@ class Account(private val mtrx: MtrxInterface, private val scope: CoroutineScope
         } catch (e: MtrxException) {
             _messages.tryEmit("No room list: ${describe(e)}")
         }
+        handles += signedIn.subscribeVerificationRequests(object : VerificationRequestListener {
+            // On a library thread.
+            override fun onRequest(verification: Verification) {
+                scope.launch { onVerificationRequest(signedIn, verification) }
+            }
+        })
         subscriptions = handles
         _state.value = AccountState.SignedIn(signedIn, Images(signedIn))
         updateSync()
@@ -207,6 +381,7 @@ class Account(private val mtrx: MtrxInterface, private val scope: CoroutineScope
         if (current != null && foreground && !syncing) {
             current.startSync()
             syncing = true
+            watchEncryption(current)
         } else if ((current == null || !foreground) && syncing) {
             stopSync()
         }
@@ -215,23 +390,33 @@ class Account(private val mtrx: MtrxInterface, private val scope: CoroutineScope
     // Under the lock.
     private suspend fun stopSync() {
         if (syncing) {
+            encryptionWatch?.cancel()
+            encryptionWatch = null
             session?.stopSync()
             syncing = false
         }
     }
 
     // Under the lock, after logout or forget.
-    private fun close() {
+    private suspend fun close() {
         _state.value = AccountState.SignedOut()
         subscriptions.forEach {
             it.cancel()
             it.close()
         }
         subscriptions = emptyList()
+        recoveryJob?.cancel()
+        recoveryJob = null
+        _recovery.value = Recovery.Idle
+        replaceVerification(null)
+        declineVerificationRequest()
+        _encryption.value = null
+        _devices.value = null
         session?.close()
         session = null
         _rooms.value = NO_ROOMS
         _connection.value = ConnectionState.ONLINE
+        spaceSelection.clear()
     }
 
     private companion object {

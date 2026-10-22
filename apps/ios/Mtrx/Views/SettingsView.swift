@@ -1,6 +1,7 @@
+import MtrxFFI
 import SwiftUI
 
-/// The account, and signing out.
+/// The account, its encryption on this device, and signing out.
 struct SettingsView: View {
     @EnvironmentObject private var app: AppModel
     @EnvironmentObject private var session: SessionModel
@@ -16,6 +17,7 @@ struct SettingsView: View {
                     LabeledContent("Device", value: session.deviceId)
                 }
                 .textSelection(.enabled)
+                EncryptionSection()
                 Section {
                     Button("Sign out…", role: .destructive) {
                         confirmSignOut = true
@@ -55,5 +57,70 @@ struct SettingsView: View {
         let short = info?["CFBundleShortVersionString"] as? String ?? "?"
         let build = info?["CFBundleVersion"] as? String ?? "?"
         return "\(short) (\(build))"
+    }
+}
+
+/// Whether this device is verified and recovery unlocked; while not, the
+/// ways to fix it: the recovery key, or another device.
+struct EncryptionSection: View {
+    @EnvironmentObject private var session: SessionModel
+
+    var body: some View {
+        Section {
+            LabeledContent("This device", value: deviceStatus)
+            LabeledContent("Recovery", value: recoveryStatus)
+            if session.needsEncryptionSetup, let encryption = session.encryption {
+                if encryption.recovery != .disabled {
+                    NavigationLink("Enter recovery key") {
+                        RecoveryView(model: session.recovery)
+                    }
+                }
+                if !encryption.deviceVerified {
+                    if session.hasOtherDevice == false {
+                        Text("Verifying needs another device signed in to this account, such as the desktop app.")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Button {
+                            session.verifyWithAnotherDevice()
+                        } label: {
+                            HStack {
+                                Text("Verify with another device")
+                                Spacer()
+                                if session.requestingVerification {
+                                    ProgressView()
+                                }
+                            }
+                        }
+                        .disabled(session.requestingVerification)
+                    }
+                }
+            }
+        } header: {
+            Text("Encryption")
+        } footer: {
+            if let error = session.verificationError {
+                Text(error).foregroundColor(.red)
+            }
+        }
+        .task(id: session.encryption?.deviceVerified) {
+            if session.encryption?.deviceVerified == false {
+                await session.loadDevices()
+            }
+        }
+    }
+
+    private var deviceStatus: String {
+        guard let encryption = session.encryption else { return "not known yet" }
+        return encryption.deviceVerified ? "verified" : "not verified"
+    }
+
+    private var recoveryStatus: String {
+        switch session.encryption?.recovery {
+        case nil, .unknown: return "not known yet"
+        case .enabled: return "set up"
+        case .disabled: return "not set up"
+        case .incomplete: return "not unlocked on this device"
+        }
     }
 }

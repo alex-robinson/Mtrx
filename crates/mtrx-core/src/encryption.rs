@@ -9,6 +9,7 @@ use matrix_sdk::{
     encryption::{
         CrossSigningResetAuthType,
         recovery::{RecoveryError, RecoveryState},
+        secret_storage::SecretStorageError,
         verification::{
             SasState, SasVerification, Verification as SdkVerification, VerificationRequest,
             VerificationRequestState,
@@ -19,6 +20,7 @@ use matrix_sdk::{
         events::key::verification::request::ToDeviceKeyVerificationRequestEvent,
     },
 };
+use matrix_sdk_crypto::secret_storage::DecodeError;
 use tokio::{
     sync::{Mutex, broadcast, watch},
     task::JoinHandle,
@@ -366,7 +368,7 @@ impl Session {
             .secret_storage()
             .open_secret_store(recovery_key)
             .await
-            .map_err(RecoveryError::from)?;
+            .map_err(recovery_key_error)?;
         progress(RecoveryStep::ImportingIdentity);
         encryption.recovery().recover(recovery_key).await?;
 
@@ -449,6 +451,22 @@ impl Session {
     }
 }
 
+/// A key that is not a recovery key (not Base58, the wrong length, prefix or
+/// parity) or not the backup's (the MAC check fails) is the user's mistake;
+/// other failures are not.
+fn recovery_key_error(error: SecretStorageError) -> Error {
+    match error {
+        SecretStorageError::SecretStorageKey(
+            DecodeError::Base58(_)
+            | DecodeError::KeyLength(..)
+            | DecodeError::Prefix(..)
+            | DecodeError::Parity(..)
+            | DecodeError::Mac(_),
+        ) => Error::InvalidRecoveryKey,
+        error => RecoveryError::from(error).into(),
+    }
+}
+
 /// Encrypted rooms whose message keys [`Session::recover`] fetches right away.
 const PREFETCH_ROOMS: usize = 20;
 
@@ -499,4 +517,50 @@ pub struct DeviceInfo {
     pub name: Option<String>,
     pub verified: bool,
     pub current: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use matrix_sdk_crypto::secret_storage::SecretStorageKey;
+
+    use super::*;
+
+    /// Why `key` does not open the secret store of `backup`.
+    fn decode_error(key: &str, backup: &SecretStorageKey) -> DecodeError {
+        SecretStorageKey::from_account_data(key, backup.event_content().clone())
+            .expect_err("the key is refused")
+    }
+
+    #[test]
+    fn mistyped_and_other_keys_are_invalid() {
+        let backup = SecretStorageKey::new();
+        let right = backup.to_base58();
+        let other = SecretStorageKey::new().to_base58();
+        let short = right[..right.len() - 5].to_owned();
+        for key in ["not a recovery key", "0OIl", &short, &other] {
+            let error = SecretStorageError::SecretStorageKey(decode_error(key, &backup));
+            assert!(
+                matches!(recovery_key_error(error), Error::InvalidRecoveryKey),
+                "{key}"
+            );
+        }
+        assert!(
+            SecretStorageKey::from_account_data(&right, backup.event_content().clone()).is_ok()
+        );
+        assert_eq!(
+            Error::InvalidRecoveryKey.to_string(),
+            "The recovery key is not valid"
+        );
+    }
+
+    #[test]
+    fn other_secret_storage_failures_are_not_the_key() {
+        let missing = SecretStorageError::MissingKeyInfo { key_id: None };
+        assert!(matches!(
+            recovery_key_error(missing),
+            Error::Recovery(RecoveryError::SecretStorage(
+                SecretStorageError::MissingKeyInfo { .. }
+            ))
+        ));
+    }
 }

@@ -835,6 +835,7 @@ async fn replies_reactions_edits_typing_receipts() -> Result<()> {
     assert_eq!(reply.event_id, question);
     assert_eq!(reply.preview.as_deref(), Some("Which dataset?"));
     assert_eq!(reply.sender, Some(bob.session.user_id()));
+    assert_eq!(reply.kind, Some(mtrx_core::MessageKind::Text));
 
     // Reaction, seen as ours by alice and as someone else's by bob.
     let entries = alice_timeline.current();

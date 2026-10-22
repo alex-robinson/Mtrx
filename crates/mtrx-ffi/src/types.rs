@@ -86,20 +86,49 @@ impl From<&core::RoomSummary> for RoomSummary {
 }
 
 /// The room list: every joined and invited room (spaces too), most recently
-/// active first.
+/// active first, and the rooms by space as the desktop shows them.
 #[derive(Clone, Debug, PartialEq, uniffi::Record)]
 pub struct RoomListState {
     pub rooms: Vec<RoomSummary>,
     /// Synced with the server since the list was created. Before that,
     /// `rooms` may be a stale cache, or empty on the first sign-in.
     pub loaded: bool,
+    /// The desktop's space column: joined spaces in no joined space, in the
+    /// order of `rooms`, each with the rooms it lists.
+    #[uniffi(default)]
+    pub spaces: Vec<SpaceRooms>,
+    /// IDs of the rooms no space lists, in the order of `rooms`: rooms and
+    /// invites to spaces; no direct chats, no joined spaces.
+    #[uniffi(default)]
+    pub rooms_outside_spaces: Vec<String>,
 }
 
-impl From<core::RoomListState> for RoomListState {
-    fn from(state: core::RoomListState) -> Self {
+/// A top-level space and what it lists.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct SpaceRooms {
+    /// Its `RoomSummary.id`.
+    pub space_id: String,
+    /// IDs of the rooms it lists, in the order of `RoomListState.rooms`:
+    /// rooms below it (through nested spaces, which are not listed
+    /// themselves), invites to rooms and spaces below it, direct chats with
+    /// its joined members, and rooms put into its categories on the desktop.
+    pub room_ids: Vec<String>,
+}
+
+impl RoomListState {
+    pub(crate) fn new(state: &core::RoomListState, by_space: core::RoomsBySpace) -> Self {
         Self {
             rooms: state.rooms.iter().map(RoomSummary::from).collect(),
             loaded: state.loaded,
+            spaces: by_space
+                .spaces
+                .into_iter()
+                .map(|space| SpaceRooms {
+                    space_id: space.space.to_string(),
+                    room_ids: space.rooms.iter().map(ToString::to_string).collect(),
+                })
+                .collect(),
+            rooms_outside_spaces: by_space.outside.iter().map(ToString::to_string).collect(),
         }
     }
 }
@@ -144,6 +173,14 @@ pub struct TimelineEvent {
     pub own: bool,
     pub content: EventContent,
     pub send_state: SendState,
+    /// We may edit it (our own text message): `Timeline.edit`.
+    #[uniffi(default)]
+    pub editable: bool,
+    /// Others whose read receipt is on this event: they read up to here.
+    /// Moved off state events to the message before, as the desktop shows
+    /// them. Names and avatars arrive in a later update when not yet known.
+    #[uniffi(default)]
+    pub read_by: Vec<Reader>,
 }
 
 #[derive(Clone, Debug, PartialEq, uniffi::Enum)]
@@ -152,11 +189,64 @@ pub enum SendState {
     Sending,
     /// Not sent because the server is unreachable; sent once it is back.
     Waiting,
+    /// The server refused it: `Timeline.retry` or `Timeline.discard` it.
+    /// Later messages wait until then.
     Failed {
         error: String,
     },
 }
 
+/// Someone who read up to an event, or reacted to it.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct Reader {
+    pub user_id: String,
+    /// Display name, once known.
+    pub name: Option<String>,
+    /// `mxc://` URI, for `Session.avatar`.
+    pub avatar_url: Option<String>,
+}
+
+/// Everyone who reacted to a message with one key.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct Reaction {
+    /// Usually an emoji.
+    pub key: String,
+    pub count: u64,
+    /// We reacted with it: `Timeline.react` with it removes ours.
+    pub by_us: bool,
+    /// Who reacted, us included, in the order they did.
+    pub senders: Vec<Reader>,
+}
+
+/// The message a reply answers, as quoted above the reply.
+#[derive(Clone, Debug, PartialEq, uniffi::Record)]
+pub struct ReplyQuote {
+    /// The original's event ID: `TimelineEvent.eventId` of its row once
+    /// loaded in the timeline.
+    pub event_id: String,
+    pub state: QuoteState,
+    /// The original's sender, once loaded.
+    pub sender_id: Option<String>,
+    pub sender_name: Option<String>,
+    /// The original's kind once loaded, if it is a message (`None` if it was
+    /// deleted, or is a poll, say).
+    pub kind: Option<MessageKind>,
+    /// Its text on one line, shortened, once loaded: for a file its name
+    /// (or caption); "Message deleted" or "…" if it is no message.
+    pub body: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum QuoteState {
+    /// Being fetched from the server; the quote updates by itself.
+    Loading,
+    Loaded,
+    /// Not available to us, e.g. sent before we joined, or no such event.
+    Failed,
+}
+
+// Most events are messages, so boxing would only add indirection.
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug, PartialEq, uniffi::Enum)]
 pub enum EventContent {
     Message {
@@ -193,6 +283,16 @@ pub struct Message {
     pub edited: bool,
     /// The file of an image, video, audio or file message.
     pub media: Option<Media>,
+    /// Reactions, in the order they were first given.
+    #[uniffi(default)]
+    pub reactions: Vec<Reaction>,
+    /// The message this one answers.
+    #[uniffi(default)]
+    pub reply_to: Option<ReplyQuote>,
+    /// The text as sent, unformatted: for our messages, the Markdown typed.
+    /// An edit starts from it.
+    #[uniffi(default)]
+    pub raw_body: String,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
@@ -299,6 +399,48 @@ impl From<&core::Event> for TimelineEvent {
                     error: error.clone(),
                 },
             },
+            editable: event.editable,
+            read_by: event.read_by.iter().map(Reader::from).collect(),
+        }
+    }
+}
+
+impl From<&core::Reader> for Reader {
+    fn from(reader: &core::Reader) -> Self {
+        Self {
+            user_id: reader.id.to_string(),
+            name: reader.name.clone(),
+            avatar_url: reader.avatar.as_ref().map(ToString::to_string),
+        }
+    }
+}
+
+impl From<&core::Reaction> for Reaction {
+    fn from(reaction: &core::Reaction) -> Self {
+        Self {
+            key: reaction.key.clone(),
+            count: reaction.count as u64,
+            by_us: reaction.own,
+            senders: reaction.by.iter().map(Reader::from).collect(),
+        }
+    }
+}
+
+impl From<&core::Reply> for ReplyQuote {
+    fn from(reply: &core::Reply) -> Self {
+        Self {
+            event_id: reply.event_id.to_string(),
+            state: if reply.failed {
+                QuoteState::Failed
+            } else if reply.preview.is_some() {
+                QuoteState::Loaded
+            } else {
+                QuoteState::Loading
+            },
+            sender_id: reply.sender.as_ref().map(ToString::to_string),
+            sender_name: reply.sender_name.clone(),
+            kind: reply.kind.map(message_kind),
+            body: reply.preview.clone(),
         }
     }
 }
@@ -333,21 +475,28 @@ impl From<&core::EventContent> for EventContent {
 impl From<&core::Message> for Message {
     fn from(message: &core::Message) -> Self {
         Self {
-            kind: match message.kind {
-                core::MessageKind::Text => MessageKind::Text,
-                core::MessageKind::Notice => MessageKind::Notice,
-                core::MessageKind::Emote => MessageKind::Emote,
-                core::MessageKind::Image => MessageKind::Image,
-                core::MessageKind::Video => MessageKind::Video,
-                core::MessageKind::Audio => MessageKind::Audio,
-                core::MessageKind::File => MessageKind::File,
-                core::MessageKind::Location => MessageKind::Location,
-                core::MessageKind::Other => MessageKind::Other,
-            },
+            kind: message_kind(message.kind),
             body: message.document.to_plain_text(),
             edited: message.edited,
             media: message.media.as_ref().map(Media::from),
+            reactions: message.reactions.iter().map(Reaction::from).collect(),
+            reply_to: message.in_reply_to.as_ref().map(ReplyQuote::from),
+            raw_body: message.body.clone(),
         }
+    }
+}
+
+fn message_kind(kind: core::MessageKind) -> MessageKind {
+    match kind {
+        core::MessageKind::Text => MessageKind::Text,
+        core::MessageKind::Notice => MessageKind::Notice,
+        core::MessageKind::Emote => MessageKind::Emote,
+        core::MessageKind::Image => MessageKind::Image,
+        core::MessageKind::Video => MessageKind::Video,
+        core::MessageKind::Audio => MessageKind::Audio,
+        core::MessageKind::File => MessageKind::File,
+        core::MessageKind::Location => MessageKind::Location,
+        core::MessageKind::Other => MessageKind::Other,
     }
 }
 
@@ -487,9 +636,78 @@ mod tests {
                     body: "bold text".into(),
                     edited: false,
                     media: None,
+                    reactions: Vec::new(),
+                    reply_to: None,
+                    raw_body: "**raw** body".into(),
                 }
             }
         );
+    }
+
+    #[test]
+    fn messages_carry_reactions_quotes_and_readers() {
+        let bob = |name: Option<&str>| core::Reader {
+            id: "@bob:example.org".try_into().unwrap(),
+            name: name.map(Into::into),
+            avatar: Some("mxc://example.org/bob".into()),
+        };
+        let reply = |preview: Option<&str>, failed| core::Reply {
+            event_id: "$original:example.org".try_into().unwrap(),
+            sender: preview.map(|_| "@bob:example.org".try_into().unwrap()),
+            sender_name: preview.map(|_| "Bob".into()),
+            preview: preview.map(Into::into),
+            kind: preview.map(|_| core::MessageKind::Image),
+            failed,
+        };
+        let mut event = event("a", message(Document::from_plain("hi"), None));
+        event.editable = false;
+        event.read_by = vec![bob(None)];
+        let core::EventContent::Message(m) = &mut event.content else {
+            unreachable!()
+        };
+        m.reactions = vec![core::Reaction {
+            key: "👍".into(),
+            count: 1,
+            own: false,
+            by: vec![bob(Some("Bob"))],
+        }];
+        m.in_reply_to = Some(reply(Some("ice.png"), false));
+
+        let converted = TimelineEvent::from(&event);
+        assert!(!converted.editable);
+        let bob_reader = |name: Option<&str>| Reader {
+            user_id: "@bob:example.org".into(),
+            name: name.map(Into::into),
+            avatar_url: Some("mxc://example.org/bob".into()),
+        };
+        assert_eq!(converted.read_by, [bob_reader(None)]);
+        let EventContent::Message { message } = converted.content else {
+            panic!("not a message");
+        };
+        assert_eq!(
+            message.reactions,
+            [Reaction {
+                key: "👍".into(),
+                count: 1,
+                by_us: false,
+                senders: vec![bob_reader(Some("Bob"))],
+            }]
+        );
+        assert_eq!(
+            message.reply_to,
+            Some(ReplyQuote {
+                event_id: "$original:example.org".into(),
+                state: QuoteState::Loaded,
+                sender_id: Some("@bob:example.org".into()),
+                sender_name: Some("Bob".into()),
+                kind: Some(MessageKind::Image),
+                body: Some("ice.png".into()),
+            })
+        );
+
+        let state = |reply| ReplyQuote::from(&reply).state;
+        assert_eq!(state(reply(None, false)), QuoteState::Loading);
+        assert_eq!(state(reply(None, true)), QuoteState::Failed);
     }
 
     #[test]
@@ -542,10 +760,18 @@ mod tests {
             alias: None,
             joined_members: 2,
         };
-        let state = RoomListState::from(core::RoomListState {
+        let state = core::RoomListState {
             rooms: vec![room],
             loaded: true,
-        });
+        };
+        let by_space = core::RoomsBySpace {
+            spaces: vec![core::SpaceRooms {
+                space: "!space:example.org".try_into().unwrap(),
+                rooms: vec!["!room:example.org".try_into().unwrap()],
+            }],
+            outside: Vec::new(),
+        };
+        let state = RoomListState::new(&state, by_space);
         assert!(state.loaded);
         let summary = &state.rooms[0];
         assert_eq!(summary.id, "!room:example.org");
@@ -553,6 +779,13 @@ mod tests {
         assert_eq!(summary.direct_user_id.as_deref(), Some("@bob:example.org"));
         assert_eq!(summary.last_activity, Some(at(5)));
         assert_eq!(summary.unread_mentions, 1);
+        assert_eq!(
+            state.spaces,
+            [SpaceRooms {
+                space_id: "!space:example.org".into(),
+                room_ids: vec!["!room:example.org".into()],
+            }]
+        );
     }
 
     #[test]

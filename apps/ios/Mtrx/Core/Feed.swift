@@ -5,7 +5,8 @@ import MtrxFFI
 /// threads with the whole state, now and after every change. `Feed` passes
 /// the states on as an `AsyncStream` that a main-actor task consumes, in
 /// order; only the newest state not consumed yet is kept, since each one
-/// replaces the last.
+/// replaces the last. Values that do not replace each other (recovery
+/// steps, verification requests) are all kept (`keepingAll`).
 ///
 /// The library holds the feed while the subscription runs; when it ends
 /// (its `TaskHandle` is cancelled or dropped) the feed is released and the
@@ -14,8 +15,9 @@ final class Feed<Value: Sendable>: @unchecked Sendable {
     let stream: AsyncStream<Value>
     private let continuation: AsyncStream<Value>.Continuation
 
-    init() {
-        (stream, continuation) = AsyncStream.makeStream(of: Value.self, bufferingPolicy: .bufferingNewest(1))
+    init(keepingAll: Bool = false) {
+        (stream, continuation) = AsyncStream.makeStream(
+            of: Value.self, bufferingPolicy: keepingAll ? .unbounded : .bufferingNewest(1))
     }
 
     deinit {
@@ -24,6 +26,12 @@ final class Feed<Value: Sendable>: @unchecked Sendable {
 
     func send(_ value: Value) {
         continuation.yield(value)
+    }
+
+    /// End the stream after the values sent so far, e.g. when the call that
+    /// reports to the feed has returned.
+    func finish() {
+        continuation.finish()
     }
 }
 
@@ -37,6 +45,22 @@ extension Feed: ConnectionListener where Value == ConnectionState {
 
 extension Feed: TimelineListener where Value == [TimelineItem] {
     func onUpdate(items: [TimelineItem]) { send(items) }
+}
+
+extension Feed: TypingListener where Value == [String] {
+    func onUpdate(names: [String]) { send(names) }
+}
+
+extension Feed: RecoveryListener where Value == RecoveryStep {
+    func onUpdate(step: RecoveryStep) { send(step) }
+}
+
+extension Feed: VerificationListener where Value == VerificationState {
+    func onUpdate(state: VerificationState) { send(state) }
+}
+
+extension Feed: VerificationRequestListener where Value == Verification {
+    func onRequest(verification: Verification) { send(verification) }
 }
 
 /// A model's subscriptions and the tasks consuming them, cancelled together

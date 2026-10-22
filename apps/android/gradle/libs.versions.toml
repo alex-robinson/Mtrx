@@ -10,7 +10,11 @@ activityCompose = "1.10.1"
 lifecycle = "2.8.7"
 navigation = "2.8.9"
 browser = "1.8.0"
+datastore = "1.1.7"
 coreKtx = "1.16.0"
+# The full emoji picker for reactions (a View); its resources need an AppCompat theme.
+emojiPicker = "1.5.0"
+appcompat = "1.7.0"
 annotation = "1.9.1"
 # Used as net.java.dev.jna:jna:<version>@aar (a catalog cannot say @aar).
 jna = "5.17.0"
@@ -18,8 +22,11 @@ junit = "4.13.2"
 
 [libraries]
 androidx-annotation = { group = "androidx.annotation", name = "annotation", version.ref = "annotation" }
+androidx-appcompat = { group = "androidx.appcompat", name = "appcompat", version.ref = "appcompat" }
+androidx-emoji2-emojipicker = { group = "androidx.emoji2", name = "emoji2-emojipicker", version.ref = "emojiPicker" }
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
 androidx-activity-compose = { group = "androidx.activity", name = "activity-compose", version.ref = "activityCompose" }
+androidx-datastore-preferences = { group = "androidx.datastore", name = "datastore-preferences", version.ref = "datastore" }
 androidx-browser = { group = "androidx.browser", name = "browser", version.ref = "browser" }
 androidx-lifecycle-process = { group = "androidx.lifecycle", name = "lifecycle-process", version.ref = "lifecycle" }
 androidx-lifecycle-runtime-compose = { group = "androidx.lifecycle", name = "lifecycle-runtime-compose", version.ref = "lifecycle" }

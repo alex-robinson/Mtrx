@@ -27,9 +27,69 @@ struct MessageRow: Equatable {
     let event: TimelineEvent
     /// Starts a group of messages by one sender.
     let firstInGroup: Bool
-    /// Show the sender's name above it (the first of a group by someone
-    /// else, outside direct chats).
+    /// Show the sender's name above it and their avatar beside it (the
+    /// first of a group by someone else, outside direct chats).
     let showSender: Bool
+    /// Someone else's message outside a direct chat: the avatars' column
+    /// is on its left (empty but for the first of a group).
+    let avatarColumn: Bool
+
+    var message: Message? {
+        if case .message(let message) = event.content { return message }
+        return nil
+    }
+
+    /// In the order first given.
+    var reactions: [Reaction] { message?.reactions ?? [] }
+    /// The message it answers.
+    var quote: ReplyQuote? { message?.replyTo }
+    var edited: Bool { message?.edited ?? false }
+    /// The others who read up to here.
+    var readers: [Reader] { event.readBy }
+
+    /// What holding the message offers, in the menu's order.
+    var actions: [MessageAction] {
+        var actions: [MessageAction] = []
+        let sent = event.eventId != nil
+        if let message {
+            if sent {
+                actions += [.react, .reply]
+            }
+            if !message.body.isEmpty {
+                actions += [.copy, .selectText]
+            }
+        }
+        if event.editable {
+            actions.append(.edit)
+        }
+        if event.own && sent && event.content != .redacted {
+            actions.append(.delete)
+        }
+        if case .failed = event.sendState {
+            actions += [.retry, .discard]
+        }
+        return actions
+    }
+}
+
+/// What can be done with a message.
+enum MessageAction: Equatable {
+    /// Add (or remove) a reaction.
+    case react
+    /// Answer it, quoting it.
+    case reply
+    /// Copy its text.
+    case copy
+    /// Show its text to select from.
+    case selectText
+    /// Change its text (ours).
+    case edit
+    /// Delete it for everyone (ours).
+    case delete
+    /// Send it again after the server refused it.
+    case retry
+    /// Drop it after the server refused it.
+    case discard
 }
 
 enum TimelineRows {
@@ -74,7 +134,9 @@ enum TimelineRows {
                 }
                 endStateRun()
                 let first = previous.map { !continuesGroup($0, with: event) } ?? true
-                let row = MessageRow(event: event, firstInGroup: first, showSender: first && showSenders && !event.own)
+                let others = showSenders && !event.own
+                let row = MessageRow(
+                    event: event, firstInGroup: first, showSender: first && others, avatarColumn: others)
                 rows.append(TimelineRow(id: item.id, content: .message(row)))
                 previous = event
             }
@@ -158,6 +220,64 @@ enum TimelineRows {
 func localpart(_ userId: String) -> String {
     let name = userId.hasPrefix("@") ? userId.dropFirst() : Substring(userId)
     return String(name.prefix { $0 != ":" })
+}
+
+/// Who read up to a message, as its row shows them: at most `shown`
+/// avatars, then "+N".
+enum ReaderAvatars {
+    static let shown = 3
+
+    static func split(_ readers: [Reader]) -> (shown: [Reader], more: Int) {
+        (Array(readers.prefix(shown)), max(0, readers.count - shown))
+    }
+}
+
+extension Reader {
+    /// The display name, else the user ID's local part (until the name is
+    /// known).
+    var displayName: String {
+        name ?? localpart(userId)
+    }
+}
+
+extension ReplyQuote {
+    /// The original's sender, once loaded.
+    var senderLabel: String? {
+        senderName ?? senderId.map(localpart)
+    }
+
+    /// The original in a few words: its text, or for a file the kind and
+    /// its name; "Loading…" while it is fetched.
+    var preview: String {
+        switch state {
+        case .loading:
+            return "Loading…"
+        case .failed:
+            return "Could not load the message"
+        case .loaded:
+            let body = body ?? ""
+            guard let label = kind?.fileLabel else { return body }
+            return body.isEmpty ? label : "\(label): \(body)"
+        }
+    }
+
+    /// Tapping it goes to the original.
+    var canGoTo: Bool {
+        state == .loaded
+    }
+}
+
+extension MessageKind {
+    /// "Image", "Video", "Audio" or "File" for a message with a file.
+    var fileLabel: String? {
+        switch self {
+        case .image: return "Image"
+        case .video: return "Video"
+        case .audio: return "Audio"
+        case .file: return "File"
+        default: return nil
+        }
+    }
 }
 
 extension TimelineEvent {

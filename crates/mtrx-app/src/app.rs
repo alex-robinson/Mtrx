@@ -2738,7 +2738,7 @@ impl App {
             Screen::Main(main) => {
                 let mut layers = stack![self.main_view(main)];
                 let (panel, close) = if let Some(panel) = &self.settings_panel {
-                    let spaces = sidebar::top_level_spaces(&main.rooms.rooms)
+                    let spaces = mtrx_core::top_level_spaces(&main.rooms.rooms)
                         .into_iter()
                         .map(|s| (s.id.clone(), s.name.clone()))
                         .collect();

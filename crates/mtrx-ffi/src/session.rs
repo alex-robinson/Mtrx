@@ -13,7 +13,7 @@ use mtrx_core::{self as core, OwnedMxcUri, OwnedRoomId};
 use sha2::{Digest, Sha256};
 
 use crate::{
-    ConnectionState, Media, MtrxError, RoomListState, TaskHandle, Timeline,
+    ConnectionState, Media, MtrxError, RoomListState, TaskHandle, Timeline, room_list,
     runtime::{InRuntime, run},
 };
 
@@ -42,7 +42,7 @@ impl Session {
         })
     }
 
-    fn core(&self) -> Arc<core::Session> {
+    pub(crate) fn core(&self) -> Arc<core::Session> {
         Arc::clone(&self.inner)
     }
 }
@@ -99,7 +99,8 @@ impl Session {
     }
 
     /// Call `listener` with the room list, now and on every change. It
-    /// fills while sync runs.
+    /// fills while sync runs; spaces list their direct chats once their
+    /// members are loaded, in a later update.
     pub async fn subscribe_room_list(
         &self,
         listener: Arc<dyn RoomListListener>,
@@ -107,13 +108,9 @@ impl Session {
         let session = self.core();
         run(async move {
             let list = session.room_list().await?;
-            Ok(TaskHandle::spawn(async move {
-                let mut updates = Box::pin(list.updates());
-                while let Some(state) = updates.next().await {
-                    listener.on_update(state.into());
-                }
-                drop(list);
-            }))
+            Ok(TaskHandle::spawn(room_list::follow(
+                session, list, listener,
+            )))
         })
         .await
     }

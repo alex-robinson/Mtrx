@@ -13,6 +13,7 @@ test-support = ["dep:hmac", "dep:sha1"]
 mtrx-format.workspace = true
 matrix-sdk.workspace = true
 matrix-sdk-ui.workspace = true
+matrix-sdk-crypto.workspace = true
 eyeball-im.workspace = true
 imbl.workspace = true
 futures-util.workspace = true
