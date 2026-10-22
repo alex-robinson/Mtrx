@@ -76,6 +76,8 @@ fn main() -> iced::Result {
     .window(iced::window::Settings {
         size,
         icon: logo::window_icon(),
+        // The app ends its session first, see `app::Message::CloseWindow`.
+        exit_on_close_request: false,
         #[cfg(target_os = "linux")]
         platform_specific: linux::window_settings(),
         ..Default::default()
