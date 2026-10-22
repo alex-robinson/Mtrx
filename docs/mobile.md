@@ -166,7 +166,10 @@ is cancelled), "The recovery key is not valid." under the field, and
 "Could not decrypt this message." rows. Stage 2 (section 7): the Chats
 and Rooms tabs. Stage 3 (section 8): reactions, replies, edits,
 deleting, retrying and discarding a refused send, read receipts and
-typing.
+typing. Stage 4, the app's part: Settings as a third tab, the Rooms tab
+named Spaces, a space's rooms in Rooms and People sections with a sort
+menu, swiping a message to reply, the person's picture in a direct
+chat's header, and a button to the newest message.
 
 ```
 apps/ios/
@@ -178,13 +181,15 @@ apps/ios/
                       browser sign-in, error messages
     Models/           AppModel (phase: starting, signed out, signed in),
                       SignInModel, SessionModel (room lists, selected space,
-                      connection, sync, encryption state, verification
-                      requests), RecoveryModel, VerificationModel,
-                      TimelineModel (also composing, actions, typing,
-                      going to a quote), ImageCache, TimelineRows (rows,
-                      menu entries), RoomLists, Emoji
-    Views/            sign-in, home (Chats and Rooms tabs, encryption
-                      banner), room (timeline, typing line, composer),
+                      sort, connection, sync, encryption state,
+                      verification requests), RecoveryModel,
+                      VerificationModel, TimelineModel (also composing,
+                      actions, typing, going to a quote, at the bottom),
+                      ImageCache, TimelineRows (rows, menu entries),
+                      RoomLists (also sections, sort), SwipeToReply, Emoji
+    Views/            sign-in, home (Chats, Spaces and Settings tabs,
+                      encryption banner), room (timeline, typing line,
+                      composer, header),
                       message sheets (who reacted or read, all emoji,
                       select text), settings, recovery key, verification
     Assets.xcassets   icon (logo.svg, full-bleed), logo, accent colour
@@ -194,21 +199,41 @@ apps/ios/
 - Threading: listeners yield into an `AsyncStream` that keeps only the
   newest state; a main-actor task applies it. Models are `@MainActor`
   `ObservableObject`s; views only read them.
-- Home: a `TabView` with Chats and Rooms, each a `NavigationStack` (also on
-  iPad) whose rooms open with the tab bar hidden (`.toolbar(.hidden, for:
-  .tabBar)`); Settings is a sheet. `RoomLists` derives the chats and the
-  spaces (with their rooms and unread dots, then "Other rooms") from each
-  `RoomListState`. Rooms is a paged `TabView` (spaces, the selected space's
-  rooms; a "Spaces" button goes back too); the page and the selected space
-  live in `SessionModel`, the space in UserDefaults (`selectedSpace`: a
-  space ID or `other-rooms`), removed at sign-out. The encryption banner
-  is the first row of each list; each list has a search by name, names
-  starting with it first. Invites are listed but answered on the desktop
-  (no join call in the FFI yet).
+- Home: a `TabView` with Chats, Spaces and Settings, each a
+  `NavigationStack` (also on iPad); rooms open with the tab bar hidden
+  (`.toolbar(.hidden, for: .tabBar)`), recovery pushes from Settings, and
+  a verification is a sheet over any tab. `RoomLists` derives the chats
+  and the spaces (with their rooms and unread dots, then "Other rooms")
+  from each `RoomListState`. Spaces is a paged `TabView` (spaces, the
+  selected space's rooms; a "Spaces" button goes back too); the page and
+  the selected space live in `SessionModel`, the space in UserDefaults
+  (`selectedSpace`: a space ID or `other-rooms`), removed at sign-out. A
+  space's rooms (and Other rooms) are in two sections, Rooms and People
+  (its direct chats; an empty section is left out), both in the order of
+  the page's sort menu: Default (the list's), A to Z, Z to A, Most recent
+  (`lastActivity`, none last; ties keep the list's order). The choice is
+  for all spaces, not Chats, and kept in UserDefaults (`roomSort`), also
+  after sign-out. The encryption banner is the first row of each list and
+  leads to Settings; each list has a search by name, names starting with
+  it first (while searching, that is the order). Invites are listed but
+  answered on the desktop (no join call in the FFI yet).
 - Timeline: rows keyed by `TimelineItem.id`; runs of state events folded
   into one line (as the desktop writes them); messages grouped by sender.
-  Bottom-anchored (`defaultScrollAnchor`) on iOS 17+, a flipped scroll view
-  on iOS 16. Older messages load while the top is on screen; read when shown.
+  A flipped scroll view (the list and each row upside down) on every
+  version, so the newest row is the lazy stack's first, where it starts.
+  Anchored at the bottom instead (`defaultScrollAnchor`, as on iOS 17+
+  before), a reopened room sometimes landed short of the bottom, or past
+  it with nothing drawn: the lazy stack estimates the rows it has not
+  drawn from those it has, every change of the rows (more loaded,
+  decrypted, a reset) changes the estimate of all of them, and the anchor
+  kept an offset that was no longer the bottom. Flipped, the scroll edge
+  effects (iOS 26) are hidden, as they would be drawn at the wrong edges,
+  and the list is clipped to the bars; the context menu has its own
+  preview (the flipped one is squashed into a line); VoiceOver reads the
+  rows oldest first. Scrolled more than 40 pt up (iOS 18+: the scroll
+  geometry; before: the end no longer drawn), a round down-arrow button
+  at the lower right goes back to the bottom. Older messages load while
+  the top is on screen; read when shown.
   Others' messages outside direct chats have the sender's name above the
   first of a group and their avatar (32 pt) beside its bubble, with the
   avatars' column kept for the rest of the group; direct chats show
@@ -223,7 +248,16 @@ apps/ios/
   picker is a searchable grid of the emoji the system's Unicode data
   marks as emoji by default, one character each, searched by Unicode
   name (no skin tones, flags or sequences). Bubbles no longer have
-  `textSelection` (its long press would take the menu's).
+  `textSelection` (its long press would take the menu's). From iOS 18,
+  swiping a message to the left (one with Reply) replies to it: the
+  bubble follows, a reply icon shows at the right, and letting go past
+  50 pt replies. A UIKit pan (`UIGestureRecognizerRepresentable`) that
+  begins only for a mostly leftward drag, so scrolling and the back
+  gesture (rightward) are left alone; a SwiftUI drag in the flipped list
+  stopped it scrolling.
+- Header: a direct chat's title is the room's picture and name, a button
+  for the person's details (`TimelineModel.showPersonInfo`, empty until
+  the person sheet comes).
 - Reactions: chips under the bubble, wrapping (`FlowLayout`); ours in
   the accent colour; tap toggles, hold lists who reacted. Quotes: a bar,
   the sender and three lines inside the bubble (above an image, in a
@@ -253,7 +287,10 @@ apps/ios/
   deleted and undecryptable messages; "+N"; quote texts; emoji search;
   replying, editing, cancelling and a failed reply; typing calls, names
   and lines; the actions; going to a quote (shown, after paginating, at
-  the room's start, after 20 calls).
+  the room's start, after 20 calls). Stage 4: the Rooms and People
+  sections, the four orders (with no `lastActivity`), the remembered
+  order; which messages swipe to reply, and the swipe's start, offset
+  and threshold; when the button to the bottom shows.
 
 Locally: run `scripts/build-ios-ffi.sh` once (or unzip CI's `MtrxFFI-ios`
 into `apps/ios`), open `apps/ios/Mtrx.xcodeproj`, run on a simulator; for a
