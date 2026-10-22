@@ -22,10 +22,11 @@ use mtrx_core::{
 };
 use mtrx_ffi::{
     ConnectionListener, ConnectionState, EncryptionState, EncryptionStateListener, EventContent,
-    MediaKind, Message, MessageKind, Mtrx, MtrxError, NotificationContent, PusherInfo, QuoteState,
-    Reaction, Reader, RecoveryListener, RecoveryStatus, RecoveryStep, ReplyQuote, RoomKind,
-    RoomListListener, RoomListState, SecretBackend, SecretError, SendState, Session, TimelineEvent,
-    TimelineItem, TimelineItemContent, TimelineListener, TypingListener, UserProfile, Verification,
+    MediaKind, Message, MessageKind, Mtrx, MtrxError, NotificationContent, Presence,
+    PresenceListener, PresenceState, PusherInfo, QuoteState, Reaction, Reader, RecoveryListener,
+    RecoveryStatus, RecoveryStep, ReplyQuote, RoomKind, RoomListListener, RoomListState,
+    SecretBackend, SecretError, SendState, Session, TimelineEvent, TimelineItem,
+    TimelineItemContent, TimelineListener, TypingListener, UserProfile, Verification,
     VerificationListener, VerificationRequestListener, VerificationState,
 };
 use tempfile::TempDir;
@@ -107,6 +108,19 @@ impl VerificationListener for Forward<VerificationState> {
     }
 }
 
+/// `None`: the server does not share presence.
+type Presences = Option<HashMap<String, Presence>>;
+
+impl PresenceListener for Forward<Presences> {
+    fn on_update(&self, presences: HashMap<String, Presence>) {
+        self.send(Some(presences));
+    }
+
+    fn on_unavailable(&self) {
+        self.send(None);
+    }
+}
+
 impl VerificationRequestListener for Forward<Arc<Verification>> {
     fn on_request(&self, verification: Arc<Verification>) {
         self.send(verification);
@@ -115,7 +129,17 @@ impl VerificationRequestListener for Forward<Arc<Verification>> {
 
 /// Wait for an update matching `pred`.
 fn wait_for<T>(what: &str, updates: &mpsc::Receiver<T>, pred: impl Fn(&T) -> bool) -> T {
-    let deadline = std::time::Instant::now() + TIMEOUT;
+    wait_within(TIMEOUT, what, updates, pred)
+}
+
+/// As [`wait_for`], for up to `timeout`.
+fn wait_within<T>(
+    timeout: Duration,
+    what: &str,
+    updates: &mpsc::Receiver<T>,
+    pred: impl Fn(&T) -> bool,
+) -> T {
+    let deadline = std::time::Instant::now() + timeout;
     loop {
         let left = deadline.saturating_duration_since(std::time::Instant::now());
         match updates.recv_timeout(left) {
@@ -1297,4 +1321,79 @@ fn a_push_handler_reads_messages_while_the_app_syncs() {
         block_on(push.notification(room_id.clone(), "$missing:localhost".into())),
         Err(MtrxError::Other { .. })
     ));
+}
+
+#[test]
+#[ignore = "needs the local Synapse (testserver/run.sh)"]
+fn presence_is_set_read_and_followed() {
+    let core_runtime = tokio::runtime::Runtime::new().unwrap();
+    // Synapse shows presence to those who share a room.
+    let (names, _room) = room_of(&core_runtime, &["ffi-presence", "ffi-presence-bob"]);
+    let stranger = unique_name("ffi-presence-stranger");
+    core_runtime.block_on(register(&stranger)).unwrap();
+    let (alice, bob) = (sign_in(&names[0]), sign_in(&names[1]));
+    let alice_id = alice.session.user_id();
+
+    block_on(
+        alice
+            .session
+            .set_presence(PresenceState::Online, Some("In a meeting".into())),
+    )
+    .unwrap();
+    let seen = block_on(bob.session.presence(alice_id.clone())).unwrap();
+    assert_eq!(seen.state, PresenceState::Online);
+    assert_eq!(seen.status_message.as_deref(), Some("In a meeting"));
+    assert!(
+        seen.currently_active && seen.last_active.is_some(),
+        "{seen:?}"
+    );
+
+    let (listener, updates) = forward::<Presences>();
+    let _handle = bob
+        .session
+        .subscribe_presence(vec![alice_id.clone()], listener)
+        .unwrap();
+    let state_of = |p: &Presences| p.as_ref().and_then(|p| p.get(&alice_id)).map(|p| p.state);
+    wait_for("Alice online", &updates, |p| {
+        state_of(p) == Some(PresenceState::Online)
+    });
+
+    // Read again within about a minute; the library keeps Alice's presence
+    // meanwhile (Synapse drops one not refreshed for 30 s), so it changes
+    // to unavailable, not offline.
+    block_on(alice.session.set_presence(PresenceState::Unavailable, None)).unwrap();
+    let changed = wait_within(
+        Duration::from_secs(100),
+        "Alice no longer online",
+        &updates,
+        |p| state_of(p) != Some(PresenceState::Online),
+    );
+    let changed = &changed.unwrap()[&alice_id];
+    assert_eq!(changed.state, PresenceState::Unavailable);
+    assert_eq!(changed.status_message, None);
+
+    block_on(alice.session.set_presence(PresenceState::Offline, None)).unwrap();
+    let seen = block_on(bob.session.presence(alice_id.clone())).unwrap();
+    assert_eq!(seen.state, PresenceState::Offline);
+
+    assert!(matches!(
+        block_on(bob.session.presence("alice".into())),
+        Err(MtrxError::InvalidInput { .. })
+    ));
+    assert!(matches!(
+        bob.session
+            .subscribe_presence(vec!["alice".into()], forward::<Presences>().0),
+        Err(MtrxError::InvalidInput { .. })
+    ));
+    // Someone Bob shares no room with: Synapse refuses theirs, not his
+    // own, so presence as a whole stays available.
+    let server = bob.session.user_id().split_once(':').unwrap().1.to_owned();
+    let stranger_id = format!("@{stranger}:{server}");
+    match block_on(bob.session.presence(stranger_id)) {
+        Err(MtrxError::Other { reason }) => {
+            assert_ne!(reason, "This server does not share presence");
+            assert!(reason.contains("M_FORBIDDEN"), "{reason}");
+        }
+        other => panic!("a stranger's presence: {other:?}"),
+    }
 }
