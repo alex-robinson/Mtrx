@@ -19,6 +19,8 @@ mtrx-core = { path = "crates/mtrx-core" }
 mtrx-format = { path = "crates/mtrx-format" }
 matrix-sdk = { version = "0.19.1", features = ["bundled-sqlite", "local-server"] }
 matrix-sdk-ui = "0.19.1"
+# For the types of recovery key errors, which matrix-sdk does not re-export.
+matrix-sdk-crypto = "0.19.1"
 eyeball-im = "0.9.1"
 imbl = "7.0.2"
 futures-util = "0.3.34"
