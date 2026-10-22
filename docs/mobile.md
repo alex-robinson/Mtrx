@@ -181,7 +181,9 @@ deleting, retrying and discarding a refused send, read receipts and
 typing. Stage 4, the app's part: Settings as a third tab, the Rooms tab
 named Spaces, a space's rooms in Rooms and People sections with a sort
 menu, swiping a message to reply, the person's picture in a direct
-chat's header, and a button to the newest message.
+chat's header, and a button to the newest message. Stage 4, the library's
+part: the encryption state pushed, "Decrypting…" while keys arrive, and
+the person's info sheet.
 
 ```
 apps/ios/
@@ -197,11 +199,12 @@ apps/ios/
                       verification requests), RecoveryModel,
                       VerificationModel, TimelineModel (also composing,
                       actions, typing, going to a quote, at the bottom),
-                      ImageCache, TimelineRows (rows, menu entries),
+                      PersonInfoModel, ImageCache, TimelineRows (rows,
+                      menu entries),
                       RoomLists (also sections, sort), SwipeToReply, Emoji
     Views/            sign-in, home (Chats, Spaces and Settings tabs,
                       encryption banner), room (timeline, typing line,
-                      composer, header),
+                      composer, header, the person's info sheet),
                       message sheets (who reacted or read, all emoji,
                       select text), settings, recovery key, verification
     Assets.xcassets   icon (logo.svg, full-bleed), logo, accent colour
@@ -229,6 +232,18 @@ apps/ios/
   leads to Settings; each list has a search by name, names starting with
   it first (while searching, that is the order). Invites are listed but
   answered on the desktop (no join call in the FFI yet).
+- Encryption state: `subscribeEncryptionState` with the other
+  subscriptions in `SessionModel.start()`, just before the first
+  `startSync()` (the library pushes the state now, `recovery` `unknown`
+  before sync, and on every change, so the order does not matter), and
+  cancelled with them at sign-out. `SessionModel.encryption` is the last
+  pushed state; `encryptionState()` is not called (the first push comes at
+  once). Recovery and verification only end: the banner goes when the
+  pushed state says so. Undecryptable rows say "Decrypting…" while
+  `keysArriving`, else "Could not decrypt this message."
+  (`MessageRow.undecryptableText`); `SessionModel.keysArriving`, a
+  publisher, is handed to each `TimelineModel`, which rebuilds its rows
+  when it changes, so rows on screen follow. `utdCause` is not shown.
 - Timeline: rows keyed by `TimelineItem.id`; runs of state events folded
   into one line (as the desktop writes them); messages grouped by sender.
   A flipped scroll view (the list and each row upside down) on every
@@ -267,9 +282,19 @@ apps/ios/
   begins only for a mostly leftward drag, so scrolling and the back
   gesture (rightward) are left alone; a SwiftUI drag in the flipped list
   stopped it scrolling.
-- Header: a direct chat's title is the room's picture and name, a button
-  for the person's details (`TimelineModel.showPersonInfo`, empty until
-  the person sheet comes).
+- Header: in a direct chat with someone else (`TimelineModel.person`: a
+  `directUserId` not ours, so not the Notes to self) the title is the
+  room's picture and name, a button opening the person's info sheet
+  (`TimelineModel.personInfo`, a `PersonInfoModel`; medium and large
+  detents): the chat's name and picture at once, then the profile's
+  (`userProfile`) where set (a failure keeps the chat's, silently); the
+  user ID, selectable, with a copy button ("Copied" for 2 s); "Add to
+  space…" (left out without spaces) pushes the top-level spaces
+  (`RoomLists.topLevelSpaces`, following the room list while open) with
+  their pictures. Tapping one invites (one at a time, a spinner on it); on
+  success the list closes and "Invited to <space>." shows under the
+  button for 3 s; on failure the reason shows in an alert, and the list
+  stays.
 - Reactions: chips under the bubble, wrapping (`FlowLayout`); ours in
   the accent colour; tap toggles, hold lists who reacted. Quotes: a bar,
   the sender and three lines inside the bubble (above an image, in a
@@ -302,7 +327,14 @@ apps/ios/
   the room's start, after 20 calls). Stage 4: the Rooms and People
   sections, the four orders (with no `lastActivity`), the remembered
   order; which messages swipe to reply, and the swipe's start, offset
-  and threshold; when the button to the bottom shows.
+  and threshold; when the button to the bottom shows. Stage 4, the
+  library's part: the banner following pushed states (also after a
+  recovery), nothing asked, the subscription ended at sign-out; the
+  undecryptable row's text by `keysArriving`, also in a timeline already
+  open; the person sheet (the profile replacing the chat's name and
+  picture, a partial profile, a failure; copying; an invite succeeding,
+  failing, one at a time; none in the Notes to self or a room); the
+  top-level spaces.
 
 Locally: run `scripts/build-ios-ffi.sh` once (or unzip CI's `MtrxFFI-ios`
 into `apps/ios`), open `apps/ios/Mtrx.xcodeproj`, run on a simulator; for a
