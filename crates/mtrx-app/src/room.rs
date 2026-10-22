@@ -42,6 +42,7 @@ use crate::{
     message,
     message_menu::{self, MenuAt},
     popover::{Edge, Side, popover},
+    presence::{self, Presences},
     selectable_image::selectable_image,
     selection::{self, Bounds, Selection, units_text},
     send_later::{self, SendLater},
@@ -768,6 +769,7 @@ impl Room {
                 name,
                 look.own_user,
                 look.avatars,
+                look.presences,
             ));
         }
         column![header, body].into()
@@ -781,7 +783,15 @@ impl Room {
     ) -> Element<'a, Message> {
         let avatars = look.avatars;
         let name = summary.map_or("", |s| s.name.as_str());
+        // A direct chat's person, as long as their presence is known.
+        let presence = summary
+            .filter(|s| s.kind == RoomKind::Direct && !s.is_notes(look.own_user))
+            .and_then(|s| s.direct_user.as_ref())
+            .and_then(|user| look.presences.get(user));
         let mut title = column![ellipsis(name).size(16).font(fonts::SEMIBOLD)];
+        if let Some(line) = presence.and_then(|p| presence::line(p, look.now)) {
+            title = title.push(ellipsis(line).size(12).style(text::secondary));
+        }
         // A room just created or joined is listed once sync delivers it.
         if summary.is_none() {
             title = title.push(
@@ -803,6 +813,9 @@ impl Room {
             HEADER_AVATAR,
             Shape::Circle,
         );
+        let avatar = presence::with_dot(avatar, presence, HEADER_AVATAR, |theme| {
+            theme.extended_palette().background.base.color
+        });
         // The name and picture open the room's info card.
         let info = summary.map_or(info::Target::Room(self.id.clone()), info::target_of);
         let about = mouse_area(
@@ -874,6 +887,10 @@ pub struct Look<'a> {
     pub frequent_emoji: &'a [String],
     /// The member list is shown beside the room.
     pub show_members: bool,
+    /// People's presence, in the member list and a direct chat's header.
+    pub presences: &'a Presences,
+    /// For how long ago people were last active.
+    pub now: SystemTime,
 }
 
 /// What rendering an event needs besides the event.

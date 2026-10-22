@@ -8,8 +8,8 @@ use iced::{
     },
 };
 use mtrx_core::{
-    Grouping, Layout, MxcUri, OwnedRoomId, RoomKind, RoomSummary, RoomTag, ScheduledMessage,
-    Section, Sort, top_level_spaces,
+    Grouping, Layout, MxcUri, OwnedRoomId, OwnedUserId, RoomKind, RoomSummary, RoomTag,
+    ScheduledMessage, Section, Sort, UserId, top_level_spaces,
 };
 
 use crate::{
@@ -21,6 +21,7 @@ use crate::{
     fonts,
     hint::{Position, hint, shortcut},
     icons, info,
+    presence::{self, Presences},
     style::{self, ROOM_AVATAR, ROOM_ROW, SPACE_AVATAR, SPACE_BAR_WIDTH},
     tint::Tint,
 };
@@ -102,26 +103,41 @@ pub fn first_match<'a>(rooms: &'a [RoomSummary], filter: &str) -> Option<&'a Roo
         .next()
 }
 
-/// Pictures in the space bar and room list, with their sizes.
-pub fn avatars<'a>(view: &RoomListView<'a>) -> Vec<(&'a MxcUri, f32)> {
-    let rooms = view.rooms;
-    let spaces = top_level_spaces(rooms)
-        .into_iter()
-        .filter_map(|s| Some((s.avatar.as_deref()?, SPACE_AVATAR)));
+/// The rooms the room list shows (in collapsed sections too), or those
+/// found by the search; not the pinned Notes.
+fn listed<'a>(view: &RoomListView<'a>) -> Vec<&'a RoomSummary> {
     let filter = view.filter.trim().to_lowercase();
-    let listed = if filter.is_empty() {
+    if filter.is_empty() {
         sections(view)
             .into_iter()
             .flat_map(|(_, entries)| entries)
             .collect()
     } else {
-        search(rooms, &filter)
-    };
-    let listed = listed
+        search(view.rooms, &filter)
+    }
+}
+
+/// Pictures in the space bar and room list, with their sizes.
+pub fn avatars<'a>(view: &RoomListView<'a>) -> Vec<(&'a MxcUri, f32)> {
+    let spaces = top_level_spaces(view.rooms)
+        .into_iter()
+        .filter_map(|s| Some((s.avatar.as_deref()?, SPACE_AVATAR)));
+    let listed = listed(view)
         .into_iter()
         .filter(|r| view.room_pictures || r.kind != RoomKind::Room)
         .filter_map(|r| Some((r.avatar.as_deref()?, ROOM_AVATAR)));
     spaces.chain(listed).collect()
+}
+
+/// The people of the direct chats the room list shows, in its order,
+/// without us (the Notes to self).
+pub fn direct_users<'a>(view: &RoomListView<'a>, own: &UserId) -> Vec<&'a OwnedUserId> {
+    listed(view)
+        .into_iter()
+        .filter(|r| r.kind == RoomKind::Direct)
+        .filter_map(|r| r.direct_user.as_ref())
+        .filter(|user| *user != own)
+        .collect()
 }
 
 pub fn space_bar<'a>(
@@ -232,6 +248,8 @@ pub struct RoomListView<'a> {
     pub room_pictures: bool,
     /// The Notes to self, pinned at the top; `None` if not pinned.
     pub notes: Option<Notes<'a>>,
+    /// Dots on the pictures of direct chats.
+    pub presences: &'a Presences,
 }
 
 /// The Notes to self at the top of the room list.
@@ -817,13 +835,22 @@ impl<'a> RoomListView<'a> {
         };
         // People keep their pictures; rooms may show whether they are open.
         let avatar = if self.room_pictures || room.kind != RoomKind::Room {
-            self.avatars.view(
+            let picture = self.avatars.view(
                 room.id.as_str(),
                 &room.name,
                 room.avatar.as_deref(),
                 ROOM_AVATAR,
                 Shape::Circle,
-            )
+            );
+            let person = room
+                .direct_user
+                .as_ref()
+                .filter(|_| room.kind == RoomKind::Direct);
+            let presence = person.and_then(|user| self.presences.get(user));
+            let tint = self.tint;
+            presence::with_dot(picture, presence, ROOM_AVATAR, move |theme| {
+                tint.color(theme)
+            })
         } else {
             access_symbol(room.public)
         };
@@ -1221,6 +1248,70 @@ mod tests {
         let loose: OwnedRoomId = "!loose:x".try_into().unwrap();
         layout.place(&loose, Some(&category));
         assert!(unread(&rooms, Some(&space()), &arrange));
+    }
+
+    /// The room list in `space` (Home for `None`), searching `filter`.
+    fn list<'a>(
+        rooms: &'a [RoomSummary],
+        space: Option<&'a OwnedRoomId>,
+        filter: &'a str,
+        arrange: &'a Arrange,
+        avatars: &'a Avatars,
+        presences: &'a Presences,
+    ) -> RoomListView<'a> {
+        RoomListView {
+            rooms,
+            selected_space: space,
+            open: None,
+            loaded: true,
+            avatars,
+            scheduled: &[],
+            add_menu: false,
+            filter,
+            arrange,
+            grouping: Grouping::default(),
+            out_of_view: OutOfView::default(),
+            width: 260.0,
+            tint: Tint::default(),
+            room_pictures: false,
+            notes: None,
+            presences,
+        }
+    }
+
+    #[test]
+    fn follows_the_people_of_the_direct_chats_listed() {
+        let own: OwnedUserId = "@me:x".try_into().unwrap();
+        let mut rooms = rooms();
+        rooms.push(RoomSummary {
+            direct_user: Some("@carol:x".try_into().unwrap()),
+            ..room("!carol:x", RoomKind::Direct, &[])
+        });
+        // The Notes to self, not pinned, are listed but not followed.
+        rooms.push(RoomSummary {
+            direct_user: Some(own.clone()),
+            ..room("!notes:x", RoomKind::Direct, &[])
+        });
+        let (avatars, presences) = (Avatars::new(), Presences::default());
+        let mut arrange = Arrange::default();
+        let people = |space, filter, arrange: &Arrange| {
+            let view = list(&rooms, space, filter, arrange, &avatars, &presences);
+            let mut people: Vec<String> = direct_users(&view, &own)
+                .into_iter()
+                .map(|u| u.to_string())
+                .collect();
+            people.sort();
+            people
+        };
+        assert_eq!(people(None, "", &arrange), ["@bob:x", "@carol:x"]);
+        assert_eq!(people(None, "car", &arrange), ["@carol:x"]);
+        let space = space();
+        assert!(people(Some(&space), "", &arrange).is_empty());
+        let bob: OwnedUserId = "@bob:x".try_into().unwrap();
+        arrange
+            .space_members
+            .loaded(space.clone(), 0, HashSet::from([bob]));
+        assert_eq!(people(Some(&space), "", &arrange), ["@bob:x"]);
     }
 
     #[test]

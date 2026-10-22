@@ -1,13 +1,15 @@
 //! Cards: who someone is, with their address to copy; a room's settings.
 //! Opened by clicking a name or from the room and member lists.
 
+use std::time::SystemTime;
+
 use iced::{
     Alignment, Element, Length,
     widget::{button, checkbox, column, container, row, scrollable, space, text, text_input},
 };
 use mtrx_core::{
-    Access, MxcUri, NotifyMode, OwnedMxcUri, OwnedRoomId, OwnedUserId, RoomKind, RoomSettings,
-    RoomSummary, RoomTag, UserInfo, UserSummary,
+    Access, MxcUri, NotifyMode, OwnedMxcUri, OwnedRoomId, OwnedUserId, Presence, RoomKind,
+    RoomSettings, RoomSummary, RoomTag, UserInfo, UserSummary,
 };
 
 use crate::{
@@ -15,6 +17,7 @@ use crate::{
     avatar::{Avatars, Shape},
     dialog::Kind,
     fonts,
+    presence::{self, Presences},
     selectable::selectable_text,
     sidebar, style,
 };
@@ -168,14 +171,20 @@ impl Card {
         }
     }
 
+    /// `presences` and `now`: a person's presence.
     pub fn view<'a>(
         &'a self,
         rooms: &'a [RoomSummary],
         avatars: &Avatars,
         own_user: &OwnedUserId,
+        presences: &Presences,
+        now: SystemTime,
     ) -> Element<'a, app::Message> {
         let body = match &self.target {
-            Target::User(user) => self.user_view(user, rooms, avatars, own_user),
+            Target::User(user) => {
+                let presence = presences.get(&user.id);
+                self.user_view(user, rooms, avatars, own_user, presence, now)
+            }
             Target::Room(id) => match rooms.iter().find(|r| &r.id == id) {
                 Some(room) => self.room_view(room, rooms, avatars),
                 None => text("This room is not in your list.").into(),
@@ -199,6 +208,8 @@ impl Card {
         rooms: &'a [RoomSummary],
         avatars: &Avatars,
         own_user: &OwnedUserId,
+        presence: Option<&Presence>,
+        now: SystemTime,
     ) -> Element<'a, app::Message> {
         let name = user.name.as_deref().unwrap_or(user.id.localpart());
         // The star favourites the direct chat, made if there is none.
@@ -209,14 +220,24 @@ impl Card {
             Some(chat) => sidebar::star_button(&chat.id, chat.tag == RoomTag::Favourite),
             None => sidebar::star_for(app::Message::FavouritePerson(user.id.clone()), false),
         };
+        let picture = avatars.view(
+            user.id.as_str(),
+            name,
+            user.avatar.as_deref(),
+            AVATAR,
+            Shape::Circle,
+        );
+        let picture = presence::with_dot(picture, presence, AVATAR, |theme| {
+            theme.extended_palette().background.base.color
+        });
+        let mut title = column![selectable_text(name).size(18).font(fonts::SEMIBOLD)].spacing(2);
+        if let Some(line) = presence.and_then(|p| presence::line(p, now)) {
+            title = title.push(text(line).size(13).style(text::secondary));
+        }
         let mut card = column![
-            heading(
-                avatars,
-                user.id.as_str(),
-                name,
-                user.avatar.as_deref(),
-                star
-            ),
+            row![picture, title.width(Length::Fill), star]
+                .spacing(14)
+                .align_y(Alignment::Center),
             self.copyable("User ID", user.id.to_string()),
         ]
         .spacing(14);
@@ -265,10 +286,14 @@ impl Card {
         let allowed = |can: fn(&RoomSettings) -> bool| settings.is_some_and(can) && !self.saving;
         let star = sidebar::star_button(&room.id, room.tag == RoomTag::Favourite);
         let mut card = column![heading(
-            avatars,
-            room.id.as_str(),
+            avatars.view(
+                room.id.as_str(),
+                &room.name,
+                room.avatar.as_deref(),
+                AVATAR,
+                Shape::Circle
+            ),
             &room.name,
-            room.avatar.as_deref(),
             star
         )]
         .spacing(14);
@@ -540,14 +565,12 @@ fn labelled<'a>(
 }
 
 fn heading<'a>(
-    avatars: &Avatars,
-    id: &str,
+    picture: Element<'a, app::Message>,
     name: &'a str,
-    avatar: Option<&MxcUri>,
     star: Element<'a, app::Message>,
 ) -> Element<'a, app::Message> {
     row![
-        avatars.view(id, name, avatar, AVATAR, Shape::Circle),
+        picture,
         container(selectable_text(name).size(18).font(fonts::SEMIBOLD)).width(Length::Fill),
         star,
     ]

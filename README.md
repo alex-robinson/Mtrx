@@ -61,8 +61,9 @@ not carry it; our own is sent again every 20 s while Mtrx runs, since
 servers drop it otherwise (Synapse after 30 s). Some servers do not share
 presence: `mtrx presence` then says "This server does not share
 presence", or, for Synapse with presence off, shows everyone offline with
-no last activity. The phones show it as `docs/mobile.md` section 11
-describes; the desktop will show it the same way later.
+no last activity. The apps show it as `docs/mobile.md` section 11
+describes; the desktop is idle after 5 minutes without input while its
+window is not focused, and offline once closed.
 
 `--profile NAME` selects an account. Secrets go to the OS keychain;
 `--secret-store file` keeps them in a plain file instead (development only).

@@ -20,9 +20,9 @@ use iced::{
 };
 use mtrx_core::{
     CallService, Connection, Contact, Google, Media, MediaRef, Member, Notification, OwnedEventId,
-    OwnedMxcUri, OwnedRoomId, OwnedUserId, Profile, RecoveryStep, RoomList, RoomListColours,
-    RoomListState, RoomOrAliasId, RoomTag, RoomTimeline, ScheduledMessage, SecretStore,
-    ServiceKind, Session, TimelineEntry, Url,
+    OwnedMxcUri, OwnedRoomId, OwnedUserId, PresenceState, Profile, RecoveryStep, RoomKind,
+    RoomList, RoomListColours, RoomListState, RoomOrAliasId, RoomTag, RoomTimeline,
+    ScheduledMessage, SecretStore, ServiceKind, Session, TimelineEntry, Url,
 };
 
 use crate::{
@@ -40,6 +40,7 @@ use crate::{
     math::{self, Math, Rendered},
     media::{self, Previews, Viewer},
     members, mention, message, pdf_viewer,
+    presence::{self, Activity, Presences},
     room::{self, Look, Older, Room},
     selection::{self, Selection},
     send_later,
@@ -140,6 +141,10 @@ pub enum Message {
     /// A desktop notification about the room was clicked.
     NotificationClicked(OwnedRoomId),
     WindowFocused(bool),
+    /// The window's close button (or Alt+F4, ...) was pressed.
+    CloseWindow(window::Id),
+    /// Others' presence, and ours.
+    Presence(presence::Message),
     Calls(OwnedRoomId, calls::Message),
     RecoveryKey(String),
     Recover,
@@ -306,6 +311,10 @@ struct Main {
     out_of_view: sidebar::OutOfView,
     /// The view to show again once its room is listed (after starting).
     restore: Option<LastView>,
+    /// Others' presence, for the people shown.
+    presences: Presences,
+    /// Our presence, from the window's focus and input.
+    activity: Activity,
 }
 
 /// The room list's width limits, and its draggable edge's.
@@ -349,6 +358,8 @@ impl Main {
             colours: session.room_list_colours(),
             out_of_view: Default::default(),
             restore: None,
+            presences: Presences::default(),
+            activity: Activity::new(true, Instant::now()),
             now: SystemTime::now(),
             session,
             error: None,
@@ -409,7 +420,58 @@ impl Main {
             tint: Tint::of(&self.colours, self.space.as_ref()),
             room_pictures: settings.room_pictures,
             notes: self.pinned_notes(settings),
+            presences: &self.presences,
         }
+    }
+
+    /// The people whose presence shows, first shown first: the open direct
+    /// chat's, those of the direct chats listed, and the member list's.
+    fn shown_people(&self, settings: &Settings) -> Vec<OwnedUserId> {
+        let rooms = &self.rooms.rooms;
+        let open = self
+            .room
+            .as_ref()
+            .and_then(|room| rooms.iter().find(|r| r.id == room.id));
+        let mut people: Vec<&OwnedUserId> = open
+            .filter(|r| r.kind == RoomKind::Direct)
+            .and_then(|r| r.direct_user.as_ref())
+            .into_iter()
+            .collect();
+        people.extend(sidebar::direct_users(
+            &self.room_list_view(settings),
+            &self.own_user,
+        ));
+        if self.show_members
+            && let Some(Ok(members)) = self.room.as_ref().and_then(|r| r.member_list.as_ref())
+        {
+            people.extend(members.iter().map(|m| &m.id));
+        }
+        let mut unique: Vec<OwnedUserId> = Vec::with_capacity(people.len());
+        for person in people {
+            if *person != self.own_user && !unique.contains(person) {
+                unique.push(person.clone());
+            }
+        }
+        unique
+    }
+
+    /// Follow the presence of the people shown once they settle.
+    fn follow_shown(&mut self, settings: &Settings) -> Task<Message> {
+        let people = self.shown_people(settings);
+        match self.presences.show(people) {
+            Some(generation) => Task::perform(tokio::time::sleep(presence::SETTLE), move |()| {
+                Message::Presence(presence::Message::Settle(generation))
+            }),
+            None => Task::none(),
+        }
+    }
+
+    /// Set our presence, unless the server does not share it.
+    fn set_presence(&self, state: PresenceState) -> Task<Message> {
+        if self.presences.unavailable() {
+            return Task::none();
+        }
+        presence::set_own(&self.session, state).map(Message::Presence)
     }
 
     /// The Notes to self if pinned; missing ones only once the room list
@@ -563,7 +625,11 @@ impl App {
             }
             _ => Task::none(),
         };
-        Task::batch([task, badge, out_of_view])
+        let presence = match &mut self.screen {
+            Screen::Main(main) => main.follow_shown(&self.settings),
+            _ => Task::none(),
+        };
+        Task::batch([task, badge, out_of_view, presence])
     }
 
     fn handle(&mut self, message: Message) -> Task<Message> {
@@ -598,10 +664,21 @@ impl App {
             Message::Restored(Ok(Shared(session))) | Message::LoggedIn(Ok(Shared(session))) => {
                 let mut main = Main::new(session.clone());
                 main.restore = self.view_file.as_deref().map(LastView::load);
+                main.activity = Activity::new(self.focused, Instant::now());
+                let share = self.settings.share_presence;
+                let online = if share {
+                    main.set_presence(PresenceState::Online)
+                } else {
+                    Task::none()
+                };
                 self.screen = Screen::Main(Box::new(main));
                 let migrate = self.move_colours_to_account(&session);
                 let start = Task::perform(
                     async move {
+                        // Before syncing, whose requests would say online.
+                        if !share {
+                            presence::go_offline(&session).await;
+                        }
                         session.start_sync().await;
                         session.start_scheduler();
                         let list = session.room_list().await?;
@@ -612,7 +689,7 @@ impl App {
                         Message::Ready(result.map_err(|e| e.to_string()))
                     },
                 );
-                Task::batch([start, migrate])
+                Task::batch([start, migrate, online])
             }
             Message::Colours(colours) => {
                 if let Screen::Main(main) = &mut self.screen {
@@ -1153,6 +1230,13 @@ impl App {
                     room.reactors = None;
                 }
                 let card = info::Card::new(target, &main.rooms.rooms);
+                // Fresher than the watcher's, and for people it does not follow.
+                let presence = match card.user() {
+                    Some(user) if *user != main.own_user && !main.presences.unavailable() => {
+                        presence::look_up(&main.session, user.clone()).map(Message::Presence)
+                    }
+                    _ => Task::none(),
+                };
                 let load = match card.user() {
                     Some(user) => {
                         let (session, user) = (main.session.clone(), user.clone());
@@ -1171,7 +1255,7 @@ impl App {
                         .map_or_else(Task::none, |room| load_settings(&main.session, room)),
                 };
                 main.info = Some(card);
-                Task::batch([load, self.load_avatars()])
+                Task::batch([load, presence, self.load_avatars()])
             }
             Message::Info(message) => {
                 let Screen::Main(main) = &mut self.screen else {
@@ -1292,11 +1376,18 @@ impl App {
                 let back =
                     main.connection == Connection::Offline && connection == Connection::Online;
                 main.connection = connection;
+                // Our presence, if it could not be set while offline.
+                let presence = if back && self.settings.share_presence {
+                    main.set_presence(main.activity.state())
+                } else {
+                    Task::none()
+                };
                 // History that could not load while offline.
-                match main.room.as_mut() {
+                let history = match main.room.as_mut() {
                     Some(room) if back => fill(room),
                     _ => Task::none(),
-                }
+                };
+                Task::batch([presence, history])
             }
             Message::SignInAgain => {
                 let Screen::Main(main) = &self.screen else {
@@ -1549,8 +1640,28 @@ impl App {
             }
             Message::WindowFocused(focused) => {
                 self.focused = focused;
-                Task::none()
+                let Screen::Main(main) = &mut self.screen else {
+                    return Task::none();
+                };
+                match main.activity.focus(focused, Instant::now()) {
+                    Some(state) if self.settings.share_presence => main.set_presence(state),
+                    _ => Task::none(),
+                }
             }
+            Message::CloseWindow(id) => {
+                // Others see us offline now, not once the server forgets us.
+                let offline = match &self.screen {
+                    Screen::Main(main)
+                        if self.settings.share_presence && !main.presences.unavailable() =>
+                    {
+                        let session = main.session.clone();
+                        Task::future(async move { presence::go_offline(&session).await }).discard()
+                    }
+                    _ => Task::none(),
+                };
+                offline.chain(window::close(id))
+            }
+            Message::Presence(message) => self.presence(message),
             Message::CloseNotice => {
                 if let Screen::Main(main) = &mut self.screen {
                     main.notice = None;
@@ -1998,6 +2109,18 @@ impl App {
                 self.save_settings();
                 self.rescaled()
             }
+            settings::Action::SharePresence => {
+                self.save_settings();
+                let Screen::Main(main) = &mut self.screen else {
+                    return Task::none();
+                };
+                let state = if self.settings.share_presence {
+                    main.activity.restart(Instant::now())
+                } else {
+                    PresenceState::Offline
+                };
+                main.set_presence(state)
+            }
             settings::Action::GoogleSignIn(client) => {
                 let google = self.google.clone();
                 let (task, handle) = Task::perform(
@@ -2101,6 +2224,25 @@ impl App {
                     },
                 )
             }
+        }
+    }
+
+    fn presence(&mut self, message: presence::Message) -> Task<Message> {
+        let Screen::Main(main) = &mut self.screen else {
+            return Task::none();
+        };
+        let now = Instant::now();
+        let ours = match message {
+            presence::Message::Input => main.activity.input(now),
+            presence::Message::CheckIdle => main.activity.check(now),
+            message => {
+                main.presences.update(message);
+                None
+            }
+        };
+        match ours {
+            Some(state) if self.settings.share_presence => main.set_presence(state),
+            _ => Task::none(),
         }
     }
 
@@ -2718,6 +2860,7 @@ impl App {
     pub fn subscription(&self) -> Subscription<Message> {
         let mut subscriptions = vec![
             window::resize_events().map(|(_, size)| Message::WindowResized(size)),
+            window::close_requests().map(Message::CloseWindow),
             iced::system::theme_changes().map(Message::ThemeMode),
             // Also on the sign-in screen.
             iced::event::listen_with(|event, _, _| match event {
@@ -2782,8 +2925,21 @@ impl App {
                 })
                 .map(Message::Colours),
             );
-            if !main.scheduled.is_empty() {
+            // Times shown relative to now: scheduled messages, last activity.
+            if !main.scheduled.is_empty() || main.presences.following() {
                 subscriptions.push(iced::time::every(TICK).map(|_| Message::Tick));
+            }
+            if let Some(watcher) = main.presences.subscription(&main.session) {
+                subscriptions.push(watcher.map(Message::Presence));
+            }
+            if self.settings.share_presence && !main.presences.unavailable() {
+                subscriptions.push(iced::event::listen_with(input));
+                if main.activity.may_idle() {
+                    subscriptions.push(
+                        iced::time::every(presence::IDLE_CHECK)
+                            .map(|_| Message::Presence(presence::Message::CheckIdle)),
+                    );
+                }
             }
             if main.dialog.as_ref().is_some_and(Dialog::busy) {
                 subscriptions.push(iced::time::every(PROGRESS_TICK).map(|_| Message::Progress));
@@ -2847,7 +3003,12 @@ impl App {
                         .map(|s| (s.id.clone(), s.name.clone()))
                         .collect();
                     (
-                        panel.view(&self.settings, spaces, &main.colours),
+                        panel.view(
+                            &self.settings,
+                            spaces,
+                            &main.colours,
+                            !main.presences.unavailable(),
+                        ),
                         Message::ShowSettings(false),
                     )
                 } else if let Some(dialog) = &main.dialog {
@@ -2857,7 +3018,13 @@ impl App {
                     )
                 } else if let Some(card) = &main.info {
                     (
-                        card.view(&main.rooms.rooms, &main.avatars, &main.own_user),
+                        card.view(
+                            &main.rooms.rooms,
+                            &main.avatars,
+                            &main.own_user,
+                            &main.presences,
+                            main.now,
+                        ),
                         Message::Info(info::Message::Close),
                     )
                 } else if let Some(viewer) = &main.viewer {
@@ -2919,7 +3086,14 @@ impl App {
                         .map_or("", |r| r.name.as_str());
                     row![
                         opening,
-                        members::view(None, id, name, &main.own_user, &main.avatars)
+                        members::view(
+                            None,
+                            id,
+                            name,
+                            &main.own_user,
+                            &main.avatars,
+                            &main.presences,
+                        )
                     ]
                     .into()
                 } else {
@@ -2947,6 +3121,8 @@ impl App {
                     previews: &main.previews,
                     frequent_emoji: &main.frequent_emoji,
                     show_members: main.show_members,
+                    presences: &main.presences,
+                    now: main.now,
                 };
                 room.view(summary, &look, &scheduled)
             }
@@ -3231,6 +3407,8 @@ async fn run_request(
                 Opened::Left(room)
             }
             Request::SignOut => {
+                // Others see us offline now, not once the server forgets us.
+                presence::go_offline(&session).await;
                 session.logout().await?;
                 Opened::SignedOut
             }
@@ -3274,6 +3452,18 @@ fn shortcuts(
         }
         iced::Event::Window(window::Event::Focused) => Some(Message::WindowFocused(true)),
         iced::Event::Window(window::Event::Unfocused) => Some(Message::WindowFocused(false)),
+        _ => None,
+    }
+}
+
+/// Keys, clicks and scrolling: we are here (see [`presence::Activity`]).
+fn input(event: iced::Event, _status: iced::event::Status, _window: window::Id) -> Option<Message> {
+    use iced::keyboard;
+    match event {
+        iced::Event::Keyboard(keyboard::Event::KeyPressed { .. })
+        | iced::Event::Mouse(mouse::Event::ButtonPressed(_) | mouse::Event::WheelScrolled { .. }) => {
+            Some(Message::Presence(presence::Message::Input))
+        }
         _ => None,
     }
 }
