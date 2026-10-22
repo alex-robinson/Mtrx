@@ -144,6 +144,11 @@ SwiftUI, iOS 16, iPhone and iPad, bundle `org.mtrx.Mtrx`; no team (signed
 ad hoc for the simulator). Sign in
 (the homeserver, then a password or the browser, as `supportsOauth` says),
 room list, room timeline with text and images, sending text, sign out.
+Stage 1 (section 6): the banner, Settings' "Encryption" section, the
+recovery key screen with its steps, emoji verification in both directions
+(one sheet over everything, Settings returns after it; a request that
+comes while another is unanswered replaces it, one during a verification
+is cancelled), and "Could not decrypt this message." rows.
 
 ```
 apps/ios/
@@ -154,9 +159,13 @@ apps/ios/
     Core/             Keychain backend, Feed (listeners -> AsyncStream),
                       browser sign-in, error messages
     Models/           AppModel (phase: starting, signed out, signed in),
-                      SignInModel, SessionModel (room list, connection, sync),
-                      TimelineModel, ImageCache, TimelineRows, RoomSections
-    Views/            sign-in, room list, room (timeline, composer), settings
+                      SignInModel, SessionModel (room list, connection, sync,
+                      encryption state, verification requests),
+                      RecoveryModel, VerificationModel, TimelineModel,
+                      ImageCache, TimelineRows, RoomSections
+    Views/            sign-in, room list (encryption banner), room
+                      (timeline, composer), settings, recovery key,
+                      verification
     Assets.xcassets   icon (logo.svg, full-bleed), logo, accent colour
   MtrxTests/          models with fakes of the FFI classes
 ```
@@ -200,9 +209,10 @@ crash report; the screenshot is the artifact `ios-smoke`), and uploads
 `Mtrx-ios-simulator` (the zipped `.app`; install with `xcrun simctl install
 booted Mtrx.app`). Passes; the screenshot shows the sign-in screen.
 
-To do: signing in, the room list and the timeline tried against a server
-(only the models' unit tests and the sign-in screen are checked so far; the
-CI start does not check which screen shows); opening images full size and
+To do: signing in, the room list, the timeline, recovery and verification
+tried against a server (only the models' unit tests and the sign-in screen
+are checked so far; the CI start does not check which screen shows);
+opening images full size and
 files (`mediaFile`); answering invites; reconnecting when the network
 returns (`reconnect`); a build for devices (signing).
 
