@@ -10830,6 +10830,7 @@ name = "xtask"
 version = "0.1.3"
 dependencies = [
  "anyhow",
+ "png 0.17.16",
  "resvg 0.45.1",
 ]
 

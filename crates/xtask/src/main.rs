@@ -1,10 +1,13 @@
 //! Build tasks, run with `cargo xtask <task>`:
 //!
 //! - `render SVG PNG SIZE`: render an SVG to a square PNG.
+//! - `icons`: make the iOS and Android icons and the website's logo from the
+//!   logo (see [`icons`]); run it after changing the logo.
 //! - `bundle`: build the app and wrap it as `target/bundle/Mtrx.app` (macOS),
 //!   an AppImage and a `.deb` (Linux, see [`linux`]), or a portable zip and
 //!   an installer (Windows, see `windows.rs`).
 
+mod icons;
 #[cfg(target_os = "linux")]
 mod linux;
 
@@ -34,13 +37,16 @@ fn main() -> Result<()> {
         .as_slice()
     {
         ["render", svg, png, size] => render(Path::new(svg), Path::new(png), size.parse()?),
+        ["icons"] => icons::icons(&root),
         #[cfg(target_os = "linux")]
         ["bundle"] => linux::bundle(&root),
         #[cfg(windows)]
         ["bundle"] => windows::bundle(&root),
         #[cfg(not(any(target_os = "linux", windows)))]
         ["bundle"] => bundle(&root),
-        _ => bail!("usage: cargo xtask render SVG PNG SIZE | cargo xtask bundle"),
+        _ => {
+            bail!("usage: cargo xtask render SVG PNG SIZE | cargo xtask icons | cargo xtask bundle")
+        }
     }
 }
 

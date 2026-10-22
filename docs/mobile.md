@@ -187,7 +187,7 @@ apps/ios/
                       banner), room (timeline, typing line, composer),
                       message sheets (who reacted or read, all emoji,
                       select text), settings, recovery key, verification
-    Assets.xcassets   icon (logo.svg, full-bleed), logo, accent colour
+    Assets.xcassets   icon and logo (`cargo xtask icons`), accent colour
   MtrxTests/          models with fakes of the FFI classes
 ```
 
@@ -437,6 +437,12 @@ Remaining:
 
 ## 5. Builds and CI
 
+- [x] Icons: `cargo xtask icons` makes the iOS icon (full bleed, opaque)
+      and sign-in logo, the Android adaptive icon (the square's colour
+      behind the bubble, which fits the safe zone) and sign-in logo, and
+      the website's logo from `crates/mtrx-app/assets/logo.svg`; they are
+      committed. An xtask test fails when the committed vector files differ
+      from what it makes.
 - [x] `scripts/generate-ffi-bindings.sh`: host build, Swift and Kotlin into
       `target/bindings/` (checks the API goes through UniFFI). Swift
       bindings compiled and run against the macOS library locally.
