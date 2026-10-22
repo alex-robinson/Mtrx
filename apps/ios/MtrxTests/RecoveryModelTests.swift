@@ -41,25 +41,39 @@ final class RecoveryModelTests: XCTestCase {
         XCTAssertEqual(recovered, 1)
     }
 
-    func testAWrongKeySaysWhy() async {
+    func testAnInvalidKeySaysSoUnderTheField() async {
         session.recoverySteps = [.checkingKey]
-        session.recoverError = MtrxError.Other(reason: "The Base58 decoded key has an invalid length")
+        session.recoverError = MtrxError.InvalidInput(reason: "The recovery key is not valid")
         model.key = "EsTc"
         model.recover()
         await eventually { !self.model.recovering }
 
-        XCTAssertEqual(model.error, "The Base58 decoded key has an invalid length")
+        XCTAssertEqual(model.keyError, "The recovery key is not valid.")
+        XCTAssertNil(model.error)
         XCTAssertFalse(model.recovered)
         XCTAssertNil(model.step)
         // The key stays, to correct it.
         XCTAssertEqual(model.key, "EsTc")
         XCTAssertEqual(recovered, 0)
 
-        // A new attempt clears the error.
+        // A new attempt clears the message.
         session.recoverError = nil
         model.recover()
-        XCTAssertNil(model.error)
+        XCTAssertNil(model.keyError)
         await eventually { self.model.recovered }
+    }
+
+    func testOtherFailuresSayWhy() async {
+        session.recoverySteps = [.checkingKey, .importingIdentity]
+        session.recoverError = MtrxError.Other(reason: "The backup could not be downloaded")
+        model.key = "EsTc abcd"
+        model.recover()
+        await eventually { !self.model.recovering }
+
+        XCTAssertEqual(model.error, "The backup could not be downloaded")
+        XCTAssertNil(model.keyError)
+        XCTAssertEqual(model.key, "EsTc abcd")
+        XCTAssertEqual(recovered, 0)
     }
 
     func testNothingWithoutAKey() {

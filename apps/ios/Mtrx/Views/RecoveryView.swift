@@ -17,7 +17,12 @@ struct RecoveryView: View {
                     .textInputAutocapitalization(.never)
                     .disabled(model.recovering)
             } footer: {
-                Text("The key you saved when you set up recovery, e.g. on the desktop app. Spaces are fine.")
+                if let error = model.keyError {
+                    Text(error)
+                        .foregroundColor(.red)
+                } else {
+                    Text("The key you saved when you set up recovery, e.g. on the desktop app. Spaces are fine.")
+                }
             }
             Section {
                 Button {

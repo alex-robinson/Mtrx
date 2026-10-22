@@ -10,7 +10,11 @@ final class RecoveryModel: ObservableObject {
     @Published private(set) var recovering = false
     /// The step in progress, while recovering.
     @Published private(set) var step: RecoveryStep?
-    /// Why the last attempt failed ("Could not recover." is shown above it).
+    /// Why the last attempt's key was refused: not one, or not the
+    /// account's. Shown under the field, which keeps the key for correcting.
+    @Published private(set) var keyError: String?
+    /// Why the last attempt failed otherwise ("Could not recover." is shown
+    /// above it).
     @Published private(set) var error: String?
     /// The last attempt succeeded (the screen closes).
     @Published private(set) var recovered = false
@@ -27,6 +31,7 @@ final class RecoveryModel: ObservableObject {
     /// Clear what the last attempt left, unless one is running.
     func reset() {
         guard !recovering else { return }
+        keyError = nil
         error = nil
         recovered = false
     }
@@ -35,6 +40,7 @@ final class RecoveryModel: ObservableObject {
         let key = self.key.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !recovering, !key.isEmpty else { return }
         recovering = true
+        keyError = nil
         error = nil
         recovered = false
         step = nil
@@ -70,6 +76,8 @@ final class RecoveryModel: ObservableObject {
             key = ""
             recovered = true
             onRecovered()
+        case .failure(MtrxError.InvalidInput):
+            keyError = "The recovery key is not valid."
         case .failure(let error):
             self.error = errorMessage(error)
         }
