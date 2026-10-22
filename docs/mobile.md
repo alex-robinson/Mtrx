@@ -328,8 +328,66 @@ and tested by CI only; no Android SDK is used locally.
   `uniffi.mtrx.**` and `org.rustls.platformverifier.**`.
 - `:app` (`org.mtrx.app`), only the ABIs the library is built for:
   - `MtrxApplication`: `AndroidPlatform.initialize` first, then
-    `Mtrx(filesDir, cacheDir, secrets)` and the `Account`; sync follows
-    `ProcessLifecycleOwner` (start in the foreground, stop in the background).
+    `Mtrx(filesDir, cacheDir, secrets)`, push registration, the message
+    notifications (channel `messages` created), the `Account` and the push
+    handler; sync follows `ProcessLifecycleOwner` (start in the foreground,
+    stop in the background). It runs in every start of the process, the
+    push service's too (no `android:process`).
+  - Push notifications (section 10), through UnifiedPush
+    (`org.unifiedpush.android:connector` 3.3.5: `PushService`,
+    `UnifiedPush.register`, `unregister`, `getDistributors`,
+    `getSavedDistributor`, `saveDistributor`, `resolveDefaultDistributor`).
+    `model/Push.kt`: `PushRegistration`, told by the `Account` when a
+    session opens (sets the pusher again on the saved endpoint, then picks
+    the distributor: the saved one, else the only or the system's default
+    one, else Settings offers the installed ones; and registers) and
+    before it signs out or is forgotten (`deletePusher`, the connector's
+    `unregister`, then `logout`; a failed sign-out registers again); a
+    new endpoint replaces the pusher (`setPusher` with the endpoint as
+    pushkey, the gateway from UnifiedPush's discovery at the endpoint's
+    origin: `GET <origin>/_matrix/push/v1/notify` answering
+    `{"unifiedpush":{"gateway":"matrix"}}`, else UnifiedPush's gateway;
+    unreachable counts as one; `appId` `org.mtrx.app`, `Build.MODEL`, the
+    locale's tag), deleting the earlier one's; unregistered by the
+    distributor deletes it. Its state (`Off`, `NoDistributor`, `Choose`,
+    `Registering`, `Registered`, `Failed`) and the switch are flows for
+    Settings; DataStore `push` (`enabled`, on by default and kept at
+    sign-out; `endpoint`; `permission_asked`), `model/PushPreferences.kt`.
+    `push/MtrxPushService.kt` (the connector's service, not exported):
+    endpoints, failures and unregistrations to `PushRegistration`; each
+    push to `PushHandler` in a coroutine of the service, which keeps
+    itself started (allowed while the distributor raises the app; logged
+    otherwise) and holds a wake lock of 25 s while pushes run, then stops.
+    `push/PushHandler.kt`, a plain class: parses the gateway's JSON
+    (`room_id` and `event_id`; a push with only counts clears all message
+    notifications when `unread` is 0; garbage is ignored), then
+    `Mtrx.notification` within 20 s: nil or `shouldNotify` false posts
+    nothing; `NotLoggedIn` unregisters; another error, the timeout or the
+    service stopping first posts "New message"; nothing for the room open
+    on screen while the app is in the foreground (`Account.foregroundRoom`,
+    set by the room screen). `push/MessageNotifications.kt`: a room's
+    notification (tag the room ID, id 0) in channel `messages` (high),
+    `MessagingStyle` with its last six messages of this process, the
+    sender as `Person` (the avatar through `Images` while the app's session
+    is open, waited for up to 3 s), the room's name as title unless
+    direct, silent unless `isNoisy`; group `messages` with a summary from
+    two rooms on; tap: `MainActivity` with `EXTRA_ROOM_ID`, which the
+    `Account` keeps as `roomRequest` until the navigation opens
+    `room/{roomId}`. A room's notification goes when its screen shows,
+    when it is marked read, and when its `unreadNotifications` drops to 0
+    in a `RoomListState`; all go at sign-out. Settings: "Notifications"
+    above "Encryption", the switch "Push notifications" (off and fixed
+    while no distributor is installed), then "Via <app>", "Registering…",
+    "Several apps can deliver notifications" with the apps to choose,
+    "Install a UnifiedPush app, such as ntfy, to get notifications while
+    Mtrx is closed." with "Get ntfy" (`market://`, else F-Droid's page),
+    "Registration failed: <reason>", and "Notifications are off in
+    Android's settings" with a button to them; distributors and the
+    permission looked at again whenever Settings resumes.
+    `POST_NOTIFICATIONS` is asked when the switch is turned on and once
+    after a sign-in. Debug builds allow plain HTTP to `10.0.2.2` and
+    `localhost` (`src/debug`, a network security config), for the
+    instrumented tests.
   - `model/Secrets.kt`: `FileSecretBackend`, one file per secret in
     `noBackupFilesDir/secrets` named by the SHA-256 of its key, encrypted
     with AES-256-GCM (random IV, the key as associated data) by a key that
@@ -476,7 +534,33 @@ and tested by CI only; no Android SDK is used locally.
     ties, rooms never active), the selected space (saved, restored at the
     next launch, forgotten when gone or at sign-out), and the chosen order
     (saved, restored, a choice before the saved one is read wins, kept at
-    sign-out).
+    sign-out). Push (section 10): registration (the only distributor
+    saved, the system's default taken, several offered and one chosen,
+    none until one is installed; the endpoint becoming the pusher with
+    the gateway at its origin; the pusher set again at each start, an
+    endpoint before the session set when it opens, a changed endpoint
+    replacing the pusher; turning off deleting it and unregistering,
+    remembered at the next start, and on again registering; an endpoint
+    after turning off ignored; failures; unregistered by the
+    distributor; a push without session), at sign-in, at a restore, at
+    sign-out (pusher deleted, then unregistered, then logout), after a
+    failed sign-out and at `forget`; parsing pushes (with and without
+    `event_id`, counts, garbage) and the handler (posted, nil, not to
+    notify, the room on screen, an error or 20 s as "New message",
+    signed out, a count of 0); the notification's title and sound; the
+    room on screen only in the foreground; clearing on opening, on
+    `markRead` (not when it fails) and when a room's count drops to 0;
+    a tapped notification's room; the Settings switch and lines.
+  - Instrumented test (`androidTest`, `PushEndToEndTest`), against Synapse
+    on the host (`http://10.0.2.2:8008`): registers Bob and Alice with
+    the shared-secret admin API, signs Bob in through the app's `Account`
+    (syncing) and Alice in a second `Mtrx`; Alice makes an encrypted room
+    over HTTP inviting Bob, who joins over HTTP; the pusher is set through
+    `PushRegistration.onNewEndpoint` (`http://10.0.2.2:9/upTEST?up=1`) and
+    listed with `eventIdOnly`; Alice's mention, as the gateway's JSON,
+    goes to the app's `PushHandler`; the posted notification (tagged with
+    the room) has her text as typed and her as the person; a push for
+    Bob's own message adds nothing; opening the room clears it.
 - Build locally, with the Android SDK and NDK, Rust's two Android targets
   and cargo-ndk: `scripts/build-android-ffi.sh`, then in `apps/android`
   `gradle :app:assembleDebug` (Gradle 8.11.1 or later, or a wrapper made with
@@ -484,10 +568,12 @@ and tested by CI only; no Android SDK is used locally.
   `ANDROID_HOME` for the SDK). Tests: `gradle :app:testDebugUnitTest`.
 - CI (`.github/workflows/android.yml`, Ubuntu): the library and bindings
   with the build script, then the debug APK, artifact `Mtrx-android-debug`,
-  then the unit tests, then `scripts/android-smoke.sh` on an x86_64 emulator
-  (API 34): installs and starts the APK, checks that the sign-in screen
-  shows, the process lives and the log has no crash; screenshot, UI tree and
-  log as artifact `android-smoke`.
+  then the unit tests and the test APK, then Synapse (`testserver/run.sh`),
+  then on an x86_64 emulator (API 34) `scripts/android-smoke.sh`: installs
+  and starts the APK, checks that the sign-in screen shows, the process
+  lives and the log has no crash; screenshot, UI tree and log as artifact
+  `android-smoke`; and `gradle :app:connectedDebugAndroidTest`, the
+  instrumented test above (reports as `android-reports` on failure).
 
 Remaining:
 
@@ -499,7 +585,10 @@ Remaining:
   or device (only their models' unit tests); nor are the messages'
   menus, sheets and the emoji picker, swiping to reply, the button to the
   newest message, the Settings tab, "Decrypting…", and the person's info
-  sheet with its invites. Not done: notifications, sending
+  sheet with its invites. Push notifications are tested on the emulator
+  with the push handler called directly; registering with a real
+  distributor (ntfy), the push service, the Settings section, a tapped
+  notification and the summary are not yet tried. Not done: sending
   images, opening files, release signing.
 
 ## 5. Builds and CI
@@ -940,8 +1029,10 @@ installs a distributor (ntfy), which holds one connection for all apps;
 the homeserver posts to a Matrix push gateway (ntfy.sh or a self-hosted
 ntfy, at `<ntfy>/_matrix/push/v1/notify`), which hands the post to the
 distributor, which wakes the app. No Google services. The library part is
-done and tested (section 5); iOS (APNs) waits for an Apple developer
-account and uses the same calls (below).
+done and tested (section 5), and so is the Android app's (section 4; end
+to end on the emulator in CI, not yet with a real distributor); iOS
+(APNs) waits for an Apple developer account and uses the same calls
+(below).
 
 **Registering.** Library `org.unifiedpush.android:connector` (the current
 3.x; check its docs for the exact names, which changed from 2.x). At
