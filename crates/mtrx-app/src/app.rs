@@ -647,28 +647,31 @@ impl App {
                     }
                     Err(e) => main.error = Some(e),
                 }
-                Task::batch([self.load_avatars(), self.restore_view()])
+                let members = main
+                    .arrange
+                    .load_space_members(&main.session, &main.rooms.rooms);
+                Task::batch([members, self.load_avatars(), self.restore_view()])
             }
             Message::Rooms(state) => {
-                if let Screen::Main(main) = &mut self.screen {
-                    main.rooms = state;
-                    main.arrange.rooms_updated(&mut main.rooms.rooms);
-                }
-                Task::batch([self.load_avatars(), self.restore_view()])
+                let Screen::Main(main) = &mut self.screen else {
+                    return Task::none();
+                };
+                main.rooms = state;
+                main.arrange.rooms_updated(&mut main.rooms.rooms);
+                let members = main
+                    .arrange
+                    .load_space_members(&main.session, &main.rooms.rooms);
+                Task::batch([members, self.load_avatars(), self.restore_view()])
             }
             Message::SelectSpace(space) => {
                 let Screen::Main(main) = &mut self.screen else {
                     return Task::none();
                 };
-                main.space = space.clone();
+                main.space = space;
                 main.info = None;
                 main.restore = None;
                 main.arrange.escape();
-                let members = match space {
-                    Some(space) => main.arrange.space_selected(&main.session, space),
-                    None => Task::none(),
-                };
-                Task::batch([members, self.load_avatars()])
+                self.load_avatars()
             }
             Message::Arrange(message) => {
                 let Screen::Main(main) = &mut self.screen else {
@@ -2539,13 +2542,8 @@ impl App {
         match view.found(&main.rooms.rooms) {
             Some((space, room)) => {
                 main.restore = None;
-                main.space = space.clone();
-                // As on selecting it: the space's members, for its direct chats.
-                let members = match space {
-                    Some(space) => main.arrange.space_selected(&main.session, space),
-                    None => Task::none(),
-                };
-                Task::batch([members, self.update(Message::OpenRoom(room))])
+                main.space = space;
+                self.update(Message::OpenRoom(room))
             }
             None => {
                 if main.rooms.loaded {

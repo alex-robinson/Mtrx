@@ -10,7 +10,7 @@ use std::{
 use iced::{Point, Subscription, Task, event, mouse};
 use mtrx_core::{
     Grouping, OwnedRoomId, OwnedUserId, RoomCategories, RoomSummary, RoomTag, Section, Session,
-    Sort, home_rooms, space_rooms,
+    Sort, SpaceMembers, home_rooms, space_rooms,
 };
 
 use tracing::warn;
@@ -28,8 +28,8 @@ const TAG_SYNC: Duration = Duration::from_secs(10);
 #[derive(Debug, Clone)]
 pub enum Message {
     Categories(RoomCategories),
-    /// A space's joined members.
-    SpaceMembers(OwnedRoomId, Result<HashSet<OwnedUserId>, String>),
+    /// The joined members of a space that had this many.
+    SpaceMembers(OwnedRoomId, u64, Result<HashSet<OwnedUserId>, String>),
     /// The cursor entered (`true`) or left a room row.
     Row(OwnedRoomId, bool),
     /// The cursor entered or left the pinned Notes row, which is not dragged.
@@ -87,8 +87,9 @@ pub struct Arrange {
     pub categories: RoomCategories,
     /// Tags set here that the room list does not show yet.
     pending_tags: HashMap<OwnedRoomId, PendingTag>,
-    /// Joined members of spaces, for the direct chats listed in them.
-    space_members: HashMap<OwnedRoomId, HashSet<OwnedUserId>>,
+    /// Joined members of the top-level spaces, for the direct chats listed
+    /// in them.
+    pub space_members: SpaceMembers,
     /// The room row under the cursor.
     pub hovered: Option<OwnedRoomId>,
     pub notes_hovered: bool,
@@ -139,25 +140,38 @@ impl Arrange {
         }
     }
 
-    /// The joined members of `space`, for the direct chats it lists.
-    pub fn members_loaded(&mut self, space: OwnedRoomId, joined: HashSet<OwnedUserId>) {
-        self.space_members.insert(space, joined);
-    }
-
-    /// Load the members of a space shown, for its direct chats.
-    pub fn space_selected(&self, session: &Arc<Session>, space: OwnedRoomId) -> Task<app::Message> {
-        let session = session.clone();
-        Task::perform(
-            {
-                let space = space.clone();
-                async move {
-                    session
-                        .joined_member_ids(&space)
-                        .await
-                        .map_err(|e| e.to_string())
-                }
-            },
-            move |result| app::Message::Arrange(Message::SpaceMembers(space.clone(), result)),
+    /// Load the members of the top-level spaces that appeared or whose
+    /// number of members changed, for their direct chats.
+    pub fn load_space_members(
+        &mut self,
+        session: &Arc<Session>,
+        rooms: &[RoomSummary],
+    ) -> Task<app::Message> {
+        Task::batch(
+            self.space_members
+                .due(rooms)
+                .into_iter()
+                .map(|(space, count)| {
+                    let session = session.clone();
+                    Task::perform(
+                        {
+                            let space = space.clone();
+                            async move {
+                                session
+                                    .joined_member_ids(&space)
+                                    .await
+                                    .map_err(|e| e.to_string())
+                            }
+                        },
+                        move |result| {
+                            app::Message::Arrange(Message::SpaceMembers(
+                                space.clone(),
+                                count,
+                                result,
+                            ))
+                        },
+                    )
+                }),
         )
     }
 
@@ -194,8 +208,10 @@ impl Arrange {
         let space = context.space.cloned();
         match message {
             Message::Categories(categories) => self.categories = categories,
-            Message::SpaceMembers(space, Ok(joined)) => self.members_loaded(space, joined),
-            Message::SpaceMembers(space, Err(e)) => {
+            Message::SpaceMembers(space, count, Ok(joined)) => {
+                self.space_members.loaded(space, count, joined);
+            }
+            Message::SpaceMembers(space, _, Err(e)) => {
                 warn!(%space, "could not load the space's members: {e}");
             }
             Message::Row(room, true) => self.hovered = Some(room),

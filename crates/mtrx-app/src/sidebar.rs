@@ -1200,8 +1200,12 @@ mod tests {
         let mut arrange = Arrange::default();
         // Before its members are known the space lists no direct chats.
         assert!(!unread(&rooms, Some(&space()), &arrange));
+        // Loaded for every top-level space, selected or not.
+        assert_eq!(arrange.space_members.due(&rooms), [(space(), 0)]);
         let bob: OwnedUserId = "@bob:x".try_into().unwrap();
-        arrange.members_loaded(space(), HashSet::from([bob]));
+        arrange
+            .space_members
+            .loaded(space(), 0, HashSet::from([bob]));
         assert!(unread(&rooms, Some(&space()), &arrange));
         assert!(unread(&rooms, None, &arrange));
     }
