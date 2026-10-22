@@ -8,7 +8,9 @@ import java.io.File
 import kotlinx.coroutines.MainScope
 import org.mtrx.app.model.Account
 import org.mtrx.app.model.AesGcmSealer
+import org.mtrx.app.model.DataStoreSelectedSpace
 import org.mtrx.app.model.FileSecretBackend
+import org.mtrx.app.model.viewPreferences
 import org.mtrx.ffi.AndroidPlatform
 import uniffi.mtrx.Mtrx
 
@@ -22,7 +24,7 @@ class MtrxApplication : Application() {
         AndroidPlatform.initialize(this)
         val secrets = FileSecretBackend(File(noBackupFilesDir, "secrets"), AesGcmSealer.keystore())
         val mtrx = Mtrx(filesDir.absolutePath, cacheDir.absolutePath, secrets)
-        account = Account(mtrx, MainScope())
+        account = Account(mtrx, MainScope(), DataStoreSelectedSpace(viewPreferences))
         account.start()
         // Sync while the app is in the foreground.
         ProcessLifecycleOwner.get().lifecycle.addObserver(object : DefaultLifecycleObserver {

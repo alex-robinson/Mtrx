@@ -59,14 +59,22 @@ sealed interface BrowserLogin {
  * connection and encryption state as flows. Recovery and verification run
  * here too, so leaving their screens does not stop them. Lives as long as
  * the process; [scope] runs on the main thread. Listener callbacks arrive on
- * the library's threads and only set flows or launch into [scope].
+ * the library's threads and only set flows or launch into [scope]. The
+ * space selected on the Rooms tab is kept in [selectedSpace] until sign-out.
  */
-class Account(private val mtrx: MtrxInterface, private val scope: CoroutineScope) {
+class Account(
+    private val mtrx: MtrxInterface,
+    private val scope: CoroutineScope,
+    selectedSpace: SelectedSpaceStore,
+) {
     private val _state = MutableStateFlow<AccountState>(AccountState.Loading)
     val state: StateFlow<AccountState> = _state.asStateFlow()
 
     private val _rooms = MutableStateFlow(NO_ROOMS)
     val rooms: StateFlow<RoomListState> = _rooms.asStateFlow()
+
+    /** The space selected on the Rooms tab. */
+    val spaceSelection = SpaceSelection(selectedSpace, rooms, scope)
 
     private val _connection = MutableStateFlow(ConnectionState.ONLINE)
     val connection: StateFlow<ConnectionState> = _connection.asStateFlow()
@@ -390,7 +398,7 @@ class Account(private val mtrx: MtrxInterface, private val scope: CoroutineScope
     }
 
     // Under the lock, after logout or forget.
-    private fun close() {
+    private suspend fun close() {
         _state.value = AccountState.SignedOut()
         subscriptions.forEach {
             it.cancel()
@@ -408,6 +416,7 @@ class Account(private val mtrx: MtrxInterface, private val scope: CoroutineScope
         session = null
         _rooms.value = NO_ROOMS
         _connection.value = ConnectionState.ONLINE
+        spaceSelection.clear()
     }
 
     private companion object {
