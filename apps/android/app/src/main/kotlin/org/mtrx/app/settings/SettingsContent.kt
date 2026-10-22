@@ -1,25 +1,24 @@
 package org.mtrx.app.settings
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.HorizontalDivider
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
-import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -31,48 +30,59 @@ import uniffi.mtrx.RecoveryStatus
 /** What the settings show of the session. */
 data class SessionInfo(val userId: String, val homeserver: String, val deviceId: String)
 
-/** The account, and encryption: its state, recovery and verification. */
-@OptIn(ExperimentalMaterial3Api::class)
+/**
+ * The Settings tab: the account, encryption (its state, recovery and
+ * verification), and signing out.
+ */
 @Composable
-fun SettingsScreen(
+fun SettingsContent(
     account: Account,
     info: SessionInfo,
-    onBack: () -> Unit,
     onEnterRecoveryKey: () -> Unit,
     onVerify: () -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     val encryption by account.encryption.collectAsStateWithLifecycle()
     val devices by account.devices.collectAsStateWithLifecycle()
     LaunchedEffect(account) { account.loadDevices() }
     // Unknown (not loaded, or failed) counts as having one: the request says.
     val otherDevice = devices?.any { !it.current } ?: true
+    var confirmSignOut by rememberSaveable { mutableStateOf(false) }
 
-    Scaffold(
-        topBar = {
-            TopAppBar(
-                title = { Text("Settings") },
-                navigationIcon = {
-                    IconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
-                    }
-                },
-            )
-        },
-    ) { padding ->
-        Column(
-            Modifier
-                .padding(padding)
-                .fillMaxSize()
-                .verticalScroll(rememberScrollState()),
-        ) {
-            SectionTitle("Account")
-            Line("User", info.userId)
-            Line("Server", info.homeserver)
-            Line("Device", info.deviceId)
-            HorizontalDivider(Modifier.padding(vertical = 8.dp))
-            SectionTitle("Encryption")
-            EncryptionSection(encryption, otherDevice, onEnterRecoveryKey, onVerify)
-        }
+    Column(
+        modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState()),
+    ) {
+        SectionTitle("Account")
+        Line("User", info.userId)
+        Line("Server", info.homeserver)
+        Line("Device", info.deviceId)
+        HorizontalDivider(Modifier.padding(vertical = 8.dp))
+        SectionTitle("Encryption")
+        EncryptionSection(encryption, otherDevice, onEnterRecoveryKey, onVerify)
+        HorizontalDivider(Modifier.padding(vertical = 8.dp))
+        ListItem(
+            headlineContent = { Text("Sign out", color = MaterialTheme.colorScheme.error) },
+            modifier = Modifier.clickable { confirmSignOut = true },
+        )
+    }
+
+    if (confirmSignOut) {
+        AlertDialog(
+            onDismissRequest = { confirmSignOut = false },
+            title = { Text("Sign out?") },
+            text = { Text("Messages and keys of this account are deleted from this device.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    confirmSignOut = false
+                    account.signOut()
+                }) { Text("Sign out") }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmSignOut = false }) { Text("Cancel") }
+            },
+        )
     }
 }
 

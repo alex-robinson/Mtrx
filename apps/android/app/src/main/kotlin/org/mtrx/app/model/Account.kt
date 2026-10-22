@@ -60,12 +60,14 @@ sealed interface BrowserLogin {
  * here too, so leaving their screens does not stop them. Lives as long as
  * the process; [scope] runs on the main thread. Listener callbacks arrive on
  * the library's threads and only set flows or launch into [scope]. The
- * space selected on the Rooms tab is kept in [selectedSpace] until sign-out.
+ * space selected on the Spaces tab is kept in [selectedSpace] until
+ * sign-out; the order of the spaces' rooms in [roomSortStore].
  */
 class Account(
     private val mtrx: MtrxInterface,
     private val scope: CoroutineScope,
     selectedSpace: SelectedSpaceStore,
+    roomSortStore: RoomSortStore,
 ) {
     private val _state = MutableStateFlow<AccountState>(AccountState.Loading)
     val state: StateFlow<AccountState> = _state.asStateFlow()
@@ -73,8 +75,11 @@ class Account(
     private val _rooms = MutableStateFlow(NO_ROOMS)
     val rooms: StateFlow<RoomListState> = _rooms.asStateFlow()
 
-    /** The space selected on the Rooms tab. */
+    /** The space selected on the Spaces tab. */
     val spaceSelection = SpaceSelection(selectedSpace, rooms, scope)
+
+    /** The order of a space's rooms and people. */
+    val roomSort = RoomSortChoice(roomSortStore, scope)
 
     private val _connection = MutableStateFlow(ConnectionState.ONLINE)
     val connection: StateFlow<ConnectionState> = _connection.asStateFlow()

@@ -1,4 +1,4 @@
-package org.mtrx.app.rooms
+package org.mtrx.app.ui
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.ExperimentalFoundationApi
@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -23,10 +24,10 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.List
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Lock
-import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Person
-import androidx.compose.material3.AlertDialog
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Badge
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
@@ -68,10 +69,17 @@ import java.time.LocalDate
 import kotlinx.coroutines.launch
 import org.mtrx.app.model.Account
 import org.mtrx.app.model.Images
+import org.mtrx.app.model.RoomSort
 import org.mtrx.app.model.SpaceEntry
 import org.mtrx.app.model.showsEncryptionBanner
-import org.mtrx.app.ui.Avatar
-import org.mtrx.app.ui.lastActivity
+import org.mtrx.app.rooms.SpaceRow
+import org.mtrx.app.rooms.SpaceSections
+import org.mtrx.app.rooms.chats
+import org.mtrx.app.rooms.sectionsOf
+import org.mtrx.app.rooms.spaceRows
+import org.mtrx.app.rooms.unreadBadge
+import org.mtrx.app.settings.SessionInfo
+import org.mtrx.app.settings.SettingsContent
 import uniffi.mtrx.ConnectionState
 import uniffi.mtrx.RoomKind
 import uniffi.mtrx.RoomSummary
@@ -79,39 +87,43 @@ import uniffi.mtrx.RoomSummary
 /** The tabs of the bottom bar. */
 enum class HomeTab(val label: String, val icon: ImageVector) {
     Chats("Chats", Icons.Filled.Person),
-    Rooms("Rooms", Icons.AutoMirrored.Filled.List),
+    Spaces("Spaces", MtrxIcons.Spaces),
+    Settings("Settings", Icons.Filled.Settings),
 }
 
 /**
- * The lists of rooms, in two tabs: Chats, the direct chats; and Rooms, a
- * pager of the spaces (left) and the selected space's rooms (right), as the
- * desktop's two columns. Tab, page and scroll positions are kept while a
- * room is open (the screen's saved state); the selected space is the
- * account's ([Account.spaceSelection]). Banners for the connection and
- * encryption over both tabs.
+ * The signed-in home, in three tabs: Chats, the direct chats; Spaces, a
+ * pager of the spaces (left) and the selected space's rooms and people
+ * (right), as the desktop's two columns; and Settings. Tab, page and scroll
+ * positions are kept while a room or another screen is open (the screen's
+ * saved state); the selected space and the order of its rooms are the
+ * account's ([Account.spaceSelection], [Account.roomSort]). Banners for the
+ * connection over all tabs, and for encryption over Chats and Spaces.
  */
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
-fun RoomListScreen(
+fun HomeScreen(
     account: Account,
-    userId: String,
+    info: SessionInfo,
     images: Images,
     onOpenRoom: (String) -> Unit,
-    onOpenSettings: () -> Unit,
+    onEnterRecoveryKey: () -> Unit,
+    onVerify: () -> Unit,
 ) {
     val list by account.rooms.collectAsStateWithLifecycle()
     val connection by account.connection.collectAsStateWithLifecycle()
     val encryption by account.encryption.collectAsStateWithLifecycle()
     val selected by account.spaceSelection.selected.collectAsStateWithLifecycle()
+    val sort by account.roomSort.sort.collectAsStateWithLifecycle()
     var tab by rememberSaveable { mutableStateOf(HomeTab.Chats) }
-    var menuOpen by remember { mutableStateOf(false) }
-    var confirmSignOut by remember { mutableStateOf(false) }
     val snackbar = remember { SnackbarHostState() }
     LaunchedEffect(account) { account.messages.collect { snackbar.showSnackbar(it) } }
     val today = remember(list) { LocalDate.now() }
     val chatRooms = remember(list) { chats(list) }
     val spaceEntries = remember(list) { spaceRows(list) }
-    val spaceRooms = remember(list, selected) { selected?.let { roomsOf(list, it) }.orEmpty() }
+    val sections = remember(list, selected, sort) {
+        selected?.let { sectionsOf(list, it, sort) } ?: SpaceSections(emptyList(), emptyList())
+    }
 
     val scope = rememberCoroutineScope()
     // The selected space's rooms are the second page; without one there is none.
@@ -131,11 +143,11 @@ fun RoomListScreen(
         pagedTo = entry?.key
         when {
             entry == null -> pager.scrollToPage(0)
-            tab == HomeTab.Rooms -> pager.animateScrollToPage(1)
+            tab == HomeTab.Spaces -> pager.animateScrollToPage(1)
             else -> pager.scrollToPage(1)
         }
     }
-    val onSpaceRooms = tab == HomeTab.Rooms && pager.currentPage == 1 && selected != null
+    val onSpaceRooms = tab == HomeTab.Spaces && pager.currentPage == 1 && selected != null
     BackHandler(enabled = onSpaceRooms, onBack = showSpaces)
 
     Scaffold(
@@ -157,26 +169,7 @@ fun RoomListScreen(
                     }
                 },
                 actions = {
-                    IconButton(onClick = { menuOpen = true }) {
-                        Icon(Icons.Filled.MoreVert, contentDescription = "More")
-                    }
-                    DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
-                        DropdownMenuItem(text = { Text(userId) }, onClick = {}, enabled = false)
-                        DropdownMenuItem(
-                            text = { Text("Settings") },
-                            onClick = {
-                                menuOpen = false
-                                onOpenSettings()
-                            },
-                        )
-                        DropdownMenuItem(
-                            text = { Text("Sign out") },
-                            onClick = {
-                                menuOpen = false
-                                confirmSignOut = true
-                            },
-                        )
-                    }
+                    if (onSpaceRooms) SortMenu(sort, onSort = account.roomSort::choose)
                 },
             )
         },
@@ -186,8 +179,8 @@ fun RoomListScreen(
                     NavigationBarItem(
                         selected = tab == it,
                         onClick = {
-                            // Rooms again: back to the spaces.
-                            if (tab == it && it == HomeTab.Rooms) showSpaces()
+                            // Spaces again: back to the spaces.
+                            if (tab == it && it == HomeTab.Spaces) showSpaces()
                             tab = it
                         },
                         icon = { Icon(it.icon, contentDescription = null) },
@@ -204,10 +197,13 @@ fun RoomListScreen(
                 .fillMaxSize(),
         ) {
             ConnectionBanner(connection, onSignInAgain = { account.forget() })
-            if (showsEncryptionBanner(encryption)) EncryptionBanner(onClick = onOpenSettings)
+            // Settings says the same in its Encryption section.
+            if (tab != HomeTab.Settings && showsEncryptionBanner(encryption)) {
+                EncryptionBanner(onClick = { tab = HomeTab.Settings })
+            }
             when (tab) {
                 HomeTab.Chats -> RoomColumn(chatRooms, list.loaded, "No chats", chatsList, images, today, onOpenRoom)
-                HomeTab.Rooms -> HorizontalPager(pager, Modifier.fillMaxSize()) { page ->
+                HomeTab.Spaces -> HorizontalPager(pager, Modifier.fillMaxSize()) { page ->
                     if (page == 0) {
                         SpaceColumn(spaceEntries, selected, list.loaded, spacesList, images) { entry ->
                             if (entry == selected) {
@@ -217,32 +213,43 @@ fun RoomListScreen(
                             }
                         }
                     } else {
-                        RoomColumn(spaceRooms, list.loaded, "No rooms", spaceRoomsList, images, today, onOpenRoom)
+                        SectionColumn(sections, list.loaded, spaceRoomsList, images, today, onOpenRoom)
                     }
                 }
+                HomeTab.Settings -> SettingsContent(account, info, onEnterRecoveryKey, onVerify)
             }
         }
     }
+}
 
-    if (confirmSignOut) {
-        AlertDialog(
-            onDismissRequest = { confirmSignOut = false },
-            title = { Text("Sign out?") },
-            text = { Text("Messages and keys of this account are deleted from this device.") },
-            confirmButton = {
-                TextButton(onClick = {
-                    confirmSignOut = false
-                    account.signOut()
-                }) { Text("Sign out") }
-            },
-            dismissButton = {
-                TextButton(onClick = { confirmSignOut = false }) { Text("Cancel") }
-            },
-        )
+/** The order of the spaces' rooms, chosen in a menu; the current one checked. */
+@Composable
+private fun SortMenu(sort: RoomSort, onSort: (RoomSort) -> Unit) {
+    var open by remember { mutableStateOf(false) }
+    Box {
+        IconButton(onClick = { open = true }) {
+            Icon(MtrxIcons.Sort, contentDescription = "Sort")
+        }
+        DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+            RoomSort.entries.forEach { option ->
+                DropdownMenuItem(
+                    text = { Text(option.label) },
+                    onClick = {
+                        open = false
+                        onSort(option)
+                    },
+                    trailingIcon = if (option == sort) {
+                        { Icon(Icons.Filled.Check, contentDescription = "Selected") }
+                    } else {
+                        null
+                    },
+                )
+            }
+        }
     }
 }
 
-/** [rooms] in [state], or a spinner until the list is loaded, or [empty]. */
+/** [rooms], or a spinner until the list is loaded, or [empty]. */
 @Composable
 private fun RoomColumn(
     rooms: List<RoomSummary>,
@@ -261,6 +268,49 @@ private fun RoomColumn(
                 RoomRow(room, images, today, onClick = { onOpenRoom(room.id) })
             }
         }
+    }
+}
+
+/** A space's rooms page: Rooms, then People, each left out while empty. */
+@Composable
+private fun SectionColumn(
+    sections: SpaceSections,
+    loaded: Boolean,
+    state: LazyListState,
+    images: Images,
+    today: LocalDate,
+    onOpenRoom: (String) -> Unit,
+) {
+    val empty = sections.rooms.isEmpty() && sections.people.isEmpty()
+    when {
+        empty && !loaded -> Loading()
+        empty -> Empty("No rooms")
+        else -> LazyColumn(Modifier.fillMaxSize(), state = state) {
+            section("Rooms", sections.rooms, images, today, onOpenRoom)
+            section("People", sections.people, images, today, onOpenRoom)
+        }
+    }
+}
+
+private fun LazyListScope.section(
+    title: String,
+    rooms: List<RoomSummary>,
+    images: Images,
+    today: LocalDate,
+    onOpenRoom: (String) -> Unit,
+) {
+    if (rooms.isEmpty()) return
+    // Room IDs start with "!": no clash with the rows' keys.
+    item(key = "section:$title", contentType = "section") {
+        Text(
+            title,
+            Modifier.padding(start = 16.dp, end = 16.dp, top = 16.dp, bottom = 4.dp),
+            style = MaterialTheme.typography.titleSmall,
+            color = MaterialTheme.colorScheme.primary,
+        )
+    }
+    items(rooms, key = { it.id }, contentType = { "room" }) { room ->
+        RoomRow(room, images, today, onClick = { onOpenRoom(room.id) })
     }
 }
 

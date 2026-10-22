@@ -11,6 +11,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.mtrx.app.FakeMtrx
 import org.mtrx.app.FakeSession
+import org.mtrx.app.FakeSortStore
 import org.mtrx.app.FakeSpaceStore
 import org.mtrx.app.FakeVerification
 import uniffi.mtrx.EncryptionState
@@ -40,7 +41,7 @@ class EncryptionTest {
     @Test
     fun askedOnceTheRoomListLoadsAndBackInTheForeground() = runTest {
         val session = FakeSession()
-        val account = Account(FakeMtrx(restored = session), CoroutineScope(UnconfinedTestDispatcher(testScheduler)), FakeSpaceStore())
+        val account = Account(FakeMtrx(restored = session), CoroutineScope(UnconfinedTestDispatcher(testScheduler)), FakeSpaceStore(), FakeSortStore())
         account.start()
         account.setForeground(true)
         assertEquals(0, session.encryptionAsks)
@@ -63,7 +64,7 @@ class EncryptionTest {
     @Test
     fun unknownRecoveryIsAskedAgainWithTheRoomList() = runTest {
         val session = FakeSession().apply { encryption = EncryptionState(false, RecoveryStatus.UNKNOWN) }
-        val account = Account(FakeMtrx(restored = session), CoroutineScope(UnconfinedTestDispatcher(testScheduler)), FakeSpaceStore())
+        val account = Account(FakeMtrx(restored = session), CoroutineScope(UnconfinedTestDispatcher(testScheduler)), FakeSpaceStore(), FakeSortStore())
         account.start()
         account.setForeground(true)
         session.roomListListener!!.onUpdate(loaded(true))
@@ -79,7 +80,7 @@ class EncryptionTest {
     @Test
     fun recoveryReportsItsStepsInOrderThenAsksAgain() = runTest {
         val session = FakeSession()
-        val account = Account(FakeMtrx(restored = session), CoroutineScope(UnconfinedTestDispatcher(testScheduler)), FakeSpaceStore())
+        val account = Account(FakeMtrx(restored = session), CoroutineScope(UnconfinedTestDispatcher(testScheduler)), FakeSpaceStore(), FakeSortStore())
         account.start()
         val steps = listOf(
             RecoveryStep.CheckingKey,
@@ -109,7 +110,7 @@ class EncryptionTest {
             recoverySteps = listOf(RecoveryStep.CheckingKey)
             recoveryError = MtrxException.Other("The Base58 decoded key has an invalid length")
         }
-        val account = Account(FakeMtrx(restored = session), CoroutineScope(UnconfinedTestDispatcher(testScheduler)), FakeSpaceStore())
+        val account = Account(FakeMtrx(restored = session), CoroutineScope(UnconfinedTestDispatcher(testScheduler)), FakeSpaceStore(), FakeSortStore())
         account.start()
         account.recover("wrong")
         assertEquals(Recovery.Failed("The Base58 decoded key has an invalid length"), account.recovery.value)
@@ -122,7 +123,7 @@ class EncryptionTest {
             recoverySteps = listOf(RecoveryStep.CheckingKey)
             recoveryError = MtrxException.InvalidInput("The recovery key is not valid")
         }
-        val account = Account(FakeMtrx(restored = session), CoroutineScope(UnconfinedTestDispatcher(testScheduler)), FakeSpaceStore())
+        val account = Account(FakeMtrx(restored = session), CoroutineScope(UnconfinedTestDispatcher(testScheduler)), FakeSpaceStore(), FakeSortStore())
         account.start()
         account.recover("EsTc not a key")
         assertEquals(Recovery.InvalidKey, account.recovery.value)
@@ -133,7 +134,7 @@ class EncryptionTest {
     @Test
     fun requestFromAnotherUserIsCancelled() = runTest {
         val session = FakeSession()
-        val account = Account(FakeMtrx(restored = session), CoroutineScope(UnconfinedTestDispatcher(testScheduler)), FakeSpaceStore())
+        val account = Account(FakeMtrx(restored = session), CoroutineScope(UnconfinedTestDispatcher(testScheduler)), FakeSpaceStore(), FakeSortStore())
         account.start()
         val request = FakeVerification("@eve:example.org")
         session.verificationRequests!!.onRequest(request)
@@ -145,7 +146,7 @@ class EncryptionTest {
     @Test
     fun requestFromOurOtherDeviceIsAcceptedOrDeclined() = runTest {
         val session = FakeSession()
-        val account = Account(FakeMtrx(restored = session), CoroutineScope(UnconfinedTestDispatcher(testScheduler)), FakeSpaceStore())
+        val account = Account(FakeMtrx(restored = session), CoroutineScope(UnconfinedTestDispatcher(testScheduler)), FakeSpaceStore(), FakeSortStore())
         account.start()
 
         val declined = FakeVerification(FakeSession.USER_ID)
@@ -173,7 +174,7 @@ class EncryptionTest {
     @Test
     fun verifiedDeviceAsksAgainAndSignOutClosesTheVerification() = runTest {
         val session = FakeSession()
-        val account = Account(FakeMtrx(restored = session), CoroutineScope(UnconfinedTestDispatcher(testScheduler)), FakeSpaceStore())
+        val account = Account(FakeMtrx(restored = session), CoroutineScope(UnconfinedTestDispatcher(testScheduler)), FakeSpaceStore(), FakeSortStore())
         account.start()
         account.verifyWithAnotherDevice()
         val model = account.verification.value!!

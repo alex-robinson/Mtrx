@@ -2,6 +2,8 @@ package org.mtrx.app
 
 import java.time.Instant
 import kotlinx.coroutines.CompletableDeferred
+import org.mtrx.app.model.RoomSort
+import org.mtrx.app.model.RoomSortStore
 import org.mtrx.app.model.SelectedSpaceStore
 import org.mtrx.app.model.SpaceEntry
 import uniffi.mtrx.ConnectionListener
@@ -181,15 +183,33 @@ class FakeSpaceStore(var saved: SpaceEntry? = null) : SelectedSpaceStore {
     }
 }
 
+/** The order of the spaces' rooms, in memory: one instance across "launches". */
+class FakeSortStore(var saved: RoomSort? = null) : RoomSortStore {
+    /** When set, [load] reads the saved order, then waits for it to return. */
+    var loading: CompletableDeferred<Unit>? = null
+
+    override suspend fun load(): RoomSort? {
+        val read = saved
+        loading?.await()
+        return read
+    }
+
+    override suspend fun save(sort: RoomSort) {
+        saved = sort
+    }
+}
+
 fun summary(
     id: String,
     kind: RoomKind = RoomKind.ROOM,
     invited: Boolean = false,
     unread: Long = 0,
     directUserId: String? = null,
+    name: String = id.removePrefix("!").substringBefore(':'),
+    lastActivity: Instant? = null,
 ): RoomSummary = RoomSummary(
     id = id,
-    name = id.removePrefix("!").substringBefore(':'),
+    name = name,
     avatarUrl = null,
     topic = null,
     kind = kind,
@@ -198,7 +218,7 @@ fun summary(
     unreadMessages = unread.toULong(),
     unreadMentions = 0uL,
     unreadNotifications = unread.toULong(),
-    lastActivity = null,
+    lastActivity = lastActivity,
     directUserId = directUserId,
     alias = null,
     joinedMembers = 2uL,
