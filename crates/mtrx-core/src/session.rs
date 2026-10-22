@@ -10,6 +10,7 @@ use matrix_sdk::{
         registration::{ApplicationType, ClientMetadata, Localized, OAuthGrantType},
     },
     encryption::{BackupDownloadStrategy, EncryptionSettings, verification::VerificationRequest},
+    event_handler::EventHandlerDropGuard,
     ruma::{OwnedDeviceId, OwnedUserId, serde::Raw},
     store::RoomLoadSettings,
     utils::{
@@ -54,6 +55,7 @@ pub struct Session {
     /// Set once [`Session::start_scheduler`] ran.
     pub(crate) scheduler: std::sync::Mutex<Option<AbortOnDrop>>,
     pub(crate) notifications: broadcast::Sender<crate::Notification>,
+    _notifier: EventHandlerDropGuard,
     pub(crate) categories: crate::account_data::Synced<crate::RoomCategories>,
     pub(crate) colours: crate::account_data::Synced<crate::RoomListColours>,
     pub(crate) connection: tokio::sync::watch::Receiver<crate::Connection>,
@@ -197,12 +199,13 @@ impl Session {
         );
         let (connection, watch_connection) = crate::connection::watch(client.clone(), sync.clone());
         let verification_tx = crate::encryption::register_handlers(&client);
-        let notifications = crate::notifications::register(&client).await;
+        let notification_settings = client.notification_settings().await;
+        let (notifications, notifier) =
+            crate::notifications::register(&client, sync.clone(), notification_settings.clone());
         let send_lock = Arc::new(Mutex::new(()));
         let schedule = Arc::new(Schedule::load(client.clone(), send_lock.clone()).await?);
         let categories = crate::account_data::Synced::load(client.clone()).await;
         let colours = crate::account_data::Synced::load(client.clone()).await;
-        let notification_settings = client.notification_settings().await;
         Ok(Self {
             client,
             sync,
@@ -212,6 +215,7 @@ impl Session {
             schedule,
             scheduler: Default::default(),
             notifications,
+            _notifier: notifier,
             categories,
             colours,
             connection,
