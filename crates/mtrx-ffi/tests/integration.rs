@@ -1193,8 +1193,8 @@ fn pushers_are_set_listed_and_deleted() {
     ));
 }
 
-/// The sent message whose text ends with `tail`: a mention's text is
-/// the person's name, not the `@user:server` typed.
+/// The sent message whose text ends with `tail`: the timeline shows a
+/// mention as the person's name, not the `@user:server` typed.
 fn sent_ending<'a>(items: &'a [TimelineItem], tail: &str) -> Option<&'a TimelineEvent> {
     items.iter().find_map(|item| match &item.content {
         TimelineItemContent::Event { event }
@@ -1259,13 +1259,8 @@ fn a_push_handler_reads_messages_while_the_app_syncs() {
     assert_eq!(content.room_name, "lab");
     assert_eq!(content.sender_id, alice.session.user_id());
     assert_eq!(content.sender_name, names[0]);
-    // The mention reads as Bob's name.
-    assert!(
-        content
-            .body
-            .ends_with(&format!("{} the run finished", names[1])),
-        "{content:?}"
-    );
+    // The message's plain text, as typed (the timeline shows the name).
+    assert_eq!(content.body, mention);
     assert!(content.is_mention, "{content:?}");
     assert!(content.should_notify, "{content:?}");
 
