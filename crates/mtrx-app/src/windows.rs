@@ -30,7 +30,7 @@ pub fn taskbar_badge(window: &dyn iced::window::Window, count: u64) {
         Foundation::HWND,
         System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx, CoUninitialize},
     };
-    use iced::window::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    use iced::window::raw_window_handle::RawWindowHandle;
 
     let hwnd = match window.window_handle().map(|h| h.as_raw()) {
         Ok(RawWindowHandle::Win32(handle)) => HWND(handle.hwnd.get() as *mut std::ffi::c_void),
@@ -96,9 +96,10 @@ fn icon(
 
     // The colour bitmap is BGRA; its alpha channel overrides the 1-bit
     // mask, so that stays empty (rows padded to 16 bits).
-    let bgra: Vec<u8> = rgba
-        .chunks_exact(4)
-        .flat_map(|p| [p[2], p[1], p[0], p[3]])
+    let (pixels, _) = rgba.as_chunks::<4>();
+    let bgra: Vec<u8> = pixels
+        .iter()
+        .flat_map(|&[r, g, b, a]| [b, g, r, a])
         .collect();
     let side = size as usize;
     let mask = vec![0u8; side.div_ceil(16) * 2 * side];
