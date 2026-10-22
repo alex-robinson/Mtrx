@@ -150,6 +150,23 @@ class TimelineRowsTest {
     }
 
     @Test
+    fun swipingRepliesToSentMessagesOnly() {
+        val me = "@me:x"
+        assertTrue(row(textEvent("1", "@bob:x", "hi")).canReply)
+        assertTrue(row(messageEvent("2", me, text("mine"), own = true)).canReply)
+        assertFalse(
+            "not sent yet",
+            row(messageEvent("3", me, text("on its way"), own = true, eventId = null, sendState = SendState.Sending)).canReply,
+        )
+        assertFalse(
+            "failed",
+            row(messageEvent("4", me, text("refused"), own = true, eventId = null, sendState = SendState.Failed("too large"))).canReply,
+        )
+        assertFalse("deleted", row(eventItem("5", "@bob:x", EventContent.Redacted)).canReply)
+        assertFalse("undecryptable", row(eventItem("6", "@bob:x", EventContent.UnableToDecrypt)).canReply)
+    }
+
+    @Test
     fun theMenuOffersWhatApplies() {
         val all = MessageAction.entries
         fun actions(item: TimelineItem) = row(item).actions.toList()

@@ -53,6 +53,9 @@ data class EventRow(override val id: String, val event: TimelineEvent, val showS
 
     /** What holding the message offers, in the menu's order. */
     val actions: Set<MessageAction> get() = messageActions(this)
+
+    /** Swiping it left replies, as Reply in its menu: a sent message. */
+    val canReply: Boolean get() = MessageAction.REPLY in actions
 }
 
 /** What holding a message offers. */

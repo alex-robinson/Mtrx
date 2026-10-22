@@ -130,6 +130,14 @@ class TimelineViewModelTest {
     }
 
     @Test
+    fun aMessageNotSentYetCannotBeAnswered() = runTest {
+        val viewModel = viewModel()
+        show(messageEvent("unsent", "@me:example.org", Message(kind = MessageKind.TEXT, body = "soon", edited = false, media = null), own = true, eventId = null))
+        viewModel.startReply("unsent")
+        assertNull(viewModel.composing.value)
+    }
+
+    @Test
     fun editsStartFromTheTextWeWroteAndGiveTheDraftBack() = runTest {
         val viewModel = viewModel()
         show(textEvent("1", alice, "hi"), ours)

@@ -191,9 +191,12 @@ class TimelineViewModel(
         }
     }
 
-    /** Reply to row [itemId]: the composer says to whom; an edit under way ends. */
+    /**
+     * Reply to row [itemId] (from its menu, or swiped): the composer says to
+     * whom; an edit under way ends. Only a sent message can be answered.
+     */
     fun startReply(itemId: String) {
-        val row = eventRow(itemId) ?: return
+        val row = eventRow(itemId)?.takeIf { it.canReply } ?: return
         endEdit()
         _composing.value = Composing.Replying(itemId, displayName(row.event), preview(row))
     }
@@ -258,6 +261,12 @@ class TimelineViewModel(
             }
         }
     }
+
+    /**
+     * The name or avatar of a direct chat's header was tapped. The sheet
+     * about the person comes with the library's calls for it; nothing yet.
+     */
+    fun showPersonInfo() {}
 
     /** Add our reaction [key] to row [itemId], or remove it. */
     fun react(itemId: String, key: String) = act { it.react(itemId, key) }

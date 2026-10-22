@@ -1,13 +1,22 @@
 package org.mtrx.app.timeline
 
 import android.graphics.Bitmap
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.animate
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.Orientation
+import androidx.compose.foundation.gestures.draggable
+import androidx.compose.foundation.gestures.rememberDraggableState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -24,17 +33,20 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -43,6 +55,7 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SmallFloatingActionButton
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
@@ -53,6 +66,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
@@ -67,9 +81,11 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
@@ -82,17 +98,21 @@ import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import java.time.LocalDate
+import kotlin.math.roundToInt
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import org.mtrx.app.model.Images
 import org.mtrx.app.ui.Avatar
+import org.mtrx.app.ui.MtrxIcons
 import org.mtrx.app.ui.dayLabel
 import org.mtrx.app.ui.identityColor
 import org.mtrx.app.ui.timeOfDay
@@ -120,6 +140,7 @@ private sealed interface Overlay {
 private class RowHandlers(
     val hold: (EventRow) -> Unit,
     val goTo: (String) -> Unit,
+    val reply: (String) -> Unit,
     val react: (String, String) -> Unit,
     val showReactors: (String, String) -> Unit,
     val showReaders: (String) -> Unit,
@@ -127,7 +148,7 @@ private class RowHandlers(
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun TimelineScreen(title: String, viewModel: TimelineViewModel, images: Images, onBack: () -> Unit) {
+fun TimelineScreen(header: RoomHeader, viewModel: TimelineViewModel, images: Images, onBack: () -> Unit) {
     val rows by viewModel.rows.collectAsStateWithLifecycle()
     // At once, not at the next frame: the field compares its text with it.
     val draft by viewModel.draft.collectAsStateWithLifecycle(context = Dispatchers.Main.immediate)
@@ -193,6 +214,7 @@ fun TimelineScreen(title: String, viewModel: TimelineViewModel, images: Images, 
                 }
             },
             goTo = viewModel::goToOriginal,
+            reply = viewModel::startReply,
             react = viewModel::react,
             showReactors = { rowId, key -> overlay = Overlay.Reactors(rowId, key) },
             showReaders = { rowId -> overlay = Overlay.Readers(rowId) },
@@ -203,7 +225,7 @@ fun TimelineScreen(title: String, viewModel: TimelineViewModel, images: Images, 
         topBar = {
             Column {
                 TopAppBar(
-                    title = { Text(title, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                    title = { RoomTitle(header, images, onPerson = viewModel::showPersonInfo) },
                     navigationIcon = {
                         IconButton(onClick = onBack) {
                             Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
@@ -228,6 +250,21 @@ fun TimelineScreen(title: String, viewModel: TimelineViewModel, images: Images, 
             }
         },
         snackbarHost = { SnackbarHost(snackbar) },
+        // Back to the newest message, while away from it.
+        floatingActionButton = {
+            AnimatedVisibility(
+                visible = !atBottom,
+                enter = fadeIn() + scaleIn(),
+                exit = fadeOut() + scaleOut(),
+            ) {
+                SmallFloatingActionButton(
+                    onClick = { scope.launch { listState.animateScrollToItem(0) } },
+                    shape = CircleShape,
+                ) {
+                    Icon(Icons.Filled.KeyboardArrowDown, contentDescription = "Latest messages")
+                }
+            }
+        },
     ) { padding ->
         LazyColumn(
             Modifier
@@ -318,6 +355,25 @@ fun TimelineScreen(title: String, viewModel: TimelineViewModel, images: Images, 
             },
             onDismiss = dismiss,
         )
+    }
+}
+
+/** The room's name; a direct chat's with the person's avatar, both tapped for [onPerson]. */
+@Composable
+private fun RoomTitle(header: RoomHeader, images: Images, onPerson: () -> Unit) {
+    if (!header.direct) {
+        Text(header.name, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        return
+    }
+    Row(
+        Modifier
+            .clip(RoundedCornerShape(8.dp))
+            .clickable(onClick = onPerson),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Avatar(header.name, header.avatarUrl, seed = header.seed, images = images, size = 32.dp)
+        Spacer(Modifier.width(10.dp))
+        Text(header.name, maxLines = 1, overflow = TextOverflow.Ellipsis)
     }
 }
 
@@ -450,45 +506,47 @@ private fun EventBubble(row: EventRow, images: Images, highlighted: Boolean, han
                 modifier = Modifier.padding(start = AVATAR + AVATAR_GAP + 4.dp, end = 48.dp, bottom = 2.dp),
             )
         }
-        Row(
-            Modifier
-                .fillMaxWidth()
-                .padding(start = if (own) 48.dp else 0.dp, end = if (own) 0.dp else 48.dp),
-            horizontalArrangement = if (own) Arrangement.End else Arrangement.Start,
-        ) {
-            // Beside the bubble, at the first of a group.
-            if (!own) {
-                if (row.showSender) {
-                    Avatar(name, event.senderAvatarUrl, seed = event.senderId, images = images, size = AVATAR)
-                } else {
-                    Spacer(Modifier.width(AVATAR))
-                }
-                Spacer(Modifier.width(AVATAR_GAP))
-            }
-            Column(
-                Modifier.weight(1f, fill = false),
-                horizontalAlignment = if (own) Alignment.End else Alignment.Start,
+        SwipeToReply(enabled = row.canReply, onReply = { handlers.reply(row.id) }) {
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(start = if (own) 48.dp else 0.dp, end = if (own) 0.dp else 48.dp),
+                horizontalArrangement = if (own) Arrangement.End else Arrangement.Start,
             ) {
-                Surface(
-                    shape = bubbleShape,
-                    color = if (own) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant,
-                    modifier = Modifier
-                        .clip(bubbleShape)
-                        .combinedClickable(onClick = {}, onLongClick = { handlers.hold(row) }),
-                ) {
-                    Column(Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
-                        row.quote?.let { QuoteBlock(it, handlers.goTo) }
-                        MessageBody(event, row.edited, name, images)
-                        Text(
-                            timeOfDay(event.timestamp),
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.align(Alignment.End),
-                        )
+                // Beside the bubble, at the first of a group.
+                if (!own) {
+                    if (row.showSender) {
+                        Avatar(name, event.senderAvatarUrl, seed = event.senderId, images = images, size = AVATAR)
+                    } else {
+                        Spacer(Modifier.width(AVATAR))
                     }
+                    Spacer(Modifier.width(AVATAR_GAP))
                 }
-                ReactionChips(row, handlers)
-                SendStateLine(event.sendState)
+                Column(
+                    Modifier.weight(1f, fill = false),
+                    horizontalAlignment = if (own) Alignment.End else Alignment.Start,
+                ) {
+                    Surface(
+                        shape = bubbleShape,
+                        color = if (own) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant,
+                        modifier = Modifier
+                            .clip(bubbleShape)
+                            .combinedClickable(onClick = {}, onLongClick = { handlers.hold(row) }),
+                    ) {
+                        Column(Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
+                            row.quote?.let { QuoteBlock(it, handlers.goTo) }
+                            MessageBody(event, row.edited, name, images)
+                            Text(
+                                timeOfDay(event.timestamp),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.align(Alignment.End),
+                            )
+                        }
+                    }
+                    ReactionChips(row, handlers)
+                    SendStateLine(event.sendState)
+                }
             }
         }
         if (row.readers.all.isNotEmpty()) {
@@ -504,6 +562,64 @@ private fun EventBubble(row: EventRow, images: Images, highlighted: Boolean, han
 
 private val AVATAR = 32.dp
 private val AVATAR_GAP = 8.dp
+
+/** How far a message is swiped left to reply, and the most it moves. */
+private val SWIPE_REPLY = 64.dp
+private val SWIPE_MAX = 96.dp
+
+/**
+ * [content] that, while [enabled], swiped left past [SWIPE_REPLY] calls
+ * [onReply] when let go, the reply icon showing at the right as it moves;
+ * it springs back. Horizontal drags only, so vertical ones scroll the list;
+ * and swipes from the screen's edge stay the system's back gesture.
+ */
+@Composable
+private fun SwipeToReply(enabled: Boolean, onReply: () -> Unit, content: @Composable () -> Unit) {
+    val density = LocalDensity.current
+    val threshold = with(density) { SWIPE_REPLY.toPx() }
+    val limit = with(density) { SWIPE_MAX.toPx() }
+    val haptics = LocalHapticFeedback.current
+    val scope = rememberCoroutineScope()
+    val reply by rememberUpdatedState(onReply)
+    var dragX by remember { mutableFloatStateOf(0f) }
+    var settling by remember { mutableStateOf<Job?>(null) }
+    val drag = rememberDraggableState { delta ->
+        val before = dragX
+        dragX = (dragX + delta).coerceIn(-limit, 0f)
+        // Felt once the reply is armed.
+        if (before > -threshold && dragX <= -threshold) haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+    }
+    Box(
+        Modifier
+            .fillMaxWidth()
+            .draggable(
+                drag,
+                Orientation.Horizontal,
+                enabled = enabled,
+                onDragStarted = { settling?.cancel() },
+                onDragStopped = {
+                    if (dragX <= -threshold) reply()
+                    settling = scope.launch { animate(dragX, 0f) { value, _ -> dragX = value } }
+                },
+            ),
+    ) {
+        Icon(
+            MtrxIcons.Reply,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.primary,
+            modifier = Modifier
+                .align(Alignment.CenterEnd)
+                .padding(end = 8.dp)
+                .graphicsLayer {
+                    val progress = (-dragX / threshold).coerceIn(0f, 1f)
+                    alpha = progress
+                    scaleX = 0.6f + 0.4f * progress
+                    scaleY = scaleX
+                },
+        )
+        Box(Modifier.offset { IntOffset(dragX.roundToInt(), 0) }) { content() }
+    }
+}
 
 /** The message a reply answers; a loaded one goes to it. */
 @Composable
