@@ -15,6 +15,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Badge
@@ -50,6 +51,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import java.time.LocalDate
 import org.mtrx.app.model.Account
 import org.mtrx.app.model.Images
+import org.mtrx.app.model.showsEncryptionBanner
 import org.mtrx.app.ui.Avatar
 import org.mtrx.app.ui.lastActivity
 import uniffi.mtrx.ConnectionState
@@ -58,9 +60,16 @@ import uniffi.mtrx.RoomSummary
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun RoomListScreen(account: Account, userId: String, images: Images, onOpenRoom: (String) -> Unit) {
+fun RoomListScreen(
+    account: Account,
+    userId: String,
+    images: Images,
+    onOpenRoom: (String) -> Unit,
+    onOpenSettings: () -> Unit,
+) {
     val list by account.rooms.collectAsStateWithLifecycle()
     val connection by account.connection.collectAsStateWithLifecycle()
+    val encryption by account.encryption.collectAsStateWithLifecycle()
     var filter by rememberSaveable { mutableStateOf(RoomFilter.All) }
     var menuOpen by remember { mutableStateOf(false) }
     var confirmSignOut by remember { mutableStateOf(false) }
@@ -80,6 +89,13 @@ fun RoomListScreen(account: Account, userId: String, images: Images, onOpenRoom:
                     DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
                         DropdownMenuItem(text = { Text(userId) }, onClick = {}, enabled = false)
                         DropdownMenuItem(
+                            text = { Text("Settings") },
+                            onClick = {
+                                menuOpen = false
+                                onOpenSettings()
+                            },
+                        )
+                        DropdownMenuItem(
                             text = { Text("Sign out") },
                             onClick = {
                                 menuOpen = false
@@ -98,6 +114,7 @@ fun RoomListScreen(account: Account, userId: String, images: Images, onOpenRoom:
                 .fillMaxSize(),
         ) {
             ConnectionBanner(connection, onSignInAgain = { account.forget() })
+            if (showsEncryptionBanner(encryption)) EncryptionBanner(onClick = onOpenSettings)
             Row(
                 Modifier
                     .fillMaxWidth()
@@ -170,6 +187,26 @@ private fun ConnectionBanner(connection: ConnectionState, onSignInAgain: () -> U
                 )
                 TextButton(onClick = onSignInAgain) { Text("Sign in again") }
             }
+        }
+    }
+}
+
+@Composable
+private fun EncryptionBanner(onClick: () -> Unit) {
+    Surface(color = MaterialTheme.colorScheme.tertiaryContainer) {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .clickable(onClick = onClick)
+                .padding(horizontal = 16.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Icon(Icons.Filled.Lock, contentDescription = null)
+            Text(
+                "Verify this device or enter your recovery key to read encrypted messages.",
+                style = MaterialTheme.typography.bodySmall,
+            )
         }
     }
 }
