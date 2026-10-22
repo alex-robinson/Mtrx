@@ -31,7 +31,7 @@ pub use error::MtrxError;
 pub use runtime::TaskHandle;
 pub use secrets::{SecretBackend, SecretError};
 pub use session::{ConnectionListener, RoomListListener, Session};
-pub use timeline::{Timeline, TimelineListener};
+pub use timeline::{Timeline, TimelineListener, TypingListener};
 pub use types::*;
 
 /// Where the server sends the browser back after a browser sign-in, e.g.
