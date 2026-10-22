@@ -344,27 +344,40 @@ and tested by CI only; no Android SDK is used locally.
     (`model/ViewPreferences.kt`: Preferences DataStore `view`, key
     `selected_space`; `androidx.datastore:datastore-preferences`); a saved
     one waits for a list that has it and is forgotten when a loaded list
-    does not; cleared at sign-out (and `forget`). `rooms/RoomLists.kt`: the
-    tabs' lists from each `RoomListState` (`chats`, `spaceRows` with the
-    unread dot, `roomsOf`).
+    does not; cleared at sign-out (and `forget`). `RoomSortChoice`, also
+    the `Account`'s: the order of the spaces' rooms (`RoomSort`: Default,
+    A to Z, Z to A, Most recent), saved through `RoomSortStore` (key
+    `room_sort`), kept at sign-out (the device's, not the account's).
+    `rooms/RoomLists.kt`: the tabs' lists from each `RoomListState`
+    (`chats`, `spaceRows` with the unread dot, `roomsOf`, and `sectionsOf`:
+    a space's rooms and its direct chats apart, each `sorted`: by name with
+    the locale's `Collator`, case aside; most recent by `lastActivity`, never
+    active last; ties in list order).
   - `model/Images.kt`: avatars and image previews, decoded (downsampled)
     and kept in an in-memory LRU cache.
   - Screens: sign-in (homeserver, then password or "Sign in with browser" as
-    `supportsOauth` says), the room list (section 7: a bottom bar with Chats
-    and Rooms, only on this screen; Chats the direct chats; Rooms a
-    `HorizontalPager` of the spaces, with "Other rooms", and the selected
-    entry's rooms, titled with its name, back or the arrow to the spaces;
-    tapping the Rooms tab again also returns to them; a new selection,
-    tapped or restored, pages right; tab, page and scroll positions are the
-    screen's saved state, so they are kept while a room or Settings is
+    `supportsOauth` says), the home (`ui/HomeScreen.kt`, section 7: a
+    bottom bar with Chats, Spaces and Settings, only on this screen; Chats
+    the direct chats; Spaces a `HorizontalPager` of the spaces, with "Other
+    rooms", and the selected entry's rooms, titled with its name, back or
+    the arrow to the spaces; tapping the Spaces tab again also returns to
+    them; a new selection, tapped or restored, pages right; the entry's
+    page in two sections, Rooms and People (its direct chats; each left
+    out while empty), in the order chosen in the top bar's sort menu, for
+    every space; Settings the account, encryption and "Sign out" (after
+    "Sign out?"); tab, page and scroll positions are the screen's saved
+    state, so they are kept while a room, recovery or verification is
     open; rows with avatars, unread and mention counts, last activity,
-    "Invited"; banners for offline and signed out by the server over both
-    tabs; menu with Settings and sign-out), and a room's timeline
-    (newest at the bottom, keyed by `TimelineItem.id`; day dividers, read
-    marker, grouped bubbles, send states, images, state events summarised
-    in a line as on the desktop; older events near the top; marked read
-    while the newest message shows; "Could not decrypt this message." for
-    an event without its key). Messages (section 8): the sender's name in
+    "Invited"; banners for offline and signed out by the server over all
+    tabs), and a room's timeline (the room's name, and for a direct chat
+    the room's avatar beside it, both tapped for the view model's
+    `showPersonInfo`, which does nothing yet; newest at the bottom, keyed
+    by `TimelineItem.id`; day dividers, read marker, grouped bubbles, send
+    states, images, state events summarised in a line as on the desktop;
+    older events near the top; marked read while the newest message
+    shows; "Could not decrypt this message." for an event without its
+    key; away from the bottom, a round down-arrow button over the
+    messages at the bottom right goes to the newest). Messages (section 8): the sender's name in
     the body text size above a group, the avatar beside its first bubble;
     holding a bubble opens a bottom sheet with the six common reactions
     (ours marked) and "+" for the full picker (`androidx.emoji2:
@@ -372,7 +385,11 @@ and tested by CI only; no Android SDK is used locally.
     AppCompat's DayNight, which its resources need), then Reply, Copy,
     Select text, Edit, Delete (after "Delete this message for everyone?"),
     Retry and Discard, as `timeline/TimelineRows.kt`'s `messageActions`
-    allows; reaction chips under the bubble (tap toggles, hold lists who);
+    allows; swiping a bubble left (a horizontal `draggable`, so vertical
+    drags scroll and edge swipes stay the system's back) shows the reply
+    icon and, past 64 dp when let go, replies as Reply does, for the
+    messages Reply is offered for (`EventRow.canReply`); it springs back;
+    reaction chips under the bubble (tap toggles, hold lists who);
     the reply's quote in the bubble (tap goes to the original); "(edited)"
     muted after the text; read receipts as up to three 16 dp avatars and
     "+N" on a line under the message at the right margin (tap lists
@@ -388,14 +405,16 @@ and tested by CI only; no Android SDK is used locally.
     typing notice is sent. Going to a quote's original pages back 50
     events at a time, at most 20 times, looking in each new list; after
     the room's start or the last page it waits up to two seconds for
-    their items before saying it was not found. Encryption: the banner on the room list (opens
-    Settings); Settings (from the room list's menu) with the account and
-    "Encryption" (status lines, "Enter recovery key", "Verify with another
-    device", or the note that another device is needed); the recovery key
-    screen with its steps and progress; the verification screen (one for
-    both directions; back cancels it while it runs); the prompt for a
-    request, over any screen. Navigation Compose: `rooms`, `room/{roomId}`,
-    `settings`, `settings/recovery`, `settings/verification`.
+    their items before saying it was not found. Encryption: the banner over
+    Chats and Spaces (opens the Settings tab); the Settings tab with the
+    account and "Encryption" (status lines, "Enter recovery key", "Verify
+    with another device", or the note that another device is needed); the
+    recovery key screen with its steps and progress; the verification
+    screen (one for both directions; back cancels it while it runs); the
+    prompt for a request, over any screen. Navigation Compose: `home`,
+    `room/{roomId}`, `settings/recovery`, `settings/verification`. Icons
+    the core set lacks (spaces, reply, sort) are drawn from their Material
+    paths (`ui/Icons.kt`).
   - Unit tests (JVM) on fakes of the library's objects (subclasses made with
     `NoHandle`): secrets, the account's sync and sign-out, timeline rows,
     the timeline's view model; messages (section 8): the rows' reactions,
@@ -404,14 +423,18 @@ and tested by CI only; no Android SDK is used locally.
     composer, typing both ways and on leaving the room (a send under way
     still completes), the typing line's texts, and going to a quote's
     original (loaded already, after paginating, arriving after the call,
-    at the room's start, after 20 pages); the encryption state and banner, the
+    at the room's start, after 20 pages); swiping to reply only to sent
+    messages, and no reply to one not sent; the encryption state and banner, the
     recovery's steps and errors (an invalid key), the verification model
     (states, confirm, mismatch, cancel, close), and verification requests
     (another user's cancelled, ours accepted or declined); the Chats and
     Rooms lists from a `RoomListState` like the library's integration test
-    (two top-level spaces, a nested one, direct chats, invites), and the
-    selected space (saved, restored at the next launch, forgotten when gone
-    or at sign-out).
+    (two top-level spaces, a nested one, direct chats, invites), a space's
+    Rooms and People sections and the four orders (names in either case,
+    ties, rooms never active), the selected space (saved, restored at the
+    next launch, forgotten when gone or at sign-out), and the chosen order
+    (saved, restored, a choice before the saved one is read wins, kept at
+    sign-out).
 - Build locally, with the Android SDK and NDK, Rust's two Android targets
   and cargo-ndk: `scripts/build-android-ffi.sh`, then in `apps/android`
   `gradle :app:assembleDebug` (Gradle 8.11.1 or later, or a wrapper made with
@@ -432,7 +455,8 @@ Remaining:
 - Run only to the sign-in screen (emulator, CI); signing in, the room list,
   the timeline, recovery and verification are not yet tried on an emulator
   or device (only their models' unit tests); nor are the messages'
-  menus, sheets and the emoji picker. Not done: notifications, sending
+  menus, sheets and the emoji picker, swiping to reply, the button to the
+  newest message, and the Settings tab. Not done: notifications, sending
   images, opening files, release signing.
 
 ## 5. Builds and CI
