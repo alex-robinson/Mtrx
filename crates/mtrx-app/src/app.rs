@@ -2801,7 +2801,8 @@ impl App {
     fn main_view<'a>(&'a self, main: &'a Main) -> Element<'a, Message> {
         let theme = self.theme();
         let rooms = &main.rooms.rooms;
-        let space_bar = sidebar::space_bar(rooms, main.space.as_ref(), &main.avatars);
+        let space_bar =
+            sidebar::space_bar(rooms, main.space.as_ref(), &main.arrange, &main.avatars);
         let room_list = sidebar::room_list(main.room_list_view(&self.settings));
 
         // Banners come and go inside a column that is always there, so the

@@ -10,7 +10,7 @@ use std::{
 use iced::{Point, Subscription, Task, event, mouse};
 use mtrx_core::{
     Grouping, OwnedRoomId, OwnedUserId, RoomCategories, RoomSummary, RoomTag, Section, Session,
-    Sort,
+    Sort, home_rooms, space_rooms,
 };
 
 use tracing::warn;
@@ -120,9 +120,28 @@ impl Arrange {
         self.drag.as_ref().filter(|d| d.active)
     }
 
-    /// Members of `space` known so far.
-    pub fn members(&self, space: &OwnedRoomId) -> Option<&HashSet<OwnedUserId>> {
-        self.space_members.get(space)
+    /// What `space` lists, or Home for `None`, in the order of `rooms`: the
+    /// room list's rooms and what lights the space bar's dot. A space whose
+    /// members are not loaded yet lists no direct chats.
+    pub fn listed<'a>(
+        &self,
+        rooms: &'a [RoomSummary],
+        space: Option<&OwnedRoomId>,
+    ) -> Vec<&'a RoomSummary> {
+        match space {
+            None => home_rooms(rooms),
+            Some(space) => space_rooms(
+                rooms,
+                space,
+                self.space_members.get(space),
+                self.categories.layout(Some(space)),
+            ),
+        }
+    }
+
+    /// The joined members of `space`, for the direct chats it lists.
+    pub fn members_loaded(&mut self, space: OwnedRoomId, joined: HashSet<OwnedUserId>) {
+        self.space_members.insert(space, joined);
     }
 
     /// Load the members of a space shown, for its direct chats.
@@ -175,9 +194,7 @@ impl Arrange {
         let space = context.space.cloned();
         match message {
             Message::Categories(categories) => self.categories = categories,
-            Message::SpaceMembers(space, Ok(joined)) => {
-                self.space_members.insert(space, joined);
-            }
+            Message::SpaceMembers(space, Ok(joined)) => self.members_loaded(space, joined),
             Message::SpaceMembers(space, Err(e)) => {
                 warn!(%space, "could not load the space's members: {e}");
             }

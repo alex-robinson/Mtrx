@@ -9,7 +9,7 @@ use iced::{
 };
 use mtrx_core::{
     Grouping, Layout, MxcUri, OwnedRoomId, RoomKind, RoomSummary, RoomTag, ScheduledMessage,
-    Section, Sort, descendants, home_rooms, space_rooms, top_level_spaces,
+    Section, Sort, top_level_spaces,
 };
 
 use crate::{
@@ -52,21 +52,13 @@ pub fn ancestors(rooms: &[RoomSummary], room: &OwnedRoomId) -> Vec<OwnedRoomId> 
     found
 }
 
-/// Rooms listed for a space, or all of them in Home.
-fn scope<'a>(
-    rooms: &'a [RoomSummary],
-    space: Option<&OwnedRoomId>,
-    arrange: &Arrange,
-) -> Vec<&'a RoomSummary> {
-    match space {
-        None => home_rooms(rooms),
-        Some(space) => space_rooms(
-            rooms,
-            space,
-            arrange.members(space),
-            arrange.categories.layout(Some(space)),
-        ),
-    }
+/// Whether anything `space` lists (Home for `None`) is unread: its dot in
+/// the space bar.
+fn unread(rooms: &[RoomSummary], space: Option<&OwnedRoomId>, arrange: &Arrange) -> bool {
+    arrange
+        .listed(rooms, space)
+        .iter()
+        .any(|r| r.unread_messages > 0)
 }
 
 /// The room list's sections and their rooms, in display order; sections
@@ -77,7 +69,9 @@ fn sections<'a>(view: &RoomListView<'a>) -> Vec<(Section, Vec<&'a RoomSummary>)>
         Some(Notes::Room(notes)) => Some(&notes.id),
         _ => None,
     };
-    let listed = scope(view.rooms, space, view.arrange)
+    let listed = view
+        .arrange
+        .listed(view.rooms, space)
         .into_iter()
         .filter(|r| Some(&r.id) != pinned);
     view.arrange
@@ -133,6 +127,7 @@ pub fn avatars<'a>(view: &RoomListView<'a>) -> Vec<(&'a MxcUri, f32)> {
 pub fn space_bar<'a>(
     rooms: &[RoomSummary],
     selected: Option<&OwnedRoomId>,
+    arrange: &Arrange,
     avatars: &Avatars,
 ) -> Element<'a, Message> {
     let entry = |icon: Element<'a, Message>, title: String, target: Option<OwnedRoomId>, unread| {
@@ -152,19 +147,13 @@ pub fn space_bar<'a>(
         container(with_tooltip(entry_button, title)).center_x(Length::Fill)
     };
 
-    let any_unread = |ids: &dyn Fn(&RoomSummary) -> bool| {
-        rooms
-            .iter()
-            .any(|r| ids(r) && r.kind != RoomKind::Space && r.unread_messages > 0)
-    };
     let mut bar = column![entry(
         home_icon(),
         "Home".into(),
         None,
-        any_unread(&|_| true)
+        unread(rooms, None, arrange)
     )];
     for space in top_level_spaces(rooms) {
-        let inside = descendants(rooms, &space.id);
         let icon = avatars.view(
             space.id.as_str(),
             &space.name,
@@ -172,12 +161,11 @@ pub fn space_bar<'a>(
             SPACE_AVATAR,
             Shape::RoundedSquare,
         );
-        let unread = any_unread(&|r| inside.contains(&r.id));
         bar = bar.push(entry(
             icon,
             space.name.clone(),
             Some(space.id.clone()),
-            unread,
+            unread(rooms, Some(&space.id), arrange),
         ));
     }
     let new_space = button(
@@ -1154,7 +1142,82 @@ fn out_of_view_arrows<'a>(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
+
+    use mtrx_core::OwnedUserId;
+
     use super::*;
+
+    fn room(id: &str, kind: RoomKind, parents: &[&str]) -> RoomSummary {
+        RoomSummary {
+            id: id.try_into().unwrap(),
+            name: id.into(),
+            avatar: None,
+            topic: None,
+            kind,
+            invited: false,
+            encrypted: false,
+            public: false,
+            unread_messages: 0,
+            unread_mentions: 0,
+            unread_notifications: 0,
+            last_activity: None,
+            parents: parents.iter().map(|p| (*p).try_into().unwrap()).collect(),
+            tag: RoomTag::None,
+            direct_user: None,
+            alias: None,
+            joined_members: 0,
+        }
+    }
+
+    /// A space with a room below it, a direct chat with one of its members
+    /// and a room outside it.
+    fn rooms() -> Vec<RoomSummary> {
+        vec![
+            room("!space:x", RoomKind::Space, &[]),
+            room("!inside:x", RoomKind::Room, &["!space:x"]),
+            RoomSummary {
+                direct_user: Some("@bob:x".try_into().unwrap()),
+                ..room("!bob:x", RoomKind::Direct, &[])
+            },
+            room("!loose:x", RoomKind::Room, &[]),
+        ]
+    }
+
+    fn unread_in(rooms: &mut [RoomSummary], id: &str) {
+        let room = rooms.iter_mut().find(|r| r.id == id).unwrap();
+        room.unread_messages = 1;
+    }
+
+    fn space() -> OwnedRoomId {
+        "!space:x".try_into().unwrap()
+    }
+
+    #[test]
+    fn an_unread_direct_chat_with_a_member_lights_the_space() {
+        let mut rooms = rooms();
+        unread_in(&mut rooms, "!bob:x");
+        let mut arrange = Arrange::default();
+        // Before its members are known the space lists no direct chats.
+        assert!(!unread(&rooms, Some(&space()), &arrange));
+        let bob: OwnedUserId = "@bob:x".try_into().unwrap();
+        arrange.members_loaded(space(), HashSet::from([bob]));
+        assert!(unread(&rooms, Some(&space()), &arrange));
+        assert!(unread(&rooms, None, &arrange));
+    }
+
+    #[test]
+    fn an_unread_room_in_a_category_of_the_space_lights_it() {
+        let mut rooms = rooms();
+        unread_in(&mut rooms, "!loose:x");
+        let mut arrange = Arrange::default();
+        assert!(!unread(&rooms, Some(&space()), &arrange));
+        let layout = arrange.categories.layout_mut(Some(&space()));
+        let category = layout.add_category("Mine");
+        let loose: OwnedRoomId = "!loose:x".try_into().unwrap();
+        layout.place(&loose, Some(&category));
+        assert!(unread(&rooms, Some(&space()), &arrange));
+    }
 
     #[test]
     fn finds_unread_rooms_out_of_view() {
