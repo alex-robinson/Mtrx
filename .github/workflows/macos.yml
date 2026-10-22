@@ -2,8 +2,10 @@
 name: macOS
 
 on:
-  push:
-    branches: [main, core-cli]
+  # Each pull request runs once on its merge with main; nothing runs on
+  # plain pushes. Packages come from the release workflow on a tag.
+  pull_request:
+    branches: [main]
   workflow_dispatch:
   # From the release workflow, for the package.
   workflow_call:
