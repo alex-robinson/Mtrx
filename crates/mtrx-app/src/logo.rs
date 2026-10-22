@@ -25,22 +25,29 @@ pub fn view<'a, Message: 'a>(size: f32) -> Element<'a, Message> {
 /// The logo as a window icon (Windows and Linux; macOS uses the bundle's).
 pub fn window_icon() -> Option<window::Icon> {
     let tree = usvg::Tree::from_data(SVG, &usvg::Options::default()).ok()?;
-    let mut pixmap = tiny_skia::Pixmap::new(ICON_SIZE, ICON_SIZE)?;
-    let scale = ICON_SIZE as f32 / tree.size().width();
+    let rgba = rasterize(&tree, ICON_SIZE)?;
+    window::icon::from_rgba(rgba, ICON_SIZE, ICON_SIZE).ok()
+}
+
+/// A square image `size` pixels wide, as straight (not premultiplied) RGBA.
+pub fn rasterize(tree: &usvg::Tree, size: u32) -> Option<Vec<u8>> {
+    let mut pixmap = tiny_skia::Pixmap::new(size, size)?;
+    let scale = size as f32 / tree.size().width();
     resvg::render(
-        &tree,
+        tree,
         tiny_skia::Transform::from_scale(scale, scale),
         &mut pixmap.as_mut(),
     );
-    let rgba = pixmap
-        .pixels()
-        .iter()
-        .flat_map(|p| {
-            let c = p.demultiply();
-            [c.red(), c.green(), c.blue(), c.alpha()]
-        })
-        .collect();
-    window::icon::from_rgba(rgba, ICON_SIZE, ICON_SIZE).ok()
+    Some(
+        pixmap
+            .pixels()
+            .iter()
+            .flat_map(|p| {
+                let c = p.demultiply();
+                [c.red(), c.green(), c.blue(), c.alpha()]
+            })
+            .collect(),
+    )
 }
 
 /// Notifications come from the app when it runs as `Mtrx.app`, so they
