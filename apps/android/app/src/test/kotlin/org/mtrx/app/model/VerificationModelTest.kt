@@ -17,10 +17,9 @@ import uniffi.mtrx.VerificationState
 @OptIn(ExperimentalCoroutinesApi::class)
 class VerificationModelTest {
     private val verification = FakeVerification("@me:example.org")
-    private var done = 0
 
     private fun TestScope.requested(): VerificationModel =
-        VerificationModel.request(CoroutineScope(UnconfinedTestDispatcher(testScheduler)), onDone = { done++ }) {
+        VerificationModel.request(CoroutineScope(UnconfinedTestDispatcher(testScheduler))) {
             verification
         }
 
@@ -45,7 +44,6 @@ class VerificationModelTest {
         assertFalse(model.ended)
         verification.update(VerificationState.Done)
         assertTrue(model.ended)
-        assertEquals(1, done)
 
         model.close()
         assertTrue(verification.subscription!!.cancelled)
@@ -63,7 +61,6 @@ class VerificationModelTest {
         // Nothing to answer after it ended.
         model.confirm()
         assertFalse(verification.confirmed)
-        assertEquals(0, done)
     }
 
     @Test
@@ -86,7 +83,7 @@ class VerificationModelTest {
 
     @Test
     fun failedRequestEndsCancelledWithTheReason() = runTest {
-        val model = VerificationModel.request(CoroutineScope(UnconfinedTestDispatcher(testScheduler)), onDone = {}) {
+        val model = VerificationModel.request(CoroutineScope(UnconfinedTestDispatcher(testScheduler))) {
             throw MtrxException.Other("account has no cross-signing identity")
         }
         assertEquals(VerificationState.Cancelled("account has no cross-signing identity"), model.state.value)
@@ -95,7 +92,7 @@ class VerificationModelTest {
 
     @Test
     fun acceptingAnIncomingRequestWaitsForTheOtherDevice() = runTest {
-        val model = VerificationModel.accept(CoroutineScope(UnconfinedTestDispatcher(testScheduler)), onDone = {}, verification)
+        val model = VerificationModel.accept(CoroutineScope(UnconfinedTestDispatcher(testScheduler)), verification)
         assertFalse(model.outgoing)
         assertTrue(verification.accepted)
         assertEquals(VerificationState.Waiting, model.state.value)

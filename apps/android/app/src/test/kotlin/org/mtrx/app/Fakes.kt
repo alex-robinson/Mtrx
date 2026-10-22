@@ -10,6 +10,7 @@ import uniffi.mtrx.ConnectionListener
 import uniffi.mtrx.ConnectionState
 import uniffi.mtrx.DeviceInfo
 import uniffi.mtrx.EncryptionState
+import uniffi.mtrx.EncryptionStateListener
 import uniffi.mtrx.EventContent
 import uniffi.mtrx.Message
 import uniffi.mtrx.MessageKind
@@ -35,6 +36,7 @@ import uniffi.mtrx.TimelineItem
 import uniffi.mtrx.TimelineItemContent
 import uniffi.mtrx.TimelineListener
 import uniffi.mtrx.TypingListener
+import uniffi.mtrx.UserProfile
 import uniffi.mtrx.Verification
 import uniffi.mtrx.VerificationListener
 import uniffi.mtrx.VerificationRequestListener
@@ -63,6 +65,22 @@ class FakeSession : Session(NoHandle) {
 
     var encryption = EncryptionState(deviceVerified = false, recovery = RecoveryStatus.INCOMPLETE)
     var encryptionAsks = 0
+    var encryptionListener: EncryptionStateListener? = null
+    var encryptionSubscription: FakeHandle? = null
+    var encryptionSubscriptions = 0
+
+    /** What [timeline] opens. */
+    var roomTimeline: Timeline = FakeTimeline()
+
+    /** [userProfile] gives [profile], or throws [profileError]; after [profileGate] if set. */
+    var profile: UserProfile? = null
+    var profileError: MtrxException? = null
+    var profileGate: CompletableDeferred<Unit>? = null
+
+    /** Invites made, as (room, user); [inviteError] fails them, after [inviteGate] if set. */
+    val invites = mutableListOf<Pair<String, String>>()
+    var inviteError: MtrxException? = null
+    var inviteGate: CompletableDeferred<Unit>? = null
 
     /** The steps [recover] reports, then [recoveryError] if set. */
     var recoverySteps: List<RecoveryStep> = emptyList()
@@ -102,6 +120,37 @@ class FakeSession : Session(NoHandle) {
     override suspend fun encryptionState(): EncryptionState {
         encryptionAsks++
         return encryption
+    }
+
+    // As the library: the state now, then after each change ([pushEncryption]).
+    override fun subscribeEncryptionState(listener: EncryptionStateListener): TaskHandle {
+        encryptionSubscriptions++
+        encryptionListener = listener
+        listener.onUpdate(encryption)
+        return FakeHandle().also {
+            handles += it
+            encryptionSubscription = it
+        }
+    }
+
+    /** The library reports a new encryption state. */
+    fun pushEncryption(state: EncryptionState) {
+        encryption = state
+        encryptionListener?.onUpdate(state)
+    }
+
+    override suspend fun timeline(roomId: String): Timeline = roomTimeline
+
+    override suspend fun userProfile(userId: String): UserProfile {
+        profileGate?.await()
+        profileError?.let { throw it }
+        return profile ?: UserProfile(userId = userId, name = null, avatarUrl = null)
+    }
+
+    override suspend fun invite(roomId: String, userId: String) {
+        inviteGate?.await()
+        inviteError?.let { throw it }
+        invites += roomId to userId
     }
 
     override suspend fun recover(recoveryKey: String, listener: RecoveryListener) {

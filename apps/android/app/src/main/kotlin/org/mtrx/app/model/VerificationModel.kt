@@ -18,14 +18,13 @@ import uniffi.mtrx.VerificationState
  * accept ([accept]). Holds the [Verification] and its subscription, which
  * must live until it ends (dropping them stops following the protocol), so
  * it belongs to the [Account], not to a screen; calls run in [scope]
- * (the account's). [onDone] is called once it is verified, on a library
- * thread. Methods are called on the main thread; [close] when done.
+ * (the account's). Methods are called on the main thread; [close] when
+ * done.
  */
 class VerificationModel private constructor(
     /** We asked (the other device accepts) rather than accepted. */
     val outgoing: Boolean,
     private val scope: CoroutineScope,
-    private val onDone: () -> Unit,
 ) {
     private val _state = MutableStateFlow<VerificationState>(VerificationState.Waiting)
     val state: StateFlow<VerificationState> = _state.asStateFlow()
@@ -106,7 +105,6 @@ class VerificationModel private constructor(
             // On a library thread; the whole state, now and after each change.
             override fun onUpdate(state: VerificationState) {
                 _state.value = state
-                if (state is VerificationState.Done) onDone()
             }
         })
     }
@@ -129,12 +127,12 @@ class VerificationModel private constructor(
 
     companion object {
         /** Ask our other devices ([open] is `Session.requestSelfVerification`). */
-        fun request(scope: CoroutineScope, onDone: () -> Unit, open: suspend () -> Verification): VerificationModel =
-            VerificationModel(outgoing = true, scope, onDone).also { it.start(open) }
+        fun request(scope: CoroutineScope, open: suspend () -> Verification): VerificationModel =
+            VerificationModel(outgoing = true, scope).also { it.start(open) }
 
         /** Accept a request another of our devices sent. */
-        fun accept(scope: CoroutineScope, onDone: () -> Unit, request: Verification): VerificationModel =
-            VerificationModel(outgoing = false, scope, onDone).also { model ->
+        fun accept(scope: CoroutineScope, request: Verification): VerificationModel =
+            VerificationModel(outgoing = false, scope).also { model ->
                 model.start {
                     try {
                         request.accept()

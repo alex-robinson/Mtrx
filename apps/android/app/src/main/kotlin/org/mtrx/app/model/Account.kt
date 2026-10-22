@@ -9,8 +9,6 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.filter
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -18,11 +16,11 @@ import uniffi.mtrx.ConnectionListener
 import uniffi.mtrx.ConnectionState
 import uniffi.mtrx.DeviceInfo
 import uniffi.mtrx.EncryptionState
+import uniffi.mtrx.EncryptionStateListener
 import uniffi.mtrx.MtrxException
 import uniffi.mtrx.MtrxInterface
 import uniffi.mtrx.OAuthLogin
 import uniffi.mtrx.RecoveryListener
-import uniffi.mtrx.RecoveryStatus
 import uniffi.mtrx.RecoveryStep
 import uniffi.mtrx.RoomListListener
 import uniffi.mtrx.RoomListState
@@ -87,7 +85,10 @@ class Account(
     private val _browserLogin = MutableStateFlow<BrowserLogin>(BrowserLogin.Idle)
     val browserLogin: StateFlow<BrowserLogin> = _browserLogin.asStateFlow()
 
-    /** Whether this device can read encrypted messages; null until asked. */
+    /**
+     * Whether this device can read encrypted messages, and whether keys are
+     * arriving: as the library reports it once sync started; null before.
+     */
     private val _encryption = MutableStateFlow<EncryptionState?>(null)
     val encryption: StateFlow<EncryptionState?> = _encryption.asStateFlow()
 
@@ -114,11 +115,11 @@ class Account(
     private val lock = Mutex()
     private var session: Session? = null
     private var subscriptions: List<TaskHandle> = emptyList()
+    private var encryptionSubscription: TaskHandle? = null
     private var foreground = false
     private var syncing = false
 
     // On the main thread.
-    private var encryptionWatch: Job? = null
     private var recoveryJob: Job? = null
 
     private val pendingLogin = AtomicReference<OAuthLogin?>(null)
@@ -235,7 +236,7 @@ class Account(
 
     /**
      * Unlock encryption with the recovery key; [recovery] follows its steps.
-     * Ignored while one runs.
+     * Ignored while one runs. [encryption] follows as the library reports it.
      */
     fun recover(recoveryKey: String) {
         val current = session ?: return
@@ -254,7 +255,6 @@ class Account(
                 return@launch
             }
             _recovery.value = Recovery.Done
-            askEncryption(current)
         }
     }
 
@@ -266,17 +266,16 @@ class Account(
     /** Ask our other devices to verify this one; then [verification] has it. */
     fun verifyWithAnotherDevice() {
         val current = session ?: return
-        replaceVerification(VerificationModel.request(scope, onDone = { refreshEncryption(current) }) {
+        replaceVerification(VerificationModel.request(scope) {
             current.requestSelfVerification()
         })
     }
 
     /** Accept [verificationRequest]; then [verification] has it. */
     fun acceptVerificationRequest() {
-        val current = session ?: return
         val request = _verificationRequest.value ?: return
         _verificationRequest.value = null
-        replaceVerification(VerificationModel.accept(scope, onDone = { refreshEncryption(current) }, request))
+        replaceVerification(VerificationModel.accept(scope, request))
     }
 
     fun declineVerificationRequest() {
@@ -320,34 +319,14 @@ class Account(
         }
     }
 
-    // Asked when sync starts: once the room list is loaded (at once if it
-    // already is, coming back to the foreground), and again with its updates
-    // while recovery is not known yet (before the first sync's response).
-    private fun watchEncryption(current: Session) {
-        encryptionWatch?.cancel()
-        encryptionWatch = scope.launch {
-            _rooms.filter { it.loaded }.first {
-                val status = askEncryption(current)?.recovery
-                status != null && status != RecoveryStatus.UNKNOWN
+    // Once sync has started (before it, the state is not known).
+    private fun followEncryption(current: Session): TaskHandle =
+        current.subscribeEncryptionState(object : EncryptionStateListener {
+            // On a library thread: the state now and after every change.
+            override fun onUpdate(state: EncryptionState) {
+                scope.launch { if (session === current) _encryption.value = state }
             }
-        }
-    }
-
-    private fun refreshEncryption(current: Session) {
-        scope.launch { askEncryption(current) }
-    }
-
-    /** The state, also in [encryption]; null on failure or after sign-out. */
-    private suspend fun askEncryption(current: Session): EncryptionState? {
-        val state = try {
-            current.encryptionState()
-        } catch (e: MtrxException) {
-            return null
-        }
-        if (session !== current) return null
-        _encryption.value = state
-        return state
-    }
+        })
 
     // Under the lock.
     private suspend fun open(signedIn: Session) {
@@ -386,7 +365,7 @@ class Account(
         if (current != null && foreground && !syncing) {
             current.startSync()
             syncing = true
-            watchEncryption(current)
+            if (encryptionSubscription == null) encryptionSubscription = followEncryption(current)
         } else if ((current == null || !foreground) && syncing) {
             stopSync()
         }
@@ -395,8 +374,6 @@ class Account(
     // Under the lock.
     private suspend fun stopSync() {
         if (syncing) {
-            encryptionWatch?.cancel()
-            encryptionWatch = null
             session?.stopSync()
             syncing = false
         }
@@ -405,11 +382,12 @@ class Account(
     // Under the lock, after logout or forget.
     private suspend fun close() {
         _state.value = AccountState.SignedOut()
-        subscriptions.forEach {
+        (subscriptions + listOfNotNull(encryptionSubscription)).forEach {
             it.cancel()
             it.close()
         }
         subscriptions = emptyList()
+        encryptionSubscription = null
         recoveryJob?.cancel()
         recoveryJob = null
         _recovery.value = Recovery.Idle

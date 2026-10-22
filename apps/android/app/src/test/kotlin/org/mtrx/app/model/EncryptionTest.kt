@@ -2,6 +2,7 @@ package org.mtrx.app.model
 
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
@@ -18,14 +19,11 @@ import uniffi.mtrx.EncryptionState
 import uniffi.mtrx.MtrxException
 import uniffi.mtrx.RecoveryStatus
 import uniffi.mtrx.RecoveryStep
-import uniffi.mtrx.RoomListState
 import uniffi.mtrx.VerificationState
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class EncryptionTest {
     private fun state(verified: Boolean, recovery: RecoveryStatus) = EncryptionState(verified, recovery)
-
-    private fun loaded(value: Boolean) = RoomListState(rooms = emptyList(), loaded = value)
 
     @Test
     fun bannerWhileNotVerifiedOrRecoveryNotUnlocked() {
@@ -38,50 +36,41 @@ class EncryptionTest {
         assertTrue(showsEncryptionBanner(state(true, RecoveryStatus.INCOMPLETE)))
     }
 
+    private fun TestScope.signedIn(session: FakeSession): Account =
+        Account(FakeMtrx(restored = session), CoroutineScope(UnconfinedTestDispatcher(testScheduler)), FakeSpaceStore(), FakeSortStore())
+            .also { it.start() }
+
     @Test
-    fun askedOnceTheRoomListLoadsAndBackInTheForeground() = runTest {
+    fun followsTheLibraryOnceSyncStarts() = runTest {
         val session = FakeSession()
-        val account = Account(FakeMtrx(restored = session), CoroutineScope(UnconfinedTestDispatcher(testScheduler)), FakeSpaceStore(), FakeSortStore())
-        account.start()
-        account.setForeground(true)
-        assertEquals(0, session.encryptionAsks)
+        val account = signedIn(session)
+        // Not known before sync.
+        assertEquals(0, session.encryptionSubscriptions)
         assertNull(account.encryption.value)
 
-        session.roomListListener!!.onUpdate(loaded(true))
-        assertEquals(1, session.encryptionAsks)
+        account.setForeground(true)
+        assertEquals(1, session.encryptionSubscriptions)
         assertEquals(session.encryption, account.encryption.value)
         assertTrue(showsEncryptionBanner(account.encryption.value))
 
-        // Known: later updates do not ask; coming back to the foreground does.
-        session.roomListListener!!.onUpdate(loaded(false))
-        session.roomListListener!!.onUpdate(loaded(true))
-        assertEquals(1, session.encryptionAsks)
+        session.pushEncryption(state(false, RecoveryStatus.UNKNOWN))
+        assertFalse(showsEncryptionBanner(account.encryption.value))
+        session.pushEncryption(state(true, RecoveryStatus.INCOMPLETE))
+        assertTrue(showsEncryptionBanner(account.encryption.value))
+
+        // One subscription for the session, across background and foreground.
         account.setForeground(false)
         account.setForeground(true)
-        assertEquals(2, session.encryptionAsks)
+        assertEquals(1, session.encryptionSubscriptions)
+        assertFalse(session.encryptionSubscription!!.cancelled)
+        assertEquals(0, session.encryptionAsks)
     }
 
     @Test
-    fun unknownRecoveryIsAskedAgainWithTheRoomList() = runTest {
-        val session = FakeSession().apply { encryption = EncryptionState(false, RecoveryStatus.UNKNOWN) }
-        val account = Account(FakeMtrx(restored = session), CoroutineScope(UnconfinedTestDispatcher(testScheduler)), FakeSpaceStore(), FakeSortStore())
-        account.start()
-        account.setForeground(true)
-        session.roomListListener!!.onUpdate(loaded(true))
-        assertFalse(showsEncryptionBanner(account.encryption.value))
-
-        session.encryption = EncryptionState(true, RecoveryStatus.INCOMPLETE)
-        session.roomListListener!!.onUpdate(loaded(false))
-        session.roomListListener!!.onUpdate(loaded(true))
-        assertEquals(2, session.encryptionAsks)
-        assertTrue(showsEncryptionBanner(account.encryption.value))
-    }
-
-    @Test
-    fun recoveryReportsItsStepsInOrderThenAsksAgain() = runTest {
+    fun recoveryReportsItsStepsInOrderAndTheBannerGoesWithThePushedState() = runTest {
         val session = FakeSession()
-        val account = Account(FakeMtrx(restored = session), CoroutineScope(UnconfinedTestDispatcher(testScheduler)), FakeSpaceStore(), FakeSortStore())
-        account.start()
+        val account = signedIn(session)
+        account.setForeground(true)
         val steps = listOf(
             RecoveryStep.CheckingKey,
             RecoveryStep.ImportingIdentity,
@@ -91,14 +80,20 @@ class EncryptionTest {
         val seen = mutableListOf<Recovery>()
         session.recoverySteps = steps
         session.onRecoveryStep = { seen += account.recovery.value }
-        session.encryption = EncryptionState(true, RecoveryStatus.ENABLED)
 
         account.recover("EsTc 1234")
         assertEquals(listOf("EsTc 1234"), session.recoveryKeys)
         assertEquals(steps.map { Recovery.Running(it) }, seen)
         assertEquals(Recovery.Done, account.recovery.value)
-        assertEquals(1, session.encryptionAsks)
+        // The state is the library's to report, not asked for.
+        assertTrue(showsEncryptionBanner(account.encryption.value))
+
+        session.pushEncryption(EncryptionState(true, RecoveryStatus.ENABLED, keysArriving = true))
         assertFalse(showsEncryptionBanner(account.encryption.value))
+        assertTrue(account.encryption.value!!.keysArriving)
+        session.pushEncryption(EncryptionState(true, RecoveryStatus.ENABLED, keysArriving = false))
+        assertFalse(account.encryption.value!!.keysArriving)
+        assertEquals(0, session.encryptionAsks)
 
         account.resetRecovery()
         assertEquals(Recovery.Idle, account.recovery.value)
@@ -172,16 +167,19 @@ class EncryptionTest {
     }
 
     @Test
-    fun verifiedDeviceAsksAgainAndSignOutClosesTheVerification() = runTest {
+    fun verifiedDeviceLosesTheBannerAndSignOutClosesTheVerificationAndSubscription() = runTest {
         val session = FakeSession()
-        val account = Account(FakeMtrx(restored = session), CoroutineScope(UnconfinedTestDispatcher(testScheduler)), FakeSpaceStore(), FakeSortStore())
-        account.start()
+        val account = signedIn(session)
+        account.setForeground(true)
         account.verifyWithAnotherDevice()
         val model = account.verification.value!!
         assertTrue(model.outgoing)
         val first = session.selfVerification
         first.update(VerificationState.Done)
-        assertEquals(1, session.encryptionAsks)
+        assertTrue(showsEncryptionBanner(account.encryption.value))
+        session.pushEncryption(EncryptionState(true, RecoveryStatus.ENABLED, keysArriving = true))
+        assertFalse(showsEncryptionBanner(account.encryption.value))
+        assertEquals(0, session.encryptionAsks)
 
         // A new one, still waiting at sign-out: cancelled and closed.
         val second = FakeVerification(FakeSession.USER_ID)
@@ -195,5 +193,11 @@ class EncryptionTest {
         assertNull(account.encryption.value)
         assertTrue(second.cancelled)
         assertTrue(second.uniffiIsDestroyed)
+        val subscription = session.encryptionSubscription!!
+        assertTrue(subscription.cancelled)
+        assertTrue(subscription.uniffiIsDestroyed)
+        // A state on its way at sign-out is dropped.
+        session.pushEncryption(EncryptionState(true, RecoveryStatus.ENABLED))
+        assertNull(account.encryption.value)
     }
 }
