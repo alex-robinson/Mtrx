@@ -164,7 +164,9 @@ recovery key screen with its steps, emoji verification in both directions
 comes while another is unanswered replaces it, one during a verification
 is cancelled), "The recovery key is not valid." under the field, and
 "Could not decrypt this message." rows. Stage 2 (section 7): the Chats
-and Rooms tabs.
+and Rooms tabs. Stage 3 (section 8): reactions, replies, edits,
+deleting, retrying and discarding a refused send, read receipts and
+typing.
 
 ```
 apps/ios/
@@ -178,10 +180,13 @@ apps/ios/
                       SignInModel, SessionModel (room lists, selected space,
                       connection, sync, encryption state, verification
                       requests), RecoveryModel, VerificationModel,
-                      TimelineModel, ImageCache, TimelineRows, RoomLists
+                      TimelineModel (also composing, actions, typing,
+                      going to a quote), ImageCache, TimelineRows (rows,
+                      menu entries), RoomLists, Emoji
     Views/            sign-in, home (Chats and Rooms tabs, encryption
-                      banner), room (timeline, composer), settings,
-                      recovery key, verification
+                      banner), room (timeline, typing line, composer),
+                      message sheets (who reacted or read, all emoji,
+                      select text), settings, recovery key, verification
     Assets.xcassets   icon (logo.svg, full-bleed), logo, accent colour
   MtrxTests/          models with fakes of the FFI classes
 ```
@@ -204,10 +209,51 @@ apps/ios/
   into one line (as the desktop writes them); messages grouped by sender.
   Bottom-anchored (`defaultScrollAnchor`) on iOS 17+, a flipped scroll view
   on iOS 16. Older messages load while the top is on screen; read when shown.
+  Others' messages outside direct chats have the sender's name above the
+  first of a group and their avatar (32 pt) beside its bubble, with the
+  avatars' column kept for the rest of the group; direct chats show
+  neither, as before.
+- Messages (section 8): holding a bubble opens a context menu (the
+  bubble is its preview) with what `MessageRow.actions` allows: on iOS
+  17 the six common emoji as a palette (ours selected), then "More
+  Reactions" (a palette fits six, so no "+" in it); on iOS 16 a "React"
+  submenu with both. Then Reply, Copy, Select Text (a sheet with a
+  `UITextView`), Edit (`editable`), Delete (own, sent; confirmed), Retry
+  and Discard (failed). React and Reply once `eventId != nil`. The full
+  picker is a searchable grid of the emoji the system's Unicode data
+  marks as emoji by default, one character each, searched by Unicode
+  name (no skin tones, flags or sequences). Bubbles no longer have
+  `textSelection` (its long press would take the menu's).
+- Reactions: chips under the bubble, wrapping (`FlowLayout`); ours in
+  the accent colour; tap toggles, hold lists who reacted. Quotes: a bar,
+  the sender and three lines inside the bubble (above an image, in a
+  bubble of its own); a file's kind and name as "Image: cat.png"; tapping
+  a loaded one scrolls to the original and marks it for 2 s, after
+  `paginateBack(50)` as needed (the model checks each new item list; at
+  the start it waits for the items with the start before saying it is
+  not found). Read receipts: 16 pt avatars at the row's right, three
+  then "+N"; tap lists them. "(edited)" follows the text.
+- Composer: a bar "Replying to <name>" with the first line, or "Editing"
+  (the field holds `rawBody`; the draft from before comes back after);
+  ✕ cancels; a send that fails restores both. `setTyping` on every
+  change of the draft (calls chained so they arrive in order), `false`
+  when the room disappears. The typing line sits above the composer
+  (always one line high); three people are "Anna, Ben and Cleo are
+  typing…", more "Anna, Ben and N others…". `subscribeTyping` runs
+  while the room is on screen.
+- Actions (`react`, `delete`, `retry`, `discard`) run in tasks the model
+  creates; sending, replying and editing in `send()`. Back-paginations
+  are chained, so loading older messages and looking for a quote do not
+  overlap.
 - Images: avatars and `mediaPreview`s decoded off the main thread, kept in
   an `NSCache` (the library caches the downloads).
 - Tests: fakes subclass the generated classes (`init(noHandle:)`), so the
-  models need no protocol layer.
+  models need no protocol layer. Stage 3: rows carrying reactions, quote,
+  edited and readers; menu entries for own, others', unsent, failed,
+  deleted and undecryptable messages; "+N"; quote texts; emoji search;
+  replying, editing, cancelling and a failed reply; typing calls, names
+  and lines; the actions; going to a quote (shown, after paginating, at
+  the room's start, after 20 calls).
 
 Locally: run `scripts/build-ios-ffi.sh` once (or unzip CI's `MtrxFFI-ios`
 into `apps/ios`), open `apps/ios/Mtrx.xcodeproj`, run on a simulator; for a
@@ -235,7 +281,8 @@ booted Mtrx.app`). Passes; the screenshot shows the sign-in screen.
 
 To do: signing in, the room list, the timeline, recovery and verification
 tried against a server (only the models' unit tests and the sign-in screen
-are checked so far; the CI start does not check which screen shows);
+are checked so far; the CI start does not check which screen shows; the
+stage 3 room was seen in the simulator with made-up items only);
 opening images full size and
 files (`mediaFile`); answering invites; reconnecting when the network
 returns (`reconnect`); a build for devices (signing).
