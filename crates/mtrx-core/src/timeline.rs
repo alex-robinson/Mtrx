@@ -42,7 +42,7 @@ use tokio_stream::wrappers::{BroadcastStream, WatchStream};
 use tracing::warn;
 
 use crate::{
-    Error, Result, Session,
+    Error, Result, Session, calls,
     media::{self, MediaRef},
     system_time,
 };
@@ -175,6 +175,7 @@ impl Event {
             self.content,
             EventContent::Membership { .. }
                 | EventContent::DisplayNameChange { .. }
+                | EventContent::CallLink { .. }
                 | EventContent::OtherState { .. }
         )
     }
@@ -235,6 +236,10 @@ pub enum EventContent {
     DisplayNameChange {
         user: OwnedUserId,
         new_name: Option<String>,
+    },
+    /// The room's call link was set, or removed (`None`).
+    CallLink {
+        url: Option<String>,
     },
     /// A state event we do not render in detail, e.g. `m.room.topic`.
     OtherState {
@@ -1011,9 +1016,15 @@ impl Converter {
                 user: change.user_id().to_owned(),
                 new_name: change.displayname_change()?.new.clone(),
             },
-            TimelineItemContent::OtherState(state) => EventContent::OtherState {
-                event_type: state.content().event_type().to_string(),
-            },
+            TimelineItemContent::OtherState(state) => {
+                let event_type = state.content().event_type();
+                match calls::call_link_change(&event_type, event.original_json()) {
+                    Some(url) => EventContent::CallLink { url },
+                    None => EventContent::OtherState {
+                        event_type: event_type.to_string(),
+                    },
+                }
+            }
             _ => return None,
         };
 

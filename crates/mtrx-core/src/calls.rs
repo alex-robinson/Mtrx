@@ -10,8 +10,10 @@ use matrix_sdk::{
         RoomId,
         api::{client::state::get_state_event_for_key, error::ErrorKind},
         events::{
-            EmptyStateKey, StateEventType, StaticEventContent, SyncStateEvent, macros::EventContent,
+            AnySyncTimelineEvent, EmptyStateKey, StateEventType, StaticEventContent,
+            SyncStateEvent, macros::EventContent,
         },
+        serde::Raw,
     },
 };
 use rand::distr::{Alphanumeric, SampleString};
@@ -178,6 +180,19 @@ struct CallLinkEventContent {
     url: Option<String>,
 }
 
+/// The call link a timeline's state event of `event_type` sets: `None` if it
+/// is not a call link event, `Some(None)` if it removes the link.
+pub(crate) fn call_link_change(
+    event_type: &StateEventType,
+    raw: Option<&Raw<AnySyncTimelineEvent>>,
+) -> Option<Option<String>> {
+    if *event_type != StateEventType::from(CallLinkEventContent::TYPE) {
+        return None;
+    }
+    let content = raw.and_then(|raw| raw.get_field::<CallLinkEventContent>("content").ok()?);
+    Some(content.and_then(|c| c.url))
+}
+
 /// The call service of a space, used by the rooms in it.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, EventContent)]
 #[ruma_event(type = "org.mtrx.call_service", kind = State, state_key_type = EmptyStateKey)]
@@ -315,6 +330,28 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reads_call_link_changes_from_the_timeline() {
+        let call_link = StateEventType::from("org.mtrx.call_link");
+        let event = |content: &str| {
+            Raw::<AnySyncTimelineEvent>::from_json_string(format!(
+                r#"{{"type": "org.mtrx.call_link", "state_key": "", "event_id": "$a",
+                    "sender": "@alice:x", "origin_server_ts": 1, "content": {content}}}"#
+            ))
+            .unwrap()
+        };
+        let set = event(r#"{"url": "https://meet.jit.si/ice"}"#);
+        assert_eq!(
+            call_link_change(&call_link, Some(&set)),
+            Some(Some("https://meet.jit.si/ice".into()))
+        );
+        assert_eq!(call_link_change(&call_link, Some(&event("{}"))), Some(None));
+        assert_eq!(
+            call_link_change(&StateEventType::RoomTopic, Some(&set)),
+            None
+        );
+    }
 
     #[test]
     fn recognizes_meeting_links() {

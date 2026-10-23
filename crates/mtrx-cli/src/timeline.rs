@@ -67,6 +67,10 @@ pub fn event_line(event: &Event) -> String {
             Some(new) => format!("{user} is now {new}"),
             None => format!("{user} removed their display name"),
         },
+        EventContent::CallLink { url: Some(url) } => {
+            format!("{who} changed the call link to {url}")
+        }
+        EventContent::CallLink { url: None } => format!("{who} removed the call link"),
         EventContent::OtherState { event_type } => format!("{who} changed {event_type}"),
         EventContent::Other { description } => format!("{who}: [{description}]"),
     };
