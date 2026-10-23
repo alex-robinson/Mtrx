@@ -374,7 +374,10 @@ fn recovery_key_decrypts_history_on_a_new_device() {
         }
     );
     let key = block_on(first.session.enable_recovery()).unwrap();
-    assert_eq!(first.session.recovery_status(), RecoveryStatus::Enabled);
+    assert_eq!(
+        block_on(first.session.recovery_status()),
+        RecoveryStatus::Enabled
+    );
 
     // A new device cannot read it, and says why.
     let second = sign_in(&name);

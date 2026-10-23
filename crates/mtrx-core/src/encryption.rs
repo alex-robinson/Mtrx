@@ -8,7 +8,7 @@ use matrix_sdk::{
     Client,
     encryption::{
         CrossSigningResetAuthType,
-        recovery::{RecoveryError, RecoveryState},
+        recovery::RecoveryError,
         secret_storage::SecretStorageError,
         verification::{
             SasState, SasVerification, Verification as SdkVerification, VerificationRequest,
@@ -32,7 +32,7 @@ use crate::{Error, OwnedDeviceId, OwnedRoomId, OwnedUserId, Result, Session};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RecoveryStatus {
-    /// Not determined yet (no sync so far).
+    /// Not known: the server could not be asked.
     Unknown,
     /// Recovery is set up and this device has all secrets.
     Enabled,
@@ -311,13 +311,52 @@ pub(crate) fn register_handlers(client: &Client) -> broadcast::Sender<Verificati
 }
 
 impl Session {
-    pub fn recovery_status(&self) -> RecoveryStatus {
-        match self.client.encryption().recovery().state() {
-            RecoveryState::Unknown => RecoveryStatus::Unknown,
-            RecoveryState::Enabled => RecoveryStatus::Enabled,
-            RecoveryState::Disabled => RecoveryStatus::Disabled,
-            RecoveryState::Incomplete => RecoveryStatus::Incomplete,
+    /// The account's recovery, checked now as the SDK checks it: whether it
+    /// is set up, and whether this device holds the secrets it keeps (the
+    /// cross-signing keys, and the key backup's unless the backup was turned
+    /// off). Not the SDK's record of it, which its checks running at once
+    /// can leave stale: one begun before [`Session::recover`] enabled the
+    /// backup (on a keys query, as recovery signs this device) can write
+    /// last.
+    pub async fn recovery_status(&self) -> RecoveryStatus {
+        match self.check_recovery().await {
+            Ok(status) => status,
+            Err(e) => {
+                warn!("checking recovery failed: {e}");
+                RecoveryStatus::Unknown
+            }
         }
+    }
+
+    async fn check_recovery(&self) -> Result<RecoveryStatus> {
+        let encryption = self.client.encryption();
+        if !encryption.secret_storage().is_enabled().await? {
+            return Ok(RecoveryStatus::Disabled);
+        }
+        let cross_signing = encryption
+            .cross_signing_status()
+            .await
+            .is_some_and(|status| status.is_complete());
+        let backup = encryption.backups().are_enabled().await || self.backup_turned_off().await?;
+        Ok(if cross_signing && backup {
+            RecoveryStatus::Enabled
+        } else {
+            RecoveryStatus::Incomplete
+        })
+    }
+
+    /// Whether the key backup was turned off for the account: MSC4287's
+    /// `m.key_backup`, else its unstable form.
+    async fn backup_turned_off(&self) -> Result<bool> {
+        let account = self.client.account();
+        if let Some(content) = account.fetch_account_data("m.key_backup".into()).await? {
+            return Ok(content.get_field::<bool>("enabled").ok().flatten() == Some(false));
+        }
+        Ok(account
+            .fetch_account_data("m.org.matrix.custom.backup_disabled".into())
+            .await?
+            .and_then(|content| content.get_field::<bool>("disabled").ok().flatten())
+            .unwrap_or(false))
     }
 
     /// Set up recovery: back up room keys and store our secrets on the server,

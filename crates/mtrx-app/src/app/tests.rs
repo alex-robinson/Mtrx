@@ -310,14 +310,17 @@ async fn send_reply(
     .unwrap()
 }
 
-/// The key of the message with `body`, once the timeline has it.
+/// The key of the message with `body`, once the timeline shows it sent: a
+/// message [`send`] waited for can still show as being sent, and an edit
+/// then goes to the send queue, which sent it already.
 async fn key_of(timeline: &RoomTimeline, body: &str) -> mtrx_core::EventKey {
     tokio::time::timeout(TIMEOUT, async {
         let mut updates = std::pin::pin!(timeline.updates());
         while let Some(entries) = updates.next().await {
             let found = entries.iter().find_map(|e| match e {
                 TimelineEntry::Event(ev)
-                    if matches!(&ev.content, EventContent::Message(m) if m.body == body) =>
+                    if ev.send_state == SendState::Sent
+                        && matches!(&ev.content, EventContent::Message(m) if m.body == body) =>
                 {
                     Some(ev.key.clone())
                 }
@@ -1627,33 +1630,50 @@ async fn media_messages() {
         .await
         .unwrap();
     while !timeline.paginate_back(50).await.unwrap() {}
-    // The files as the server has them: once uploaded, those of the local
-    // echoes (sent or not) are no longer in the store.
+    // Each file as the server has it, and no local echo pointing into the
+    // send queue's store: once uploaded, those files are no longer there, and
+    // such an echo can still show beside the server's copy.
+    let mut seen = Vec::new();
     let entries = tokio::time::timeout(TIMEOUT, async {
         let mut updates = std::pin::pin!(timeline.updates());
         while let Some(entries) = updates.next().await {
-            let sent = entries
+            let files: Vec<_> = entries
                 .iter()
-                .filter(|e| match e {
-                    TimelineEntry::Event(ev) => {
-                        ev.send_state == SendState::Sent
-                            && matches!(&ev.content, EventContent::Message(m)
-                            if m.media.as_ref().is_some_and(|media| {
-                                media.source.uri().server_name().map(|s| s.as_str())
-                                    != Ok("send-queue.localhost")
-                            }))
-                    }
-                    _ => false,
+                .filter_map(|e| match e {
+                    TimelineEntry::Event(ev) => match &ev.content {
+                        EventContent::Message(m) => m.media.as_ref().map(|media| (ev, media)),
+                        _ => None,
+                    },
+                    _ => None,
                 })
-                .count();
-            if sent == 2 {
+                .collect();
+            let on_server = files.iter().all(|(ev, media)| {
+                ev.send_state == SendState::Sent
+                    && media.source.uri().server_name().map(|s| s.as_str())
+                        != Ok("send-queue.localhost")
+            });
+            let shown = |name: &str| files.iter().any(|(_, media)| media.filename == name);
+            if on_server && shown("melt-rate-map.png") && shown("ice-flux-draft.pdf") {
                 return entries;
             }
+            seen = files
+                .iter()
+                .map(|(ev, media)| {
+                    format!(
+                        "{} ({}, {:?}, {:?}, {})",
+                        media.filename,
+                        ev.id,
+                        ev.send_state,
+                        ev.event_id,
+                        media.source.uri()
+                    )
+                })
+                .collect();
         }
         unreachable!()
     })
     .await
-    .unwrap();
+    .unwrap_or_else(|_| panic!("the files did not show as the server has them: {seen:#?}"));
     let file = |extension: &str| {
         entries
             .iter()

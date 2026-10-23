@@ -24,7 +24,7 @@ pub struct EncryptionState {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
 pub enum RecoveryStatus {
-    /// Not known yet (before the first sync).
+    /// Not known: the server could not be asked.
     Unknown,
     /// Recovery is set up and this device has all its secrets.
     Enabled,
@@ -248,14 +248,15 @@ impl Session {
         run(async move {
             Ok(EncryptionState {
                 device_verified: session.is_device_verified().await?,
-                recovery: session.recovery_status().into(),
+                recovery: session.recovery_status().await.into(),
             })
         })
         .await
     }
 
-    pub fn recovery_status(&self) -> RecoveryStatus {
-        self.core().recovery_status().into()
+    pub async fn recovery_status(&self) -> RecoveryStatus {
+        let session = self.core();
+        run(async move { session.recovery_status().await.into() }).await
     }
 
     /// Unlock encryption with the recovery key (as the user typed it; spaces
