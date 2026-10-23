@@ -10,10 +10,10 @@ without recovery or verification, which stage 1 (section 6) adds; the
 library side of it is done. Stage 2 (section 7) organises the room list by
 space, and stage 3 (section 8) adds reactions, replies, edits, deleting,
 read receipts and typing; their library sides are done too. Stage 4
-(section 9) polishes what the phone test of stages 1 to 3 found; its
-library side is done. Push notifications on Android (section 10) and
-presence (section 11) have their library side done too. This is the plan,
-and the contract the apps are built on.
+(section 9), which polishes what the phone test of stages 1 to 3 found,
+push notifications on Android through UnifiedPush and ntfy (section 10),
+and presence (section 11, also on the desktop) are now in the apps. This
+is the plan, and the contract the apps are built on.
 
 ## Decisions
 
