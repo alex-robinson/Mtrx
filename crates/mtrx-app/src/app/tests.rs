@@ -2193,7 +2193,8 @@ async fn website_screenshots() {
     snapshot(&app, "site-copy");
 }
 
-/// Scrolling a long draft scrolls the composer, not the timeline (#32).
+/// Scrolling a long draft scrolls the composer, not the timeline: its
+/// height stays, with empty lines at the edges too (#32).
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "needs local Synapse (testserver/run.sh)"]
 async fn composer_scrolls_alone() {
@@ -2219,8 +2220,15 @@ async fn composer_scrolls_alone() {
     let mut open = Room::new(room.clone(), timeline.clone());
     open.entries = timeline.current();
     with_start(&mut open.entries);
-    let draft: Vec<String> = (0..40)
-        .map(|i| format!("Line {i} of a long draft"))
+    // Short lines, then empty ones, as typed.
+    let draft: Vec<String> = (0..18)
+        .map(|i| {
+            if i < 9 {
+                format!("Line {i}")
+            } else {
+                String::new()
+            }
+        })
         .collect();
     open.composer = typed(&draft.join("\n"));
     main.room = Some(open);
@@ -2245,10 +2253,19 @@ async fn composer_scrolls_alone() {
         };
         let mut ui = UserInterface::build(app.view(), size, cache, &mut renderer);
         let mut messages = Vec::new();
-        let events = [
-            iced::Event::Mouse(mouse::Event::CursorMoved { position: at }),
-            iced::Event::Mouse(mouse::Event::WheelScrolled { delta }),
-        ];
+        let mut events = vec![iced::Event::Mouse(mouse::Event::CursorMoved {
+            position: at,
+        })];
+        // Typing in it: focused.
+        if round == 0 {
+            events.push(iced::Event::Mouse(mouse::Event::ButtonPressed(
+                mouse::Button::Left,
+            )));
+            events.push(iced::Event::Mouse(mouse::Event::ButtonReleased(
+                mouse::Button::Left,
+            )));
+        }
+        events.push(iced::Event::Mouse(mouse::Event::WheelScrolled { delta }));
         let (_, statuses) = ui.update(
             &events,
             mouse::Cursor::Available(at),
@@ -2259,7 +2276,7 @@ async fn composer_scrolls_alone() {
         let mut timeline = TimelineView(None);
         ui.operate(&renderer, &mut timeline);
         cache = ui.into_cache();
-        assert_eq!(statuses[1], iced::event::Status::Captured);
+        assert_eq!(*statuses.last().unwrap(), iced::event::Status::Captured);
         assert_eq!(
             *before.get_or_insert(timeline.0),
             timeline.0,
