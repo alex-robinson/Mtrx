@@ -3,6 +3,8 @@
 //! - `render SVG PNG SIZE`: render an SVG to a square PNG.
 //! - `icons`: make the iOS and Android icons and the website's logo from the
 //!   logo (see [`icons`]); run it after changing the logo.
+//! - `version X.Y.Z`: set the version of the workspace and the iOS and
+//!   Android apps (see [`version`]).
 //! - `bundle`: build the app and wrap it as `target/bundle/Mtrx.app` (macOS),
 //!   an AppImage and a `.deb` (Linux, see [`linux`]), or a portable zip and
 //!   an installer (Windows, see `windows.rs`).
@@ -10,6 +12,7 @@
 mod icons;
 #[cfg(target_os = "linux")]
 mod linux;
+mod version;
 
 use std::{
     path::{Path, PathBuf},
@@ -41,6 +44,7 @@ fn main() -> Result<()> {
     {
         ["render", svg, png, size] => render(Path::new(svg), Path::new(png), size.parse()?),
         ["icons"] => icons::icons(&root),
+        ["version", version] => version::version(&root, version),
         #[cfg(target_os = "linux")]
         ["bundle"] => linux::bundle(&root),
         #[cfg(windows)]
@@ -48,7 +52,10 @@ fn main() -> Result<()> {
         #[cfg(not(any(target_os = "linux", windows)))]
         ["bundle"] => bundle(&root),
         _ => {
-            bail!("usage: cargo xtask render SVG PNG SIZE | cargo xtask icons | cargo xtask bundle")
+            bail!(
+                "usage: cargo xtask render SVG PNG SIZE | cargo xtask icons \
+                 | cargo xtask version X.Y.Z | cargo xtask bundle"
+            )
         }
     }
 }
