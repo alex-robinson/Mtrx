@@ -14,7 +14,7 @@ Native Rust Matrix client for macOS, Windows and Linux, built on
   model, math typesetting with Typst.
 - `crates/mtrx-cli`: the `mtrx` command-line client on top of core.
 - `crates/mtrx-app`: the desktop app (iced).
-- `crates/xtask`: build tasks (`cargo xtask bundle`).
+- `crates/xtask`: build tasks (`cargo xtask bundle`, `icons`, `version`).
 - `testserver/`: local Synapse for development and tests.
 
 ## Desktop app
@@ -102,6 +102,19 @@ testserver/add_user.sh alice alicepw
 cargo test -p mtrx-core --test integration -- --ignored
 cargo test -p mtrx-app -- --ignored   # UI snapshots in target/ui-snapshots/
 ```
+
+## Releasing
+
+```sh
+cargo xtask version 0.1.5          # Cargo.toml, Cargo.lock, iOS and Android apps
+git commit -am "Version 0.1.5" && git push
+git tag -a v0.1.5 -m "Mtrx 0.1.5" && git push origin v0.1.5
+```
+
+A test fails if the apps' versions differ from `Cargo.toml`. The tag runs
+`.github/workflows/release.yml`, which builds the macOS, Linux and Windows
+packages and attaches them to a draft release, to be published by hand; the
+website links to the latest published release's.
 
 ## License
 
