@@ -32,7 +32,8 @@ once the timeline itself became selectable.
 ⌘A selects the messages on screen (partly shown ones too), so it never
 loads or copies the whole history. Drag across words, lines and messages. Double-click selects a word (or a
 formula), triple-click a paragraph, and Shift-click extends, as do
-Shift+← and Shift+→ (with ⌥ by word), across messages. ⌘C copies,
+Shift+← and Shift+→ (with ⌥ by word) and Shift+↑ and Shift+↓ (by line,
+as laid out; by paragraph in typeset messages), across messages. ⌘C copies,
 and Esc or a click beside the text clears. Dragging past the top or bottom
 of the timeline scrolls it, and scrolling while dragging extends the
 selection to the text under the cursor. A message editor without a

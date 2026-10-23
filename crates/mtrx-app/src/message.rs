@@ -33,6 +33,8 @@ struct Flags {
 pub struct Select<'a, M> {
     /// The part of this message that is selected.
     pub range: Option<(Pos, Pos)>,
+    /// Where in this message the selection ends, if it does.
+    pub focus: Option<Pos>,
     /// A selection is being dragged, so moving over the text extends it.
     pub dragging: bool,
     pub on_gesture: Rc<dyn Fn(Gesture) -> M + 'a>,
@@ -285,6 +287,7 @@ impl<'a, M: Clone + 'a> Walk<'_, 'a, M> {
         if let Some(select) = &self.select {
             unit = unit
                 .selected(select.range.and_then(|range| unit_range(range, index, len)))
+                .focus(select.focus.is_some_and(|focus| focus.unit == index))
                 .dragging(select.dragging)
                 .on_gesture(select.on_gesture.clone());
         }
@@ -462,6 +465,7 @@ mod tests {
             },
             Select {
                 range: None,
+                focus: None,
                 dragging,
                 on_gesture: Rc::new(|gesture| gesture),
             },
