@@ -81,11 +81,17 @@ fn sections<'a>(view: &RoomListView<'a>) -> Vec<(Section, Vec<&'a RoomSummary>)>
         .group(listed, &view.grouping)
 }
 
-/// Rooms and chats whose name contains `filter` (lower case), names starting
-/// with it first.
-fn search<'a>(rooms: &'a [RoomSummary], filter: &str) -> Vec<&'a RoomSummary> {
-    let mut found: Vec<_> = rooms
-        .iter()
+/// What the search finds in `space`, or everywhere at Home: rooms and chats
+/// whose name contains `filter` (lower case), names starting with it first.
+fn search<'a>(
+    rooms: &'a [RoomSummary],
+    space: Option<&OwnedRoomId>,
+    arrange: &Arrange,
+    filter: &str,
+) -> Vec<&'a RoomSummary> {
+    let mut found: Vec<_> = arrange
+        .listed(rooms, space)
+        .into_iter()
         .filter(|r| r.kind != RoomKind::Space)
         .filter_map(|r| {
             let name = r.name.to_lowercase();
@@ -97,8 +103,13 @@ fn search<'a>(rooms: &'a [RoomSummary], filter: &str) -> Vec<&'a RoomSummary> {
 }
 
 /// The room the search field's Enter opens.
-pub fn first_match<'a>(rooms: &'a [RoomSummary], filter: &str) -> Option<&'a RoomSummary> {
-    search(rooms, &filter.trim().to_lowercase())
+pub fn first_match<'a>(
+    rooms: &'a [RoomSummary],
+    space: Option<&OwnedRoomId>,
+    arrange: &Arrange,
+    filter: &str,
+) -> Option<&'a RoomSummary> {
+    search(rooms, space, arrange, &filter.trim().to_lowercase())
         .into_iter()
         .next()
 }
@@ -113,7 +124,7 @@ fn listed<'a>(view: &RoomListView<'a>) -> Vec<&'a RoomSummary> {
             .flat_map(|(_, entries)| entries)
             .collect()
     } else {
-        search(view.rooms, &filter)
+        search(view.rooms, view.selected_space, view.arrange, &filter)
     }
 }
 
@@ -309,13 +320,16 @@ pub fn room_list<'a>(view: RoomListView<'a>) -> Element<'a, Message> {
     }
     list = list.push(
         container(
-            text_input(&format!("Search rooms  ({})", shortcut("K")), filter)
-                .id(SEARCH)
-                .on_input(Message::RoomFilter)
-                .on_submit(Message::OpenFirstMatch)
-                .style(style::input)
-                .padding([5, 8])
-                .size(13),
+            text_input(
+                &format!("Search rooms and chats  ({})", shortcut("K")),
+                filter,
+            )
+            .id(SEARCH)
+            .on_input(Message::RoomFilter)
+            .on_submit(Message::OpenFirstMatch)
+            .style(style::input)
+            .padding([5, 8])
+            .size(13),
         )
         .padding([4, 0]),
     );
@@ -326,11 +340,14 @@ pub fn room_list<'a>(view: RoomListView<'a>) -> Element<'a, Message> {
         }
         list = list.extend(arranged(&view));
     } else {
-        let found = search(rooms, &filter);
+        let found = search(rooms, selected_space, view.arrange, &filter);
         if found.is_empty() {
-            list = list.push(
-                container(text("No rooms match.").size(12).style(text::secondary)).padding([8, 8]),
-            );
+            let none = if selected_space.is_some() {
+                "No rooms or chats in this space match."
+            } else {
+                "No rooms or chats match."
+            };
+            list = list.push(container(text(none).size(12).style(text::secondary)).padding([8, 8]));
         } else {
             list = list.push(
                 container(section_title("Results")).padding(Padding::new(8.0).top(14).bottom(4)),
@@ -1235,6 +1252,28 @@ mod tests {
             .loaded(space(), 0, HashSet::from([bob]));
         assert!(unread(&rooms, Some(&space()), &arrange));
         assert!(unread(&rooms, None, &arrange));
+    }
+
+    #[test]
+    fn search_finds_what_the_space_lists_and_everything_at_home() {
+        let rooms = rooms();
+        let arrange = Arrange::default();
+        let found = |space: Option<&OwnedRoomId>| -> Vec<&str> {
+            search(&rooms, space, &arrange, "")
+                .iter()
+                .map(|r| r.id.as_str())
+                .collect()
+        };
+        assert_eq!(found(Some(&space())), ["!inside:x"]);
+        assert_eq!(found(None), ["!bob:x", "!inside:x", "!loose:x"]);
+        assert_eq!(
+            first_match(&rooms, Some(&space()), &arrange, " LOO").map(|r| r.id.as_str()),
+            None
+        );
+        assert_eq!(
+            first_match(&rooms, None, &arrange, " LOO").map(|r| r.id.as_str()),
+            Some("!loose:x")
+        );
     }
 
     #[test]
