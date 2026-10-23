@@ -2,19 +2,41 @@ package org.mtrx.app
 
 import java.time.Instant
 import kotlinx.coroutines.CompletableDeferred
+import kotlin.coroutines.ContinuationInterceptor
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.test.TestDispatcher
+import org.mtrx.app.model.Account
+import org.mtrx.app.model.Distributors
+import org.mtrx.app.model.GatewayDiscovery
+import org.mtrx.app.model.PushRegistration
+import org.mtrx.app.model.PushStore
+import org.mtrx.app.model.PusherDevice
+import org.mtrx.app.model.RoomNotifications
+import org.mtrx.app.model.RoomSort
+import org.mtrx.app.model.RoomSortStore
 import org.mtrx.app.model.SelectedSpaceStore
+import org.mtrx.app.model.SharePresenceStore
 import org.mtrx.app.model.SpaceEntry
+import org.mtrx.app.model.originGateway
+import org.mtrx.app.push.MessageNotifier
 import uniffi.mtrx.ConnectionListener
 import uniffi.mtrx.ConnectionState
 import uniffi.mtrx.DeviceInfo
 import uniffi.mtrx.EncryptionState
+import uniffi.mtrx.EncryptionStateListener
 import uniffi.mtrx.EventContent
 import uniffi.mtrx.Message
 import uniffi.mtrx.MessageKind
 import uniffi.mtrx.MtrxException
 import uniffi.mtrx.MtrxInterface
 import uniffi.mtrx.NoHandle
+import uniffi.mtrx.NotificationContent
 import uniffi.mtrx.OAuthLogin
+import uniffi.mtrx.Presence
+import uniffi.mtrx.PresenceListener
+import uniffi.mtrx.PresenceState
+import uniffi.mtrx.PusherInfo
 import uniffi.mtrx.Reader
 import uniffi.mtrx.RecoveryListener
 import uniffi.mtrx.RecoveryStatus
@@ -33,6 +55,7 @@ import uniffi.mtrx.TimelineItem
 import uniffi.mtrx.TimelineItemContent
 import uniffi.mtrx.TimelineListener
 import uniffi.mtrx.TypingListener
+import uniffi.mtrx.UserProfile
 import uniffi.mtrx.Verification
 import uniffi.mtrx.VerificationListener
 import uniffi.mtrx.VerificationRequestListener
@@ -61,6 +84,22 @@ class FakeSession : Session(NoHandle) {
 
     var encryption = EncryptionState(deviceVerified = false, recovery = RecoveryStatus.INCOMPLETE)
     var encryptionAsks = 0
+    var encryptionListener: EncryptionStateListener? = null
+    var encryptionSubscription: FakeHandle? = null
+    var encryptionSubscriptions = 0
+
+    /** What [timeline] opens. */
+    var roomTimeline: Timeline = FakeTimeline()
+
+    /** [userProfile] gives [profile], or throws [profileError]; after [profileGate] if set. */
+    var profile: UserProfile? = null
+    var profileError: MtrxException? = null
+    var profileGate: CompletableDeferred<Unit>? = null
+
+    /** Invites made, as (room, user); [inviteError] fails them, after [inviteGate] if set. */
+    val invites = mutableListOf<Pair<String, String>>()
+    var inviteError: MtrxException? = null
+    var inviteGate: CompletableDeferred<Unit>? = null
 
     /** The steps [recover] reports, then [recoveryError] if set. */
     var recoverySteps: List<RecoveryStep> = emptyList()
@@ -73,16 +112,79 @@ class FakeSession : Session(NoHandle) {
     var selfVerification: FakeVerification = FakeVerification(USER_ID)
     var verificationRequests: VerificationRequestListener? = null
 
+    /** The account's pushers, by pushkey; [pusherError] fails setting one. */
+    val serverPushers = linkedMapOf<String, PusherInfo>()
+    var pusherError: MtrxException? = null
+    val pusherCalls = mutableListOf<String>()
+
+    override suspend fun setPusher(
+        gatewayUrl: String,
+        pushkey: String,
+        appId: String,
+        appName: String,
+        deviceName: String,
+        lang: String,
+    ) {
+        pusherCalls += "set $pushkey"
+        pusherError?.let { throw it }
+        serverPushers[pushkey] = PusherInfo(pushkey, appId, appName, deviceName, lang, gatewayUrl, eventIdOnly = true)
+    }
+
+    override suspend fun deletePusher(pushkey: String) {
+        pusherCalls += "delete $pushkey"
+        serverPushers.remove(pushkey)
+    }
+
+    override suspend fun pushers(): List<PusherInfo> = serverPushers.values.toList()
+
     override fun userId(): String = USER_ID
 
     override fun connection(): ConnectionState = ConnectionState.ONLINE
 
+    /** Sync and presence calls in order: "startSync", "stopSync", "presence online". */
+    val calls = mutableListOf<String>()
+
     override suspend fun startSync() {
         syncStarts++
+        calls += "startSync"
     }
 
     override suspend fun stopSync() {
         syncStops++
+        calls += "stopSync"
+    }
+
+    /** Our presence as set, in order; [setPresenceError] fails the calls. */
+    val presenceSets = mutableListOf<PresenceState>()
+    var setPresenceError: MtrxException? = null
+
+    override suspend fun setPresence(state: PresenceState, statusMessage: String?) {
+        presenceSets += state
+        calls += "presence ${state.name.lowercase()}"
+        setPresenceError?.let { throw it }
+    }
+
+    /** [presence] gives these, or offline without more; [presenceError] fails it. */
+    val presences = mutableMapOf<String, Presence>()
+    var presenceError: MtrxException? = null
+    val presenceReads = mutableListOf<String>()
+
+    override suspend fun presence(userId: String): Presence {
+        presenceReads += userId
+        presenceError?.let { throw it }
+        return presences[userId] ?: makePresence(PresenceState.OFFLINE)
+    }
+
+    /** Each subscription's users and handle; the test calls the last [presenceListener]. */
+    val presenceSubscriptions = mutableListOf<Pair<List<String>, FakeHandle>>()
+    var presenceListener: PresenceListener? = null
+
+    override fun subscribePresence(userIds: List<String>, listener: PresenceListener): TaskHandle {
+        presenceListener = listener
+        return FakeHandle().also {
+            handles += it
+            presenceSubscriptions += userIds to it
+        }
     }
 
     override fun subscribeConnection(listener: ConnectionListener): TaskHandle = FakeHandle().also { handles += it }
@@ -92,7 +194,17 @@ class FakeSession : Session(NoHandle) {
         return FakeHandle().also { handles += it }
     }
 
+    var forgotten = false
+
+    override suspend fun forget() {
+        forgotten = true
+    }
+
+    /** Called at the start of [logout], for the order of calls. */
+    var onLogout: () -> Unit = {}
+
     override suspend fun logout() {
+        onLogout()
         logoutError?.let { throw it }
         loggedOut = true
     }
@@ -100,6 +212,37 @@ class FakeSession : Session(NoHandle) {
     override suspend fun encryptionState(): EncryptionState {
         encryptionAsks++
         return encryption
+    }
+
+    // As the library: the state now, then after each change ([pushEncryption]).
+    override fun subscribeEncryptionState(listener: EncryptionStateListener): TaskHandle {
+        encryptionSubscriptions++
+        encryptionListener = listener
+        listener.onUpdate(encryption)
+        return FakeHandle().also {
+            handles += it
+            encryptionSubscription = it
+        }
+    }
+
+    /** The library reports a new encryption state. */
+    fun pushEncryption(state: EncryptionState) {
+        encryption = state
+        encryptionListener?.onUpdate(state)
+    }
+
+    override suspend fun timeline(roomId: String): Timeline = roomTimeline
+
+    override suspend fun userProfile(userId: String): UserProfile {
+        profileGate?.await()
+        profileError?.let { throw it }
+        return profile ?: UserProfile(userId = userId, name = null, avatarUrl = null)
+    }
+
+    override suspend fun invite(roomId: String, userId: String) {
+        inviteGate?.await()
+        inviteError?.let { throw it }
+        invites += roomId to userId
     }
 
     override suspend fun recover(recoveryKey: String, listener: RecoveryListener) {
@@ -181,15 +324,39 @@ class FakeSpaceStore(var saved: SpaceEntry? = null) : SelectedSpaceStore {
     }
 }
 
+/** The order of the spaces' rooms, in memory: one instance across "launches". */
+class FakeSortStore(var saved: RoomSort? = null) : RoomSortStore {
+    /** When set, [load] reads the saved order, then waits for it to return. */
+    var loading: CompletableDeferred<Unit>? = null
+
+    override suspend fun load(): RoomSort? {
+        val read = saved
+        loading?.await()
+        return read
+    }
+
+    override suspend fun save(sort: RoomSort) {
+        saved = sort
+    }
+}
+
+fun makePresence(
+    state: PresenceState,
+    lastActive: Instant? = null,
+    statusMessage: String? = null,
+): Presence = Presence(state = state, lastActive = lastActive, currentlyActive = state == PresenceState.ONLINE, statusMessage = statusMessage)
+
 fun summary(
     id: String,
     kind: RoomKind = RoomKind.ROOM,
     invited: Boolean = false,
     unread: Long = 0,
     directUserId: String? = null,
+    name: String = id.removePrefix("!").substringBefore(':'),
+    lastActivity: Instant? = null,
 ): RoomSummary = RoomSummary(
     id = id,
-    name = id.removePrefix("!").substringBefore(':'),
+    name = name,
     avatarUrl = null,
     topic = null,
     kind = kind,
@@ -198,7 +365,7 @@ fun summary(
     unreadMessages = unread.toULong(),
     unreadMentions = 0uL,
     unreadNotifications = unread.toULong(),
-    lastActivity = null,
+    lastActivity = lastActivity,
     directUserId = directUserId,
     alias = null,
     joinedMembers = 2uL,
@@ -206,6 +373,19 @@ fun summary(
 
 class FakeMtrx(private val restored: Session?) : MtrxInterface {
     var loginSession: Session? = null
+
+    /** What [notification] returns, or throws [notificationError]; after [notificationGate] if set. */
+    var notificationContent: NotificationContent? = null
+    var notificationError: MtrxException? = null
+    var notificationGate: CompletableDeferred<Unit>? = null
+    val notificationsRead = mutableListOf<Pair<String, String>>()
+
+    override suspend fun notification(roomId: String, eventId: String): NotificationContent? {
+        notificationsRead += roomId to eventId
+        notificationGate?.await()
+        notificationError?.let { throw it }
+        return notificationContent
+    }
 
     override suspend fun login(homeserver: String, user: String, password: String): Session =
         loginSession ?: throw MtrxException.Other("wrong password")
@@ -290,7 +470,10 @@ class FakeTimeline : Timeline(NoHandle) {
         this.typing += typing
     }
 
+    var markReadError: MtrxException? = null
+
     override suspend fun markRead() {
+        markReadError?.let { throw it }
         markedRead++
     }
 
@@ -402,3 +585,134 @@ object SpacesFixture {
         roomsOutsideSpaces = listOf(PARTY, LOOSE),
     )
 }
+
+/** The UnifiedPush connector: [installed] distributors, the saved one, and the calls made. */
+class FakeDistributors(
+    var installed: List<String> = listOf(NTFY),
+    var saved: String? = null,
+    var default: String? = null,
+) : Distributors {
+    var registrations = 0
+    var unregistrations = 0
+
+    /** Called at each [unregister], for the order of calls. */
+    var onUnregister: () -> Unit = {}
+
+    override fun installed(): List<String> = installed
+
+    override fun saved(): String? = saved?.takeIf { it in installed }
+
+    override fun default(): String? = default
+
+    override fun save(packageName: String) {
+        saved = packageName
+    }
+
+    override fun register() {
+        registrations++
+    }
+
+    override fun unregister() {
+        unregistrations++
+        saved = null
+        onUnregister()
+    }
+
+    override fun label(packageName: String): String = when (packageName) {
+        NTFY -> "ntfy"
+        else -> packageName.substringAfterLast('.')
+    }
+
+    companion object {
+        const val NTFY = "io.heckel.ntfy"
+        const val OTHER = "org.example.push"
+    }
+}
+
+/** Push registration's preferences, in memory: one instance across "launches". */
+class FakePushStore(var enabled: Boolean = true, var endpoint: String? = null) : PushStore {
+    var permissionAsked = false
+
+    override suspend fun enabled(): Boolean = enabled
+
+    override suspend fun setEnabled(value: Boolean) {
+        enabled = value
+    }
+
+    override suspend fun endpoint(): String? = endpoint
+
+    override suspend fun setEndpoint(value: String?) {
+        endpoint = value
+    }
+
+    override suspend fun permissionAsked(): Boolean = permissionAsked
+
+    override suspend fun setPermissionAsked() {
+        permissionAsked = true
+    }
+}
+
+/** Push registration on fakes; the gateway is the endpoint's origin. */
+fun pushRegistration(
+    scope: CoroutineScope,
+    distributors: FakeDistributors = FakeDistributors(),
+    store: FakePushStore = FakePushStore(),
+): PushRegistration = PushRegistration(
+    distributors,
+    store,
+    object : GatewayDiscovery {
+        override suspend fun gatewayFor(endpoint: String): String = originGateway(endpoint)!!
+    },
+    scope,
+) { PusherDevice(name = "Pixel 9", lang = "en-GB") }
+
+/** The posted notifications, by room: the contents, or "fallback". */
+class FakeNotifier : MessageNotifier {
+    val posted = mutableListOf<NotificationContent>()
+    val fallbacks = mutableListOf<String>()
+    val cleared = mutableListOf<String>()
+    var clearedAll = 0
+
+    override suspend fun post(content: NotificationContent) {
+        posted += content
+    }
+
+    override fun postFallback(roomId: String) {
+        fallbacks += roomId
+    }
+
+    override fun clearRoom(roomId: String) {
+        cleared += roomId
+    }
+
+    override fun clearAll() {
+        clearedAll++
+    }
+}
+
+/** "Share my presence", in memory: one instance across "launches". */
+class FakeSharePresenceStore(var saved: Boolean? = null) : SharePresenceStore {
+    override suspend fun load(): Boolean? = saved
+
+    override suspend fun save(on: Boolean) {
+        saved = on
+    }
+}
+
+/** The virtual time of [scope]'s test dispatcher, in milliseconds; 0 without one. */
+@OptIn(ExperimentalCoroutinesApi::class)
+fun testClock(scope: CoroutineScope): () -> Long {
+    val scheduler = (scope.coroutineContext[ContinuationInterceptor] as? TestDispatcher)?.scheduler ?: return { 0L }
+    return { scheduler.currentTime }
+}
+
+/** An account on fakes, with push registration and notifications that tests may look at; idling in virtual time. */
+fun testAccount(
+    mtrx: MtrxInterface,
+    scope: CoroutineScope,
+    spaces: SelectedSpaceStore = FakeSpaceStore(),
+    sort: RoomSortStore = FakeSortStore(),
+    push: PushRegistration = pushRegistration(scope),
+    notifications: RoomNotifications = FakeNotifier(),
+    sharePresence: SharePresenceStore = FakeSharePresenceStore(),
+): Account = Account(mtrx, scope, spaces, sort, push, notifications, sharePresence, testClock(scope))

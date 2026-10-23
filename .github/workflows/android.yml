@@ -1,7 +1,9 @@
 # Android app (apps/android): the Rust library and its Kotlin bindings, then
 # a debug APK (artifact Mtrx-android-debug, signed with the runner's debug
-# key), the app's unit tests, and the APK started on an emulator (artifact
-# android-smoke). Gradle is set up by version; no wrapper jar is committed.
+# key), the app's unit tests, and on an emulator the APK started (artifact
+# android-smoke) and the instrumented tests against a local Synapse (push
+# notifications end to end). Gradle is set up by version; no wrapper jar is
+# committed.
 name: Android
 
 on:
@@ -62,14 +64,26 @@ jobs:
       - name: Unit tests
         working-directory: apps/android
         run: gradle --no-daemon --stacktrace :app:testDebugUnitTest
+      - name: Instrumented tests' APK
+        working-directory: apps/android
+        run: gradle --no-daemon --stacktrace :app:assembleDebugAndroidTest
+      - name: Synapse
+        # On the host's port 8008, which the emulator reaches as 10.0.2.2:8008.
+        run: |
+          # The container runs Synapse as uid 991; it writes to data/.
+          mkdir -p testserver/data
+          chmod 777 testserver/data
+          testserver/run.sh
       - name: Enable KVM for the emulator
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
-      - name: Start the app on an emulator
+      - name: Start the app on an emulator, then the instrumented tests
         # x86_64, as the library is built for. The sign-in screen shows, the
-        # process lives, no crash in the log. Screenshot as an artifact.
+        # process lives, no crash in the log; screenshot as an artifact. Then
+        # the instrumented tests (push notifications against Synapse). Each
+        # script line runs in a shell of its own.
         id: smoke
         uses: reactivecircus/android-emulator-runner@v2
         with:
@@ -77,18 +91,24 @@ jobs:
           target: default
           arch: x86_64
           disable-animations: true
-          script: scripts/android-smoke.sh target/mobile/Mtrx-android-debug.apk
+          script: |
+            scripts/android-smoke.sh target/mobile/Mtrx-android-debug.apk
+            cd apps/android && gradle --no-daemon --stacktrace :app:connectedDebugAndroidTest
       - uses: actions/upload-artifact@v4
         if: ${{ !cancelled() && steps.smoke.outcome != 'skipped' }}
         with:
           name: android-smoke
           path: target/smoke
           if-no-files-found: error
+      - name: Synapse log
+        if: failure()
+        run: docker logs mtrx-synapse 2>&1 | tail -100
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
           name: android-reports
           path: |
             apps/android/app/build/reports
+            apps/android/app/build/outputs/androidTest-results
             apps/android/mtrx-ffi/build/reports
           if-no-files-found: ignore

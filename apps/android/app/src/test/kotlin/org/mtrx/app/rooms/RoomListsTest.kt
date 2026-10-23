@@ -1,5 +1,6 @@
 package org.mtrx.app.rooms
 
+import java.time.Instant
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -16,7 +17,10 @@ import org.mtrx.app.SpacesFixture.SUB
 import org.mtrx.app.SpacesFixture.TEAM
 import org.mtrx.app.SpacesFixture.WITH_BOB
 import org.mtrx.app.SpacesFixture.WITH_CAROL
+import org.mtrx.app.model.RoomSort
 import org.mtrx.app.model.SpaceEntry
+import org.mtrx.app.summary
+import uniffi.mtrx.RoomKind
 
 class RoomListsTest {
     private val state = SpacesFixture.state()
@@ -26,6 +30,15 @@ class RoomListsTest {
         val chats = chats(state)
         assertEquals(listOf(WITH_CAROL, WITH_BOB, NOTES), chats.map { it.id })
         assertTrue("Carol's is an invite", chats.first().invited)
+    }
+
+    @Test
+    fun topLevelSpacesInListOrderWithTheirSummaries() {
+        val spaces = topLevelSpaces(state)
+        assertEquals(listOf(OTHER, TEAM), spaces.map { it.id })
+        assertEquals(listOf("other", "team"), spaces.map { it.name })
+        // A space not (yet) in the rooms is left out.
+        assertEquals(listOf(TEAM), topLevelSpaces(state.copy(rooms = state.rooms.filter { it.id != OTHER })).map { it.id })
     }
 
     @Test
@@ -73,5 +86,61 @@ class RoomListsTest {
         for (entry in listOf(SpaceEntry.Space(TEAM), SpaceEntry.OtherRooms)) {
             assertEquals(entry, SpaceEntry.fromKey(entry.key))
         }
+    }
+
+    @Test
+    fun aSpacesPageHasItsRoomsThenItsPeople() {
+        val team = sectionsOf(state, SpaceEntry.Space(TEAM), RoomSort.DEFAULT)
+        assertEquals(listOf(OFFER, LAB, DEEP), team.rooms.map { it.id })
+        assertEquals(listOf(WITH_BOB, NOTES), team.people.map { it.id })
+
+        val other = sectionsOf(state, SpaceEntry.OtherRooms, RoomSort.DEFAULT)
+        assertEquals(listOf(PARTY, LOOSE), other.rooms.map { it.id })
+        assertEquals(emptyList<String>(), other.people.map { it.id })
+
+        val gone = sectionsOf(state, SpaceEntry.Space("!left:x"), RoomSort.DEFAULT)
+        assertTrue(gone.rooms.isEmpty() && gone.people.isEmpty())
+    }
+
+    @Test
+    fun bothSectionsFollowTheChosenOrder() {
+        val az = sectionsOf(state, SpaceEntry.Space(TEAM), RoomSort.A_TO_Z)
+        assertEquals(listOf(DEEP, LAB, OFFER), az.rooms.map { it.id })
+        assertEquals(listOf(NOTES, WITH_BOB), az.people.map { it.id })
+        val za = sectionsOf(state, SpaceEntry.Space(TEAM), RoomSort.Z_TO_A)
+        assertEquals(listOf(OFFER, LAB, DEEP), za.rooms.map { it.id })
+        assertEquals(listOf(WITH_BOB, NOTES), za.people.map { it.id })
+    }
+
+    // In list order (most recently active first, by the library's rules).
+    private val listed = listOf(
+        summary("!b:x", name = "bravo", lastActivity = Instant.ofEpochSecond(200)),
+        summary("!a:x", name = "Alpha"),
+        summary("!c:x", name = "charlie", lastActivity = Instant.ofEpochSecond(300)),
+        summary("!e:x", name = "echo", lastActivity = Instant.ofEpochSecond(100)),
+        summary("!d:x", name = "Delta"),
+    )
+
+    @Test
+    fun defaultKeepsTheListsOrder() {
+        assertEquals(listOf("!b:x", "!a:x", "!c:x", "!e:x", "!d:x"), sorted(listed, RoomSort.DEFAULT).map { it.id })
+    }
+
+    @Test
+    fun alphabeticalOrdersIgnoreCase() {
+        assertEquals(listOf("Alpha", "bravo", "charlie", "Delta", "echo"), sorted(listed, RoomSort.A_TO_Z).map { it.name })
+        assertEquals(listOf("echo", "Delta", "charlie", "bravo", "Alpha"), sorted(listed, RoomSort.Z_TO_A).map { it.name })
+    }
+
+    @Test
+    fun mostRecentPutsRoomsNeverActiveLastInListOrder() {
+        assertEquals(listOf("!c:x", "!b:x", "!e:x", "!a:x", "!d:x"), sorted(listed, RoomSort.RECENT).map { it.id })
+    }
+
+    @Test
+    fun equalNamesKeepTheListsOrder() {
+        val twins = listOf(summary("!2:x", name = "Ann"), summary("!1:x", name = "ann"), summary("!0:x", RoomKind.DIRECT, name = "Ann"))
+        assertEquals(listOf("!2:x", "!1:x", "!0:x"), sorted(twins, RoomSort.A_TO_Z).map { it.id })
+        assertEquals(listOf("!2:x", "!1:x", "!0:x"), sorted(twins, RoomSort.Z_TO_A).map { it.id })
     }
 }

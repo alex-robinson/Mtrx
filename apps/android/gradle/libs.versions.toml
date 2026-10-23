@@ -18,7 +18,14 @@ appcompat = "1.7.0"
 annotation = "1.9.1"
 # Used as net.java.dev.jna:jna:<version>@aar (a catalog cannot say @aar).
 jna = "5.17.0"
+# UnifiedPush (docs/mobile.md, section 10): PushService and UnifiedPush.register.
+unifiedpush = "3.3.5"
 junit = "4.13.2"
+# Android's org.json for the JVM unit tests (android.jar has only stubs).
+json = "20250517"
+androidxTestRunner = "1.6.2"
+androidxTestCore = "1.6.1"
+androidxTestJunit = "1.2.1"
 
 [libraries]
 androidx-annotation = { group = "androidx.annotation", name = "annotation", version.ref = "annotation" }
@@ -39,7 +46,12 @@ androidx-compose-material3 = { group = "androidx.compose.material3", name = "mat
 androidx-compose-material-icons-core = { group = "androidx.compose.material", name = "material-icons-core" }
 kotlinx-coroutines-android = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-android", version.ref = "coroutines" }
 kotlinx-coroutines-test = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-test", version.ref = "coroutines" }
+unifiedpush-connector = { group = "org.unifiedpush.android", name = "connector", version.ref = "unifiedpush" }
 junit = { group = "junit", name = "junit", version.ref = "junit" }
+json = { group = "org.json", name = "json", version.ref = "json" }
+androidx-test-runner = { group = "androidx.test", name = "runner", version.ref = "androidxTestRunner" }
+androidx-test-core = { group = "androidx.test", name = "core", version.ref = "androidxTestCore" }
+androidx-test-ext-junit = { group = "androidx.test.ext", name = "junit", version.ref = "androidxTestJunit" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }

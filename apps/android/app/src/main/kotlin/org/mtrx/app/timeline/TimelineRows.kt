@@ -53,6 +53,9 @@ data class EventRow(override val id: String, val event: TimelineEvent, val showS
 
     /** What holding the message offers, in the menu's order. */
     val actions: Set<MessageAction> get() = messageActions(this)
+
+    /** Swiping it left replies, as Reply in its menu: a sent message. */
+    val canReply: Boolean get() = MessageAction.REPLY in actions
 }
 
 /** What holding a message offers. */
@@ -98,6 +101,13 @@ fun messageText(message: Message): String? {
     val media = message.media
     return message.body.takeIf { it.isNotBlank() && (media == null || it != media.filename) }
 }
+
+/**
+ * What a message without its key says: while keys arrive from the backup
+ * ([uniffi.mtrx.EncryptionState.keysArriving]) it may still decrypt.
+ */
+fun undecryptableText(keysArriving: Boolean): String =
+    if (keysArriving) "Decrypting…" else "Could not decrypt this message."
 
 /** The emoji offered first for a reaction. */
 val COMMON_REACTIONS = listOf("👍", "❤️", "😂", "😮", "😢", "🎉")

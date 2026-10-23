@@ -439,8 +439,66 @@ and tested by CI only; no Android SDK is used locally.
   `uniffi.mtrx.**` and `org.rustls.platformverifier.**`.
 - `:app` (`org.mtrx.app`), only the ABIs the library is built for:
   - `MtrxApplication`: `AndroidPlatform.initialize` first, then
-    `Mtrx(filesDir, cacheDir, secrets)` and the `Account`; sync follows
-    `ProcessLifecycleOwner` (start in the foreground, stop in the background).
+    `Mtrx(filesDir, cacheDir, secrets)`, push registration, the message
+    notifications (channel `messages` created), the `Account` and the push
+    handler; sync follows `ProcessLifecycleOwner` (start in the foreground,
+    stop in the background). It runs in every start of the process, the
+    push service's too (no `android:process`).
+  - Push notifications (section 10), through UnifiedPush
+    (`org.unifiedpush.android:connector` 3.3.5: `PushService`,
+    `UnifiedPush.register`, `unregister`, `getDistributors`,
+    `getSavedDistributor`, `saveDistributor`, `resolveDefaultDistributor`).
+    `model/Push.kt`: `PushRegistration`, told by the `Account` when a
+    session opens (sets the pusher again on the saved endpoint, then picks
+    the distributor: the saved one, else the only or the system's default
+    one, else Settings offers the installed ones; and registers) and
+    before it signs out or is forgotten (`deletePusher`, the connector's
+    `unregister`, then `logout`; a failed sign-out registers again); a
+    new endpoint replaces the pusher (`setPusher` with the endpoint as
+    pushkey, the gateway from UnifiedPush's discovery at the endpoint's
+    origin: `GET <origin>/_matrix/push/v1/notify` answering
+    `{"unifiedpush":{"gateway":"matrix"}}`, else UnifiedPush's gateway;
+    unreachable counts as one; `appId` `org.mtrx.app`, `Build.MODEL`, the
+    locale's tag), deleting the earlier one's; unregistered by the
+    distributor deletes it. Its state (`Off`, `NoDistributor`, `Choose`,
+    `Registering`, `Registered`, `Failed`) and the switch are flows for
+    Settings; DataStore `push` (`enabled`, on by default and kept at
+    sign-out; `endpoint`; `permission_asked`), `model/PushPreferences.kt`.
+    `push/MtrxPushService.kt` (the connector's service, not exported):
+    endpoints, failures and unregistrations to `PushRegistration`; each
+    push to `PushHandler` in a coroutine of the service, which keeps
+    itself started (allowed while the distributor raises the app; logged
+    otherwise) and holds a wake lock of 25 s while pushes run, then stops.
+    `push/PushHandler.kt`, a plain class: parses the gateway's JSON
+    (`room_id` and `event_id`; a push with only counts clears all message
+    notifications when `unread` is 0; garbage is ignored), then
+    `Mtrx.notification` within 20 s: nil or `shouldNotify` false posts
+    nothing; `NotLoggedIn` unregisters; another error, the timeout or the
+    service stopping first posts "New message"; nothing for the room open
+    on screen while the app is in the foreground (`Account.foregroundRoom`,
+    set by the room screen). `push/MessageNotifications.kt`: a room's
+    notification (tag the room ID, id 0) in channel `messages` (high),
+    `MessagingStyle` with its last six messages of this process, the
+    sender as `Person` (the avatar through `Images` while the app's session
+    is open, waited for up to 3 s), the room's name as title unless
+    direct, silent unless `isNoisy`; group `messages` with a summary from
+    two rooms on; tap: `MainActivity` with `EXTRA_ROOM_ID`, which the
+    `Account` keeps as `roomRequest` until the navigation opens
+    `room/{roomId}`. A room's notification goes when its screen shows,
+    when it is marked read, and when its `unreadNotifications` drops to 0
+    in a `RoomListState`; all go at sign-out. Settings: "Notifications"
+    above "Encryption", the switch "Push notifications" (off and fixed
+    while no distributor is installed), then "Via <app>", "Registering…",
+    "Several apps can deliver notifications" with the apps to choose,
+    "Install a UnifiedPush app, such as ntfy, to get notifications while
+    Mtrx is closed." with "Get ntfy" (`market://`, else F-Droid's page),
+    "Registration failed: <reason>", and "Notifications are off in
+    Android's settings" with a button to them; distributors and the
+    permission looked at again whenever Settings resumes.
+    `POST_NOTIFICATIONS` is asked when the switch is turned on and once
+    after a sign-in. Debug builds allow plain HTTP to `10.0.2.2` and
+    `localhost` (`src/debug`, a network security config), for the
+    instrumented tests.
   - `model/Secrets.kt`: `FileSecretBackend`, one file per secret in
     `noBackupFilesDir/secrets` named by the SHA-256 of its key, encrypted
     with AES-256-GCM (random IV, the key as associated data) by a key that
@@ -455,9 +513,11 @@ and tested by CI only; no Android SDK is used locally.
     `io.github.alex-robinson`; the path `/oauth` is checked in code, as
     Android ignores path filters without a host) calls `finish` and returns
     to `MainActivity`. Back from the browser without the redirect cancels.
-    Encryption (section 6) too: `encryption` (asked when sync starts, once
-    the room list is loaded, and again with its updates while recovery is
-    `unknown`; after a recovery and a verification), `recover` with its
+    Encryption (section 6) too: `encryption`, as `subscribeEncryptionState`
+    reports it (section 9; subscribed at the first `startSync`, the handle
+    with the session's other subscriptions, cancelled and closed at
+    sign-out; a state arriving after sign-out is dropped; never asked with
+    `encryptionState()`), `recover` with its
     steps as a flow (in the account's scope, so leaving the screen does not
     stop it), our `devices`, and the verification: the request subscription
     is one of the session's; a request from another user is cancelled, one
@@ -476,27 +536,77 @@ and tested by CI only; no Android SDK is used locally.
     (`model/ViewPreferences.kt`: Preferences DataStore `view`, key
     `selected_space`; `androidx.datastore:datastore-preferences`); a saved
     one waits for a list that has it and is forgotten when a loaded list
-    does not; cleared at sign-out (and `forget`). `rooms/RoomLists.kt`: the
-    tabs' lists from each `RoomListState` (`chats`, `spaceRows` with the
-    unread dot, `roomsOf`).
+    does not; cleared at sign-out (and `forget`). `RoomSortChoice`, also
+    the `Account`'s: the order of the spaces' rooms (`RoomSort`: Default,
+    A to Z, Z to A, Most recent), saved through `RoomSortStore` (key
+    `room_sort`), kept at sign-out (the device's, not the account's).
+    `rooms/RoomLists.kt`: the tabs' lists from each `RoomListState`
+    (`chats`, `spaceRows` with the unread dot, `roomsOf`, and `sectionsOf`:
+    a space's rooms and its direct chats apart, each `sorted`: by name with
+    the locale's `Collator`, case aside; most recent by `lastActivity`, never
+    active last; ties in list order).
   - `model/Images.kt`: avatars and image previews, decoded (downsampled)
     and kept in an in-memory LRU cache.
+  - Presence (section 11), `model/Presence.kt`: `PresenceModel`, one per
+    session, made by the `Account` and in `AccountState.SignedIn`,
+    closed at sign-out. The `Account` runs the lifecycle under its lock:
+    `foreground()` before `startSync()` (`online` if sharing, not waited
+    for; not sharing, the session's first one waits for `offline`), and
+    `background()` before `stopSync()` (waits for `offline` if sharing),
+    which a sign-out also goes through, so `offline` precedes `logout`;
+    `forget` closes it first and sets nothing. Our `setPresence` calls are
+    chained, so they arrive in order. Idle: `MainActivity`'s
+    `dispatchTouchEvent` and `dispatchKeyEvent`, and each change of the
+    composer's draft (the soft keyboard is another window), call
+    `Account.input()`; one timer coroutine waits for the last input + 5
+    minutes (a monotonic clock); input only moves the last input, except
+    when idle (`online` again). Others: the subscription is for the
+    people of the loaded room list's direct chats (`directPeople`; the
+    open direct chat's person is one of them), debounced by 1 s (room
+    lists come in bursts), replaced only when they change, ended in the
+    background and at sign-out; dots only in Chats, not in a space's
+    People section. `refresh(userId)` when the person sheet opens, into
+    the map. Once the server does not share presence, ours is not set
+    either. "Share my presence": `SharePresence` (DataStore `view`, key
+    `share_presence`), the `Account`'s, read before the first sync. The
+    dot (`ui/PresenceViews.kt`): its ring outside its size (12 + 2 + 2
+    dp), centred on the avatar's circle at 45°; 10 dp on the header's 32
+    dp avatar. The line re-renders each minute; `DateUtils` writes "2 hr.
+    ago" in English.
   - Screens: sign-in (homeserver, then password or "Sign in with browser" as
-    `supportsOauth` says), the room list (section 7: a bottom bar with Chats
-    and Rooms, only on this screen; Chats the direct chats; Rooms a
-    `HorizontalPager` of the spaces, with "Other rooms", and the selected
-    entry's rooms, titled with its name, back or the arrow to the spaces;
-    tapping the Rooms tab again also returns to them; a new selection,
-    tapped or restored, pages right; tab, page and scroll positions are the
-    screen's saved state, so they are kept while a room or Settings is
+    `supportsOauth` says), the home (`ui/HomeScreen.kt`, section 7: a
+    bottom bar with Chats, Spaces and Settings, only on this screen; Chats
+    the direct chats; Spaces a `HorizontalPager` of the spaces, with "Other
+    rooms", and the selected entry's rooms, titled with its name, back or
+    the arrow to the spaces; tapping the Spaces tab again also returns to
+    them; a new selection, tapped or restored, pages right; the entry's
+    page in two sections, Rooms and People (its direct chats; each left
+    out while empty), in the order chosen in the top bar's sort menu, for
+    every space; Settings the account, privacy ("Share my presence"),
+    encryption and "Sign out" (after "Sign out?"); tab, page and scroll positions are the screen's saved
+    state, so they are kept while a room, recovery or verification is
     open; rows with avatars, unread and mention counts, last activity,
-    "Invited"; banners for offline and signed out by the server over both
-    tabs; menu with Settings and sign-out), and a room's timeline
-    (newest at the bottom, keyed by `TimelineItem.id`; day dividers, read
-    marker, grouped bubbles, send states, images, state events summarised
-    in a line as on the desktop; older events near the top; marked read
-    while the newest message shows; "Could not decrypt this message." for
-    an event without its key). Messages (section 8): the sender's name in
+    "Invited"; banners for offline and signed out by the server over all
+    tabs), and a room's timeline (the room's name, and for a direct chat
+    with someone else (not the Notes to self) the room's avatar beside it,
+    both tapped for the person's info sheet, `timeline/PersonInfoSheet.kt`
+    with `PersonInfoModel`, held by the timeline's view model: the chat's
+    name and avatar, then the profile's where set (`userProfile`; a
+    failure keeps the chat's); the user ID, selectable, with a copy button
+    ("Copied" in the sheet's snackbar before Android 13); "Add to space…"
+    while there are top-level spaces (`topLevelSpaces`), listing them with
+    their avatars, back to the person with ← or back; tapping one invites
+    (one at a time, a spinner on its row, in the actions' scope so leaving
+    the room does not cancel it): "Invited to <space>." and back to the
+    person, or the error's reason with the list kept, both in the sheet's
+    snackbar; newest at the bottom, keyed
+    by `TimelineItem.id`; day dividers, read marker, grouped bubbles, send
+    states, images, state events summarised in a line as on the desktop;
+    older events near the top; marked read while the newest message
+    shows; for an event without its key "Decrypting…" while
+    `keysArriving`, otherwise "Could not decrypt this message."
+    (`undecryptableText`; `utdCause` not shown); away from the bottom, a round down-arrow button over the
+    messages at the bottom right goes to the newest). Messages (section 8): the sender's name in
     the body text size above a group, the avatar beside its first bubble;
     holding a bubble opens a bottom sheet with the six common reactions
     (ours marked) and "+" for the full picker (`androidx.emoji2:
@@ -504,7 +614,11 @@ and tested by CI only; no Android SDK is used locally.
     AppCompat's DayNight, which its resources need), then Reply, Copy,
     Select text, Edit, Delete (after "Delete this message for everyone?"),
     Retry and Discard, as `timeline/TimelineRows.kt`'s `messageActions`
-    allows; reaction chips under the bubble (tap toggles, hold lists who);
+    allows; swiping a bubble left (a horizontal `draggable`, so vertical
+    drags scroll and edge swipes stay the system's back) shows the reply
+    icon and, past 64 dp when let go, replies as Reply does, for the
+    messages Reply is offered for (`EventRow.canReply`); it springs back;
+    reaction chips under the bubble (tap toggles, hold lists who);
     the reply's quote in the bubble (tap goes to the original); "(edited)"
     muted after the text; read receipts as up to three 16 dp avatars and
     "+N" on a line under the message at the right margin (tap lists
@@ -520,14 +634,16 @@ and tested by CI only; no Android SDK is used locally.
     typing notice is sent. Going to a quote's original pages back 50
     events at a time, at most 20 times, looking in each new list; after
     the room's start or the last page it waits up to two seconds for
-    their items before saying it was not found. Encryption: the banner on the room list (opens
-    Settings); Settings (from the room list's menu) with the account and
-    "Encryption" (status lines, "Enter recovery key", "Verify with another
-    device", or the note that another device is needed); the recovery key
-    screen with its steps and progress; the verification screen (one for
-    both directions; back cancels it while it runs); the prompt for a
-    request, over any screen. Navigation Compose: `rooms`, `room/{roomId}`,
-    `settings`, `settings/recovery`, `settings/verification`.
+    their items before saying it was not found. Encryption: the banner over
+    Chats and Spaces (opens the Settings tab); the Settings tab with the
+    account and "Encryption" (status lines, "Enter recovery key", "Verify
+    with another device", or the note that another device is needed); the
+    recovery key screen with its steps and progress; the verification
+    screen (one for both directions; back cancels it while it runs); the
+    prompt for a request, over any screen. Navigation Compose: `home`,
+    `room/{roomId}`, `settings/recovery`, `settings/verification`. Icons
+    the core set lacks (spaces, reply, sort) are drawn from their Material
+    paths (`ui/Icons.kt`).
   - Unit tests (JVM) on fakes of the library's objects (subclasses made with
     `NoHandle`): secrets, the account's sync and sign-out, timeline rows,
     the timeline's view model; messages (section 8): the rows' reactions,
@@ -536,14 +652,66 @@ and tested by CI only; no Android SDK is used locally.
     composer, typing both ways and on leaving the room (a send under way
     still completes), the typing line's texts, and going to a quote's
     original (loaded already, after paginating, arriving after the call,
-    at the room's start, after 20 pages); the encryption state and banner, the
+    at the room's start, after 20 pages); swiping to reply only to sent
+    messages, and no reply to one not sent; the encryption state as
+    pushed (subscribed once sync starts, the banner going after a recovery
+    or a verification without asking, dropped after sign-out) and the
+    banner rule, the undecryptable row's text for both values of
+    `keysArriving`; the person's info sheet (a header's person only for
+    someone else's direct chat, the profile replacing the chat's name and
+    avatar where set, a failure keeping them, closing it stops the
+    loading; an invite succeeding, also after leaving the room, failing
+    with the list kept, one at a time) and the top-level spaces; the
     recovery's steps and errors (an invalid key), the verification model
     (states, confirm, mismatch, cancel, close), and verification requests
     (another user's cancelled, ours accepted or declined); the Chats and
     Rooms lists from a `RoomListState` like the library's integration test
-    (two top-level spaces, a nested one, direct chats, invites), and the
-    selected space (saved, restored at the next launch, forgotten when gone
-    or at sign-out).
+    (two top-level spaces, a nested one, direct chats, invites), a space's
+    Rooms and People sections and the four orders (names in either case,
+    ties, rooms never active), the selected space (saved, restored at the
+    next launch, forgotten when gone or at sign-out), and the chosen order
+    (saved, restored, a choice before the saved one is read wins, kept at
+    sign-out). Push (section 10): registration (the only distributor
+    saved, the system's default taken, several offered and one chosen,
+    none until one is installed; the endpoint becoming the pusher with
+    the gateway at its origin; the pusher set again at each start, an
+    endpoint before the session set when it opens, a changed endpoint
+    replacing the pusher; turning off deleting it and unregistering,
+    remembered at the next start, and on again registering; an endpoint
+    after turning off ignored; failures; unregistered by the
+    distributor; a push without session), at sign-in, at a restore, at
+    sign-out (pusher deleted, then unregistered, then logout), after a
+    failed sign-out and at `forget`; parsing pushes (with and without
+    `event_id`, counts, garbage) and the handler (posted, nil, not to
+    notify, the room on screen, an error or 20 s as "New message",
+    signed out, a count of 0); the notification's title and sound; the
+    room on screen only in the foreground; clearing on opening, on
+    `markRead` (not when it fails) and when a room's count drops to 0;
+    a tapped notification's room; the Settings switch and lines.
+    Presence (section 11): the dot and the line for each state, status
+    message and age; the subscription following the loaded room list's
+    direct chats (not the Notes to self), kept on other changes, replaced
+    when they change (once for a burst), only in the foreground, ended at
+    sign-out; the person sheet's fresh value, kept on a failure; hiding
+    after `onUnavailable` or the error (also from `setPresence`), with
+    nothing read or set after, and shown again in the next session;
+    online alongside sync and offline before it stops and before
+    `logout`, nothing at `forget`, offline before the first sync when not
+    sharing, the switch (saved, kept at sign-out, in the background),
+    idle after five minutes without input and online at the next,
+    failures ignored; the Settings footnote.
+  - Instrumented test (`androidTest`, `PushEndToEndTest`), against Synapse
+    on the host (`http://10.0.2.2:8008`): registers Bob and Alice with
+    the shared-secret admin API, signs Bob in through the app's `Account`
+    (syncing) and Alice in a second `Mtrx`; Alice makes an encrypted room
+    over HTTP inviting Bob, who joins over HTTP; the pusher is set through
+    `PushRegistration.onNewEndpoint` (`http://10.0.2.2:9/upTEST?up=1`) and
+    listed with `eventIdOnly`; Alice's mention, as the gateway's JSON,
+    goes to the app's `PushHandler`; the posted notification (tagged with
+    the room) has her text as typed and her as the person; opening the
+    room clears it; then a push for Bob's own message posts nothing (his
+    sending reads the room, which clears a notification while he syncs,
+    so this comes after the clearing).
 - Build locally, with the Android SDK and NDK, Rust's two Android targets
   and cargo-ndk: `scripts/build-android-ffi.sh`, then in `apps/android`
   `gradle :app:assembleDebug` (Gradle 8.11.1 or later, or a wrapper made with
@@ -551,10 +719,12 @@ and tested by CI only; no Android SDK is used locally.
   `ANDROID_HOME` for the SDK). Tests: `gradle :app:testDebugUnitTest`.
 - CI (`.github/workflows/android.yml`, Ubuntu): the library and bindings
   with the build script, then the debug APK, artifact `Mtrx-android-debug`,
-  then the unit tests, then `scripts/android-smoke.sh` on an x86_64 emulator
-  (API 34): installs and starts the APK, checks that the sign-in screen
-  shows, the process lives and the log has no crash; screenshot, UI tree and
-  log as artifact `android-smoke`.
+  then the unit tests and the test APK, then Synapse (`testserver/run.sh`),
+  then on an x86_64 emulator (API 34) `scripts/android-smoke.sh`: installs
+  and starts the APK, checks that the sign-in screen shows, the process
+  lives and the log has no crash; screenshot, UI tree and log as artifact
+  `android-smoke`; and `gradle :app:connectedDebugAndroidTest`, the
+  instrumented test above (reports as `android-reports` on failure).
 
 Remaining:
 
@@ -564,7 +734,13 @@ Remaining:
 - Run only to the sign-in screen (emulator, CI); signing in, the room list,
   the timeline, recovery and verification are not yet tried on an emulator
   or device (only their models' unit tests); nor are the messages'
-  menus, sheets and the emoji picker. Not done: notifications, sending
+  menus, sheets and the emoji picker, swiping to reply, the button to the
+  newest message, the Settings tab, "Decrypting…", and the person's info
+  sheet with its invites, nor presence (dots, lines, the switch, idling).
+  Push notifications are tested on the emulator
+  with the push handler called directly; registering with a real
+  distributor (ntfy), the push service, the Settings section, a tapped
+  notification and the summary are not yet tried. Not done: sending
   images, opening files, release signing.
 
 ## 5. Builds and CI
@@ -1016,8 +1192,10 @@ installs a distributor (ntfy), which holds one connection for all apps;
 the homeserver posts to a Matrix push gateway (ntfy.sh or a self-hosted
 ntfy, at `<ntfy>/_matrix/push/v1/notify`), which hands the post to the
 distributor, which wakes the app. No Google services. The library part is
-done and tested (section 5); iOS (APNs) waits for an Apple developer
-account and uses the same calls (below).
+done and tested (section 5), and so is the Android app's (section 4; end
+to end on the emulator in CI, not yet with a real distributor); iOS
+(APNs) waits for an Apple developer account and uses the same calls
+(below).
 
 **Registering.** Library `org.unifiedpush.android:connector` (the current
 3.x; check its docs for the exact names, which changed from 2.x). At

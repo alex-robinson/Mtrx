@@ -16,6 +16,7 @@ android {
         targetSdk = 36
         versionCode = 1
         versionName = "0.1.2"
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         // The ABIs the Rust library is built for (scripts/build-android-ffi.sh);
         // also drops JNA's native parts for the others.
         ndk {
@@ -78,7 +79,14 @@ dependencies {
     implementation(libs.androidx.emoji2.emojipicker)
     implementation(libs.androidx.appcompat)
     implementation(libs.kotlinx.coroutines.android)
+    implementation(libs.unifiedpush.connector)
 
     testImplementation(libs.junit)
     testImplementation(libs.kotlinx.coroutines.test)
+    testImplementation(libs.json)
+
+    androidTestImplementation(libs.junit)
+    androidTestImplementation(libs.androidx.test.runner)
+    androidTestImplementation(libs.androidx.test.core)
+    androidTestImplementation(libs.androidx.test.ext.junit)
 }
