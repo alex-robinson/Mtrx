@@ -1123,6 +1123,11 @@ impl App {
                         room.extend(step);
                         return Task::none();
                     }
+                    selection::Message::ExtendLine(up) => return room.extend_line(up),
+                    selection::Message::LineMoved(from, up, offset) => {
+                        room.line_moved(from, up, offset);
+                        return Task::none();
+                    }
                     _ => {}
                 }
                 Selection::update(&mut room.selection, message);
@@ -3445,7 +3450,7 @@ async fn run_request(
 }
 
 /// ⌘K / Ctrl+K focuses the room search, Esc closes the viewer or clears the
-/// search, ⌘C, ⌘A and Shift with ← or → act on the timeline's selection;
+/// search, ⌘C, ⌘A and Shift with an arrow act on the timeline's selection;
 /// window focus.
 fn shortcuts(
     event: iced::Event,
@@ -3476,6 +3481,13 @@ fn shortcuts(
                     (true, true) => selection::Step::WordForward,
                 };
                 Some(Message::Select(selection::Message::Extend(step)))
+            }
+            Key::Named(arrow @ (Named::ArrowUp | Named::ArrowDown))
+                if modifiers.shift() && status == iced::event::Status::Ignored =>
+            {
+                Some(Message::Select(selection::Message::ExtendLine(
+                    arrow == Named::ArrowUp,
+                )))
             }
             Key::Character(c) if c == "k" && modifiers.command() => Some(Message::FocusSearch),
             Key::Character(c) if c == "r" && modifiers.command() => Some(Message::Reload),

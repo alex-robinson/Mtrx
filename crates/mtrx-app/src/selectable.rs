@@ -5,14 +5,17 @@
 //! the part it is given. Elsewhere ([`selectable_text`]) it keeps its own
 //! selection and copies it with ⌘C.
 
-use std::{ops::Range, rc::Rc};
+use std::{any::Any, ops::Range, rc::Rc};
 
 use iced::{
-    Color, Element, Event, Font, Length, Pixels, Point, Rectangle, Renderer, Size, Theme, Vector,
+    Color, Element, Event, Font, Length, Pixels, Point, Rectangle, Renderer, Size, Task, Theme,
+    Vector,
     advanced::{
         Clipboard, Layout, Shell, Widget, clipboard, layout, mouse, renderer,
         text::{self as core_text, Paragraph as _, Span},
         widget::{
+            Id, Operation, operate,
+            operation::Outcome,
             text as core_widget_text,
             tree::{self, Tree},
         },
@@ -32,6 +35,9 @@ use crate::{selection::Gesture, style};
 /// to count as a click rather than the start of a selection.
 const CLICK_SLOP: f32 = 4.0;
 
+/// The id of the unit holding the end of the selection, for [`line_step`].
+const FOCUS: &str = "selection-focus";
+
 pub struct Selectable<'a, Message> {
     spans: Vec<Span<'static, String, Font>>,
     /// The bytes of `spans` that are its text, when spans after them are
@@ -42,6 +48,8 @@ pub struct Selectable<'a, Message> {
     size: Option<Pixels>,
     /// The selected part of its text, in bytes.
     selected: Option<Range<usize>>,
+    /// The selection ends in it.
+    focus: bool,
     dragging: bool,
     on_link: Option<fn(String) -> Message>,
     on_gesture: Option<Rc<dyn Fn(Gesture) -> Message + 'a>>,
@@ -70,6 +78,7 @@ pub fn selectable<'a, Message>(
         unit,
         size: None,
         selected: None,
+        focus: false,
         dragging: false,
         on_link: None,
         on_gesture: None,
@@ -121,6 +130,12 @@ impl<'a, Message> Selectable<'a, Message> {
 
     pub fn selected(mut self, range: Option<Range<usize>>) -> Self {
         self.selected = range;
+        self
+    }
+
+    /// The selection ends in it, so Shift with ↑ or ↓ moves from it.
+    pub fn focus(mut self, focus: bool) -> Self {
+        self.focus = focus;
         self
     }
 
@@ -216,6 +231,29 @@ impl State {
             .map(|(start, word)| start..start + word.len())
             .find(|word| word.contains(&offset))
             .unwrap_or(offset..offset)
+    }
+
+    /// The offset a line above (`up`) or below `offset`, nearest to where
+    /// it is across; `None` past the first or last line.
+    fn line_step(&self, offset: usize, up: bool, size: Size) -> Option<usize> {
+        let runs: Vec<_> = self.buffer().layout_runs().collect();
+        let (at, x) = runs.iter().enumerate().find_map(|(i, run)| {
+            let start = self.line_starts.get(run.line_i).copied().unwrap_or(0);
+            let local = offset.checked_sub(start)?;
+            let (from, to) = match (run.glyphs.first(), run.glyphs.last()) {
+                (Some(first), Some(last)) => (first.start, last.end),
+                // An empty line.
+                _ => (0, 0),
+            };
+            (from..=to).contains(&local).then(|| {
+                let x = (run.glyphs.iter())
+                    .find(|glyph| glyph.start >= local)
+                    .map_or(run.line_w, |glyph| glyph.x);
+                (i, x)
+            })
+        })?;
+        let run = runs.get(if up { at.checked_sub(1)? } else { at + 1 })?;
+        Some(self.offset_at(Point::new(x, run.line_top + run.line_height / 2.0), size))
     }
 
     /// Rectangles covering `range`, relative to the text.
@@ -484,6 +522,19 @@ impl<Message> Widget<Message, Theme, Renderer> for Selectable<'_, Message> {
         }
     }
 
+    fn operate(
+        &mut self,
+        tree: &mut Tree,
+        layout: Layout<'_>,
+        _renderer: &Renderer,
+        operation: &mut dyn Operation,
+    ) {
+        if self.focus {
+            let state: &mut dyn Any = tree.state.downcast_mut::<State>();
+            operation.custom(Some(&Id::new(FOCUS)), layout.bounds(), state);
+        }
+    }
+
     fn mouse_interaction(
         &self,
         tree: &Tree,
@@ -560,6 +611,41 @@ fn update_own<Message>(
     }
 }
 
+/// Where the end of the selection, at `offset` in the unit holding it,
+/// moves a line up or down: `Some(None)` past the unit's first or last line,
+/// `None` if no text unit holds it (e.g. in a typeset message).
+pub fn line_step(offset: usize, up: bool) -> Task<Option<Option<usize>>> {
+    operate(LineStep {
+        offset,
+        up,
+        moved: None,
+    })
+}
+
+struct LineStep {
+    offset: usize,
+    up: bool,
+    moved: Option<Option<usize>>,
+}
+
+impl Operation<Option<Option<usize>>> for LineStep {
+    fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn Operation<Option<Option<usize>>>)) {
+        operate(self);
+    }
+
+    fn custom(&mut self, id: Option<&Id>, bounds: Rectangle, state: &mut dyn Any) {
+        if id == Some(&Id::new(FOCUS))
+            && let Some(state) = state.downcast_ref::<State>()
+        {
+            self.moved = Some(state.line_step(self.offset, self.up, bounds.size()));
+        }
+    }
+
+    fn finish(&self) -> Outcome<Option<Option<usize>>> {
+        Outcome::Some(self.moved)
+    }
+}
+
 fn translation(bounds: Rectangle) -> Vector {
     bounds.position() - Point::ORIGIN
 }
@@ -627,5 +713,47 @@ mod tests {
             mouse::Button::Left,
         ))]);
         assert_eq!(ui.simulate([command_c()]), [Status::Ignored]);
+    }
+
+    #[test]
+    fn shift_up_and_down_move_by_line() {
+        use iced::advanced::{renderer::Headless, widget::operation::black_box};
+        use iced_runtime::user_interface::{Cache, UserInterface};
+
+        let mut renderer = iced::futures::executor::block_on(iced::Renderer::new(
+            fonts::INTER,
+            Pixels(style::TEXT_SIZE),
+            None,
+        ))
+        .unwrap();
+        // Wrapped over a few lines, the last after a line break.
+        let text = "Ice sheets flow towards the ocean, where they calve.\nMelt";
+        let mut step = |offset, up| {
+            let view: Element<'_, ()> = iced::widget::container(
+                selectable::<()>(vec![Span::new(text.to_owned())], 0).focus(true),
+            )
+            .width(150)
+            .into();
+            let mut ui = UserInterface::build(
+                view,
+                Size::new(150.0, 400.0),
+                Cache::default(),
+                &mut renderer,
+            );
+            let mut operation = LineStep {
+                offset,
+                up,
+                moved: None,
+            };
+            ui.operate(&renderer, &mut black_box(&mut operation));
+            operation.moved.expect("the focused unit reports itself")
+        };
+        assert_eq!(step(2, true), None);
+        let below = step(2, false).unwrap();
+        assert!(below > 2 && below < text.find('\n').unwrap(), "{below}");
+        assert_eq!(step(below, true), Some(2));
+        let last = text.len() - 1;
+        assert_eq!(step(last, false), None);
+        assert!(step(last, true).unwrap() < text.find('\n').unwrap());
     }
 }

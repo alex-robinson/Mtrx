@@ -58,8 +58,13 @@ pub enum Message {
     Copy,
     /// ⌘A: select the messages on screen, from the first to the last.
     SelectAll,
-    /// Shift with an arrow: move the end of the selection.
+    /// Shift with ← or →: move the end of the selection.
     Extend(Step),
+    /// Shift with ↑ (`true`) or ↓: move the end of the selection a line.
+    ExtendLine(bool),
+    /// The end of the selection moved a line from this point to an offset
+    /// in its unit, or past it (`None`).
+    LineMoved(Point, bool, Option<usize>),
     All(String, String),
     Clear,
 }
@@ -135,7 +140,11 @@ impl Selection {
                 }
             }
             // Handled by the room, which has the text and the view.
-            Message::Copy | Message::SelectAll | Message::Extend(_) => {}
+            Message::Copy
+            | Message::SelectAll
+            | Message::Extend(_)
+            | Message::ExtendLine(_)
+            | Message::LineMoved(..) => {}
         }
     }
 

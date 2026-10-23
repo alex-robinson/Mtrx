@@ -43,6 +43,7 @@ use crate::{
     message_menu::{self, MenuAt},
     popover::{Edge, Side, popover},
     presence::{self, Presences},
+    selectable,
     selectable_image::selectable_image,
     selection::{self, Bounds, Point, Pos, Selection, Step, units_text},
     send_later::{self, SendLater},
@@ -483,6 +484,38 @@ impl Room {
         };
     }
 
+    /// Move the end of the selection a line up or down, by the layout of
+    /// the text holding it.
+    pub fn extend_line(&self, up: bool) -> Task<Message> {
+        let Some(focus) = self.selection.as_ref().map(|s| s.focus.clone()) else {
+            return Task::none();
+        };
+        selectable::line_step(focus.pos.offset, up).map(move |moved| {
+            Message::Select(selection::Message::LineMoved(
+                focus.clone(),
+                up,
+                moved.flatten(),
+            ))
+        })
+    }
+
+    /// The end of the selection moved from `from` a line up or down to
+    /// `offset` in its unit, or past the unit (`None`): on into the one
+    /// before or after.
+    pub fn line_moved(&mut self, from: Point, up: bool, offset: Option<usize>) {
+        let Some(selection) = self.selection.as_mut().filter(|s| s.focus == from) else {
+            return;
+        };
+        match offset {
+            Some(offset) => selection.focus.pos.offset = offset,
+            None => {
+                // From the unit's edge, a step goes on into the next one.
+                selection.focus.pos.offset = if up { 0 } else { usize::MAX };
+                self.extend(if up { Step::Back } else { Step::Forward });
+            }
+        }
+    }
+
     /// Each message's index in the timeline, for ordering a selection.
     fn order(&self) -> HashMap<&str, usize> {
         self.entries
@@ -583,6 +616,7 @@ impl Room {
             newest_own: self.newest_own(),
             sending: &self.sending,
             selected,
+            focus: self.selection.as_ref().map(|s| &s.focus),
             dragging: self.selection.as_ref().is_some_and(|s| s.dragging),
             emoji: self.emoji.as_ref(),
             frequent_emoji: look.frequent_emoji,
@@ -975,6 +1009,8 @@ struct Context<'a, 'b> {
     sending: &'b Sending,
     /// The selection, with each message's index in the timeline.
     selected: Option<(Bounds, &'b HashMap<&'b str, usize>)>,
+    /// Where the selection ends.
+    focus: Option<&'b Point>,
     dragging: bool,
     emoji: Option<&'a emoji::Panel>,
     /// The user's most used emoji.
@@ -1015,6 +1051,10 @@ fn event_view<'a>(
             range: context
                 .selected
                 .and_then(|(bounds, order)| bounds.in_message(*order.get(event.id.as_str())?)),
+            focus: context
+                .focus
+                .filter(|focus| focus.event == event.id)
+                .map(|focus| focus.pos),
             dragging: context.dragging,
             on_gesture: Rc::new(move |gesture| {
                 Message::Select(selection::Message::Gesture(id.clone(), gesture))
