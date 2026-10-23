@@ -43,6 +43,10 @@ impl From<mtrx_core::Error> for MtrxError {
             Error::RoomNotFound(room_id) => Self::RoomNotFound { room_id },
             Error::SecretStorage(reason) => Self::SecretStorage { reason },
             error @ Error::InvalidRecoveryKey => Self::invalid(error),
+            // The server's answer is for logs; the apps match the reason.
+            error @ Error::PresenceUnavailable(_) => Self::Other {
+                reason: error.to_string(),
+            },
             error => Self::Other {
                 reason: error.to_string(),
             },
@@ -80,6 +84,10 @@ mod tests {
         assert!(matches!(
             convert(mtrx_core::Error::InvalidRecoveryKey),
             MtrxError::InvalidInput { reason } if reason == "The recovery key is not valid"
+        ));
+        assert!(matches!(
+            convert(mtrx_core::Error::PresenceUnavailable("[403 / M_FORBIDDEN] off".into())),
+            MtrxError::Other { reason } if reason == "This server does not share presence"
         ));
         assert!(matches!(
             convert(mtrx_core::Error::Timeline("nothing to send".into())),

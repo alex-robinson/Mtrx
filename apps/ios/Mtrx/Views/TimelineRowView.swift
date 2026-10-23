@@ -68,12 +68,14 @@ struct RowActions {
 /// A message: in a bubble on the right if ours, else on the left with the
 /// sender's name over the first of a group and their avatar beside it; its
 /// reactions under it, and who read up to it at the right. Holding it opens
-/// its menu.
+/// its menu; swiping it to the left replies to it.
 struct MessageView: View {
     let id: String
     let row: MessageRow
     let highlighted: Bool
     let actions: RowActions
+    @State private var swipe = SwipeToReply()
+    @EnvironmentObject private var images: ImageCache
 
     static let avatarSize: CGFloat = 32
     private static let avatarSpacing: CGFloat = 8
@@ -100,9 +102,10 @@ struct MessageView: View {
                     }
                 }
                 VStack(alignment: own ? .trailing : .leading, spacing: 4) {
+                    // The preview drawn apart: the flipped timeline's own
+                    // would be squashed into a line.
                     content
-                        .contentShape(.contextMenuPreview, RoundedRectangle(cornerRadius: 18))
-                        .contextMenu { menu }
+                        .contextMenu { menu } preview: { content.environmentObject(images) }
                     if !row.reactions.isEmpty {
                         ReactionChips(reactions: row.reactions, trailing: own) { key in
                             actions.react(id, key)
@@ -119,6 +122,15 @@ struct MessageView: View {
                 }
                 if !own { Spacer(minLength: 48) }
             }
+            .offset(x: swipe.offset)
+            .background(alignment: .trailing) {
+                if swipe.progress > 0 {
+                    replyIcon
+                }
+            }
+            .modifier(SwipesToReply(enabled: row.canSwipeToReply, swipe: $swipe) {
+                actions.perform(.reply, id)
+            })
             if !row.readers.isEmpty {
                 ReaderAvatarsView(readers: row.readers) {
                     actions.showReaders(id)
@@ -134,6 +146,19 @@ struct MessageView: View {
                 .padding(.vertical, -2)
         )
         .animation(.easeInOut(duration: 0.3), value: highlighted)
+    }
+
+    /// Revealed at the right while the row is swiped.
+    private var replyIcon: some View {
+        Image(systemName: "arrowshape.turn.up.left.fill")
+            .font(.system(size: 15, weight: .semibold))
+            .foregroundColor(swipe.triggers ? .white : .accentColor)
+            .frame(width: 32, height: 32)
+            .background(swipe.triggers ? Color.accentColor : Color.accentColor.opacity(0.15), in: Circle())
+            .scaleEffect(0.6 + 0.4 * swipe.progress)
+            .opacity(swipe.progress)
+            .padding(.trailing, 8)
+            .accessibilityHidden(true)
     }
 
     @ViewBuilder
@@ -166,7 +191,7 @@ struct MessageView: View {
         case .unableToDecrypt:
             // Turns into the message by itself once its key arrives (after a
             // recovery or verification).
-            bubble(Text("Could not decrypt this message.").italic().foregroundColor(.secondary), quote: nil)
+            bubble(Text(row.undecryptableText ?? "").italic().foregroundColor(.secondary), quote: nil)
         case .other(let description):
             bubble(Text("sent a \(description)").italic().foregroundColor(.secondary), quote: nil)
         case .membership, .displayNameChange, .otherState:
@@ -259,6 +284,82 @@ struct MessageView: View {
         }
         .font(.caption2)
         .foregroundStyle(muted)
+    }
+}
+
+/// From iOS 18, a message swiped to the left replies to it (before, Reply
+/// in its menu does): a UIKit pan that begins only for a leftward drag, so
+/// the list's scrolling and the back gesture are left alone.
+private struct SwipesToReply: ViewModifier {
+    let enabled: Bool
+    @Binding var swipe: SwipeToReply
+    let reply: () -> Void
+
+    func body(content: Content) -> some View {
+        if #available(iOS 18, *) {
+            if enabled {
+                content
+                    .gesture(LeftwardPan { translation in
+                        swipe.update(translation)
+                    } ended: { finished in
+                        if finished && swipe.triggers {
+                            reply()
+                        }
+                        withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+                            swipe = SwipeToReply()
+                        }
+                    })
+                    .onChange(of: swipe.triggers) { triggers in
+                        if triggers {
+                            UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                        }
+                    }
+            } else {
+                content
+            }
+        } else {
+            content
+        }
+    }
+}
+
+/// A pan that begins only when the finger first moves leftward, as
+/// `SwipeToReply.begins` says; its translation is in the window's
+/// coordinates (the timeline is flipped).
+@available(iOS 18, *)
+private struct LeftwardPan: UIGestureRecognizerRepresentable {
+    let changed: (CGPoint) -> Void
+    /// Let go (true), or cancelled.
+    let ended: (Bool) -> Void
+
+    func makeCoordinator(converter: CoordinateSpaceConverter) -> Coordinator {
+        Coordinator()
+    }
+
+    func makeUIGestureRecognizer(context: Context) -> UIPanGestureRecognizer {
+        let pan = UIPanGestureRecognizer()
+        pan.delegate = context.coordinator
+        return pan
+    }
+
+    func handleUIGestureRecognizerAction(_ recognizer: UIPanGestureRecognizer, context: Context) {
+        switch recognizer.state {
+        case .began, .changed:
+            changed(recognizer.translation(in: recognizer.view?.window))
+        case .ended:
+            ended(true)
+        case .cancelled, .failed:
+            ended(false)
+        default:
+            break
+        }
+    }
+
+    final class Coordinator: NSObject, UIGestureRecognizerDelegate {
+        func gestureRecognizerShouldBegin(_ recognizer: UIGestureRecognizer) -> Bool {
+            guard let pan = recognizer as? UIPanGestureRecognizer else { return false }
+            return SwipeToReply.begins(velocity: pan.velocity(in: pan.view?.window))
+        }
     }
 }
 

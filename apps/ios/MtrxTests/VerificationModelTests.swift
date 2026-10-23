@@ -5,15 +5,13 @@ import XCTest
 @MainActor
 final class VerificationModelTests: XCTestCase {
     private var verification: FakeVerification!
-    private var done = 0
 
     override func setUp() async throws {
         verification = FakeVerification(noHandle: .init())
-        done = 0
     }
 
     private func makeModel(incoming: Bool = false) -> VerificationModel {
-        VerificationModel(verification: verification, incoming: incoming) { [unowned self] in self.done += 1 }
+        VerificationModel(verification: verification, incoming: incoming)
     }
 
     private let emojis = [
@@ -37,11 +35,9 @@ final class VerificationModelTests: XCTestCase {
         await eventually { model.state == .confirmed }
         verification.listener?.onUpdate(state: .sharingKeys)
         await eventually { model.state == .sharingKeys }
-        XCTAssertEqual(done, 0)
         verification.listener?.onUpdate(state: .done)
         await eventually { model.state == .done }
         XCTAssertTrue(model.ended)
-        XCTAssertEqual(done, 1)
     }
 
     func testStartsAtTheCurrentState() {
@@ -58,7 +54,6 @@ final class VerificationModelTests: XCTestCase {
         await eventually { model.ended }
         XCTAssertEqual(model.state, .cancelled(reason: "The emoji did not match"))
         XCTAssertEqual(verification.confirmed, 0)
-        XCTAssertEqual(done, 0)
     }
 
     func testCancels() async {

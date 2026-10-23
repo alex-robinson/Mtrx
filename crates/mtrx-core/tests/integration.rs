@@ -19,8 +19,8 @@ use anyhow::{Context, Result, bail};
 use futures_util::{Stream, StreamExt};
 use mtrx_core::{
     Access, Attachment, CallService, Connection, EventContent, MembershipChange, NewRoom,
-    NotifyMode, Permissions, Profile, RecoveryStatus, RoomKind, SecretStore, Session,
-    TimelineEntry, VerificationState,
+    NotifyMode, Permissions, PresenceState, Profile, RecoveryStatus, RoomKind, SecretStore,
+    Session, TimelineEntry, VerificationState,
     test_support::{self, PASSWORD, homeserver, unique_name},
 };
 use mtrx_format::{Block, Inline, Style};
@@ -1723,5 +1723,91 @@ async fn failed_sends_are_retried_or_discarded() -> Result<()> {
     let sent = find_message(&entries, "after the long one").unwrap();
     assert!(timeline.retry(&sent.key).await.is_err());
     assert!(timeline.discard(&sent.key).await.is_err());
+    Ok(())
+}
+
+/// Long enough for a watcher's next read of a user (once a minute).
+const PRESENCE_TIMEOUT: Duration = Duration::from_secs(100);
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs local Synapse (testserver/run.sh)"]
+async fn presence_between_users() -> Result<()> {
+    let (_, alice) = new_user("presence").await?;
+    let (_, bob) = new_user("presence").await?;
+    let (_, carol) = new_user("presence").await?;
+    let alice_id = alice.session.user_id();
+    // Synapse shows presence to those who share a room.
+    let room = alice
+        .session
+        .create_room(NewRoom {
+            name: Some("here".into()),
+            invite: vec![bob.session.user_id()],
+            ..Default::default()
+        })
+        .await?;
+    join_synced(&bob, &room, "here").await?;
+
+    alice
+        .session
+        .set_presence(PresenceState::Online, Some("In a meeting"))
+        .await?;
+    let seen = bob.session.presence(&alice_id).await?;
+    assert_eq!(seen.state, PresenceState::Online);
+    assert_eq!(seen.status_message.as_deref(), Some("In a meeting"));
+    assert!(seen.currently_active);
+    let last_active = seen.last_active.context("last active")?;
+    let ago = SystemTime::now()
+        .duration_since(last_active)
+        .unwrap_or_default();
+    assert!(ago < TIMEOUT, "{ago:?}");
+
+    let watcher = bob.session.watch_presence([alice_id.clone()]);
+    let mut updates = std::pin::pin!(watcher.updates());
+    let (user, first) = timeout("the first presence", updates.next())
+        .await?
+        .context("ended")??;
+    assert_eq!(
+        (user, first.state),
+        (alice_id.clone(), PresenceState::Online)
+    );
+
+    // Read again a minute later: the server kept Alice's presence (it
+    // drops one not refreshed for 30 s), so the change is to unavailable,
+    // not offline.
+    alice
+        .session
+        .set_presence(PresenceState::Unavailable, None)
+        .await?;
+    let changed = tokio::time::timeout(PRESENCE_TIMEOUT, async {
+        while let Some(update) = updates.next().await {
+            let (_, presence) = update?;
+            if presence.state != PresenceState::Online {
+                return Ok(presence);
+            }
+        }
+        bail!("the watcher ended")
+    })
+    .await
+    .context("timed out: the change to unavailable")??;
+    assert_eq!(changed.state, PresenceState::Unavailable);
+    assert_eq!(changed.status_message, None);
+
+    alice
+        .session
+        .set_presence(PresenceState::Offline, None)
+        .await?;
+    let seen = bob.session.presence(&alice_id).await?;
+    assert_eq!(seen.state, PresenceState::Offline);
+
+    // Synapse refuses the presence of someone Bob shares no room with,
+    // while it answers his own: that user's error, not a server without
+    // presence.
+    match bob.session.presence(&carol.session.user_id()).await {
+        Err(mtrx_core::Error::PresenceUnavailable(answer)) => {
+            bail!("a stranger's presence read as unavailable: {answer}")
+        }
+        Err(e) => assert!(e.to_string().contains("M_FORBIDDEN"), "{e}"),
+        Ok(presence) => bail!("a stranger's presence: {presence:?}"),
+    }
     Ok(())
 }

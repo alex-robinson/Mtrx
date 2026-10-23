@@ -35,6 +35,7 @@ mod message_menu;
 mod pdf;
 mod pdf_viewer;
 mod popover;
+mod presence;
 mod room;
 mod selectable;
 mod selectable_image;
@@ -76,7 +77,8 @@ fn main() -> iced::Result {
     .window(iced::window::Settings {
         size,
         icon: logo::window_icon(),
-        // The app ends its session first, see `app::Message::CloseWindow`.
+        // The app sets its presence offline and ends its session first, see
+        // `app::Message::CloseWindow`.
         exit_on_close_request: false,
         #[cfg(target_os = "linux")]
         platform_specific: linux::window_settings(),

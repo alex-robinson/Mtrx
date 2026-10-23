@@ -9,8 +9,6 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.filter
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -18,11 +16,11 @@ import uniffi.mtrx.ConnectionListener
 import uniffi.mtrx.ConnectionState
 import uniffi.mtrx.DeviceInfo
 import uniffi.mtrx.EncryptionState
+import uniffi.mtrx.EncryptionStateListener
 import uniffi.mtrx.MtrxException
 import uniffi.mtrx.MtrxInterface
 import uniffi.mtrx.OAuthLogin
 import uniffi.mtrx.RecoveryListener
-import uniffi.mtrx.RecoveryStatus
 import uniffi.mtrx.RecoveryStep
 import uniffi.mtrx.RoomListListener
 import uniffi.mtrx.RoomListState
@@ -37,7 +35,7 @@ sealed interface AccountState {
 
     data class SignedOut(val error: String? = null) : AccountState
 
-    data class SignedIn(val session: Session, val images: Images) : AccountState
+    data class SignedIn(val session: Session, val images: Images, val presence: PresenceModel) : AccountState
 }
 
 /** A browser sign-in, from the sign-in page to the redirect. */
@@ -60,12 +58,22 @@ sealed interface BrowserLogin {
  * here too, so leaving their screens does not stop them. Lives as long as
  * the process; [scope] runs on the main thread. Listener callbacks arrive on
  * the library's threads and only set flows or launch into [scope]. The
- * space selected on the Rooms tab is kept in [selectedSpace] until sign-out.
+ * space selected on the Spaces tab is kept in [selectedSpace] until
+ * sign-out; the order of the spaces' rooms in [roomSortStore]. [push] is
+ * told when a session opens and before it closes; [notifications] are
+ * cleared as rooms are opened or read. Each session's [PresenceModel] reads
+ * the direct chats' presence and sets ours around sync, as [sharePresence]
+ * says; [clock] counts milliseconds, for idling.
  */
 class Account(
     private val mtrx: MtrxInterface,
     private val scope: CoroutineScope,
     selectedSpace: SelectedSpaceStore,
+    roomSortStore: RoomSortStore,
+    private val push: PushRegistration,
+    private val notifications: RoomNotifications,
+    sharePresenceStore: SharePresenceStore,
+    private val clock: () -> Long = { System.nanoTime() / 1_000_000 },
 ) {
     private val _state = MutableStateFlow<AccountState>(AccountState.Loading)
     val state: StateFlow<AccountState> = _state.asStateFlow()
@@ -73,8 +81,14 @@ class Account(
     private val _rooms = MutableStateFlow(NO_ROOMS)
     val rooms: StateFlow<RoomListState> = _rooms.asStateFlow()
 
-    /** The space selected on the Rooms tab. */
+    /** The space selected on the Spaces tab. */
     val spaceSelection = SpaceSelection(selectedSpace, rooms, scope)
+
+    /** The order of a space's rooms and people. */
+    val roomSort = RoomSortChoice(roomSortStore, scope)
+
+    /** "Share my presence". */
+    val sharePresence = SharePresence(sharePresenceStore, scope)
 
     private val _connection = MutableStateFlow(ConnectionState.ONLINE)
     val connection: StateFlow<ConnectionState> = _connection.asStateFlow()
@@ -82,7 +96,10 @@ class Account(
     private val _browserLogin = MutableStateFlow<BrowserLogin>(BrowserLogin.Idle)
     val browserLogin: StateFlow<BrowserLogin> = _browserLogin.asStateFlow()
 
-    /** Whether this device can read encrypted messages; null until asked. */
+    /**
+     * Whether this device can read encrypted messages, and whether keys are
+     * arriving: as the library reports it once sync started; null before.
+     */
     private val _encryption = MutableStateFlow<EncryptionState?>(null)
     val encryption: StateFlow<EncryptionState?> = _encryption.asStateFlow()
 
@@ -101,6 +118,13 @@ class Account(
     private val _verificationRequest = MutableStateFlow<Verification?>(null)
     val verificationRequest: StateFlow<Verification?> = _verificationRequest.asStateFlow()
 
+    /** A room to open, from a tapped notification; cleared once shown. */
+    private val _roomRequest = MutableStateFlow<String?>(null)
+    val roomRequest: StateFlow<String?> = _roomRequest.asStateFlow()
+
+    // The room on screen: read by pushes.
+    @Volatile private var openRoom: String? = null
+
     /** Errors of background work, to show briefly. */
     private val _messages = MutableSharedFlow<String>(extraBufferCapacity = 8)
     val messages: SharedFlow<String> = _messages.asSharedFlow()
@@ -109,11 +133,14 @@ class Account(
     private val lock = Mutex()
     private var session: Session? = null
     private var subscriptions: List<TaskHandle> = emptyList()
-    private var foreground = false
+    private var encryptionSubscription: TaskHandle? = null
+    private var presence: PresenceModel? = null
     private var syncing = false
 
+    // Set at once, followed by sync under the lock; read by pushes too.
+    @Volatile private var foreground = false
+
     // On the main thread.
-    private var encryptionWatch: Job? = null
     private var recoveryJob: Job? = null
 
     private val pendingLogin = AtomicReference<OAuthLogin?>(null)
@@ -134,11 +161,52 @@ class Account(
     }
 
     /** The app came to the foreground (sync) or went to the background (stop). */
-    fun setForeground(value: Boolean): Job = scope.launch {
-        lock.withLock {
-            foreground = value
-            updateSync()
+    fun setForeground(value: Boolean): Job {
+        foreground = value
+        return scope.launch {
+            lock.withLock { updateSync() }
         }
+    }
+
+    /** The room open on screen while the app is in the foreground; from any thread. */
+    fun foregroundRoom(): String? = if (foreground) openRoom else null
+
+    /** The room screen shows [roomId]: its notification goes. */
+    fun roomOpened(roomId: String) {
+        openRoom = roomId
+        notifications.clearRoom(roomId)
+    }
+
+    /** The room screen left [roomId]. */
+    fun roomClosed(roomId: String) {
+        if (openRoom == roomId) openRoom = null
+    }
+
+    /** [roomId] was marked read: its notification goes. */
+    fun roomRead(roomId: String) {
+        notifications.clearRoom(roomId)
+    }
+
+    /** A touch or key press in the app: we are not idle. */
+    fun input() {
+        presence?.input()
+    }
+
+    /** Turn "Share my presence" on or off; the session's presence follows at once. */
+    fun setSharePresence(on: Boolean) {
+        if (on == sharePresence.on.value) return
+        sharePresence.set(on)
+        presence?.sharingChanged(on)
+    }
+
+    /** Open [roomId] (a notification was tapped); signed in, the navigation does. */
+    fun requestRoom(roomId: String) {
+        _roomRequest.value = roomId
+    }
+
+    /** The navigation opened the requested room. */
+    fun roomRequestHandled() {
+        _roomRequest.value = null
     }
 
     /** Throws [MtrxException]. */
@@ -189,11 +257,14 @@ class Account(
         lock.withLock {
             val current = session ?: return@withLock
             stopSync()
+            // No more pushes to this device: on the server, then at the distributor.
+            push.closing(current)
             try {
                 current.logout()
             } catch (e: MtrxException) {
                 _messages.tryEmit("Could not sign out: ${describe(e)}")
                 updateSync()
+                push.opened(current)
                 return@withLock
             }
             close()
@@ -207,7 +278,10 @@ class Account(
     fun forget(): Job = scope.launch {
         lock.withLock {
             val current = session ?: return@withLock
+            // The server no longer accepts the session: nothing to set.
+            presence?.close()
             stopSync()
+            push.closing(current)
             try {
                 current.forget()
             } catch (e: MtrxException) {
@@ -230,7 +304,7 @@ class Account(
 
     /**
      * Unlock encryption with the recovery key; [recovery] follows its steps.
-     * Ignored while one runs.
+     * Ignored while one runs. [encryption] follows as the library reports it.
      */
     fun recover(recoveryKey: String) {
         val current = session ?: return
@@ -249,7 +323,6 @@ class Account(
                 return@launch
             }
             _recovery.value = Recovery.Done
-            askEncryption(current)
         }
     }
 
@@ -261,17 +334,16 @@ class Account(
     /** Ask our other devices to verify this one; then [verification] has it. */
     fun verifyWithAnotherDevice() {
         val current = session ?: return
-        replaceVerification(VerificationModel.request(scope, onDone = { refreshEncryption(current) }) {
+        replaceVerification(VerificationModel.request(scope) {
             current.requestSelfVerification()
         })
     }
 
     /** Accept [verificationRequest]; then [verification] has it. */
     fun acceptVerificationRequest() {
-        val current = session ?: return
         val request = _verificationRequest.value ?: return
         _verificationRequest.value = null
-        replaceVerification(VerificationModel.accept(scope, onDone = { refreshEncryption(current) }, request))
+        replaceVerification(VerificationModel.accept(scope, request))
     }
 
     fun declineVerificationRequest() {
@@ -315,34 +387,14 @@ class Account(
         }
     }
 
-    // Asked when sync starts: once the room list is loaded (at once if it
-    // already is, coming back to the foreground), and again with its updates
-    // while recovery is not known yet (before the first sync's response).
-    private fun watchEncryption(current: Session) {
-        encryptionWatch?.cancel()
-        encryptionWatch = scope.launch {
-            _rooms.filter { it.loaded }.first {
-                val status = askEncryption(current)?.recovery
-                status != null && status != RecoveryStatus.UNKNOWN
+    // Once sync has started (before it, the state is not known).
+    private fun followEncryption(current: Session): TaskHandle =
+        current.subscribeEncryptionState(object : EncryptionStateListener {
+            // On a library thread: the state now and after every change.
+            override fun onUpdate(state: EncryptionState) {
+                scope.launch { if (session === current) _encryption.value = state }
             }
-        }
-    }
-
-    private fun refreshEncryption(current: Session) {
-        scope.launch { askEncryption(current) }
-    }
-
-    /** The state, also in [encryption]; null on failure or after sign-out. */
-    private suspend fun askEncryption(current: Session): EncryptionState? {
-        val state = try {
-            current.encryptionState()
-        } catch (e: MtrxException) {
-            return null
-        }
-        if (session !== current) return null
-        _encryption.value = state
-        return state
-    }
+        })
 
     // Under the lock.
     private suspend fun open(signedIn: Session) {
@@ -358,7 +410,9 @@ class Account(
         try {
             handles += signedIn.subscribeRoomList(object : RoomListListener {
                 override fun onUpdate(state: RoomListState) {
+                    val previous = _rooms.value
                     _rooms.value = state
+                    roomsRead(previous, state).forEach(notifications::clearRoom)
                 }
             })
         } catch (e: MtrxException) {
@@ -371,27 +425,31 @@ class Account(
             }
         })
         subscriptions = handles
-        _state.value = AccountState.SignedIn(signedIn, Images(signedIn))
+        val sessionPresence = PresenceModel(signedIn, signedIn.userId(), rooms, sharePresence, scope, clock)
+        presence = sessionPresence
+        _state.value = AccountState.SignedIn(signedIn, Images(signedIn), sessionPresence)
         updateSync()
+        push.opened(signedIn)
     }
 
     // Under the lock.
     private suspend fun updateSync() {
         val current = session
         if (current != null && foreground && !syncing) {
+            // Online, or (not sharing, at first) offline before sync can say otherwise.
+            presence?.foreground()
             current.startSync()
             syncing = true
-            watchEncryption(current)
+            if (encryptionSubscription == null) encryptionSubscription = followEncryption(current)
         } else if ((current == null || !foreground) && syncing) {
             stopSync()
         }
     }
 
-    // Under the lock.
+    // Under the lock. Offline (if shared) first, also before a logout.
     private suspend fun stopSync() {
         if (syncing) {
-            encryptionWatch?.cancel()
-            encryptionWatch = null
+            presence?.background()
             session?.stopSync()
             syncing = false
         }
@@ -400,11 +458,14 @@ class Account(
     // Under the lock, after logout or forget.
     private suspend fun close() {
         _state.value = AccountState.SignedOut()
-        subscriptions.forEach {
+        (subscriptions + listOfNotNull(encryptionSubscription)).forEach {
             it.cancel()
             it.close()
         }
         subscriptions = emptyList()
+        encryptionSubscription = null
+        presence?.close()
+        presence = null
         recoveryJob?.cancel()
         recoveryJob = null
         _recovery.value = Recovery.Idle
@@ -417,6 +478,8 @@ class Account(
         _rooms.value = NO_ROOMS
         _connection.value = ConnectionState.ONLINE
         spaceSelection.clear()
+        _roomRequest.value = null
+        notifications.clearAll()
     }
 
     private companion object {

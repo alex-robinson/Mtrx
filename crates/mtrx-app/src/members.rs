@@ -13,6 +13,7 @@ use crate::{
     ellipsis::ellipsis,
     fonts,
     hint::{Position, hint},
+    presence::{self, Presences},
     style,
 };
 
@@ -26,6 +27,7 @@ pub fn view<'a>(
     room_name: &str,
     own: &OwnedUserId,
     avatars: &Avatars,
+    presences: &Presences,
 ) -> Element<'a, Message> {
     let mut panel = column![
         row![
@@ -57,12 +59,12 @@ pub fn view<'a>(
             let (joined, invited): (Vec<_>, Vec<_>) = members.iter().partition(|m| !m.invited);
             panel = panel.push(heading(format!("Joined · {}", joined.len())));
             for member in joined {
-                panel = panel.push(entry(member, own, avatars));
+                panel = panel.push(entry(member, own, avatars, presences));
             }
             if !invited.is_empty() {
                 panel = panel.push(heading(format!("Invited · {}", invited.len())));
                 for member in invited {
-                    panel = panel.push(entry(member, own, avatars));
+                    panel = panel.push(entry(member, own, avatars, presences));
                 }
             }
         }
@@ -99,22 +101,31 @@ fn heading<'a>(label: String) -> Element<'a, Message> {
     .into()
 }
 
-/// A member; clicking shows who they are.
-fn entry<'a>(member: &'a Member, own: &OwnedUserId, avatars: &Avatars) -> Element<'a, Message> {
+/// A member, with their presence; clicking shows who they are.
+fn entry<'a>(
+    member: &'a Member,
+    own: &OwnedUserId,
+    avatars: &Avatars,
+    presences: &Presences,
+) -> Element<'a, Message> {
     let name = member.name.as_deref().unwrap_or(member.id.localpart());
     let role = match member.role {
         Role::Admin => "Admin",
         Role::Moderator => "Mod",
         Role::Member => "",
     };
+    let avatar = avatars.view(
+        member.id.as_str(),
+        name,
+        member.avatar.as_deref(),
+        AVATAR,
+        Shape::Circle,
+    );
+    let presence = presences.get(&member.id);
     let line = row![
-        avatars.view(
-            member.id.as_str(),
-            name,
-            member.avatar.as_deref(),
-            AVATAR,
-            Shape::Circle
-        ),
+        presence::with_dot(avatar, presence, AVATAR, |theme| {
+            theme.extended_palette().background.weak.color
+        }),
         ellipsis(name).size(13).width(Length::Fill),
         text(role).size(11).style(text::secondary),
     ]

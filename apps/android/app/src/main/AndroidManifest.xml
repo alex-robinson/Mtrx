@@ -2,6 +2,10 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Message notifications (asked on Android 13+). -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- Held while a push is handled; the connector declares it too. -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
 
     <!-- Browsers that offer Custom Tabs (package visibility, API 30+). -->
     <queries>
@@ -48,5 +52,16 @@
                 <data android:scheme="io.github.alex-robinson" />
             </intent-filter>
         </activity>
+
+        <!-- UnifiedPush (connector 3.x): the connector's receiver hands
+             endpoints and pushes to this service. In the app's process, so
+             MtrxApplication.onCreate runs first. -->
+        <service
+            android:name=".push.MtrxPushService"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="org.unifiedpush.android.connector.PUSH_EVENT" />
+            </intent-filter>
+        </service>
     </application>
 </manifest>

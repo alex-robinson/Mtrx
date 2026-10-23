@@ -1,15 +1,18 @@
 import MtrxFFI
 import SwiftUI
 
-/// A room in the list: picture, name, last activity and unread count.
+/// A room in the list: picture (with a direct chat's person's presence),
+/// name, last activity and unread count.
 struct RoomRow: View {
     let room: RoomSummary
+    var presence: Presence?
 
     private var unread: Bool { room.unreadMessages > 0 || room.unreadMentions > 0 }
 
     var body: some View {
         HStack(spacing: 12) {
             AvatarView(name: room.name, uri: room.avatarUrl, size: 44, shape: room.kind == .space ? .square : .circle)
+                .presenceDot(presence, size: 12, avatar: 44)
             VStack(alignment: .leading, spacing: 2) {
                 Text(room.name)
                     .fontWeight(unread ? .semibold : .regular)

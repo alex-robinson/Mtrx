@@ -4,7 +4,8 @@ import MtrxFFI
 /// An emoji verification of this device with another of ours, asked for
 /// here (outgoing) or by the other device (incoming). Holds the
 /// `Verification` and its subscription while the screen shows: the
-/// protocol is followed only while the object lives.
+/// protocol is followed only while the object lives. The encryption state
+/// that follows is pushed to `SessionModel`.
 @MainActor
 final class VerificationModel: ObservableObject, Identifiable {
     let incoming: Bool
@@ -16,19 +17,17 @@ final class VerificationModel: ObservableObject, Identifiable {
     @Published private(set) var error: String?
 
     private let verification: Verification
-    private let onDone: @MainActor () -> Void
     private let subscriptions = Subscriptions()
     private var task: Task<Void, Never>?
 
-    init(verification: Verification, incoming: Bool, onDone: @escaping @MainActor () -> Void) {
+    init(verification: Verification, incoming: Bool) {
         self.verification = verification
         self.incoming = incoming
-        self.onDone = onDone
         asking = incoming
         state = verification.state()
         let feed = Feed<VerificationState>()
         subscriptions.add(verification.subscribe(listener: feed), feed) { [weak self] in
-            self?.apply($0)
+            self?.state = $0
         }
     }
 
@@ -67,14 +66,6 @@ final class VerificationModel: ObservableObject, Identifiable {
         let verification = self.verification
         Task {
             try? await verification.cancel()
-        }
-    }
-
-    private func apply(_ state: VerificationState) {
-        let wasDone = self.state == .done
-        self.state = state
-        if state == .done && !wasDone {
-            onDone()
         }
     }
 

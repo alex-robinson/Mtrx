@@ -28,6 +28,7 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
 import org.mtrx.app.model.describe
 import uniffi.mtrx.MtrxException
+import uniffi.mtrx.Session
 import uniffi.mtrx.TaskHandle
 import uniffi.mtrx.Timeline
 import uniffi.mtrx.TimelineItem
@@ -37,16 +38,21 @@ import uniffi.mtrx.TypingListener
 /**
  * A room's timeline screen: its rows, older events on demand, the composer
  * (a new message, a reply or an edit), who is typing, the actions on a
- * message, and going to the original of a reply. [open] gives the room's
- * timeline (`Session.timeline`). Methods are called on the main thread.
+ * message, going to the original of a reply, and a direct chat's person
+ * ([personInfo]). Methods are called on the main thread.
  *
  * Actions on a message take its row's id from the latest [rows]. Sends and
- * the other actions run in a scope of their own, so leaving the room (which
- * clears this model) does not cancel them.
+ * the other actions (invites too) run in a scope of their own, so leaving
+ * the room (which clears this model) does not cancel them. [onRead] follows
+ * each successful [markRead] (the room's notifications go); [onInput] each
+ * change of the draft (typing on the keyboard, which the activity does not
+ * see, is not idle).
  */
 class TimelineViewModel(
     roomId: String,
-    open: suspend (String) -> Timeline,
+    private val session: Session,
+    private val onRead: () -> Unit,
+    private val onInput: () -> Unit = {},
 ) : ViewModel() {
     private val _rows = MutableStateFlow<List<TimelineRow>>(emptyList())
     val rows: StateFlow<List<TimelineRow>> = _rows.asStateFlow()
@@ -77,6 +83,10 @@ class TimelineViewModel(
     private val _error = MutableStateFlow<String?>(null)
     val error: StateFlow<String?> = _error.asStateFlow()
 
+    /** The sheet about a direct chat's person, while open. */
+    private val _personInfo = MutableStateFlow<PersonInfoModel?>(null)
+    val personInfo: StateFlow<PersonInfoModel?> = _personInfo.asStateFlow()
+
     private var timeline: Timeline? = null
     private var subscription: TaskHandle? = null
     private var typingSubscription: TaskHandle? = null
@@ -101,7 +111,7 @@ class TimelineViewModel(
     init {
         viewModelScope.launch {
             try {
-                val opened = open(roomId)
+                val opened = session.timeline(roomId)
                 timeline = opened
                 subscription = opened.subscribe(object : TimelineListener {
                     // On a library thread.
@@ -164,12 +174,15 @@ class TimelineViewModel(
                 current.markRead()
             } catch (e: MtrxException) {
                 markedRead = null
+                return@launch
             }
+            onRead()
         }
     }
 
     /** The user changed the text. */
     fun onDraft(value: String) {
+        onInput()
         _draft.value = value
         typed(value.isNotEmpty())
     }
@@ -191,9 +204,12 @@ class TimelineViewModel(
         }
     }
 
-    /** Reply to row [itemId]: the composer says to whom; an edit under way ends. */
+    /**
+     * Reply to row [itemId] (from its menu, or swiped): the composer says to
+     * whom; an edit under way ends. Only a sent message can be answered.
+     */
     fun startReply(itemId: String) {
-        val row = eventRow(itemId) ?: return
+        val row = eventRow(itemId)?.takeIf { it.canReply } ?: return
         endEdit()
         _composing.value = Composing.Replying(itemId, displayName(row.event), preview(row))
     }
@@ -257,6 +273,18 @@ class TimelineViewModel(
                 _draft.value = text
             }
         }
+    }
+
+    /** The name or avatar of a direct chat's header was tapped: the sheet about [userId]. */
+    fun showPersonInfo(userId: String) {
+        if (_personInfo.value?.userId == userId) return
+        _personInfo.value?.close()
+        _personInfo.value = PersonInfoModel(userId, session, viewModelScope, actions)
+    }
+
+    fun closePersonInfo() {
+        _personInfo.value?.close()
+        _personInfo.value = null
     }
 
     /** Add our reaction [key] to row [itemId], or remove it. */

@@ -11,15 +11,29 @@ use crate::{
     runtime::{InRuntime, run},
 };
 
-/// Whether this device can read encrypted messages. Not pushed: ask again
-/// (`Session.encryptionState()`) once the room list is loaded and after a
-/// recovery or verification completes.
+/// Whether this device can read encrypted messages: `Session.encryptionState()`
+/// now, `Session.subscribeEncryptionState` now and after every change.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Record)]
 pub struct EncryptionState {
     /// Signed by our cross-signing identity: other devices and users trust
     /// it, and it gets the keys of new messages.
     pub device_verified: bool,
     pub recovery: RecoveryStatus,
+    /// Message keys are being fetched from the key backup (after the
+    /// recovery key or a verification, and when a room's timeline opens):
+    /// undecryptable messages may decrypt meanwhile.
+    #[uniffi(default)]
+    pub keys_arriving: bool,
+}
+
+impl From<core::EncryptionState> for EncryptionState {
+    fn from(state: core::EncryptionState) -> Self {
+        Self {
+            device_verified: state.device_verified,
+            recovery: state.recovery.into(),
+            keys_arriving: state.keys_arriving,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
@@ -146,6 +160,12 @@ impl From<core::VerificationState> for VerificationState {
     }
 }
 
+/// Receives the encryption state, now and after every change.
+#[uniffi::export(with_foreign)]
+pub trait EncryptionStateListener: Send + Sync {
+    fn on_update(&self, state: EncryptionState);
+}
+
 /// Receives the steps of `Session.recover` as they start.
 #[uniffi::export(with_foreign)]
 pub trait RecoveryListener: Send + Sync {
@@ -242,16 +262,26 @@ impl Verification {
 
 #[uniffi::export]
 impl Session {
-    /// Whether this device is verified, and the account's recovery.
+    /// Whether this device is verified, the account's recovery, and whether
+    /// message keys are arriving.
     pub async fn encryption_state(&self) -> Result<EncryptionState, MtrxError> {
         let session = self.core();
-        run(async move {
-            Ok(EncryptionState {
-                device_verified: session.is_device_verified().await?,
-                recovery: session.recovery_status().await.into(),
-            })
+        run(async move { Ok(session.encryption_state().await?.into()) }).await
+    }
+
+    /// Call `listener` with the encryption state, now and on every change
+    /// (a verification, a recovery, keys arriving and done).
+    pub fn subscribe_encryption_state(
+        &self,
+        listener: Arc<dyn EncryptionStateListener>,
+    ) -> Arc<TaskHandle> {
+        let session = self.core();
+        TaskHandle::spawn(async move {
+            let mut states = Box::pin(session.encryption_states());
+            while let Some(state) = states.next().await {
+                listener.on_update(state.into());
+            }
         })
-        .await
     }
 
     pub async fn recovery_status(&self) -> RecoveryStatus {
@@ -378,6 +408,22 @@ mod tests {
         assert_eq!(
             RecoveryStatus::from(core::RecoveryStatus::Incomplete),
             RecoveryStatus::Incomplete
+        );
+    }
+
+    #[test]
+    fn encryption_states_say_when_keys_arrive() {
+        assert_eq!(
+            EncryptionState::from(core::EncryptionState {
+                device_verified: true,
+                recovery: core::RecoveryStatus::Enabled,
+                keys_arriving: true,
+            }),
+            EncryptionState {
+                device_verified: true,
+                recovery: RecoveryStatus::Enabled,
+                keys_arriving: true,
+            }
         );
     }
 }

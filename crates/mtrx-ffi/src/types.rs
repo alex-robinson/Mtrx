@@ -85,6 +85,27 @@ impl From<&core::RoomSummary> for RoomSummary {
     }
 }
 
+/// Someone's public profile.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct UserProfile {
+    /// `@user:server`.
+    pub user_id: String,
+    /// Display name, if they set one.
+    pub name: Option<String>,
+    /// `mxc://` URI, for `Session.avatar`.
+    pub avatar_url: Option<String>,
+}
+
+impl From<core::UserSummary> for UserProfile {
+    fn from(user: core::UserSummary) -> Self {
+        Self {
+            user_id: user.id.to_string(),
+            name: user.name,
+            avatar_url: user.avatar.map(|uri| uri.to_string()),
+        }
+    }
+}
+
 /// The room list: every joined and invited room (spaces too), most recently
 /// active first, and the rooms by space as the desktop shows them.
 #[derive(Clone, Debug, PartialEq, uniffi::Record)]
@@ -181,6 +202,57 @@ pub struct TimelineEvent {
     /// them. Names and avatars arrive in a later update when not yet known.
     #[uniffi(default)]
     pub read_by: Vec<Reader>,
+    /// For `EventContent.unableToDecrypt`, why, as far as known.
+    #[uniffi(default)]
+    pub utd_cause: Option<UtdCause>,
+}
+
+/// Why a message could not be decrypted (the SDK's best guess).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum UtdCause {
+    /// The key is missing, without a known reason: it may still arrive
+    /// (from the key backup, or the sender's device).
+    Unknown,
+    /// Sent before we joined the room; its key was not shared with us.
+    SentBeforeWeJoined,
+    /// The sender's identity was verified before but has changed since.
+    VerificationViolation,
+    /// The sender's device is not signed by its owner.
+    UnsignedDevice,
+    /// The sender's device is unknown (deleted, say).
+    UnknownDevice,
+    /// Sent before this device existed, and the account has no key backup.
+    HistoricalMessageAndBackupIsDisabled,
+    /// Sent before this device existed; the key backup can be used once this
+    /// device is verified.
+    HistoricalMessageAndDeviceIsUnverified,
+    /// The sender withheld the key as this device is not verified or
+    /// insecure.
+    WithheldForUnverifiedOrInsecureDevice,
+    /// The sender did not, or could not, share the key with this device.
+    WithheldBySender,
+}
+
+impl From<core::UtdCause> for UtdCause {
+    fn from(cause: core::UtdCause) -> Self {
+        match cause {
+            core::UtdCause::Unknown => Self::Unknown,
+            core::UtdCause::SentBeforeWeJoined => Self::SentBeforeWeJoined,
+            core::UtdCause::VerificationViolation => Self::VerificationViolation,
+            core::UtdCause::UnsignedDevice => Self::UnsignedDevice,
+            core::UtdCause::UnknownDevice => Self::UnknownDevice,
+            core::UtdCause::HistoricalMessageAndBackupIsDisabled => {
+                Self::HistoricalMessageAndBackupIsDisabled
+            }
+            core::UtdCause::HistoricalMessageAndDeviceIsUnverified => {
+                Self::HistoricalMessageAndDeviceIsUnverified
+            }
+            core::UtdCause::WithheldForUnverifiedOrInsecureDevice => {
+                Self::WithheldForUnverifiedOrInsecureDevice
+            }
+            core::UtdCause::WithheldBySender => Self::WithheldBySender,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, uniffi::Enum)]
@@ -401,6 +473,7 @@ impl From<&core::Event> for TimelineEvent {
             },
             editable: event.editable,
             read_by: event.read_by.iter().map(Reader::from).collect(),
+            utd_cause: event.utd_cause.map(UtdCause::from),
         }
     }
 }
@@ -568,7 +641,52 @@ mod tests {
             content,
             send_state: core::SendState::Sending,
             read_by: Vec::new(),
+            utd_cause: None,
         }
+    }
+
+    #[test]
+    fn undecryptable_events_say_why() {
+        let mut undecryptable = event("a", core::EventContent::UnableToDecrypt);
+        undecryptable.utd_cause = Some(core::UtdCause::SentBeforeWeJoined);
+        let entries = [
+            core::TimelineEntry::Event(undecryptable),
+            core::TimelineEntry::Event(event("b", core::EventContent::Redacted)),
+        ];
+        let causes: Vec<_> = timeline_items(&entries)
+            .into_iter()
+            .map(|item| match item.content {
+                TimelineItemContent::Event { event } => (event.content, event.utd_cause),
+                content => panic!("not an event: {content:?}"),
+            })
+            .collect();
+        assert_eq!(
+            causes,
+            [
+                (
+                    EventContent::UnableToDecrypt,
+                    Some(UtdCause::SentBeforeWeJoined)
+                ),
+                (EventContent::Redacted, None),
+            ]
+        );
+    }
+
+    #[test]
+    fn profiles_keep_what_is_set() {
+        let profile = UserProfile::from(core::UserSummary {
+            id: "@bob:example.org".try_into().unwrap(),
+            name: Some("Bob".into()),
+            avatar: None,
+        });
+        assert_eq!(
+            profile,
+            UserProfile {
+                user_id: "@bob:example.org".into(),
+                name: Some("Bob".into()),
+                avatar_url: None,
+            }
+        );
     }
 
     fn message(document: Document, media: Option<core::Media>) -> core::EventContent {

@@ -1,4 +1,5 @@
 import AuthenticationServices
+import Combine
 import Foundation
 import MtrxFFI
 import XCTest
@@ -147,14 +148,50 @@ final class FakeSession: Session, @unchecked Sendable {
     var connectionListener: ConnectionListener?
     var verificationRequestListener: VerificationRequestListener?
     var syncStarts = 0
+    var syncStops = 0
+    /// What `encryptionState()` returns, and the subscription's first state.
     var encryption = EncryptionState(deviceVerified: false, recovery: .unknown)
     var encryptionRequests = 0
+    var encryptionListener: EncryptionStateListener?
+    var encryptionSubscription: FakeTaskHandle?
+    /// What `userProfile` returns, and for whom it was asked.
+    var profile: Result<UserProfile, Error> = .failure(MtrxError.Other(reason: "No connection"))
+    var profileRequests: [String] = []
+    var invites: [(roomId: String, userId: String)] = []
+    var inviteError: Error?
     var deviceList: [DeviceInfo] = []
     /// What `recover` reports, then its outcome.
     var recoverySteps: [RecoveryStep] = []
     var recoverError: Error?
     var recoveredWith: String?
     var selfVerification = FakeVerification(noHandle: .init())
+    /// What `presence` returns, and for whom it was asked.
+    var presenceResult: Result<Presence, Error> = .failure(MtrxError.Other(reason: "No connection"))
+    var presenceRequests: [String] = []
+    var setPresenceError: Error?
+    /// Each `subscribePresence`, in order.
+    var presenceSubscriptions: [(users: [String], listener: PresenceListener, handle: FakeTaskHandle)] = []
+    /// The calls that change the session's state on the server, in order:
+    /// "startSync", "stopSync", "presence <state>", "logout". Our presence
+    /// may be set while sync starts, on another thread.
+    var calls: [String] {
+        lock.lock()
+        defer { lock.unlock() }
+        return log
+    }
+    private var log: [String] = []
+    private let lock = NSLock()
+
+    private func record(_ call: String) {
+        lock.lock()
+        log.append(call)
+        lock.unlock()
+    }
+
+    /// Our presence as set, in order.
+    var presencesSet: [String] {
+        calls.filter { $0.hasPrefix("presence ") }.map { String($0.dropFirst("presence ".count)) }
+    }
 
     override func userId() -> String { "@me:example.org" }
     override func deviceId() -> String { "DEVICE" }
@@ -179,8 +216,48 @@ final class FakeSession: Session, @unchecked Sendable {
         return FakeTaskHandle(noHandle: .init())
     }
 
+    override func subscribeEncryptionState(listener: EncryptionStateListener) -> TaskHandle {
+        encryptionListener = listener
+        listener.onUpdate(state: encryption)
+        let handle = FakeTaskHandle(noHandle: .init())
+        encryptionSubscription = handle
+        return handle
+    }
+
+    override func userProfile(userId: String) async throws -> UserProfile {
+        profileRequests.append(userId)
+        return try profile.get()
+    }
+
+    override func invite(roomId: String, userId: String) async throws {
+        if let inviteError { throw inviteError }
+        invites.append((roomId, userId))
+    }
+
     override func startSync() async {
         syncStarts += 1
+        record("startSync")
+    }
+
+    override func stopSync() async {
+        syncStops += 1
+        record("stopSync")
+    }
+
+    override func presence(userId: String) async throws -> Presence {
+        presenceRequests.append(userId)
+        return try presenceResult.get()
+    }
+
+    override func setPresence(state: PresenceState, statusMessage: String?) async throws {
+        if let setPresenceError { throw setPresenceError }
+        record("presence \(state)")
+    }
+
+    override func subscribePresence(userIds: [String], listener: PresenceListener) throws -> TaskHandle {
+        let handle = FakeTaskHandle(noHandle: .init())
+        presenceSubscriptions.append((userIds, listener, handle))
+        return handle
     }
 
     override func encryptionState() async throws -> EncryptionState {
@@ -202,7 +279,9 @@ final class FakeSession: Session, @unchecked Sendable {
         selfVerification
     }
 
-    override func logout() async throws {}
+    override func logout() async throws {
+        record("logout")
+    }
 
     override func forget() async throws {}
 }
@@ -259,6 +338,8 @@ func eventually(_ condition: @MainActor () -> Bool, file: StaticString = #filePa
 
 enum Make {
     static let start = Date(timeIntervalSince1970: 1_700_000_000)
+    /// For timelines: no message keys arriving, ever.
+    static let noKeysArriving = Just(false).eraseToAnyPublisher()
 
     static func event(
         _ sender: String, _ content: EventContent, at minutes: Double = 0, own: Bool = false,
@@ -280,6 +361,12 @@ enum Make {
                 rawBody: rawBody))
     }
 
+    static func presence(
+        _ state: PresenceState, lastActive: Date? = nil, status: String? = nil
+    ) -> Presence {
+        Presence(state: state, lastActive: lastActive, currentlyActive: state == .online, statusMessage: status)
+    }
+
     static func reader(_ name: String, named: Bool = true) -> Reader {
         Reader(userId: "@\(name):example.org", name: named ? name.capitalized : nil, avatarUrl: nil)
     }
@@ -290,11 +377,11 @@ enum Make {
 
     static func room(
         _ id: String, kind: RoomKind = .room, invited: Bool = false, name: String? = nil, unread: UInt64 = 0,
-        directUser: String? = nil
+        directUser: String? = nil, lastActivity: Date? = nil, avatarUrl: String? = nil
     ) -> RoomSummary {
         RoomSummary(
-            id: id, name: name ?? id, avatarUrl: nil, topic: nil, kind: kind, invited: invited, encrypted: false,
-            unreadMessages: unread, unreadMentions: 0, unreadNotifications: 0, lastActivity: nil,
+            id: id, name: name ?? id, avatarUrl: avatarUrl, topic: nil, kind: kind, invited: invited, encrypted: false,
+            unreadMessages: unread, unreadMentions: 0, unreadNotifications: 0, lastActivity: lastActivity,
             directUserId: directUser, alias: nil, joinedMembers: 2)
     }
 

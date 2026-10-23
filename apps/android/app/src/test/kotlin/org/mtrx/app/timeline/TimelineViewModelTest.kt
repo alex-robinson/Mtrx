@@ -20,6 +20,7 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
+import org.mtrx.app.FakeSession
 import org.mtrx.app.FakeTimeline
 import org.mtrx.app.messageEvent
 import org.mtrx.app.textEvent
@@ -30,10 +31,12 @@ import uniffi.mtrx.QuoteState
 import uniffi.mtrx.ReplyQuote
 import uniffi.mtrx.TimelineItem
 import uniffi.mtrx.TimelineItemContent
+import uniffi.mtrx.UserProfile
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class TimelineViewModelTest {
     private val timeline = FakeTimeline()
+    private val session = FakeSession().apply { roomTimeline = timeline }
 
     @Before
     fun mainDispatcher() {
@@ -45,7 +48,24 @@ class TimelineViewModelTest {
         Dispatchers.resetMain()
     }
 
-    private fun viewModel() = TimelineViewModel("!room:example.org") { timeline }
+    private var reads = 0
+
+    private fun viewModel() = TimelineViewModel("!room:example.org", session, onRead = { reads++ })
+
+    @Test
+    fun personInfoOpensOnceAndCloses() = runTest {
+        session.profile = UserProfile(userId = "@bob:x", name = "Bob", avatarUrl = null)
+        val viewModel = viewModel()
+        viewModel.showPersonInfo("@bob:x")
+        val model = viewModel.personInfo.value!!
+        assertEquals("@bob:x", model.userId)
+        assertEquals("Bob", model.profile.value?.name)
+        // Tapped again while open: the same sheet.
+        viewModel.showPersonInfo("@bob:x")
+        assertTrue(viewModel.personInfo.value === model)
+        viewModel.closePersonInfo()
+        assertNull(viewModel.personInfo.value)
+    }
 
     @Test
     fun updatesBecomeRows() = runTest {
@@ -86,6 +106,17 @@ class TimelineViewModelTest {
         viewModel.markRead()
         viewModel.markRead()
         assertEquals(1, timeline.markedRead)
+        // The room's notifications go once it is read.
+        assertEquals(1, reads)
+    }
+
+    @Test
+    fun aFailedMarkReadKeepsTheNotifications() = runTest {
+        val viewModel = viewModel()
+        timeline.markReadError = MtrxException.Other("offline")
+        timeline.listener!!.onUpdate(listOf(textEvent("1", "@alice:example.org", "hi")))
+        viewModel.markRead()
+        assertEquals(0, reads)
     }
 
     private val alice = "@alice:example.org"
@@ -127,6 +158,14 @@ class TimelineViewModelTest {
         viewModel.cancelComposing()
         assertNull(viewModel.composing.value)
         assertEquals("again", viewModel.draft.value)
+    }
+
+    @Test
+    fun aMessageNotSentYetCannotBeAnswered() = runTest {
+        val viewModel = viewModel()
+        show(messageEvent("unsent", "@me:example.org", Message(kind = MessageKind.TEXT, body = "soon", edited = false, media = null), own = true, eventId = null))
+        viewModel.startReply("unsent")
+        assertNull(viewModel.composing.value)
     }
 
     @Test
@@ -203,7 +242,7 @@ class TimelineViewModelTest {
     @Test
     fun leavingTheRoomStopsTypingButNotSending() = runTest {
         val store = ViewModelStore()
-        val factory = viewModelFactory { initializer { TimelineViewModel("!room:example.org") { timeline } } }
+        val factory = viewModelFactory { initializer { TimelineViewModel("!room:example.org", session, onRead = {}) } }
         val viewModel = ViewModelProvider(store, factory)[TimelineViewModel::class.java]
         val gate = CompletableDeferred<Unit>()
         timeline.gate = gate

@@ -9,7 +9,7 @@ final class TimelineModelTests: XCTestCase {
 
     override func setUp() async throws {
         session = FakeSession(noHandle: .init())
-        model = TimelineModel(session: session, room: Make.room("!room:example.org"))
+        model = TimelineModel(session: session, room: Make.room("!room:example.org"), keysArriving: Make.noKeysArriving)
         await model.open()
     }
 
@@ -49,6 +49,29 @@ final class TimelineModelTests: XCTestCase {
         // At the start: nothing more to load.
         await model.loadOlder()
         XCTAssertEqual(session.fakeTimeline.paginations, 3)
+    }
+
+    func testTheButtonToTheBottomShowsWhenScrolledUp() async {
+        XCTAssertTrue(model.atBottom)
+        XCTAssertFalse(model.showsScrollToBottom)
+        // A little up, or pulled past the bottom: still at the bottom.
+        model.scrolled(distanceFromBottom: TimelineModel.bottomTolerance)
+        XCTAssertFalse(model.showsScrollToBottom)
+        model.scrolled(distanceFromBottom: -30)
+        XCTAssertFalse(model.showsScrollToBottom)
+        model.scrolled(distanceFromBottom: 300)
+        XCTAssertFalse(model.atBottom)
+        XCTAssertTrue(model.showsScrollToBottom)
+        model.scrolled(distanceFromBottom: 0)
+        XCTAssertFalse(model.showsScrollToBottom)
+    }
+
+    func testNoButtonWhileOpening() async {
+        let opening = TimelineModel(session: session, room: Make.room("!other:example.org"), keysArriving: Make.noKeysArriving)
+        opening.scrolled(distanceFromBottom: 300)
+        XCTAssertFalse(opening.showsScrollToBottom)
+        await opening.open()
+        XCTAssertTrue(opening.showsScrollToBottom)
     }
 
     // MARK: Replying and editing

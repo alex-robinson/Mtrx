@@ -20,7 +20,9 @@ mod notes;
 mod notifications;
 mod people;
 mod permissions;
+mod presence;
 mod profile;
+mod push;
 mod room_colours;
 mod room_settings;
 mod rooms;
@@ -38,7 +40,8 @@ pub use calls::{CallService, ServiceKind, recognize_call_link};
 pub use categories::{Category, Grouping, Layout, RoomCategories, RoomTag, Section, Sort};
 pub use connection::Connection;
 pub use encryption::{
-    DeviceInfo, RecoveryStatus, RecoveryStep, Verification, VerificationEmoji, VerificationState,
+    DeviceInfo, EncryptionState, RecoveryStatus, RecoveryStep, Verification, VerificationEmoji,
+    VerificationState,
 };
 pub use error::{Error, Result};
 pub use google::{Google, GoogleClient};
@@ -48,7 +51,9 @@ pub use notes::notes_markdown;
 pub use notifications::Notification;
 pub use people::{Contact, UserInfo};
 pub use permissions::{Permissions, SpaceUpdate};
+pub use presence::{Presence, PresenceState, PresenceWatcher, describe_last_active};
 pub use profile::Profile;
+pub use push::{HttpPusher, PushNotification, PusherInfo};
 pub use room_colours::RoomListColours;
 pub use room_settings::{Access, NotifyMode, RoomSettings};
 pub use rooms::{NewRoom, RoomKind, RoomList, RoomListState, RoomSummary, UserSummary};
@@ -62,7 +67,7 @@ pub use spaces::{
 pub use timeline::{
     Attachment, Event, EventContent, EventKey, Media, MediaKind, MembershipChange, Message,
     MessageKind, PendingSend, Reaction, Reader, Reply, RoomTimeline, SendState, TimelineEntry,
-    mention_targets,
+    UtdCause, mention_targets,
 };
 
 pub use url::Url;

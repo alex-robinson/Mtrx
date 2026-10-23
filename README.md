@@ -41,6 +41,8 @@ cargo run -p mtrx-cli -- note "Idea: compare basal melt"   # a note to self
 cargo run -p mtrx-cli -- notes --since 2026-10-01 -o notes.md  # notes as Markdown
 cargo run -p mtrx-cli -- verify          # emoji verification with another device
 cargo run -p mtrx-cli -- recovery recover
+cargo run -p mtrx-cli -- presence @bob:matrix.org   # state, last active, status
+cargo run -p mtrx-cli -- presence --set unavailable --status "In a meeting"
 ```
 
 Scheduled messages are kept (encrypted) on this device and sent while the app
@@ -52,6 +54,16 @@ rename, change the topic and picture, pin messages and set the call link.
 Removing people, deleting others' messages and changing permissions stay with
 admins. `--moderated` gives the usual Matrix rules instead, and
 `let-everyone-edit ROOM_OR_SPACE` opens existing rooms (needs admin rights).
+
+Presence (online, idle, offline, last active, a status message) is read
+from the server, about once a minute for the people shown, as sync does
+not carry it; our own is sent again every 20 s while Mtrx runs, since
+servers drop it otherwise (Synapse after 30 s). Some servers do not share
+presence: `mtrx presence` then says "This server does not share
+presence", or, for Synapse with presence off, shows everyone offline with
+no last activity. The apps show it as `docs/mobile.md` section 11
+describes; the desktop is idle after 5 minutes without input while its
+window is not focused, and offline once closed.
 
 `--profile NAME` selects an account. Secrets go to the OS keychain;
 `--secret-store file` keeps them in a plain file instead (development only).

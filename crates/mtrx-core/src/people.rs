@@ -5,7 +5,10 @@ use std::collections::HashMap;
 
 use matrix_sdk::{
     Room, RoomMemberships,
-    ruma::{OwnedRoomId, OwnedUserId, UserId},
+    ruma::{
+        OwnedRoomId, OwnedUserId, UserId,
+        api::client::profile::{AvatarUrl, DisplayName},
+    },
 };
 use tracing::warn;
 
@@ -92,39 +95,33 @@ impl Session {
         Ok(contacts)
     }
 
+    /// A user's name and picture from their profile on the server.
+    pub async fn user_profile(&self, user: &UserId) -> Result<UserSummary> {
+        let profile = self.client.account().fetch_user_profile_of(user).await?;
+        Ok(UserSummary {
+            id: user.to_owned(),
+            name: profile.get_static::<DisplayName>().ok().flatten(),
+            avatar: profile.get_static::<AvatarUrl>().ok().flatten(),
+        })
+    }
+
     /// A user's name and picture from their profile, and what we share.
     pub async fn user_info(&self, user: &UserId) -> Result<UserInfo> {
-        let profile = self.client.account().fetch_user_profile_of(user).await;
-        let (name, avatar) = match profile {
-            Ok(profile) => (
-                profile
-                    .get_static::<matrix_sdk::ruma::api::client::profile::DisplayName>()
-                    .ok()
-                    .flatten(),
-                profile
-                    .get_static::<matrix_sdk::ruma::api::client::profile::AvatarUrl>()
-                    .ok()
-                    .flatten(),
-            ),
-            Err(e) => {
-                warn!("could not load the profile of {user}: {e}");
-                (None, None)
+        let user = self.user_profile(user).await.unwrap_or_else(|e| {
+            warn!("could not load the profile of {user}: {e}");
+            UserSummary {
+                id: user.to_owned(),
+                name: None,
+                avatar: None,
             }
-        };
+        });
         let mut shared = Vec::new();
         for room in self.client.joined_rooms() {
-            if is_member(&room, user).await {
+            if is_member(&room, &user.id).await {
                 shared.push(room.room_id().to_owned());
             }
         }
-        Ok(UserInfo {
-            user: UserSummary {
-                id: user.to_owned(),
-                name,
-                avatar,
-            },
-            shared,
-        })
+        Ok(UserInfo { user, shared })
     }
 }
 

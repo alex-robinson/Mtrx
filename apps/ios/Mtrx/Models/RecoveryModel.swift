@@ -3,7 +3,8 @@ import MtrxFFI
 
 /// Unlocking encryption with the recovery key: this device becomes verified
 /// and fetches the message keys from the backup. Runs in a task of its own,
-/// so leaving the screen does not stop it.
+/// so leaving the screen does not stop it. The encryption state that
+/// follows is pushed to `SessionModel`.
 @MainActor
 final class RecoveryModel: ObservableObject {
     @Published var key = ""
@@ -20,12 +21,10 @@ final class RecoveryModel: ObservableObject {
     @Published private(set) var recovered = false
 
     private let session: Session
-    private let onRecovered: @MainActor () -> Void
     private var task: Task<Void, Never>?
 
-    init(session: Session, onRecovered: @escaping @MainActor () -> Void) {
+    init(session: Session) {
         self.session = session
-        self.onRecovered = onRecovered
     }
 
     /// Clear what the last attempt left, unless one is running.
@@ -75,7 +74,6 @@ final class RecoveryModel: ObservableObject {
         case .success:
             key = ""
             recovered = true
-            onRecovered()
         case .failure(MtrxError.InvalidInput):
             keyError = "The recovery key is not valid."
         case .failure(let error):
