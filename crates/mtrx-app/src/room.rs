@@ -1122,6 +1122,7 @@ fn event_view<'a>(
         // Rendered as summaries by `state_line`.
         EventContent::Membership { .. }
         | EventContent::DisplayNameChange { .. }
+        | EventContent::CallLink { .. }
         | EventContent::OtherState { .. } => return space().into(),
     };
 
@@ -1592,6 +1593,10 @@ fn state_summary(events: &[&Event]) -> String {
                 Some(new) => format!("{} is now {new}", user.localpart()),
                 None => format!("{} removed their display name", user.localpart()),
             },
+            EventContent::CallLink { url: Some(url) } => {
+                format!("{name} changed the call link to {url}")
+            }
+            EventContent::CallLink { url: None } => format!("{name} removed the call link"),
             _ => continue,
         };
         if parts.last() != Some(&part) {
@@ -1612,6 +1617,23 @@ mod tests {
     use iced::{Point, Size};
 
     use super::*;
+
+    #[test]
+    fn summarises_call_link_changes() {
+        let alice: mtrx_core::OwnedUserId = "@alice:x".try_into().unwrap();
+        let change = |id: &str, url: Option<&str>| Event {
+            content: EventContent::CallLink {
+                url: url.map(Into::into),
+            },
+            ..Event::test_message(id, alice.clone(), "")
+        };
+        let set = change("$a", Some("https://meet.jit.si/ice"));
+        let removed = change("$b", None);
+        assert_eq!(
+            state_summary(&[&set, &removed]),
+            "alice changed the call link to https://meet.jit.si/ice · alice removed the call link"
+        );
+    }
 
     #[test]
     fn finds_the_messages_on_screen() {
