@@ -16,7 +16,10 @@ use mtrx_core::{MxcUri, OwnedMxcUri, Session};
 use tokio::sync::Semaphore;
 use unicode_segmentation::UnicodeSegmentation;
 
-use crate::fonts;
+use crate::{
+    fonts,
+    style::{MIN_CONTRAST, contrast, luminance},
+};
 
 /// Element's colours for avatars without a picture and for display names.
 const PALETTE: [Color; 8] = [
@@ -201,9 +204,6 @@ pub fn color(id: &str) -> Color {
     PALETTE[(element_hash(id) % PALETTE.len() as u32) as usize]
 }
 
-/// Text contrast names need against the background (WCAG AA).
-const MIN_CONTRAST: f32 = 4.5;
-
 /// Colour of a user's name: their [`color`], darkened on light backgrounds
 /// until it reads well. Some of Element's colours (lime, cyan) are too light
 /// on white.
@@ -227,24 +227,6 @@ fn darken_to_contrast(mut color: Color, background: Color) -> Color {
         };
     }
     color
-}
-
-/// WCAG contrast ratio, from 1 (none) to 21.
-fn contrast(a: Color, b: Color) -> f32 {
-    let (a, b) = (luminance(a), luminance(b));
-    (a.max(b) + 0.05) / (a.min(b) + 0.05)
-}
-
-/// WCAG relative luminance of an sRGB colour.
-fn luminance(color: Color) -> f32 {
-    let linear = |v: f32| {
-        if v <= 0.04045 {
-            v / 12.92
-        } else {
-            ((v + 0.055) / 1.055).powf(2.4)
-        }
-    };
-    0.2126 * linear(color.r) + 0.7152 * linear(color.g) + 0.0722 * linear(color.b)
 }
 
 /// Element's string hash (Java's `hashCode` over UTF-16 code units, made

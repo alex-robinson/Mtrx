@@ -37,6 +37,27 @@ pub const TOOLBAR_HEIGHT: f32 = TOOL_ICON + 2.0 * (TOOL_PADDING + TOOLBAR_PADDIN
 pub const MESSAGE_INSET: f32 =
     2.0 * (TIMELINE_PADDING + MESSAGE_PADDING) + SENDER_AVATAR + GUTTER_SPACING + TEXT_MARGIN;
 
+/// Text contrast text needs against its background (WCAG AA).
+pub const MIN_CONTRAST: f32 = 4.5;
+
+/// WCAG contrast ratio, from 1 (none) to 21.
+pub fn contrast(a: Color, b: Color) -> f32 {
+    let (a, b) = (luminance(a), luminance(b));
+    (a.max(b) + 0.05) / (a.min(b) + 0.05)
+}
+
+/// WCAG relative luminance of an sRGB colour.
+pub fn luminance(color: Color) -> f32 {
+    let linear = |v: f32| {
+        if v <= 0.04045 {
+            v / 12.92
+        } else {
+            ((v + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    0.2126 * linear(color.r) + 0.7152 * linear(color.g) + 0.0722 * linear(color.b)
+}
+
 /// Behind selected text.
 pub fn selection(theme: &Theme) -> Color {
     theme
@@ -207,12 +228,14 @@ pub fn unread_dot(theme: &Theme) -> container::Style {
     }
 }
 
+/// An unread count: red for mentions, else a grey a step darker (in dark
+/// mode lighter) than the room list.
 pub fn badge(theme: &Theme, highlight: bool) -> container::Style {
     let palette = theme.extended_palette();
     let pair = if highlight {
         palette.danger.base
     } else {
-        palette.secondary.base
+        palette.background.strong
     };
     container::Style {
         background: Some(Background::Color(pair.color)),
@@ -622,5 +645,39 @@ pub fn wheel_item(theme: &Theme, status: button::Status, selected: bool) -> butt
         text_color,
         border: Border::default().rounded(6),
         ..Default::default()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tint::Tint;
+
+    #[test]
+    fn unread_counts_are_readable() {
+        for theme in [Theme::Light, Theme::Dark] {
+            for highlight in [false, true] {
+                let style = badge(&theme, highlight);
+                let Some(Background::Color(bubble)) = style.background else {
+                    panic!("a badge has a colour");
+                };
+                let text = style.text_color.unwrap();
+                assert!(
+                    contrast(text, bubble) >= MIN_CONTRAST,
+                    "{theme} highlight {highlight}: {}",
+                    contrast(text, bubble)
+                );
+            }
+            // The grey bubble stands out from every room list colour.
+            let Some(Background::Color(bubble)) = badge(&theme, false).background else {
+                unreachable!()
+            };
+            for tint in Tint::ALL {
+                assert!(
+                    contrast(bubble, tint.color(&theme)) >= 1.2,
+                    "{theme} {tint:?}"
+                );
+            }
+        }
     }
 }
