@@ -2192,3 +2192,121 @@ async fn website_screenshots() {
     finish(&mut app, &ana).await;
     snapshot(&app, "site-copy");
 }
+
+/// Scrolling a long draft scrolls the composer, not the timeline: its
+/// height stays, with empty lines at the edges too (#32).
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs local Synapse (testserver/run.sh)"]
+async fn composer_scrolls_alone() {
+    use iced::advanced::{clipboard, renderer::Headless};
+    use iced_runtime::user_interface::{Cache, UserInterface};
+
+    let dir = TempDir::new().unwrap();
+    let (_, alice) = user("scroll", &dir).await;
+    let room = alice
+        .create_room(NewRoom {
+            name: Some("drafts".into()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let timeline = Arc::new(alice.timeline(&room).await.unwrap());
+    for i in 0..40 {
+        send(&timeline, &format!("Message {i}")).await;
+    }
+    while !timeline.paginate_back(50).await.unwrap() {}
+    let mut main = Main::new(Arc::new(alice));
+    main.verified = Some(true);
+    let mut open = Room::new(room.clone(), timeline.clone());
+    open.entries = timeline.current();
+    with_start(&mut open.entries);
+    // Short lines, then empty ones, as typed.
+    let draft: Vec<String> = (0..18)
+        .map(|i| {
+            if i < 9 {
+                format!("Line {i}")
+            } else {
+                String::new()
+            }
+        })
+        .collect();
+    open.composer = typed(&draft.join("\n"));
+    main.room = Some(open);
+    let mut app = app(Screen::Main(Box::new(main)), Mode::Light);
+
+    let mut renderer = iced::futures::executor::block_on(iced::Renderer::new(
+        fonts::INTER,
+        iced::Pixels(style::TEXT_SIZE),
+        None,
+    ))
+    .unwrap();
+    let size = Size::new(1200.0, 800.0);
+    let at = iced::Point::new(700.0, 700.0);
+    let mut cache = Cache::default();
+    let mut before = None;
+    for round in 0..24 {
+        // Up, then down past the end.
+        let delta = match round {
+            0..4 => mouse::ScrollDelta::Pixels { x: 0.0, y: 30.0 },
+            4..8 => mouse::ScrollDelta::Lines { x: 0.0, y: 1.0 },
+            _ => mouse::ScrollDelta::Pixels { x: 0.0, y: -30.0 },
+        };
+        let mut ui = UserInterface::build(app.view(), size, cache, &mut renderer);
+        let mut messages = Vec::new();
+        let mut events = vec![iced::Event::Mouse(mouse::Event::CursorMoved {
+            position: at,
+        })];
+        // Typing in it: focused.
+        if round == 0 {
+            events.push(iced::Event::Mouse(mouse::Event::ButtonPressed(
+                mouse::Button::Left,
+            )));
+            events.push(iced::Event::Mouse(mouse::Event::ButtonReleased(
+                mouse::Button::Left,
+            )));
+        }
+        events.push(iced::Event::Mouse(mouse::Event::WheelScrolled { delta }));
+        let (_, statuses) = ui.update(
+            &events,
+            mouse::Cursor::Available(at),
+            &mut renderer,
+            &mut clipboard::Null,
+            &mut messages,
+        );
+        let mut timeline = TimelineView(None);
+        ui.operate(&renderer, &mut timeline);
+        cache = ui.into_cache();
+        assert_eq!(*statuses.last().unwrap(), iced::event::Status::Captured);
+        assert_eq!(
+            *before.get_or_insert(timeline.0),
+            timeline.0,
+            "round {round}"
+        );
+        for message in messages {
+            assert!(matches!(message, Message::Composer(_)), "{message:?}");
+            let _ = app.update(message);
+        }
+    }
+}
+
+/// The timeline's bounds and scroll translation, once operated.
+struct TimelineView(Option<(iced::Rectangle, iced::Vector)>);
+
+impl iced::advanced::widget::Operation for TimelineView {
+    fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn iced::advanced::widget::Operation)) {
+        operate(self);
+    }
+
+    fn scrollable(
+        &mut self,
+        id: Option<&iced::advanced::widget::Id>,
+        bounds: iced::Rectangle,
+        _content_bounds: iced::Rectangle,
+        translation: iced::Vector,
+        _state: &mut dyn iced::advanced::widget::operation::Scrollable,
+    ) {
+        if id == Some(&iced::advanced::widget::Id::new(room::TIMELINE)) {
+            self.0 = Some((bounds, translation));
+        }
+    }
+}
