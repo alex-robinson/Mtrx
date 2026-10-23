@@ -56,6 +56,8 @@ pub struct Settings {
     pub room_pictures: bool,
     /// The Notes to self at the top of the room list, in every space.
     pub pinned_notes: bool,
+    /// Others see when we are online or idle; otherwise we are offline.
+    pub share_presence: bool,
     /// Room list colours chosen before they were kept in the account
     /// ([`mtrx_core::RoomListColours`]): moved there once, then dropped.
     #[serde(rename = "home_tint", skip_serializing)]
@@ -79,6 +81,7 @@ impl Default for Settings {
             room_list_width: style::ROOM_LIST_WIDTH,
             room_pictures: false,
             pinned_notes: true,
+            share_presence: true,
             legacy_home_tint: None,
             legacy_space_tints: BTreeMap::new(),
         }
@@ -130,6 +133,7 @@ pub enum Message {
     RoomList(Grouping),
     RoomPictures(bool),
     PinnedNotes(bool),
+    SharePresence(bool),
     /// The room list's colour in a space, or at home.
     Tint(Option<OwnedRoomId>, Tint),
     FormKind(FormKind),
@@ -168,6 +172,9 @@ pub enum Action {
     Appearance,
     /// The text size changed; save the settings and draw at it.
     TextSize,
+    /// Sharing our presence was turned on or off; save the settings and
+    /// set it.
+    SharePresence,
     SetSpaceService(OwnedRoomId, Option<CallService>),
     /// Open a room, or a space with its rooms, to every member.
     LetEveryoneEdit {
@@ -400,6 +407,10 @@ impl Panel {
                 settings.pinned_notes = on;
                 return Action::Save;
             }
+            Message::SharePresence(on) => {
+                settings.share_presence = on;
+                return Action::SharePresence;
+            }
             Message::Tint(space, tint) => return Action::Colour(space, tint),
             Message::FormKind(kind) => self.form.kind = kind,
             Message::FormName(name) => self.form.name = name,
@@ -512,12 +523,14 @@ impl Panel {
         Action::None
     }
 
-    /// `spaces`: the top-level spaces, for their room list colours.
+    /// `spaces`: the top-level spaces, for their room list colours;
+    /// `presence_shared`: the server shares presence (as far as known).
     pub fn view<'a>(
         &'a self,
         settings: &'a Settings,
         spaces: Vec<(OwnedRoomId, String)>,
         colours: &RoomListColours,
+        presence_shared: bool,
     ) -> Element<'a, app::Message> {
         let mut panel = column![
             row![
@@ -553,6 +566,19 @@ impl Panel {
                 .text_size(13)
                 .padding(6)
                 .into(),
+            ),
+            option(
+                "Share my presence",
+                if presence_shared {
+                    "Others see when you are online or idle."
+                } else {
+                    "This server does not share presence."
+                },
+                toggler(settings.share_presence)
+                    .on_toggle_maybe(
+                        presence_shared.then_some(|on| message(Message::SharePresence(on)))
+                    )
+                    .into(),
             ),
             heading("Chat"),
             option(
@@ -1027,6 +1053,7 @@ mod tests {
             room_list_width: 320.0,
             room_pictures: true,
             pinned_notes: false,
+            share_presence: false,
             legacy_home_tint: None,
             legacy_space_tints: BTreeMap::new(),
         };
@@ -1035,6 +1062,7 @@ mod tests {
         let saved = std::fs::read_to_string(&path).unwrap();
         assert!(saved.contains(r#""appearance": "Dark""#), "{saved}");
         assert!(saved.contains(r#""text_size": "Larger""#), "{saved}");
+        assert!(saved.contains(r#""share_presence": false"#), "{saved}");
         std::fs::write(&path, "{}").unwrap();
         assert_eq!(Settings::load(&path), Settings::default(), "older file");
 
@@ -1072,6 +1100,15 @@ mod tests {
         let action = Panel::default().update(&mut settings, Message::TextSize(TextSize::Large));
         assert!(matches!(action, Action::TextSize));
         assert_eq!(settings.text_size, TextSize::Large);
+    }
+
+    #[test]
+    fn shares_presence_unless_turned_off() {
+        let mut settings = Settings::default();
+        assert!(settings.share_presence);
+        let action = Panel::default().update(&mut settings, Message::SharePresence(false));
+        assert!(matches!(action, Action::SharePresence));
+        assert!(!settings.share_presence);
     }
 
     #[test]
