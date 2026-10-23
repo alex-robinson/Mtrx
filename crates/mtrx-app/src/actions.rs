@@ -20,7 +20,7 @@ use crate::{
     icons, info, mention,
     message_menu::MenuAt,
     popover::{Edge, Side, popover},
-    style,
+    selection, style,
 };
 
 /// Read markers shown per message before "+N".
@@ -237,16 +237,17 @@ impl InlineEdit {
 
     /// The editor, with emoji, Save and Cancel; Enter saves, Esc cancels.
     pub fn view<'a>(&'a self, frequent: &[String]) -> Element<'a, app::Message> {
+        let selected = self.content.selection().is_some();
         let editor = text_editor(&self.content)
             .id(EDITOR)
             .highlight_with::<mention::Highlighter>(Default::default(), mention::format)
             .style(style::editor)
             .on_action(|action| act(Message::EditAction(action)))
-            .key_binding(|press| match press.key {
+            .key_binding(move |press| match press.key {
                 Key::Named(Named::Enter) if !press.modifiers.shift() => {
                     Some(text_editor::Binding::Custom(act(Message::SaveEdit)))
                 }
-                _ => text_editor::Binding::from_key_press(press),
+                _ => selection::editor_key(press, selected),
             })
             .padding(iced::Padding::new(6.0).right(emoji::FIELD_INSET_COMPACT))
             .max_height(240);

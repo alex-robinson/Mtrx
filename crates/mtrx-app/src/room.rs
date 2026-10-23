@@ -44,7 +44,7 @@ use crate::{
     popover::{Edge, Side, popover},
     presence::{self, Presences},
     selectable_image::selectable_image,
-    selection::{self, Bounds, Selection, units_text},
+    selection::{self, Bounds, Point, Pos, Selection, Step, units_text},
     send_later::{self, SendLater},
     style::{
         self, GUTTER_SPACING, HEADER_AVATAR, MESSAGE_PADDING, SENDER_AVATAR, TEXT_MARGIN,
@@ -429,6 +429,60 @@ impl Room {
         })
     }
 
+    /// Move the end of the selection by `step`, on into the message before
+    /// or after.
+    pub fn extend(&mut self, step: Step) {
+        fn units(entry: &TimelineEntry) -> Option<(&str, Vec<selection::Unit>)> {
+            match entry {
+                TimelineEntry::Event(event) => match &event.content {
+                    EventContent::Message(m) => {
+                        Some((event.id.as_str(), message::text_map(&m.document).units))
+                    }
+                    _ => None,
+                },
+                _ => None,
+            }
+        }
+        let Some(selection) = self.selection.as_mut() else {
+            return;
+        };
+        let Some(at) = (self.entries.iter())
+            .position(|e| matches!(e, TimelineEntry::Event(e) if e.id == selection.focus.event))
+        else {
+            return;
+        };
+        let Some((_, here)) = units(&self.entries[at]) else {
+            return;
+        };
+        selection.focus = match selection::step(&here, selection.focus.pos, step) {
+            Some(pos) => Point {
+                pos,
+                ..selection.focus.clone()
+            },
+            None => {
+                let next = if step.forward() {
+                    self.entries[at + 1..].iter().find_map(units)
+                } else {
+                    self.entries[..at].iter().rev().find_map(units)
+                };
+                let Some((event, units)) = next else {
+                    return;
+                };
+                let pos = match units.last() {
+                    Some(last) if !step.forward() => Pos {
+                        unit: units.len() - 1,
+                        offset: last.text.len(),
+                    },
+                    _ => Pos::default(),
+                };
+                Point {
+                    event: event.to_owned(),
+                    pos,
+                }
+            }
+        };
+    }
+
     /// Each message's index in the timeline, for ordering a selection.
     fn order(&self) -> HashMap<&str, usize> {
         self.entries
@@ -603,6 +657,7 @@ impl Room {
         let cancellable = self.compose.cancellable();
         let candidates = self.candidates(look.own_user);
         let completing = !candidates.is_empty();
+        let selected = self.composer.selection().is_some();
         let composer = text_editor(&self.composer)
             .id(COMPOSER)
             .highlight_with::<mention::Highlighter>(self.mentions.clone(), mention::format)
@@ -627,7 +682,7 @@ impl Room {
                     Key::Named(Named::Escape) if cancellable => {
                         custom(Message::Act(actions::Message::CancelCompose))
                     }
-                    _ => text_editor::Binding::from_key_press(press),
+                    _ => selection::editor_key(press, selected),
                 }
             })
             .padding(
