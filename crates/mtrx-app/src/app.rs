@@ -1517,7 +1517,12 @@ impl App {
                 let Screen::Main(main) = &mut self.screen else {
                     return Task::none();
                 };
-                match sidebar::first_match(&main.rooms.rooms, &main.filter) {
+                match sidebar::first_match(
+                    &main.rooms.rooms,
+                    main.space.as_ref(),
+                    &main.arrange,
+                    &main.filter,
+                ) {
                     Some(room) => {
                         let id = room.id.clone();
                         main.filter.clear();
