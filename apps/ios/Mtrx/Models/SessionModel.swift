@@ -1,13 +1,15 @@
+import Combine
 import MtrxFFI
 import UIKit
 
-/// A signed-in account: its room lists, connection and pictures, sync,
-/// which runs while the app is in the foreground, and whether this device
-/// can read encrypted messages.
+/// A signed-in account: its room lists, connection, pictures and presence,
+/// sync, which runs while the app is in the foreground, and whether this
+/// device can read encrypted messages.
 @MainActor
 final class SessionModel: ObservableObject {
     let session: Session
     let images: ImageCache
+    let presence: PresenceModel
     let userId: String
     let deviceId: String
     let homeserver: String
@@ -19,18 +21,20 @@ final class SessionModel: ObservableObject {
     @Published private(set) var loaded = false
     /// The chats, and the rooms by space.
     @Published private(set) var lists = RoomLists()
-    /// The Rooms tab's selected space, remembered across launches (until
+    /// The Spaces tab's selected space, remembered across launches (until
     /// sign-out).
     @Published private(set) var selectedSpace: SpaceEntry?
-    /// The Rooms tab's page: the spaces, or the selected space's rooms.
+    /// The Spaces tab's page: the spaces, or the selected space's rooms.
     @Published var roomsPage = RoomsPage.spaces
+    /// The order of every space's rooms (not of the chats), remembered
+    /// across launches.
+    @Published private(set) var roomSort: RoomSort
     @Published private(set) var connection: ConnectionState = .online
     @Published var error: String?
 
-    /// Whether this device is verified, and the account's recovery; nil
-    /// until first asked. Not pushed by the library: asked again when the
-    /// room list loads after sync starts, after a recovery or verification,
-    /// and when the app returns to the foreground.
+    /// Whether this device is verified, the account's recovery, and
+    /// whether message keys are arriving, as the library pushes it; nil
+    /// until its first update.
     @Published private(set) var encryption: EncryptionState?
     /// Whether another of our devices is signed in (to verify with); nil
     /// until known.
@@ -40,30 +44,29 @@ final class SessionModel: ObservableObject {
     @Published private(set) var requestingVerification = false
     /// Why asking another device to verify failed.
     @Published var verificationError: String?
-    private(set) lazy var recovery = RecoveryModel(session: session) { [weak self] in
-        self?.refreshEncryption()
-    }
+    private(set) lazy var recovery = RecoveryModel(session: session)
 
     private let subscriptions = Subscriptions()
-    private var syncing = false
+    /// The app is in the foreground: sync runs.
+    private var foreground = false
+    /// Sync has started once.
+    private var started = false
     /// The last start or stop of sync; the next waits for it.
     private var syncChange: Task<Void, Never>?
-    /// Sync started and the room list has not reported being loaded since.
-    private var encryptionOnLoad = false
-    /// Counts requests of the encryption state; only the latest one's
-    /// answer is kept.
-    private var encryptionRequest = 0
     private var verificationRequest: Task<Void, Never>?
     private let defaults: UserDefaults
     private static let selectedSpaceKey = "selectedSpace"
+    private static let roomSortKey = "roomSort"
 
-    init(session: Session, defaults: UserDefaults = .standard) {
+    init(session: Session, defaults: UserDefaults = .standard, idleTime: TimeInterval = PresenceModel.idleTime) {
         self.session = session
         self.defaults = defaults
         images = ImageCache(session: session)
+        presence = PresenceModel(session: session, defaults: defaults, idleTime: idleTime)
         userId = session.userId()
         deviceId = session.deviceId()
         homeserver = session.homeserver()
+        roomSort = defaults.string(forKey: Self.roomSortKey).flatMap(RoomSort.init(rawValue:)) ?? .listOrder
         // Opens on the space's rooms, until the room list says it is gone.
         if let saved = defaults.string(forKey: Self.selectedSpaceKey) {
             selectedSpace = SpaceEntry(saved: saved)
@@ -71,11 +74,18 @@ final class SessionModel: ObservableObject {
         }
     }
 
-    /// Follow the connection, the room list and verification requests.
+    /// Follow the connection, the room list, the encryption state and
+    /// verification requests, for the session (sync starts right after).
+    /// The encryption state is pushed now and on every change: its recovery
+    /// is `unknown` until sync has run.
     func start() {
         let connection = Feed<ConnectionState>()
         subscriptions.add(session.subscribeConnection(listener: connection), connection) { [weak self] in
             self?.connection = $0
+        }
+        let encryption = Feed<EncryptionState>()
+        subscriptions.add(session.subscribeEncryptionState(listener: encryption), encryption) { [weak self] in
+            self?.encryption = $0
         }
         let roomList = Feed<RoomListState>()
         let session = self.session
@@ -100,13 +110,12 @@ final class SessionModel: ObservableObject {
         rooms = state.rooms
         loaded = state.loaded
         lists = RoomLists(state)
+        if state.loaded {
+            presence.follow(lists.chats)
+        }
         // The first states may be a cache: the space may come with sync.
         if let selectedSpace, state.loaded, lists.space(selectedSpace) == nil {
             selectSpace(nil)
-        }
-        if state.loaded && encryptionOnLoad {
-            encryptionOnLoad = false
-            refreshEncryption()
         }
     }
 
@@ -114,26 +123,29 @@ final class SessionModel: ObservableObject {
         rooms.first { $0.id == id }
     }
 
-    /// Sync while the app is in the foreground; when it goes to the
-    /// background, stop and save the sync position before iOS suspends it.
-    func setSyncing(_ on: Bool) {
-        guard on != syncing else { return }
-        syncing = on
+    /// Sync while the app is in the foreground, and set our presence;
+    /// when it goes to the background, go offline, then stop and save the
+    /// sync position, before iOS suspends it. Not sharing our presence,
+    /// offline before sync first starts.
+    func setForeground(_ on: Bool) {
+        guard on != foreground else { return }
+        foreground = on
         let previous = syncChange
         let session = self.session
         if on {
+            let offline = presence.enterForeground(first: !started)
+            started = true
             syncChange = Task {
                 await previous?.value
+                await offline?.value
                 await session.startSync()
             }
-            // Back in the foreground: other devices may have verified this
-            // one meanwhile. Asked again once the room list has loaded.
-            encryptionOnLoad = true
-            refreshEncryption()
         } else {
             let background = BackgroundTask(name: "Stop sync")
+            let offline = presence.enterBackground()
             syncChange = Task {
                 await previous?.value
+                await offline?.value
                 await session.stopSync()
                 background.end()
             }
@@ -148,19 +160,6 @@ final class SessionModel: ObservableObject {
     var needsEncryptionSetup: Bool {
         guard let encryption, encryption.recovery != .unknown else { return false }
         return !encryption.deviceVerified || encryption.recovery == .incomplete
-    }
-
-    /// Ask the library for the encryption state again.
-    func refreshEncryption() {
-        encryptionRequest += 1
-        let request = encryptionRequest
-        let session = self.session
-        Task {
-            // A failure (e.g. no connection) keeps the last answer; the
-            // next moment asks again.
-            guard let state = try? await session.encryptionState(), request == encryptionRequest else { return }
-            encryption = state
-        }
     }
 
     /// Learn whether another device can verify this one.
@@ -207,9 +206,7 @@ final class SessionModel: ObservableObject {
     }
 
     private func show(_ verification: Verification, incoming: Bool) {
-        self.verification = VerificationModel(verification: verification, incoming: incoming) { [weak self] in
-            self?.refreshEncryption()
-        }
+        self.verification = VerificationModel(verification: verification, incoming: incoming)
     }
 
     // MARK: Rooms
@@ -226,14 +223,27 @@ final class SessionModel: ObservableObject {
         }
     }
 
+    /// Order the spaces' rooms by `sort`, from now on.
+    func setRoomSort(_ sort: RoomSort) {
+        roomSort = sort
+        defaults.set(sort.rawValue, forKey: Self.roomSortKey)
+    }
+
     func timeline(for room: RoomSummary) -> TimelineModel {
-        TimelineModel(session: session, room: room)
+        TimelineModel(session: session, room: room, keysArriving: keysArriving)
+    }
+
+    /// Message keys are arriving from the backup, now and on every change:
+    /// undecryptable messages say they are being decrypted meanwhile.
+    var keysArriving: AnyPublisher<Bool, Never> {
+        $encryption.map { $0?.keysArriving ?? false }.removeDuplicates().eraseToAnyPublisher()
     }
 
     /// Sign out on the server and delete the account's data here.
     func logout() async throws {
         subscriptions.cancelAll()
         verification = nil
+        await presence.signOut()?.value
         try await session.logout()
         defaults.removeObject(forKey: Self.selectedSpaceKey)
     }
@@ -242,12 +252,14 @@ final class SessionModel: ObservableObject {
     func forget() async throws {
         subscriptions.cancelAll()
         verification = nil
+        // The server no longer accepts the session: nothing to set.
+        presence.forget()
         try await session.forget()
         defaults.removeObject(forKey: Self.selectedSpaceKey)
     }
 }
 
-/// The pages of the Rooms tab, left to right.
+/// The pages of the Spaces tab, left to right.
 enum RoomsPage: Hashable {
     case spaces
     case rooms

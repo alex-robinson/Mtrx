@@ -14,51 +14,88 @@ final class SessionModelTests: XCTestCase {
         await eventually { self.session.roomListListener != nil }
     }
 
-    func testBannerWhileTheDeviceIsUnverifiedOrRecoveryLocked() async {
-        // Not asked yet.
+    func testBannerFollowsThePushedState() async {
+        // The subscription's first state: no sync yet.
+        await eventually { self.model.encryption == EncryptionState(deviceVerified: false, recovery: .unknown) }
         XCTAssertFalse(model.needsEncryptionSetup)
         let cases: [(EncryptionState, Bool)] = [
-            // No sync yet: ask again later.
-            (EncryptionState(deviceVerified: false, recovery: .unknown), false),
             (EncryptionState(deviceVerified: false, recovery: .incomplete), true),
             (EncryptionState(deviceVerified: false, recovery: .disabled), true),
             (EncryptionState(deviceVerified: true, recovery: .incomplete), true),
             (EncryptionState(deviceVerified: true, recovery: .enabled), false),
             (EncryptionState(deviceVerified: true, recovery: .disabled), false),
+            // Not before sync has run.
+            (EncryptionState(deviceVerified: false, recovery: .unknown), false),
         ]
         for (state, banner) in cases {
-            session.encryption = state
-            model.refreshEncryption()
+            session.encryptionListener?.onUpdate(state: state)
             await eventually { self.model.encryption == state }
             XCTAssertEqual(model.needsEncryptionSetup, banner, "\(state)")
         }
+        XCTAssertEqual(session.encryptionRequests, 0)
     }
 
-    func testAsksForTheEncryptionStateWhenSyncStartsAndTheRoomListLoads() async {
-        model.setSyncing(true)
-        // Returning to the foreground asks at once.
-        await eventually { self.session.syncStarts == 1 && self.session.encryptionRequests == 1 }
+    func testTheBannerGoesAwayByItselfAfterRecovery() async {
+        session.encryptionListener?.onUpdate(state: EncryptionState(deviceVerified: false, recovery: .incomplete))
+        await eventually { self.model.needsEncryptionSetup }
 
-        session.roomListListener?.onUpdate(state: RoomListState(rooms: [Make.room("!a")], loaded: false))
-        await eventually { self.model.rooms.count == 1 }
-        await settle()
-        XCTAssertEqual(session.encryptionRequests, 1)
-
-        session.roomListListener?.onUpdate(state: RoomListState(rooms: [Make.room("!a")], loaded: true))
-        await eventually { self.session.encryptionRequests == 2 }
-
-        // Only the first time it reports being loaded.
-        session.roomListListener?.onUpdate(state: RoomListState(rooms: [Make.room("!a"), Make.room("!b")], loaded: true))
-        await eventually { self.model.rooms.count == 2 }
-        await settle()
-        XCTAssertEqual(session.encryptionRequests, 2)
-    }
-
-    func testRecoveryAsksForTheEncryptionStateAgain() async {
         model.recovery.key = "EsTc abcd"
         model.recovery.recover()
         await eventually { self.model.recovery.recovered }
-        await eventually { self.session.encryptionRequests == 1 }
+        // Parts of the state settle after `recover` returns: as pushed.
+        session.encryptionListener?.onUpdate(
+            state: EncryptionState(deviceVerified: true, recovery: .incomplete, keysArriving: true))
+        await eventually { self.model.encryption?.keysArriving == true }
+        XCTAssertTrue(model.needsEncryptionSetup)
+        session.encryptionListener?.onUpdate(
+            state: EncryptionState(deviceVerified: true, recovery: .enabled, keysArriving: true))
+        await eventually { !self.model.needsEncryptionSetup }
+        XCTAssertEqual(session.encryptionRequests, 0)
+    }
+
+    func testSyncAndTheRoomListDoNotAskForTheEncryptionState() async {
+        model.setForeground(true)
+        await eventually { self.session.syncStarts == 1 }
+        session.roomListListener?.onUpdate(state: RoomListState(rooms: [Make.room("!a")], loaded: true))
+        await eventually { self.model.rooms.count == 1 }
+        model.setForeground(false)
+        model.setForeground(true)
+        await eventually { self.session.syncStops == 1 && self.session.syncStarts == 2 }
+        await settle()
+        XCTAssertEqual(session.encryptionRequests, 0)
+    }
+
+    func testSignOutEndsTheEncryptionSubscription() async throws {
+        XCTAssertEqual(session.encryptionSubscription?.cancelled, false)
+        try await model.logout()
+        XCTAssertEqual(session.encryptionSubscription?.cancelled, true)
+    }
+
+    func testOpenTimelinesFollowKeysArriving() async {
+        let timeline = model.timeline(for: Make.room("!room:example.org"))
+        await timeline.open()
+        session.fakeTimeline.listener?.onUpdate(items: [Make.item("1", Make.event("alice", .unableToDecrypt))])
+        await eventually { self.undecryptableText(timeline) == "Could not decrypt this message." }
+
+        session.encryptionListener?.onUpdate(
+            state: EncryptionState(deviceVerified: true, recovery: .enabled, keysArriving: true))
+        await eventually { self.undecryptableText(timeline) == "Decrypting…" }
+        session.encryptionListener?.onUpdate(
+            state: EncryptionState(deviceVerified: true, recovery: .enabled, keysArriving: false))
+        await eventually { self.undecryptableText(timeline) == "Could not decrypt this message." }
+
+        // A timeline opened while keys arrive says so at once.
+        session.encryptionListener?.onUpdate(
+            state: EncryptionState(deviceVerified: true, recovery: .enabled, keysArriving: true))
+        await eventually { self.model.encryption?.keysArriving == true }
+        let later = model.timeline(for: Make.room("!room:example.org"))
+        later.apply([Make.item("1", Make.event("alice", .unableToDecrypt))])
+        XCTAssertEqual(undecryptableText(later), "Decrypting…")
+    }
+
+    private func undecryptableText(_ timeline: TimelineModel) -> String? {
+        guard case .message(let row) = timeline.rows.first?.content else { return nil }
+        return row.undecryptableText
     }
 
     func testVerifiesWithAnotherDevice() async {
@@ -70,8 +107,8 @@ final class SessionModelTests: XCTestCase {
 
         session.selfVerification.listener?.onUpdate(state: .done)
         await eventually { self.model.verification?.state == .done }
-        // Verified: the state is asked again.
-        await eventually { self.session.encryptionRequests == 1 }
+        // The encryption state that follows is pushed, not asked.
+        XCTAssertEqual(session.encryptionRequests, 0)
 
         model.closeVerification()
         XCTAssertNil(model.verification)

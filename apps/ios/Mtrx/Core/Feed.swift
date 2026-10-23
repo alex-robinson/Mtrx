@@ -51,6 +51,10 @@ extension Feed: TypingListener where Value == [String] {
     func onUpdate(names: [String]) { send(names) }
 }
 
+extension Feed: EncryptionStateListener where Value == EncryptionState {
+    func onUpdate(state: EncryptionState) { send(state) }
+}
+
 extension Feed: RecoveryListener where Value == RecoveryStep {
     func onUpdate(step: RecoveryStep) { send(step) }
 }

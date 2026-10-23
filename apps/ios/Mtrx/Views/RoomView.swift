@@ -7,6 +7,8 @@ struct RoomView: View {
     let room: RoomSummary
     @StateObject private var model: TimelineModel
     @EnvironmentObject private var images: ImageCache
+    @EnvironmentObject private var session: SessionModel
+    @EnvironmentObject private var presence: PresenceModel
     @State private var sheet: RoomSheet?
     /// The message to delete, once confirmed.
     @State private var deleting: String?
@@ -28,12 +30,25 @@ struct RoomView: View {
         }
         .navigationTitle(room.name)
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            if let person = model.person {
+                ToolbarItem(placement: .principal) {
+                    PersonHeader(room: room, presence: presence.presence(of: person), open: model.showPersonInfo)
+                }
+            }
+        }
         .task { await model.open() }
         .onAppear { model.setVisible(true) }
         .onDisappear { model.setVisible(false) }
         .sheet(item: $sheet) { sheet in
             RoomSheetView(sheet: sheet, model: model)
                 .environmentObject(images)
+        }
+        .sheet(item: $model.personInfo) { info in
+            PersonInfoView(model: info)
+                .environmentObject(images)
+                .environmentObject(session)
+                .environmentObject(presence)
         }
         .confirmationDialog("Delete this message for everyone?", isPresented: isDeleting, titleVisibility: .visible) {
             Button("Delete", role: .destructive) {
@@ -81,6 +96,33 @@ struct RoomView: View {
     }
 }
 
+/// A direct chat's title: the person's picture and name, with their
+/// presence; a tap opens their info sheet.
+private struct PersonHeader: View {
+    let room: RoomSummary
+    let presence: Presence?
+    let open: () -> Void
+
+    var body: some View {
+        Button(action: open) {
+            HStack(spacing: 8) {
+                AvatarView(name: room.name, uri: room.avatarUrl, size: 28)
+                    .presenceDot(presence, size: 9, avatar: 28)
+                VStack(alignment: .leading, spacing: 0) {
+                    Text(room.name)
+                        .font(.headline)
+                        .foregroundColor(.primary)
+                        .lineLimit(1)
+                    PresenceLine(presence: presence, font: .caption)
+                }
+            }
+        }
+        .buttonStyle(.plain)
+        .accessibilityElement(children: .combine)
+        .accessibilityHint("Shows who this is")
+    }
+}
+
 /// The sheets a room opens over itself.
 enum RoomSheet: Identifiable {
     /// Who reacted to a message with a key.
@@ -125,36 +167,50 @@ private struct RoomSheetView: View {
     }
 }
 
-/// The timeline, starting at the bottom (the newest message) and keeping
-/// its place there as messages arrive; older ones load when its top comes
-/// into view. iOS 17 anchors a scroll view at the bottom; on iOS 16 the
-/// list and its rows are flipped upside down instead (which newer systems
-/// draw wrongly, with their scroll-edge effects).
+/// The timeline, newest message at the bottom, older ones loading when its
+/// top comes into view. The list and its rows are flipped upside down: the
+/// newest row is then the scroll view's first, where it starts and where a
+/// lazy stack keeps its place while rows come and change. (Anchored at the
+/// bottom instead, the lazy stack's estimates of the rows not drawn yet
+/// change with every change of the rows, and a reopened room landed short
+/// of its bottom, or past it with nothing drawn.) Flipped, the scroll
+/// view's edge effects would be drawn at the wrong edges: they are hidden,
+/// and the list is cut at the bars instead. Scrolled up, a button leads
+/// back to the bottom.
 struct TimelineList: View {
     @ObservedObject var model: TimelineModel
     let actions: RowActions
 
+    /// Below the newest row (flipped: the list's first).
+    private static let bottomId = "bottom"
+
     var body: some View {
         ScrollViewReader { proxy in
-            Group {
-                if #available(iOS 17, *) {
-                    ScrollView {
-                        rows(flipped: false)
-                    }
-                    .defaultScrollAnchor(.bottom)
-                } else {
-                    ScrollView {
-                        rows(flipped: true)
-                    }
-                    .upsideDown(true)
-                }
+            ScrollView {
+                rows
             }
+            .modifier(TracksBottom(model: model))
+            .modifier(HidesScrollEdgeEffects())
+            .upsideDown(true)
+            .clipped()
             .onChange(of: model.scrollTarget) { target in
                 guard let target else { return }
                 withAnimation {
                     proxy.scrollTo(target.rowId, anchor: .center)
                 }
             }
+            .overlay(alignment: .bottomTrailing) {
+                if model.showsScrollToBottom {
+                    ScrollToBottomButton {
+                        withAnimation {
+                            // The flipped list's top.
+                            proxy.scrollTo(Self.bottomId, anchor: .top)
+                        }
+                    }
+                    .transition(.scale.combined(with: .opacity))
+                }
+            }
+            .animation(.easeOut(duration: 0.2), value: model.showsScrollToBottom)
         }
         .scrollDismissesKeyboard(.interactively)
         .overlay {
@@ -173,20 +229,19 @@ struct TimelineList: View {
         }
     }
 
-    private func rows(flipped: Bool) -> some View {
+    /// Newest first, each the right way up; read oldest first.
+    private var rows: some View {
         LazyVStack(spacing: 0) {
-            if !flipped {
-                top
-            }
-            ForEach(flipped ? Array(model.rows.reversed()) : model.rows) { row in
+            bottom
+            ForEach(Array(model.rows.enumerated().reversed()), id: \.element.id) { index, row in
                 TimelineRowView(row: row, highlighted: model.highlighted == row.id, actions: actions)
                     .id(row.id)
-                    .upsideDown(flipped)
+                    .upsideDown(true)
+                    .accessibilitySortPriority(-Double(index))
             }
-            if flipped {
-                top.upsideDown(true)
-            }
+            top.upsideDown(true)
         }
+        .accessibilityElement(children: .contain)
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
     }
@@ -203,6 +258,67 @@ struct TimelineList: View {
         }
         .onAppear { Task { await model.setTopVisible(true) } }
         .onDisappear { Task { await model.setTopVisible(false) } }
+    }
+
+    /// Below the newest row, to scroll to; before iOS 18, whether the lazy
+    /// stack draws it says whether the timeline is at its bottom.
+    private var bottom: some View {
+        Color.clear
+            .frame(height: 1)
+            .id(Self.bottomId)
+            .onAppear { model.setBottomDrawn(true) }
+            .onDisappear { model.setBottomDrawn(false) }
+    }
+}
+
+/// From iOS 18, how far the (flipped) timeline is scrolled up from its
+/// bottom, as the scroll view says.
+private struct TracksBottom: ViewModifier {
+    @ObservedObject var model: TimelineModel
+
+    func body(content: Content) -> some View {
+        if #available(iOS 18, *) {
+            content.onScrollGeometryChange(for: CGFloat.self) { geometry in
+                // Flipped: the bottom is the scroll view's top.
+                geometry.contentOffset.y + geometry.contentInsets.top
+            } action: { _, distance in
+                model.scrolled(distanceFromBottom: distance)
+            }
+        } else {
+            content
+        }
+    }
+}
+
+/// The scroll view's soft edges (iOS 26), which a flipped one draws at the
+/// wrong edges, over its content.
+private struct HidesScrollEdgeEffects: ViewModifier {
+    func body(content: Content) -> some View {
+        if #available(iOS 26, *) {
+            content.scrollEdgeEffectHidden(true, for: .all)
+        } else {
+            content
+        }
+    }
+}
+
+/// A round button with a down arrow, over the timeline's lower right
+/// corner: to the newest message.
+struct ScrollToBottomButton: View {
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: "arrow.down")
+                .font(.body.weight(.semibold))
+                .foregroundColor(.accentColor)
+                .frame(width: 40, height: 40)
+                .background(.regularMaterial, in: Circle())
+                .overlay(Circle().strokeBorder(Color.secondary.opacity(0.25), lineWidth: 0.5))
+                .shadow(color: .black.opacity(0.15), radius: 3, y: 1)
+        }
+        .padding(12)
+        .accessibilityLabel("Scroll to the newest message")
     }
 }
 

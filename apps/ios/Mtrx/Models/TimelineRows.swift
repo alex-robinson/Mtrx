@@ -33,6 +33,9 @@ struct MessageRow: Equatable {
     /// Someone else's message outside a direct chat: the avatars' column
     /// is on its left (empty but for the first of a group).
     let avatarColumn: Bool
+    /// An undecryptable message while message keys arrive from the backup:
+    /// it may decrypt meanwhile.
+    let decrypting: Bool
 
     var message: Message? {
         if case .message(let message) = event.content { return message }
@@ -46,6 +49,18 @@ struct MessageRow: Equatable {
     var edited: Bool { message?.edited ?? false }
     /// The others who read up to here.
     var readers: [Reader] { event.readBy }
+
+    /// What an undecryptable message says instead of its text; nil for
+    /// others.
+    var undecryptableText: String? {
+        guard event.content == .unableToDecrypt else { return nil }
+        return decrypting ? "Decrypting…" : "Could not decrypt this message."
+    }
+
+    /// Swiping it to the left answers it, as Reply in its menu.
+    var canSwipeToReply: Bool {
+        actions.contains(.reply)
+    }
 
     /// What holding the message offers, in the menu's order.
     var actions: [MessageAction] {
@@ -97,8 +112,9 @@ enum TimelineRows {
     static let groupGap: TimeInterval = 5 * 60
 
     /// The rows for `items` (oldest first); `showSenders` is false in
-    /// direct chats, where who wrote what is clear.
-    static func build(_ items: [TimelineItem], showSenders: Bool) -> [TimelineRow] {
+    /// direct chats, where who wrote what is clear. While `keysArriving`,
+    /// undecryptable messages say they are being decrypted.
+    static func build(_ items: [TimelineItem], showSenders: Bool, keysArriving: Bool = false) -> [TimelineRow] {
         var rows: [TimelineRow] = []
         var stateRun: [(id: String, event: TimelineEvent)] = []
         var previous: TimelineEvent?
@@ -136,7 +152,8 @@ enum TimelineRows {
                 let first = previous.map { !continuesGroup($0, with: event) } ?? true
                 let others = showSenders && !event.own
                 let row = MessageRow(
-                    event: event, firstInGroup: first, showSender: first && others, avatarColumn: others)
+                    event: event, firstInGroup: first, showSender: first && others, avatarColumn: others,
+                    decrypting: keysArriving && event.content == .unableToDecrypt)
                 rows.append(TimelineRow(id: item.id, content: .message(row)))
                 previous = event
             }

@@ -76,7 +76,7 @@ final class AppModel: ObservableObject {
         default: return
         }
         if case .signedIn(let model) = phase {
-            model.setSyncing(foreground)
+            model.setForeground(foreground)
         }
     }
 
@@ -106,7 +106,7 @@ final class AppModel: ObservableObject {
     private func signedIn(_ session: Session) {
         let model = SessionModel(session: session)
         model.start()
-        model.setSyncing(foreground)
+        model.setForeground(foreground)
         phase = .signedIn(model)
     }
 

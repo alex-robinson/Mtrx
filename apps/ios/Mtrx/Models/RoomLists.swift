@@ -1,7 +1,7 @@
 import Foundation
 import MtrxFFI
 
-/// An entry of the Rooms tab's spaces page: a top-level space, or the rooms
+/// An entry of the Spaces tab's spaces page: a top-level space, or the rooms
 /// in no space.
 enum SpaceEntry: Hashable {
     case space(String)
@@ -43,7 +43,7 @@ struct SpaceItem: Identifiable, Equatable {
 struct RoomLists: Equatable {
     /// The Chats tab: direct chats, invites to them included.
     var chats: [RoomSummary] = []
-    /// The Rooms tab's spaces page: the top-level spaces, then Other rooms
+    /// The Spaces tab's spaces page: the top-level spaces, then Other rooms
     /// while it has any.
     var spaces: [SpaceItem] = []
 
@@ -62,6 +62,12 @@ struct RoomLists: Equatable {
         }
     }
 
+    /// The top-level spaces (not Other rooms), in order: where someone
+    /// can be invited.
+    var topLevelSpaces: [RoomSummary] {
+        spaces.compactMap(\.space)
+    }
+
     func space(_ entry: SpaceEntry) -> SpaceItem? {
         spaces.first { $0.entry == entry }
     }
@@ -77,6 +83,17 @@ struct RoomLists: Equatable {
         search(spaces, filter, name: \.name)
     }
 
+    /// A space's rooms in two sections, Rooms and People (its direct
+    /// chats), each in `sort`'s order, or while searching in the search's;
+    /// empty sections left out.
+    static func sections(_ rooms: [RoomSummary], sort: RoomSort, search filter: String) -> [RoomSection] {
+        let shown = filter.trimmingCharacters(in: .whitespaces).isEmpty ? sort.apply(rooms) : search(rooms, filter)
+        return [
+            RoomSection(title: "Rooms", rooms: shown.filter { $0.kind != .direct }),
+            RoomSection(title: "People", rooms: shown.filter { $0.kind == .direct }),
+        ].filter { !$0.rooms.isEmpty }
+    }
+
     private static func search<T>(_ items: [T], _ filter: String, name: (T) -> String) -> [T] {
         let filter = filter.trimmingCharacters(in: .whitespaces).lowercased()
         guard !filter.isEmpty else { return items }
@@ -88,5 +105,64 @@ struct RoomLists: Equatable {
             }
             .sorted { ($0.later ? 1 : 0, $0.name) < ($1.later ? 1 : 0, $1.name) }
             .map(\.item)
+    }
+}
+
+/// A titled part of a room list.
+struct RoomSection: Identifiable, Equatable {
+    /// None for a list of one section (the chats).
+    let title: String?
+    let rooms: [RoomSummary]
+
+    var id: String { title ?? "" }
+}
+
+/// The order of a space's rooms, chosen on its page; remembered.
+enum RoomSort: String, CaseIterable, Identifiable {
+    /// The room list's: most recently active first, as the library
+    /// orders it.
+    case listOrder = "default"
+    case aToZ
+    case zToA
+    /// By the last activity, newest first; rooms without one last.
+    case mostRecent
+
+    var id: Self { self }
+
+    var title: String {
+        switch self {
+        case .listOrder: return "Default"
+        case .aToZ: return "A to Z"
+        case .zToA: return "Z to A"
+        case .mostRecent: return "Most recent"
+        }
+    }
+
+    /// `rooms` in this order; ties keep the list's order.
+    func apply(_ rooms: [RoomSummary]) -> [RoomSummary] {
+        let ordered: (RoomSummary, RoomSummary) -> ComparisonResult
+        switch self {
+        case .listOrder:
+            return rooms
+        case .aToZ:
+            ordered = { $0.name.localizedStandardCompare($1.name) }
+        case .zToA:
+            ordered = { $1.name.localizedStandardCompare($0.name) }
+        case .mostRecent:
+            ordered = { a, b in
+                switch (a.lastActivity, b.lastActivity) {
+                case let (a?, b?): return a == b ? .orderedSame : (a > b ? .orderedAscending : .orderedDescending)
+                case (_?, nil): return .orderedAscending
+                case (nil, _?): return .orderedDescending
+                case (nil, nil): return .orderedSame
+                }
+            }
+        }
+        return rooms.enumerated()
+            .sorted { a, b in
+                let order = ordered(a.element, b.element)
+                return order == .orderedSame ? a.offset < b.offset : order == .orderedAscending
+            }
+            .map(\.element)
     }
 }

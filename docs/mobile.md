@@ -195,25 +195,36 @@ is cancelled), "The recovery key is not valid." under the field, and
 "Could not decrypt this message." rows. Stage 2 (section 7): the Chats
 and Rooms tabs. Stage 3 (section 8): reactions, replies, edits,
 deleting, retrying and discarding a refused send, read receipts and
-typing.
+typing. Stage 4, the app's part: Settings as a third tab, the Rooms tab
+named Spaces, a space's rooms in Rooms and People sections with a sort
+menu, swiping a message to reply, the person's picture in a direct
+chat's header, and a button to the newest message. Stage 4, the library's
+part: the encryption state pushed, "Decrypting…" while keys arrive, and
+the person's info sheet. Presence (section 11): the dots, the line under
+the name, "Share my presence" and ours from the lifecycle.
 
 ```
 apps/ios/
   Mtrx.xcodeproj      app target Mtrx, tests MtrxTests, local package MtrxFFI;
                       folders are synchronized groups (no per-file entries)
   Mtrx/
-    MtrxApp.swift     entry; scene phase -> sync
+    MtrxApp.swift     entry; scene phase -> sync and our presence
     Core/             Keychain backend, Feed (listeners -> AsyncStream),
-                      browser sign-in, error messages
+                      browser sign-in, error messages, InputWatcher
+                      (touches and typing, for idle)
     Models/           AppModel (phase: starting, signed out, signed in),
                       SignInModel, SessionModel (room lists, selected space,
-                      connection, sync, encryption state, verification
-                      requests), RecoveryModel, VerificationModel,
-                      TimelineModel (also composing, actions, typing,
-                      going to a quote), ImageCache, TimelineRows (rows,
-                      menu entries), RoomLists, Emoji
-    Views/            sign-in, home (Chats and Rooms tabs, encryption
-                      banner), room (timeline, typing line, composer),
+                      sort, connection, sync, encryption state,
+                      verification requests), PresenceModel (others'
+                      presences, ours, the switch), RecoveryModel,
+                      VerificationModel, TimelineModel (also composing,
+                      actions, typing, going to a quote, at the bottom),
+                      PersonInfoModel, ImageCache, TimelineRows (rows,
+                      menu entries),
+                      RoomLists (also sections, sort), SwipeToReply, Emoji
+    Views/            sign-in, home (Chats, Spaces and Settings tabs,
+                      encryption banner), room (timeline, typing line,
+                      composer, header, the person's info sheet),
                       message sheets (who reacted or read, all emoji,
                       select text), settings, recovery key, verification
     Assets.xcassets   icon and logo (`cargo xtask icons`), accent colour
@@ -223,21 +234,53 @@ apps/ios/
 - Threading: listeners yield into an `AsyncStream` that keeps only the
   newest state; a main-actor task applies it. Models are `@MainActor`
   `ObservableObject`s; views only read them.
-- Home: a `TabView` with Chats and Rooms, each a `NavigationStack` (also on
-  iPad) whose rooms open with the tab bar hidden (`.toolbar(.hidden, for:
-  .tabBar)`); Settings is a sheet. `RoomLists` derives the chats and the
-  spaces (with their rooms and unread dots, then "Other rooms") from each
-  `RoomListState`. Rooms is a paged `TabView` (spaces, the selected space's
-  rooms; a "Spaces" button goes back too); the page and the selected space
-  live in `SessionModel`, the space in UserDefaults (`selectedSpace`: a
-  space ID or `other-rooms`), removed at sign-out. The encryption banner
-  is the first row of each list; each list has a search by name, names
-  starting with it first. Invites are listed but answered on the desktop
-  (no join call in the FFI yet).
+- Home: a `TabView` with Chats, Spaces and Settings, each a
+  `NavigationStack` (also on iPad); rooms open with the tab bar hidden
+  (`.toolbar(.hidden, for: .tabBar)`), recovery pushes from Settings, and
+  a verification is a sheet over any tab. `RoomLists` derives the chats
+  and the spaces (with their rooms and unread dots, then "Other rooms")
+  from each `RoomListState`. Spaces is a paged `TabView` (spaces, the
+  selected space's rooms; a "Spaces" button goes back too); the page and
+  the selected space live in `SessionModel`, the space in UserDefaults
+  (`selectedSpace`: a space ID or `other-rooms`), removed at sign-out. A
+  space's rooms (and Other rooms) are in two sections, Rooms and People
+  (its direct chats; an empty section is left out), both in the order of
+  the page's sort menu: Default (the list's), A to Z, Z to A, Most recent
+  (`lastActivity`, none last; ties keep the list's order). The choice is
+  for all spaces, not Chats, and kept in UserDefaults (`roomSort`), also
+  after sign-out. The encryption banner is the first row of each list and
+  leads to Settings; each list has a search by name, names starting with
+  it first (while searching, that is the order). Invites are listed but
+  answered on the desktop (no join call in the FFI yet).
+- Encryption state: `subscribeEncryptionState` with the other
+  subscriptions in `SessionModel.start()`, just before the first
+  `startSync()` (the library pushes the state now, `recovery` `unknown`
+  before sync, and on every change, so the order does not matter), and
+  cancelled with them at sign-out. `SessionModel.encryption` is the last
+  pushed state; `encryptionState()` is not called (the first push comes at
+  once). Recovery and verification only end: the banner goes when the
+  pushed state says so. Undecryptable rows say "Decrypting…" while
+  `keysArriving`, else "Could not decrypt this message."
+  (`MessageRow.undecryptableText`); `SessionModel.keysArriving`, a
+  publisher, is handed to each `TimelineModel`, which rebuilds its rows
+  when it changes, so rows on screen follow. `utdCause` is not shown.
 - Timeline: rows keyed by `TimelineItem.id`; runs of state events folded
   into one line (as the desktop writes them); messages grouped by sender.
-  Bottom-anchored (`defaultScrollAnchor`) on iOS 17+, a flipped scroll view
-  on iOS 16. Older messages load while the top is on screen; read when shown.
+  A flipped scroll view (the list and each row upside down) on every
+  version, so the newest row is the lazy stack's first, where it starts.
+  Anchored at the bottom instead (`defaultScrollAnchor`, as on iOS 17+
+  before), a reopened room sometimes landed short of the bottom, or past
+  it with nothing drawn: the lazy stack estimates the rows it has not
+  drawn from those it has, every change of the rows (more loaded,
+  decrypted, a reset) changes the estimate of all of them, and the anchor
+  kept an offset that was no longer the bottom. Flipped, the scroll edge
+  effects (iOS 26) are hidden, as they would be drawn at the wrong edges,
+  and the list is clipped to the bars; the context menu has its own
+  preview (the flipped one is squashed into a line); VoiceOver reads the
+  rows oldest first. Scrolled more than 40 pt up (iOS 18+: the scroll
+  geometry; before: the end no longer drawn), a round down-arrow button
+  at the lower right goes back to the bottom. Older messages load while
+  the top is on screen; read when shown.
   Others' messages outside direct chats have the sender's name above the
   first of a group and their avatar (32 pt) beside its bubble, with the
   avatars' column kept for the rest of the group; direct chats show
@@ -252,7 +295,26 @@ apps/ios/
   picker is a searchable grid of the emoji the system's Unicode data
   marks as emoji by default, one character each, searched by Unicode
   name (no skin tones, flags or sequences). Bubbles no longer have
-  `textSelection` (its long press would take the menu's).
+  `textSelection` (its long press would take the menu's). From iOS 18,
+  swiping a message to the left (one with Reply) replies to it: the
+  bubble follows, a reply icon shows at the right, and letting go past
+  50 pt replies. A UIKit pan (`UIGestureRecognizerRepresentable`) that
+  begins only for a mostly leftward drag, so scrolling and the back
+  gesture (rightward) are left alone; a SwiftUI drag in the flipped list
+  stopped it scrolling.
+- Header: in a direct chat with someone else (`TimelineModel.person`: a
+  `directUserId` not ours, so not the Notes to self) the title is the
+  room's picture and name, a button opening the person's info sheet
+  (`TimelineModel.personInfo`, a `PersonInfoModel`; medium and large
+  detents): the chat's name and picture at once, then the profile's
+  (`userProfile`) where set (a failure keeps the chat's, silently); the
+  user ID, selectable, with a copy button ("Copied" for 2 s); "Add to
+  space…" (left out without spaces) pushes the top-level spaces
+  (`RoomLists.topLevelSpaces`, following the room list while open) with
+  their pictures. Tapping one invites (one at a time, a spinner on it); on
+  success the list closes and "Invited to <space>." shows under the
+  button for 3 s; on failure the reason shows in an alert, and the list
+  stays.
 - Reactions: chips under the bubble, wrapping (`FlowLayout`); ours in
   the accent colour; tap toggles, hold lists who reacted. Quotes: a bar,
   the sender and three lines inside the bubble (above an image, in a
@@ -274,6 +336,29 @@ apps/ios/
   creates; sending, replying and editing in `send()`. Back-paginations
   are chained, so loading older messages and looking for a quote do not
   overlap.
+- Presence (section 11): `PresenceModel`, owned by `SessionModel` and an
+  environment object of its own. `SessionModel.setForeground` (from the
+  scene phase) runs the lifecycle: in the foreground `online` (sharing)
+  alongside `startSync()`, or, not sharing, `offline` before the
+  session's first `startSync()`; to the background, a `beginBackgroundTask`,
+  then `offline`, then `stopSync()`. `logout` sets `offline` first;
+  `forget` sets nothing. Our `setPresence` calls are chained, so they
+  arrive in order. Idle: `InputWatcher`, behind the tabs, puts a
+  recognizer on the window that reports each touch or press and fails at
+  once (it cancels and delays nothing; sheets are in the same window), and
+  counts text changing (`UITextField`/`UITextView` notifications) as
+  input, as the keyboard is a window of its own. One timer task waits for
+  `lastInput` + 5 minutes; input only moves `lastInput`, except when idle
+  (`online` again). Others: the subscription is for the Chats tab's
+  people, which include the open direct chat's (it is in the room list);
+  dots only in Chats, not in a space's People section. The dot's ring is
+  outside its size (12 + 2 + 2 pt), centred on the avatar's circle at
+  45°. The line re-renders each minute (`TimelineView(.everyMinute)`);
+  `RelativeDateTimeFormatter` `.abbreviated` writes "2h ago" in US
+  English, "2 hr ago" in British. The person sheet calls `presence` from
+  its `.task`, into the map (the subscription's next update replaces
+  it). Once the server does not share presence, our own presence is not
+  set either (every call would fail).
 - Images: avatars and `mediaPreview`s decoded off the main thread, kept in
   an `NSCache` (the library caches the downloads).
 - Tests: fakes subclass the generated classes (`init(noHandle:)`), so the
@@ -282,7 +367,25 @@ apps/ios/
   deleted and undecryptable messages; "+N"; quote texts; emoji search;
   replying, editing, cancelling and a failed reply; typing calls, names
   and lines; the actions; going to a quote (shown, after paginating, at
-  the room's start, after 20 calls).
+  the room's start, after 20 calls). Stage 4: the Rooms and People
+  sections, the four orders (with no `lastActivity`), the remembered
+  order; which messages swipe to reply, and the swipe's start, offset
+  and threshold; when the button to the bottom shows. Stage 4, the
+  library's part: the banner following pushed states (also after a
+  recovery), nothing asked, the subscription ended at sign-out; the
+  undecryptable row's text by `keysArriving`, also in a timeline already
+  open; the person sheet (the profile replacing the chat's name and
+  picture, a partial profile, a failure; copying; an invite succeeding,
+  failing, one at a time; none in the Notes to self or a room); the
+  top-level spaces. Presence: the dot and the line for each state, status
+  message and age; the subscription following the loaded room list's
+  direct chats (not the Notes to self), kept on other changes, replaced
+  when they change, only in the foreground, ended at sign-out; the
+  person sheet's fresh value, kept on a failure; hiding after
+  `onUnavailable` or the error, with nothing read or set after; online
+  and offline around sync, offline before the first sync when not
+  sharing, the switch (on by default, in the background), idle after no
+  input and online at the next, failures ignored.
 
 Locally: run `scripts/build-ios-ffi.sh` once (or unzip CI's `MtrxFFI-ios`
 into `apps/ios`), open `apps/ios/Mtrx.xcodeproj`, run on a simulator; for a
