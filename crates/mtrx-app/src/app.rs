@@ -1098,9 +1098,11 @@ impl App {
             }
             Message::Later(message) => self.later(message),
             Message::Act(message) => self.act(message),
+            // The timeline is anchored at the bottom, so its offset counts
+            // upwards.
             Message::ScrollTimeline(dy) => iced::widget::operation::scroll_by(
                 room::TIMELINE,
-                iced::widget::scrollable::AbsoluteOffset { x: 0.0, y: dy },
+                iced::widget::scrollable::AbsoluteOffset { x: 0.0, y: -dy },
             ),
             Message::Select(message) => {
                 let Screen::Main(main) = &mut self.screen else {
@@ -1119,6 +1121,10 @@ impl App {
                         return room.on_screen().and_then(|(first, last)| {
                             Task::done(Message::Select(selection::Message::All(first, last)))
                         });
+                    }
+                    selection::Message::Extend(step) => {
+                        room.extend(step);
+                        return Task::none();
                     }
                     _ => {}
                 }
@@ -3431,7 +3437,8 @@ async fn run_request(
 }
 
 /// ⌘K / Ctrl+K focuses the room search, Esc closes the viewer or clears the
-/// search; window focus.
+/// search, ⌘C, ⌘A and Shift with ← or → act on the timeline's selection;
+/// window focus.
 fn shortcuts(
     event: iced::Event,
     status: iced::event::Status,
@@ -3450,6 +3457,17 @@ fn shortcuts(
                 if c == "a" && modifiers.command() && status == iced::event::Status::Ignored =>
             {
                 Some(Message::Select(selection::Message::SelectAll))
+            }
+            Key::Named(arrow @ (Named::ArrowLeft | Named::ArrowRight))
+                if modifiers.shift() && status == iced::event::Status::Ignored =>
+            {
+                let step = match (arrow == Named::ArrowRight, modifiers.alt()) {
+                    (false, false) => selection::Step::Back,
+                    (true, false) => selection::Step::Forward,
+                    (false, true) => selection::Step::WordBack,
+                    (true, true) => selection::Step::WordForward,
+                };
+                Some(Message::Select(selection::Message::Extend(step)))
             }
             Key::Character(c) if c == "k" && modifiers.command() => Some(Message::FocusSearch),
             Key::Character(c) if c == "r" && modifiers.command() => Some(Message::Reload),

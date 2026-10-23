@@ -1,7 +1,8 @@
 //! Scrolling while a selection is dragged past the top or bottom of the
-//! timeline: wraps the timeline's scrollable, asks for it to be scrolled
-//! each frame, and tells the text under the edge where the cursor is, as
-//! the content moves under a cursor that does not.
+//! timeline, or scrolled with the wheel: wraps the timeline's scrollable,
+//! asks for it to be scrolled each frame past an edge, and tells the text
+//! under the cursor (or the edge) where it is, as the content moves under a
+//! cursor that does not.
 
 use iced::{
     Element, Event, Length, Point, Rectangle, Renderer, Size, Theme, Vector,
@@ -113,40 +114,50 @@ impl<'a, Message> Widget<Message, Theme, Renderer> for DragScroll<'a, Message> {
             viewport,
         );
         let bounds = layout.bounds();
+        let (top, bottom) = (bounds.y, bounds.y + bounds.height);
         let state = tree.state.downcast_mut::<State>();
-        match event {
+        let at = match event {
             Event::Mouse(mouse::Event::CursorMoved { position }) => {
                 state.cursor = Some(*position);
-                if self.active && step(position.y, bounds.y, bounds.y + bounds.height) != 0.0 {
+                if self.active && step(position.y, top, bottom) != 0.0 {
                     shell.request_redraw();
                 }
+                return;
+            }
+            // The content was scrolled under the cursor.
+            Event::Mouse(mouse::Event::WheelScrolled { .. }) if self.active => {
+                let Some(at) = state.cursor else {
+                    return;
+                };
+                at
             }
             Event::Window(window::Event::RedrawRequested(_)) if self.active => {
                 let Some(at) = state.cursor else {
                     return;
                 };
-                let (top, bottom) = (bounds.y, bounds.y + bounds.height);
                 let step = step(at.y, top, bottom);
                 if step == 0.0 {
                     return;
                 }
                 shell.publish((self.on_scroll)(step));
-                // The text now under the edge extends the selection.
-                let inside = Point::new(at.x, at.y.clamp(top + 1.0, bottom - 1.0));
-                self.content.as_widget_mut().update(
-                    &mut tree.children[0],
-                    &Event::Mouse(mouse::Event::CursorMoved { position: inside }),
-                    layout,
-                    mouse::Cursor::Available(inside),
-                    renderer,
-                    clipboard,
-                    shell,
-                    viewport,
-                );
                 shell.request_redraw();
+                at
             }
-            _ => {}
-        }
+            _ => return,
+        };
+        // The text now under the cursor, or under the edge it is past,
+        // extends the selection.
+        let inside = Point::new(at.x, at.y.clamp(top + 1.0, bottom - 1.0));
+        self.content.as_widget_mut().update(
+            &mut tree.children[0],
+            &Event::Mouse(mouse::Event::CursorMoved { position: inside }),
+            layout,
+            mouse::Cursor::Available(inside),
+            renderer,
+            clipboard,
+            shell,
+            viewport,
+        );
     }
 
     fn operate(
@@ -233,5 +244,57 @@ mod tests {
         assert_eq!(step(8.0, 10.0, 500.0), -MIN_STEP);
         assert_eq!(step(600.0, 10.0, 500.0), MAX_STEP);
         assert_eq!(step(520.0, 10.0, 500.0), 20.0 * SHARE);
+    }
+
+    #[test]
+    fn wheel_scrolling_while_dragging_moves_the_selection() {
+        use std::rc::Rc;
+
+        use iced::{
+            advanced::text::Span,
+            widget::{column, scrollable},
+        };
+        use iced_test::simulator::Simulator;
+
+        use crate::{selectable::selectable, selection::Gesture};
+
+        for active in [false, true] {
+            let lines = column((0..100).map(|i| {
+                selectable(vec![Span::new(format!("Line {i}"))], i)
+                    .dragging(true)
+                    .on_gesture(Rc::new(|gesture| gesture))
+                    .into()
+            }));
+            let view = drag_scroll(scrollable(lines), active, |_| Gesture::Drag {
+                unit: usize::MAX,
+                offset: 0,
+            });
+            let mut ui =
+                Simulator::with_size(crate::fonts::settings(), Size::new(200.0, 200.0), view);
+            ui.point_at((50.0, 100.0));
+            let _ = ui.simulate([
+                Event::Mouse(mouse::Event::CursorMoved {
+                    position: Point::new(50.0, 100.0),
+                }),
+                Event::Mouse(mouse::Event::WheelScrolled {
+                    delta: mouse::ScrollDelta::Lines { x: 0.0, y: -2.0 },
+                }),
+            ]);
+            let units: Vec<usize> = ui
+                .into_messages()
+                .filter_map(|gesture| match gesture {
+                    Gesture::Drag { unit, .. } => Some(unit),
+                    Gesture::Press { .. } => None,
+                })
+                .collect();
+            // Where the cursor moved to, and while dragging, the line
+            // scrolled under it.
+            if active {
+                assert_eq!(units.len(), 2, "{units:?}");
+                assert!(units[1] > units[0], "{units:?}");
+            } else {
+                assert_eq!(units.len(), 1, "{units:?}");
+            }
+        }
     }
 }
