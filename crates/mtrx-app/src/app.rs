@@ -813,9 +813,6 @@ impl App {
                 let Screen::Main(main) = &mut self.screen else {
                     return Task::none();
                 };
-                if matches!(message, arrange::Message::NewCategory(_)) {
-                    main.add_menu = false;
-                }
                 let context = arrange::Context {
                     session: &main.session,
                     space: main.space.as_ref(),
@@ -1160,7 +1157,9 @@ impl App {
                 main.add_menu = false;
                 main.info = None;
                 let near = near_spaces(&kind, &main.rooms.rooms, main.space.as_ref());
+                main.arrange.escape();
                 let mut dialog = Dialog::new(kind);
+                dialog.fill_category(&main.arrange.categories);
                 if !dialog.picks_people() {
                     main.dialog = Some(dialog);
                     return Task::none();
@@ -2008,6 +2007,10 @@ impl App {
                 .abortable();
                 dialog.search = Some(handle);
                 task
+            }
+            dialog::Action::Arrange(message) => {
+                main.dialog = None;
+                self.update(Message::Arrange(message))
             }
             dialog::Action::Submit(request) => Task::perform(run_request(session, request), |r| {
                 Message::Dialog(dialog::Message::Done(r))
@@ -3036,7 +3039,7 @@ impl App {
                     )
                 } else if let Some(dialog) = &main.dialog {
                     (
-                        dialog.view(&main.rooms.rooms),
+                        dialog.view(&main.rooms.rooms, &main.arrange),
                         Message::Dialog(dialog::Message::Cancel),
                     )
                 } else if let Some(card) = &main.info {

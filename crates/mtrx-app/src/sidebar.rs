@@ -83,7 +83,7 @@ fn sections<'a>(view: &RoomListView<'a>) -> Vec<(Section, Vec<&'a RoomSummary>)>
 
 /// What the search finds in `space`, or everywhere at Home: rooms and chats
 /// whose name contains `filter` (lower case), names starting with it first.
-fn search<'a>(
+pub fn search<'a>(
     rooms: &'a [RoomSummary],
     space: Option<&OwnedRoomId>,
     arrange: &Arrange,
@@ -372,7 +372,7 @@ pub fn room_list<'a>(view: RoomListView<'a>) -> Element<'a, Message> {
         .into()
 }
 
-/// The sections of the room list, with menus, the category being named,
+/// The sections of the room list, with menus, the category being renamed,
 /// and drop targets while dragging.
 fn arranged<'a>(view: &RoomListView<'a>) -> Vec<Element<'a, Message>> {
     let arrange = view.arrange;
@@ -380,14 +380,9 @@ fn arranged<'a>(view: &RoomListView<'a>) -> Vec<Element<'a, Message>> {
         .categories
         .layout(view.selected_space.map(|s| s.as_ref()));
     let dragging = arrange.dragging().is_some();
+    let space = view.selected_space;
     let mut elements = Vec::new();
     for (section, entries) in sections(view) {
-        // A new category appears after the others.
-        if section == Section::Rooms
-            && let Some(naming) = arrange.naming.as_ref().filter(|n| n.category.is_none())
-        {
-            elements.push(name_input(&naming.name, "New category"));
-        }
         let shown = match section {
             Section::Invites => !entries.is_empty(),
             Section::Category(_) => true,
@@ -397,17 +392,18 @@ fn arranged<'a>(view: &RoomListView<'a>) -> Vec<Element<'a, Message>> {
             continue;
         }
         let collapsed = layout.is_collapsed(&section);
-        let renaming = arrange.naming.as_ref().filter(
-            |n| matches!(&section, Section::Category(id) if n.category.as_ref() == Some(id)),
-        );
+        let renaming = arrange
+            .naming
+            .as_ref()
+            .filter(|n| matches!(&section, Section::Category(id) if n.category == *id));
         let mut block = column![match renaming {
-            Some(naming) => name_input(&naming.name, "Category name"),
+            Some(naming) => name_input(&naming.name),
             None => section_header(layout, &section, collapsed, arrange),
         }];
         if let Section::Category(id) = &section
             && arrange.category_menu.as_ref() == Some(id)
         {
-            block = block.push(category_menu(layout, id));
+            block = block.push(category_menu(layout, space, id));
         }
         let empty = entries.is_empty();
         for room in entries {
@@ -417,7 +413,7 @@ fn arranged<'a>(view: &RoomListView<'a>) -> Vec<Element<'a, Message>> {
             }
             block = block.push(view.room_entry(room));
             if arrange.room_menu.as_ref() == Some(&room.id) {
-                block = block.push(room_menu(room, layout, &view.grouping));
+                block = block.push(room_menu(room, space, layout, &view.grouping));
             }
         }
         if empty && !collapsed && matches!(section, Section::Category(_)) {
@@ -510,10 +506,10 @@ fn section_title<'a>(title: &str) -> Element<'a, Message> {
         .into()
 }
 
-/// The field naming a new or renamed category: Enter saves, Esc cancels.
-fn name_input<'a>(name: &str, placeholder: &str) -> Element<'a, Message> {
+/// The field renaming a category: Enter saves, Esc cancels.
+fn name_input<'a>(name: &str) -> Element<'a, Message> {
     container(
-        text_input(placeholder, name)
+        text_input("Category name", name)
             .id(NAME_INPUT)
             .on_input(|name| arrange_message(arrange::Message::Name(name)))
             .on_submit(arrange_message(arrange::Message::SaveName))
@@ -543,7 +539,12 @@ fn menu<'a>(items: Vec<(String, Message)>) -> Element<'a, Message> {
 
 /// Settings, low priority and categories for a room (the star next to the
 /// menu makes it a favourite).
-fn room_menu<'a>(room: &RoomSummary, layout: &Layout, grouping: &Grouping) -> Element<'a, Message> {
+fn room_menu<'a>(
+    room: &RoomSummary,
+    space: Option<&OwnedRoomId>,
+    layout: &Layout,
+    grouping: &Grouping,
+) -> Element<'a, Message> {
     let move_to = |section| arrange_message(arrange::Message::MoveTo(room.id.clone(), section));
     let mut items = Vec::new();
     if room.kind == RoomKind::Direct {
@@ -575,19 +576,37 @@ fn room_menu<'a>(room: &RoomSummary, layout: &Layout, grouping: &Grouping) -> El
     }
     items.push((
         "New category…".into(),
-        arrange_message(arrange::Message::NewCategory(Some(room.id.clone()))),
+        Message::OpenDialog(Kind::Category {
+            space: space.cloned(),
+            category: None,
+            room: Some(room.id.clone()),
+        }),
     ));
     menu(items)
 }
 
-/// Rename, sort, reorder and delete a category.
-fn category_menu<'a>(layout: &Layout, id: &str) -> Element<'a, Message> {
+/// Rename, choose rooms, sort, reorder and delete a category.
+fn category_menu<'a>(
+    layout: &Layout,
+    in_space: Option<&OwnedRoomId>,
+    id: &str,
+) -> Element<'a, Message> {
     let Some(at) = layout.categories.iter().position(|c| c.id == id) else {
         return space().into();
     };
     let id = id.to_owned();
     let item = |label: &str, message| (label.to_owned(), arrange_message(message));
-    let mut items = vec![item("Rename…", arrange::Message::Rename(id.clone()))];
+    let mut items = vec![
+        item("Rename…", arrange::Message::Rename(id.clone())),
+        (
+            "Choose rooms…".to_owned(),
+            Message::OpenDialog(Kind::Category {
+                space: in_space.cloned(),
+                category: Some(id.clone()),
+                room: None,
+            }),
+        ),
+    ];
     items.push(match layout.categories[at].sort {
         Sort::Activity => item("Sort A–Z", arrange::Message::Sort(id.clone(), Sort::Name)),
         Sort::Name => item(
@@ -667,9 +686,13 @@ fn add_menu_view<'a>(space: Option<(OwnedRoomId, String)>) -> Element<'a, Messag
     ));
     menu = menu
         .push(dialog("New direct chat".into(), Kind::DirectChat))
-        .push(item(
-            "New category".into(),
-            arrange_message(arrange::Message::NewCategory(None)),
+        .push(dialog(
+            "New category…".into(),
+            Kind::Category {
+                space: space.as_ref().map(|(id, _)| id.clone()),
+                category: None,
+                room: None,
+            },
         ))
         .push(dialog("Join a room…".into(), Kind::Join));
     if let Some((id, name)) = space {
