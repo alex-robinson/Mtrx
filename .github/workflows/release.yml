@@ -1,5 +1,6 @@
 # A version tag (v0.1.2) builds the packages for all three platforms and
-# attaches them to a draft release, to be described and published by hand.
+# attaches them to a draft release, to be described and published by hand,
+# or to the tag's release if one is already there.
 name: Release
 
 on:
@@ -37,5 +38,11 @@ jobs:
           # latest release's.
           cp artifacts/linux-packages/mtrx_*_amd64.deb assets/Mtrx-linux-amd64.deb
           ls -la assets
-          gh release create "$TAG" assets/* --repo "$GITHUB_REPOSITORY" \
-            --draft --verify-tag --title "Mtrx ${TAG#v}" --notes "Mtrx ${TAG#v}"
+          # A release published by hand ahead of the build (a Mac package
+          # built locally, say) gets the packages added, replacing its own.
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$TAG" assets/* --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            gh release create "$TAG" assets/* --repo "$GITHUB_REPOSITORY" \
+              --draft --verify-tag --title "Mtrx ${TAG#v}" --notes "Mtrx ${TAG#v}"
+          fi
