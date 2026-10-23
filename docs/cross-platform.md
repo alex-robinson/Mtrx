@@ -15,8 +15,9 @@ Status: macOS first. This is the plan for Windows and Linux builds.
 
 - [x] Workflow: `cargo fmt --check`, `cargo clippy --workspace --all-targets`,
       `cargo test --workspace` on macOS, Windows and Ubuntu:
-      `.github/workflows/{macos,windows,linux}.yml`, on pushes to `main` and
-      `core-cli`, each also building its packages.
+      `.github/workflows/{macos,windows,linux}.yml`, once per pull request (on its
+      merge with `main`), on manual dispatch and from the release workflow;
+      plain pushes run nothing. Each also builds its packages.
 - [x] Ubuntu job: start Synapse (`testserver/`) and run the ignored tests
       (`--ignored`, skipping `big_room`). Snapshots as artifacts.
       `.github/workflows/linux.yml`: fmt,

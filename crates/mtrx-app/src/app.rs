@@ -140,6 +140,8 @@ pub enum Message {
     /// A desktop notification about the room was clicked.
     NotificationClicked(OwnedRoomId),
     WindowFocused(bool),
+    /// The window's close button (or Alt+F4, ...) was pressed.
+    CloseWindow(window::Id),
     Calls(OwnedRoomId, calls::Message),
     RecoveryKey(String),
     Recover,
@@ -248,6 +250,8 @@ enum Screen {
     Starting,
     Login(Login),
     Main(Box<Main>),
+    /// The window closes: the session or sign-in has ended.
+    Closing,
 }
 
 struct Main {
@@ -535,6 +539,11 @@ impl App {
     }
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
+        // What messages still bring, e.g. a session restored meanwhile, is
+        // dropped here, while the runtime runs (see `Message::CloseWindow`).
+        if let Screen::Closing = self.screen {
+            return Task::none();
+        }
         // Unread rooms may have moved into or out of the room list's view.
         let moved = matches!(
             message,
@@ -1546,6 +1555,13 @@ impl App {
                     None => Task::none(),
                 });
                 Task::batch([raise, self.update(Message::OpenRoom(room))])
+            }
+            Message::CloseWindow(id) => {
+                // iced drops the app only after its runtime has stopped, when
+                // the SDK's stores can no longer close: end the session, or a
+                // browser sign-in, now.
+                self.screen = Screen::Closing;
+                window::close(id)
             }
             Message::WindowFocused(focused) => {
                 self.focused = focused;
@@ -2718,6 +2734,7 @@ impl App {
     pub fn subscription(&self) -> Subscription<Message> {
         let mut subscriptions = vec![
             window::resize_events().map(|(_, size)| Message::WindowResized(size)),
+            window::close_requests().map(Message::CloseWindow),
             iced::system::theme_changes().map(Message::ThemeMode),
             // Also on the sign-in screen.
             iced::event::listen_with(|event, _, _| match event {
@@ -2836,6 +2853,7 @@ impl App {
     pub fn view(&self) -> Element<'_, Message> {
         match &self.screen {
             Screen::Starting => container(text("Starting…")).center(Length::Fill).into(),
+            Screen::Closing => container("").into(),
             Screen::Login(login) => login.view().map(Message::Login),
             // The main view is always the stack's first layer, so opening
             // and closing what floats over it keeps its widgets' state.

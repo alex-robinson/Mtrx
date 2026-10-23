@@ -1,9 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
-<defs>
-  <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#5B6CF0"/><stop offset="1" stop-color="#2BB0C9"/></linearGradient>
-  <filter id="shadow" x="-10%" y="-10%" width="120%" height="125%"><feDropShadow dx="0" dy="12" stdDeviation="14" flood-color="#000" flood-opacity="0.28"/></filter>
-</defs>
-<rect x="100" y="100" width="824" height="824" rx="185" fill="url(#bg)" filter="url(#shadow)"/>
-<path d="M 360 270 H 664 A 110 110 0 0 1 774 380 V 580 A 110 110 0 0 1 664 690 H 450 L 318 790 L 340 690 A 110 110 0 0 1 250 580 V 380 A 110 110 0 0 1 360 270 Z" fill="#fff"/>
-<polyline points="622,365 405,365 535,480 405,595 622,595" fill="none" stroke="#4A58D6" stroke-width="66" stroke-linecap="round" stroke-linejoin="round"/>
+<rect id="background" width="1024" height="1024" rx="230" fill="#2F3E9E"/>
+<path id="bubble" d="M 284 150 H 740 A 160 160 0 0 1 900 310 V 590 A 160 160 0 0 1 740 750 H 460 L 214 892 L 284 750 A 160 160 0 0 1 124 590 V 310 A 160 160 0 0 1 284 150 Z" fill="#fff"/>
+<polyline id="mark" points="668,285 357,285 544,450 357,615 668,615" fill="none" stroke="#2F3E9E" stroke-width="72" stroke-linecap="round" stroke-linejoin="round"/>
 </svg>

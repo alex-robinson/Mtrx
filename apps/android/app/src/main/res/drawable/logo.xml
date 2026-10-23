@@ -1,36 +1,21 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- crates/mtrx-app/assets/logo.svg without its shadow, cropped to the
-     rounded square (100..924), for the sign-in screen. -->
+<!-- Made by `cargo xtask icons` from crates/mtrx-app/assets/logo.svg:
+     the logo, for the sign-in screen. -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
-    xmlns:aapt="http://schemas.android.com/aapt"
     android:width="96dp"
     android:height="96dp"
-    android:viewportWidth="824"
-    android:viewportHeight="824">
-    <group
-        android:translateX="-100"
-        android:translateY="-100">
-        <path android:pathData="M285,100H739A185,185 0,0 1,924,285V739A185,185 0,0 1,739,924H285A185,185 0,0 1,100,739V285A185,185 0,0 1,285,100Z">
-            <aapt:attr name="android:fillColor">
-                <gradient
-                    android:type="linear"
-                    android:startX="100"
-                    android:startY="100"
-                    android:endX="924"
-                    android:endY="924">
-                    <item android:offset="0" android:color="#FF5B6CF0" />
-                    <item android:offset="1" android:color="#FF2BB0C9" />
-                </gradient>
-            </aapt:attr>
-        </path>
-        <path
-            android:fillColor="#FFFFFFFF"
-            android:pathData="M360,270H664A110,110 0,0 1,774,380V580A110,110 0,0 1,664,690H450L318,790L340,690A110,110 0,0 1,250,580V380A110,110 0,0 1,360,270Z" />
-        <path
-            android:pathData="M622,365L405,365L535,480L405,595L622,595"
-            android:strokeWidth="66"
-            android:strokeColor="#FF4A58D6"
-            android:strokeLineCap="round"
-            android:strokeLineJoin="round" />
-    </group>
+    android:viewportWidth="1024"
+    android:viewportHeight="1024">
+    <path
+        android:fillColor="#FF2F3E9E"
+        android:pathData="M230,0L794,0C921,0 1024,103 1024,230L1024,794C1024,921 921,1024 794,1024L230,1024C103,1024 0,921 0,794L0,230C0,103 103,0 230,0Z" />
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M284,150L740,150C828.4,150 900,221.6 900,310L900,590C900,678.4 828.4,750 740,750L460,750L214,892L284,750C195.6,750 124,678.4 124,590L124,310C124,221.6 195.6,150 284,150Z" />
+    <path
+        android:strokeColor="#FF2F3E9E"
+        android:strokeWidth="72"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:pathData="M668,285L357,285L544,450L357,615L668,615" />
 </vector>

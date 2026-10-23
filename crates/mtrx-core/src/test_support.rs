@@ -1,4 +1,4 @@
-//! Helpers for tests against the local Synapse in `testserver/`.
+//! Helpers for tests, most against the local Synapse in `testserver/`.
 
 use std::{
     sync::atomic::{AtomicU32, Ordering},
@@ -7,6 +7,11 @@ use std::{
 
 use hmac::{Hmac, KeyInit, Mac};
 use sha1::Sha1;
+
+use crate::{
+    Profile, Session,
+    profile::{StoredAuth, StoredSession},
+};
 
 /// Shared secret from `testserver/homeserver.yaml`.
 const SHARED_SECRET: &str = "mtrx-test-shared-secret";
@@ -110,4 +115,31 @@ pub async fn log_out_everywhere(name: &str) -> Result<(), String> {
         return Err(format!("logging out failed: {}", response.status()));
     }
     Ok(())
+}
+
+/// A session of `profile` as if signed in before, restored without a
+/// server: its homeserver refuses connections. For tests that need a
+/// [`Session`] but no server.
+pub async fn offline_session(profile: Profile) -> crate::Result<Session> {
+    use matrix_sdk::{
+        SessionMeta, SessionTokens, authentication::matrix::MatrixSession, ruma::owned_device_id,
+        ruma::owned_user_id,
+    };
+
+    profile.save_session(&StoredSession {
+        // Nothing listens on the discard port.
+        homeserver: "http://127.0.0.1:9".into(),
+        auth: StoredAuth::Password(MatrixSession {
+            meta: SessionMeta {
+                user_id: owned_user_id!("@offline:localhost"),
+                device_id: owned_device_id!("OFFLINE"),
+            },
+            tokens: SessionTokens {
+                access_token: "offline".into(),
+                refresh_token: None,
+            },
+        }),
+        store_passphrase: "offline".into(),
+    })?;
+    Session::restore(profile).await
 }

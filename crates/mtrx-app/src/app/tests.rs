@@ -198,6 +198,49 @@ fn window_opens_at_one_size() {
     }
 }
 
+/// iced drops the app only after its runtime has stopped, when the SDK's
+/// stores can no longer close (dropping a session then panics): closing the
+/// window ends the session first, and one restored meanwhile.
+#[test]
+fn closing_the_window_ends_the_session() {
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let dir = TempDir::new().unwrap();
+    let session = |name: &str| {
+        let profile = Profile::new(name, dir.path(), SecretStore::File).unwrap();
+        let session = runtime
+            .block_on(mtrx_core::test_support::offline_session(profile))
+            .unwrap();
+        Shared(Arc::new(session))
+    };
+    let (open, restored) = (session("open"), session("restored"));
+    let app = {
+        // As iced runs the app.
+        let _runtime = runtime.enter();
+        let mut app = app(Screen::Main(Box::new(Main::new(open.0))), Mode::Light);
+        let close = app.update(Message::CloseWindow(window::Id::unique()));
+        assert!(matches!(app.screen, Screen::Closing));
+        let restored = app.update(Message::Restored(Ok(restored)));
+        drop((close, restored));
+        app
+    };
+    assert!(matches!(app.screen, Screen::Closing));
+    drop(runtime);
+    drop(app);
+}
+
+/// Closing the window cancels a browser sign-in.
+#[test]
+fn closing_the_window_cancels_a_browser_sign_in() {
+    let mut app = app(Screen::Login(Login::default()), Mode::Light);
+    let (_sign_in, handle) = Task::<Message>::none().abortable();
+    let Screen::Login(login) = &mut app.screen else {
+        unreachable!()
+    };
+    login.browser_started(handle.clone());
+    let _ = app.update(Message::CloseWindow(window::Id::unique()));
+    assert!(handle.is_aborted());
+}
+
 /// [`Event::id`](mtrx_core::Event::id) of message `event` in `entries`.
 fn room_row(entries: &[TimelineEntry], event: &mtrx_core::OwnedEventId) -> Option<String> {
     entries.iter().find_map(|e| match e {
@@ -267,14 +310,17 @@ async fn send_reply(
     .unwrap()
 }
 
-/// The key of the message with `body`, once the timeline has it.
+/// The key of the message with `body`, once the timeline shows it sent: a
+/// message [`send`] waited for can still show as being sent, and an edit
+/// then goes to the send queue, which sent it already.
 async fn key_of(timeline: &RoomTimeline, body: &str) -> mtrx_core::EventKey {
     tokio::time::timeout(TIMEOUT, async {
         let mut updates = std::pin::pin!(timeline.updates());
         while let Some(entries) = updates.next().await {
             let found = entries.iter().find_map(|e| match e {
                 TimelineEntry::Event(ev)
-                    if matches!(&ev.content, EventContent::Message(m) if m.body == body) =>
+                    if ev.send_state == SendState::Sent
+                        && matches!(&ev.content, EventContent::Message(m) if m.body == body) =>
                 {
                     Some(ev.key.clone())
                 }
@@ -1584,33 +1630,50 @@ async fn media_messages() {
         .await
         .unwrap();
     while !timeline.paginate_back(50).await.unwrap() {}
-    // The files as the server has them: once uploaded, those of the local
-    // echoes (sent or not) are no longer in the store.
+    // Each file as the server has it, and no local echo pointing into the
+    // send queue's store: once uploaded, those files are no longer there, and
+    // such an echo can still show beside the server's copy.
+    let mut seen = Vec::new();
     let entries = tokio::time::timeout(TIMEOUT, async {
         let mut updates = std::pin::pin!(timeline.updates());
         while let Some(entries) = updates.next().await {
-            let sent = entries
+            let files: Vec<_> = entries
                 .iter()
-                .filter(|e| match e {
-                    TimelineEntry::Event(ev) => {
-                        ev.send_state == SendState::Sent
-                            && matches!(&ev.content, EventContent::Message(m)
-                            if m.media.as_ref().is_some_and(|media| {
-                                media.source.uri().server_name().map(|s| s.as_str())
-                                    != Ok("send-queue.localhost")
-                            }))
-                    }
-                    _ => false,
+                .filter_map(|e| match e {
+                    TimelineEntry::Event(ev) => match &ev.content {
+                        EventContent::Message(m) => m.media.as_ref().map(|media| (ev, media)),
+                        _ => None,
+                    },
+                    _ => None,
                 })
-                .count();
-            if sent == 2 {
+                .collect();
+            let on_server = files.iter().all(|(ev, media)| {
+                ev.send_state == SendState::Sent
+                    && media.source.uri().server_name().map(|s| s.as_str())
+                        != Ok("send-queue.localhost")
+            });
+            let shown = |name: &str| files.iter().any(|(_, media)| media.filename == name);
+            if on_server && shown("melt-rate-map.png") && shown("ice-flux-draft.pdf") {
                 return entries;
             }
+            seen = files
+                .iter()
+                .map(|(ev, media)| {
+                    format!(
+                        "{} ({}, {:?}, {:?}, {})",
+                        media.filename,
+                        ev.id,
+                        ev.send_state,
+                        ev.event_id,
+                        media.source.uri()
+                    )
+                })
+                .collect();
         }
         unreachable!()
     })
     .await
-    .unwrap();
+    .unwrap_or_else(|_| panic!("the files did not show as the server has them: {seen:#?}"));
     let file = |extension: &str| {
         entries
             .iter()
