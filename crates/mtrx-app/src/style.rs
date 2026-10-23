@@ -228,14 +228,14 @@ pub fn unread_dot(theme: &Theme) -> container::Style {
     }
 }
 
-/// An unread count: red for mentions, else a grey a step darker (in dark
-/// mode lighter) than the room list.
+/// An unread count: red for mentions, else a grey darker (in dark mode
+/// lighter) than the room list and its selected row.
 pub fn badge(theme: &Theme, highlight: bool) -> container::Style {
     let palette = theme.extended_palette();
     let pair = if highlight {
         palette.danger.base
     } else {
-        palette.background.strong
+        palette.background.strongest
     };
     container::Style {
         background: Some(Background::Color(pair.color)),
@@ -653,6 +653,16 @@ mod tests {
     use super::*;
     use crate::tint::Tint;
 
+    /// `top`, with its alpha, over `bottom`.
+    fn over(bottom: Color, top: Color) -> Color {
+        let mix = |b: f32, t: f32| b * (1.0 - top.a) + t * top.a;
+        Color::from_rgb(
+            mix(bottom.r, top.r),
+            mix(bottom.g, top.g),
+            mix(bottom.b, top.b),
+        )
+    }
+
     #[test]
     fn unread_counts_are_readable() {
         for theme in [Theme::Light, Theme::Dark] {
@@ -668,15 +678,21 @@ mod tests {
                     contrast(text, bubble)
                 );
             }
-            // The grey bubble stands out from every room list colour.
+            // The grey bubble stands out from every room list colour, and
+            // from the selected row.
             let Some(Background::Color(bubble)) = badge(&theme, false).background else {
                 unreachable!()
             };
+            let Some(Background::Color(selected)) =
+                list_item(true)(&theme, button::Status::Active).background
+            else {
+                unreachable!()
+            };
             for tint in Tint::ALL {
-                assert!(
-                    contrast(bubble, tint.color(&theme)) >= 1.2,
-                    "{theme} {tint:?}"
-                );
+                let list = tint.color(&theme);
+                assert!(contrast(bubble, list) >= 1.3, "{theme} {tint:?}");
+                let row = over(list, selected);
+                assert!(contrast(bubble, row) >= 1.1, "{theme} {tint:?} selected");
             }
         }
     }
