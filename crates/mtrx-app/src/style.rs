@@ -125,6 +125,21 @@ pub fn hint(theme: &Theme) -> container::Style {
     }
 }
 
+/// The address of a hovered link, in the window's bottom left corner: as
+/// hover help, rounded only at its inner corner.
+pub fn link_status(theme: &Theme) -> container::Style {
+    let palette = theme.extended_palette();
+    container::Style {
+        background: Some(Background::Color(palette.background.weak.color)),
+        text_color: Some(palette.background.weak.text),
+        border: Border::default()
+            .rounded(iced::border::top_right(4))
+            .width(1)
+            .color(palette.background.strong.color),
+        ..Default::default()
+    }
+}
+
 pub fn space_bar(theme: &Theme) -> container::Style {
     let palette = theme.extended_palette();
     container::Style {

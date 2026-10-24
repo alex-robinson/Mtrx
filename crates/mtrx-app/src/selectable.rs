@@ -11,7 +11,7 @@ use iced::{
     Color, Element, Event, Font, Length, Pixels, Point, Rectangle, Renderer, Size, Task, Theme,
     Vector,
     advanced::{
-        Clipboard, Layout, Shell, Widget, clipboard, layout, mouse, renderer,
+        Clipboard, Layout, Shell, Widget, clipboard, layout, mouse, overlay, renderer,
         text::{self as core_text, Paragraph as _, Span},
         widget::{
             Id, Operation, operate,
@@ -29,7 +29,7 @@ use iced_graphics::text::{
 };
 use unicode_segmentation::UnicodeSegmentation;
 
-use crate::{selection::Gesture, style};
+use crate::{link_status, selection::Gesture, style};
 
 /// How far the cursor may move between pressing and releasing a link for it
 /// to count as a click rather than the start of a selection.
@@ -165,6 +165,8 @@ struct State {
     /// The link span pressed, and where.
     link_pressed: Option<(usize, Point)>,
     hovered_link: Option<usize>,
+    /// The hovered link's address in the window's corner.
+    link_status: link_status::Status,
     /// With its own selection: where it starts and ends, and whether it is
     /// being dragged.
     own: Option<(usize, usize)>,
@@ -535,6 +537,23 @@ impl<Message> Widget<Message, Theme, Renderer> for Selectable<'_, Message> {
         }
     }
 
+    /// The address of the hovered link, if it can be clicked.
+    fn overlay<'b>(
+        &'b mut self,
+        tree: &'b mut Tree,
+        _layout: Layout<'b>,
+        _renderer: &Renderer,
+        _viewport: &Rectangle,
+        _translation: Vector,
+    ) -> Option<overlay::Element<'b, Message, Theme, Renderer>> {
+        let state = tree.state.downcast_mut::<State>();
+        let url = state
+            .hovered_link
+            .filter(|_| self.on_link.is_some())
+            .and_then(|span| self.spans.get(span)?.link.as_deref())?;
+        Some(link_status::overlay(url, &mut state.link_status))
+    }
+
     fn mouse_interaction(
         &self,
         tree: &Tree,
@@ -713,6 +732,35 @@ mod tests {
             mouse::Button::Left,
         ))]);
         assert_eq!(ui.simulate([command_c()]), [Status::Ignored]);
+    }
+
+    #[test]
+    fn hovered_link_shows_its_address_in_the_corner() {
+        const URL: &str = "https://example.org/data";
+        let spans = vec![
+            Span::new("See ".to_owned()),
+            Span::new("the data".to_owned()).link(URL.to_owned()),
+        ];
+        let view: Element<'_, String> = selectable(spans, 0).on_link(|url| url).into();
+        let window = Size::new(400.0, 300.0);
+        let mut ui = Simulator::with_size(fonts::settings(), window, view);
+        let move_to = |ui: &mut Simulator<'_, String>, x: f32| {
+            ui.point_at((x, 8.0));
+            let _ = ui.simulate([Event::Mouse(mouse::Event::CursorMoved {
+                position: Point::new(x, 8.0),
+            })]);
+        };
+        assert!(ui.find(URL).is_err(), "not before hovering");
+        move_to(&mut ui, 50.0);
+        let bounds = ui.find(URL).expect("shown while hovered").bounds();
+        assert_eq!(bounds.x, 0.0);
+        assert_eq!(bounds.y + bounds.height, window.height);
+        // Over the plain text, or beside it: gone.
+        move_to(&mut ui, 5.0);
+        assert!(ui.find(URL).is_err());
+        move_to(&mut ui, 50.0);
+        move_to(&mut ui, 350.0);
+        assert!(ui.find(URL).is_err());
     }
 
     #[test]

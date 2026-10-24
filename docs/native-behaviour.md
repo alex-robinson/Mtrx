@@ -70,7 +70,7 @@ per day:
 
 - [x] Pointing hand over links and buttons, I-beam over selectable text.
 - [x] Drop files onto the window to attach them.
-- [ ] The link's address shows on hovering it (in a corner, as in a
+- [x] The link's address shows on hovering it (in a corner, as in a
       browser).
 - [ ] Right-click a link: Open, Copy Link.
 - [ ] Right-click a picture: Copy Image, Save Image…. Math messages have
