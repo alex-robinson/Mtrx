@@ -19,9 +19,9 @@ use iced::{
     },
 };
 use mtrx_core::{
-    CallService, Event, EventContent, Media, Member, MembershipChange, MessageKind, MxcUri,
-    OwnedEventId, OwnedRoomId, OwnedUserId, RoomKind, RoomSummary, RoomTimeline, ScheduledMessage,
-    SendState, TimelineEntry, UserId,
+    CallService, Event, EventContent, EventKey, Media, Member, MembershipChange, MessageKind,
+    MxcUri, OwnedEventId, OwnedRoomId, OwnedUserId, RoomKind, RoomSummary, RoomTimeline,
+    ScheduledMessage, SendState, TimelineEntry, UserId,
 };
 
 use crate::{
@@ -361,6 +361,23 @@ impl Room {
             TimelineEntry::Event(e) => Some(e.id.clone()),
             _ => None,
         }
+    }
+
+    /// Our newest message that we may edit, rendered to be edited in place:
+    /// its [`Event::id`], key and text.
+    pub fn newest_editable(&mut self) -> Option<(String, EventKey, String)> {
+        let (event_id, key, text) = self.entries.iter().rev().find_map(|entry| match entry {
+            TimelineEntry::Event(event) if event.editable => match &event.content {
+                EventContent::Message(m) => {
+                    Some((event.event_id.clone(), event.key.clone(), m.body.clone()))
+                }
+                _ => None,
+            },
+            _ => None,
+        })?;
+        // Not while it is being sent.
+        let row = self.reveal(&event_id?)?;
+        Some((row, key, text))
     }
 
     fn visible(&self) -> &[TimelineEntry] {
@@ -732,6 +749,7 @@ impl Room {
         let candidates = self.candidates(look.own_user);
         let completing = !candidates.is_empty();
         let selected = self.composer.selection().is_some();
+        let empty = self.composer.text().is_empty();
         let composer = text_editor(&self.composer)
             .id(COMPOSER)
             .highlight_with::<mention::Highlighter>(self.mentions.clone(), mention::format)
@@ -760,6 +778,14 @@ impl Room {
                     Key::Named(Named::Enter) if !press.modifiers.shift() => custom(Message::Send),
                     Key::Named(Named::Escape) if cancellable => {
                         custom(Message::Act(actions::Message::CancelCompose))
+                    }
+                    // Bindings are asked also while not focused.
+                    Key::Named(Named::ArrowUp)
+                        if empty
+                            && press.modifiers.is_empty()
+                            && matches!(press.status, text_editor::Status::Focused { .. }) =>
+                    {
+                        custom(Message::Act(actions::Message::EditLast))
                     }
                     _ => selection::editor_key(press, selected),
                 }

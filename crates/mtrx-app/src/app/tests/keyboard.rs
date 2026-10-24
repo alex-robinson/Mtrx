@@ -547,3 +547,27 @@ async fn typing_with_nothing_focused_goes_to_the_composer() {
     );
     assert_eq!(ui.room().composer.text(), "Ok");
 }
+
+/// ↑ in the empty composer edits our newest message; not with a draft, nor
+/// with nothing focused.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs local Synapse (testserver/run.sh)"]
+async fn up_in_the_empty_composer_edits_our_last_message() {
+    let (mut ui, _dir) = room_with("editlast", &["Calving", "Melt"]).await;
+    let up = Key::Named(Named::ArrowUp);
+    // Nothing focused.
+    assert_eq!(ui.press(up.clone(), Modifiers::empty()), Status::Ignored);
+    assert!(ui.room().editing.is_none());
+    // A draft: the cursor moves.
+    ui.room().set_composer(typed("Draft"));
+    ui.run(iced::widget::operation::focus(room::COMPOSER));
+    assert_eq!(ui.press(up.clone(), Modifiers::empty()), Status::Captured);
+    assert!(ui.room().editing.is_none());
+
+    ui.room().set_composer(text_editor::Content::new());
+    ui.send(&[]);
+    assert_eq!(ui.press(up, Modifiers::empty()), Status::Captured);
+    let edit = ui.room().editing.as_ref().expect("editing");
+    assert!(matches!(edit.target, Editing::Sent(_)));
+    assert_eq!(edit.text(), "Melt");
+}

@@ -51,6 +51,8 @@ pub enum Message {
     Reply(Target),
     /// Edit one of our sent messages where it is shown, starting from its text.
     Edit(EventKey, String),
+    /// ↑ in an empty composer: edit our newest message.
+    EditLast,
     EditAction(text_editor::Action),
     SaveEdit,
     CancelEdit,

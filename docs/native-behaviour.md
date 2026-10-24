@@ -64,7 +64,7 @@ per day:
       ⌘1–⌘9 to the first nine rooms.
 - [ ] ⌘F: find in the room's loaded messages.
 - [x] Typing with nothing focused goes to the composer.
-- [ ] ↑ in an empty composer edits our last message.
+- [x] ↑ in an empty composer edits our last message.
 
 ### A3. Mouse
 

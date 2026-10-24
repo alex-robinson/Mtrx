@@ -2661,6 +2661,13 @@ impl App {
                 room.editing = Some(InlineEdit::new(Editing::Sent(key), &text));
                 InlineEdit::focus()
             }
+            Act::EditLast => {
+                let Some((row, key, text)) = room.newest_editable() else {
+                    return Task::none();
+                };
+                room.editing = Some(InlineEdit::new(Editing::Sent(key), &text));
+                Task::batch([InlineEdit::focus(), room::scroll_to_row(&row)])
+            }
             Act::EditAction(action) => {
                 if let Some(edit) = &mut room.editing {
                     edit.perform(action);
