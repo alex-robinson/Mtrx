@@ -1080,6 +1080,7 @@ fn event_view<'a>(
                             )
                             .selected(select.range)
                             .dragging(select.dragging)
+                            .on_link(Message::LinkClicked)
                             .on_gesture(select.on_gesture)
                             .into()
                         }

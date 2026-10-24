@@ -19,6 +19,7 @@ use unicode_segmentation::UnicodeSegmentation;
 
 use crate::{
     message::TextMap,
+    selectable::CLICK_SLOP,
     selection::{Gesture, Pos, unit_range},
     style,
 };
@@ -32,6 +33,8 @@ pub struct Piece {
     /// A formula or code, only selected whole.
     pub whole: bool,
     pub rect: Rectangle,
+    /// The link it is in, if any.
+    pub link: Option<String>,
 }
 
 /// What the image shows, for selecting: its pieces in reading order, and
@@ -63,6 +66,7 @@ impl Text {
                     range,
                     whole: piece.range.is_none(),
                     rect: Rectangle::new(Point::new(x, y), Size::new(width, height)),
+                    link: leaf.link.clone(),
                 })
             })
             .collect();
@@ -99,6 +103,14 @@ impl Text {
                 piece.range.end
             },
         })
+    }
+
+    /// The link under `point`, if any.
+    fn link_at(&self, point: Point) -> Option<&str> {
+        self.pieces
+            .iter()
+            .find(|p| p.rect.contains(point))
+            .and_then(|p| p.link.as_deref())
     }
 
     /// The word at `pos`, or the formula there.
@@ -154,6 +166,7 @@ pub struct SelectableImage<'a, Message> {
     text: Arc<Text>,
     selected: Option<(Pos, Pos)>,
     dragging: bool,
+    on_link: Option<fn(String) -> Message>,
     on_gesture: Option<Rc<dyn Fn(Gesture) -> Message + 'a>>,
 }
 
@@ -167,6 +180,7 @@ pub fn selectable_image<'a, Message>(
         text,
         selected: None,
         dragging: false,
+        on_link: None,
         on_gesture: None,
     }
 }
@@ -183,6 +197,12 @@ impl<'a, Message> SelectableImage<'a, Message> {
         self
     }
 
+    /// Sent when a link is clicked (pressed and released without moving).
+    pub fn on_link(mut self, on_link: fn(String) -> Message) -> Self {
+        self.on_link = Some(on_link);
+        self
+    }
+
     pub fn on_gesture(mut self, on_gesture: Rc<dyn Fn(Gesture) -> Message + 'a>) -> Self {
         self.on_gesture = Some(on_gesture);
         self
@@ -193,6 +213,8 @@ impl<'a, Message> SelectableImage<'a, Message> {
 struct State {
     last_click: Option<mouse::Click>,
     modifiers: keyboard::Modifiers,
+    /// The link pressed, and where.
+    link_pressed: Option<(String, Point)>,
 }
 
 impl<Message> Widget<Message, Theme, Renderer> for SelectableImage<'_, Message> {
@@ -268,9 +290,6 @@ impl<Message> Widget<Message, Theme, Renderer> for SelectableImage<'_, Message> 
         shell: &mut Shell<'_, Message>,
         _viewport: &Rectangle,
     ) {
-        let Some(on_gesture) = &self.on_gesture else {
-            return;
-        };
         let state = tree.state.downcast_mut::<State>();
         let bounds = layout.bounds();
         let origin = bounds.position() - Point::ORIGIN;
@@ -282,10 +301,18 @@ impl<Message> Widget<Message, Theme, Renderer> for SelectableImage<'_, Message> 
                 let Some(at) = cursor.position_in(bounds) else {
                     return;
                 };
+                let position = cursor.position().unwrap_or_default();
+                state.link_pressed =
+                    (self.text.link_at(at)).map(|link| (link.to_owned(), position));
+                let Some(on_gesture) = &self.on_gesture else {
+                    if state.link_pressed.is_some() {
+                        shell.capture_event();
+                    }
+                    return;
+                };
                 let Some(pos) = self.text.hit(at) else {
                     return;
                 };
-                let position = cursor.position().unwrap_or_default();
                 let click = mouse::Click::new(position, mouse::Button::Left, state.last_click);
                 state.last_click = Some(click);
                 let (unit, from, to) = match click.kind() {
@@ -307,18 +334,38 @@ impl<Message> Widget<Message, Theme, Renderer> for SelectableImage<'_, Message> 
                 }));
                 shell.capture_event();
             }
-            Event::Mouse(mouse::Event::CursorMoved { .. }) if self.dragging => {
+            Event::Mouse(mouse::Event::CursorMoved { .. }) => {
                 // The cursor: inside a scrollable, it is in the content's
                 // coordinates.
                 let Some(position) = cursor.land().position() else {
                     return;
                 };
+                if let Some((_, pressed)) = &state.link_pressed
+                    && pressed.distance(position) > CLICK_SLOP
+                {
+                    state.link_pressed = None;
+                }
                 let beside = position.y >= bounds.y && position.y < bounds.y + bounds.height;
-                if beside && let Some(pos) = self.text.hit(position - origin) {
+                if self.dragging
+                    && beside
+                    && let Some(on_gesture) = &self.on_gesture
+                    && let Some(pos) = self.text.hit(position - origin)
+                {
                     shell.publish(on_gesture(Gesture::Drag {
                         unit: pos.unit,
                         offset: pos.offset,
                     }));
+                }
+            }
+            Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
+                if let Some((link, _)) = state.link_pressed.take()
+                    && let Some(on_link) = self.on_link
+                    && cursor
+                        .position_in(bounds)
+                        .and_then(|at| self.text.link_at(at))
+                        == Some(link.as_str())
+                {
+                    shell.publish(on_link(link));
                 }
             }
             _ => {}
@@ -333,7 +380,16 @@ impl<Message> Widget<Message, Theme, Renderer> for SelectableImage<'_, Message> 
         _viewport: &Rectangle,
         _renderer: &Renderer,
     ) -> mouse::Interaction {
-        if self.on_gesture.is_some() && (self.dragging || cursor.is_over(layout.bounds())) {
+        let bounds = layout.bounds();
+        let over_link = || {
+            cursor
+                .position_in(bounds)
+                .and_then(|at| self.text.link_at(at))
+                .is_some()
+        };
+        if self.on_link.is_some() && over_link() {
+            mouse::Interaction::Pointer
+        } else if self.on_gesture.is_some() && (self.dragging || cursor.is_over(bounds)) {
             mouse::Interaction::Text
         } else {
             mouse::Interaction::None
@@ -357,6 +413,7 @@ mod tests {
             range,
             whole,
             rect: Rectangle::new(Point::new(x, y), Size::new(w, 20.0)),
+            link: None,
         }
     }
 
@@ -409,5 +466,95 @@ mod tests {
             .map(|rect| rect.x)
             .collect();
         assert_eq!(lit, [30.0, 40.0, 45.0, 75.0, 80.0, 90.0, 0.0]);
+    }
+
+    #[test]
+    fn links_open_on_a_click_and_show_a_hand() {
+        use iced::{
+            advanced::renderer::Headless,
+            widget::{container, space},
+        };
+        use iced_runtime::user_interface::{Cache, State, UserInterface};
+        use iced_test::simulator::Simulator;
+
+        const URL: &str = "https://example.org";
+        // "Next" is a link.
+        let mut linked = text();
+        linked.pieces[9].link = Some(URL.into());
+        let linked = Arc::new(linked);
+        // Links are messages, gestures nothing.
+        let view = || -> Element<'_, Option<String>> {
+            container(
+                selectable_image(space().width(100).height(50), linked.clone())
+                    .on_link(Some)
+                    .on_gesture(Rc::new(|_| None)),
+            )
+            .padding(10)
+            .into()
+        };
+        let clicked = |steps: &[(f32, f32, mouse::Event)]| -> Vec<String> {
+            let mut ui =
+                Simulator::with_size(crate::fonts::settings(), Size::new(200.0, 100.0), view());
+            for &(x, y, event) in steps {
+                ui.point_at((x, y));
+                let _ = ui.simulate([Event::Mouse(event)]);
+            }
+            ui.into_messages().flatten().collect()
+        };
+        use mouse::{Button::Left, Event::*};
+        let moved = |x, y| CursorMoved {
+            position: Point::new(x, y),
+        };
+        // Pressed and released on it.
+        assert_eq!(
+            clicked(&[
+                (20.0, 50.0, ButtonPressed(Left)),
+                (21.0, 50.0, ButtonReleased(Left))
+            ]),
+            [URL]
+        );
+        // Dragged from it, or clicked beside it: no link.
+        let dragged = [
+            (20.0, 50.0, ButtonPressed(Left)),
+            (60.0, 50.0, moved(60.0, 50.0)),
+            (20.0, 50.0, ButtonReleased(Left)),
+        ];
+        assert!(clicked(&dragged).is_empty());
+        let beside = [
+            (20.0, 20.0, ButtonPressed(Left)),
+            (20.0, 20.0, ButtonReleased(Left)),
+        ];
+        assert!(clicked(&beside).is_empty());
+
+        // A pointing hand over the link, the text cursor elsewhere.
+        let mut renderer = iced::futures::executor::block_on(iced::Renderer::new(
+            crate::fonts::INTER,
+            iced::Pixels(style::TEXT_SIZE),
+            None,
+        ))
+        .unwrap();
+        let mut ui = UserInterface::build(
+            view(),
+            Size::new(200.0, 100.0),
+            Cache::default(),
+            &mut renderer,
+        );
+        let mut over = |x, y| {
+            let (state, _) = ui.update(
+                &[],
+                mouse::Cursor::Available(Point::new(x, y)),
+                &mut renderer,
+                &mut iced::advanced::clipboard::Null,
+                &mut Vec::new(),
+            );
+            match state {
+                State::Updated {
+                    mouse_interaction, ..
+                } => mouse_interaction,
+                State::Outdated => panic!("outdated"),
+            }
+        };
+        assert_eq!(over(20.0, 50.0), mouse::Interaction::Pointer);
+        assert_eq!(over(20.0, 20.0), mouse::Interaction::Text);
     }
 }

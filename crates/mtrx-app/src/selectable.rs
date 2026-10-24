@@ -33,7 +33,7 @@ use crate::{selection::Gesture, style};
 
 /// How far the cursor may move between pressing and releasing a link for it
 /// to count as a click rather than the start of a selection.
-const CLICK_SLOP: f32 = 4.0;
+pub const CLICK_SLOP: f32 = 4.0;
 
 /// The id of the unit holding the end of the selection, for [`line_step`].
 const FOCUS: &str = "selection-focus";

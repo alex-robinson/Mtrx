@@ -83,7 +83,7 @@ per day:
 - [x] Drag, double- and triple-click, Shift-click, ⌘A, ⌘C, across
       messages; math as `$…$`.
 - [ ] Sender names, reply previews, notices and state lines selectable.
-- [ ] Links in typeset (math) messages clickable.
+- [x] Links in typeset (math) messages clickable.
 - [ ] Code in math messages selectable by character.
 
 ### A5. Clipboard and paste

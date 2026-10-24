@@ -91,12 +91,14 @@ pub struct TextMap {
     pub leaves: Vec<Leaf>,
 }
 
-/// Where a text leaf is shown: its unit, and its bytes there.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Where a text leaf is shown: its unit, and its bytes there; and the link
+/// it is in, if any (a mention's too).
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Leaf {
     pub unit: usize,
     pub start: usize,
     pub len: usize,
+    pub link: Option<String>,
 }
 
 pub fn text_map(document: &Document) -> TextMap {
@@ -237,11 +239,14 @@ impl<'a, M: Clone + 'a> Walk<'_, 'a, M> {
         };
         spans(content, flags, None, &look, &mut out, &mut leaves);
         let unit = self.map.units.len();
-        self.map.leaves.extend(
-            leaves
-                .into_iter()
-                .map(|(start, len)| Leaf { unit, start, len }),
-        );
+        self.map
+            .leaves
+            .extend(leaves.into_iter().map(|(start, len, link)| Leaf {
+                unit,
+                start,
+                len,
+                link,
+            }));
         self.unit(out, size, prefix, gap, last)
     }
 
@@ -251,6 +256,7 @@ impl<'a, M: Clone + 'a> Walk<'_, 'a, M> {
             unit: self.map.units.len(),
             start: 0,
             len,
+            link: None,
         });
     }
 
@@ -303,21 +309,21 @@ struct Look<'t> {
 }
 
 /// Styled spans of `content` into `out`; each leaf's start and length in
-/// their text into `leaves`.
+/// their text, and the link each is in, into `leaves`.
 fn spans(
     content: &[Inline],
     flags: Flags,
     link: Option<&str>,
     look: &Look<'_>,
     out: &mut Vec<Span<'static, String, Font>>,
-    leaves: &mut Vec<(usize, usize)>,
+    leaves: &mut Vec<(usize, usize, Option<String>)>,
 ) {
     let theme = look.theme;
     for inline in content {
         let start: usize = out.iter().map(|s| s.text.len()).sum();
         match inline {
             Inline::Text(t) => {
-                leaves.push((start, t.len()));
+                leaves.push((start, t.len(), link.map(str::to_owned)));
                 for (is_emoji, run) in emoji::runs(t) {
                     let run = styled(span(run), flags, link, theme);
                     out.push(if is_emoji {
@@ -340,7 +346,7 @@ fn spans(
                 spans(content, f, link, look, out, leaves);
             }
             Inline::Code(code) => {
-                leaves.push((start, code.len()));
+                leaves.push((start, code.len(), link.map(str::to_owned)));
                 out.push(styled(
                     span(code.clone()),
                     Flags {
@@ -355,9 +361,9 @@ fn spans(
                 spans(content, flags, Some(url), look, out, leaves);
             }
             Inline::Mention { user_id, name } => {
-                leaves.push((start, name.len()));
                 let own = look.own.is_some_and(|own| own.as_str() == user_id);
                 let url = mention_url(user_id);
+                leaves.push((start, name.len(), Some(url.clone())));
                 for (is_emoji, run) in emoji::runs(name) {
                     let run = mention(span(run), flags, own, theme).link(url.clone());
                     out.push(if is_emoji {
@@ -369,7 +375,7 @@ fn spans(
             }
             Inline::Math(tex) => {
                 let shown = format!("${tex}$");
-                leaves.push((start, shown.len()));
+                leaves.push((start, shown.len(), link.map(str::to_owned)));
                 out.push(styled(
                     span(shown),
                     Flags {
@@ -631,13 +637,17 @@ mod tests {
         // Rooms and other links open as before.
         assert_eq!(mentioned_user("https://matrix.to/#/!room:server.org"), None);
         assert_eq!(mentioned_user("https://example.org/@nils"), None);
-        // A mention is one leaf of text.
+        // A mention is one leaf of text, with its link, as other links.
         let document = Document::from_html(
-            r#"Ask <a href="https://matrix.to/#/@nils:server.org">Nils</a> now"#,
+            r#"Ask <a href="https://matrix.to/#/@nils:server.org">Nils</a> or <a href="https://x.org">here</a>"#,
         );
         let map = text_map(&document);
-        assert_eq!(map.units[0].text, "Ask Nils now");
-        assert_eq!(map.leaves.len(), 3);
+        assert_eq!(map.units[0].text, "Ask Nils or here");
+        let links: Vec<_> = map.leaves.iter().map(|l| l.link.as_deref()).collect();
+        assert_eq!(
+            links,
+            [None, Some(url.as_str()), None, Some("https://x.org")]
+        );
     }
 
     #[test]

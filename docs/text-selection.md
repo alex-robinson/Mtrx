@@ -97,12 +97,13 @@ are laid out from generated Typst, so they become one piece per line,
 selected whole. `Image::pieces` lists each piece's leaf, byte range and
 rectangle. `message::text_map` says where each leaf is in the units, so
 the image is selected with the same units as native text, and formulas
-copy as `$…$`.
+copy as `$…$`. The text map also says which link each leaf is in (a
+mention's too), so a piece of a link is clicked as in native text: a
+press and release without moving opens it, and the cursor is a pointing
+hand over it.
 
 ## Left to do
 
-- Links in typeset (math) messages cannot be clicked; the menu's Copy link
-  covers them.
 - Code inside math messages is selected whole.
 - Other text in the timeline is not selectable: sender names, reply
   previews, notices and state lines. Info cards are: names, IDs,
@@ -114,6 +115,8 @@ copy as `$…$`.
 - Unit: units and their copy text (`message.rs`, `selection.rs`), hit
   testing and highlighting over an image (`selectable_image.rs`), edge
   scrolling speed (`drag_scroll.rs`).
+- Simulated mouse: clicking a link in a typeset message, and its cursor
+  (`selectable_image.rs`).
 - Simulated mouse: dragging, double and triple clicks, and dragging in a
   scrolled timeline (`message.rs`).
 - Renderer: pieces in reading order and in the right places
