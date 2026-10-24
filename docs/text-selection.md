@@ -111,9 +111,10 @@ one piece per line, selected whole. `Image::pieces` lists each piece's
 leaf, byte range and rectangle. `message::text_map` says where each leaf is in the units, so
 the image is selected with the same units as native text, and formulas
 copy as `$…$`. The text map also says which link each leaf is in (a
-mention's too), so a piece of a link is clicked as in native text: a
-press and release without moving opens it, and the cursor is a pointing
-hand over it.
+mention's too), so a piece of a link behaves as in native text: a press
+and release without moving opens it, the cursor is a pointing hand over
+it, its address shows in the corner, and right-clicking it opens the
+link's menu.
 
 ## Left to do
 
@@ -127,8 +128,8 @@ hand over it.
 - Unit: units and their copy text (`message.rs`, `selection.rs`), hit
   testing and highlighting over an image (`selectable_image.rs`), edge
   scrolling speed (`drag_scroll.rs`).
-- Simulated mouse: clicking a link in a typeset message, and its cursor
-  (`selectable_image.rs`).
+- Simulated mouse: clicking, hovering and right-clicking a link in a
+  typeset message, and its cursor (`selectable_image.rs`).
 - Simulated mouse: dragging, double and triple clicks, and dragging in a
   scrolled timeline (`message.rs`).
 - Renderer: pieces in reading order and in the right places, code by

@@ -6,11 +6,11 @@
 use std::{ops::Range, rc::Rc, sync::Arc};
 
 use iced::{
-    Element, Event, Length, Point, Rectangle, Renderer, Size, Theme,
+    Element, Event, Length, Point, Rectangle, Renderer, Size, Theme, Vector,
     advanced::{
         Clipboard, Layout, Shell, Widget,
         layout::{Limits, Node},
-        mouse, renderer,
+        mouse, overlay, renderer,
         widget::{Id, Operation, Tree, tree},
     },
     keyboard,
@@ -19,6 +19,7 @@ use unicode_segmentation::UnicodeSegmentation;
 
 use crate::{
     find::{self, Found},
+    link_status,
     message::TextMap,
     selectable::CLICK_SLOP,
     selection::{Gesture, Pos, unit_range},
@@ -170,6 +171,7 @@ pub struct SelectableImage<'a, Message> {
     found: Vec<Found>,
     dragging: bool,
     on_link: Option<fn(String) -> Message>,
+    on_link_menu: Option<Rc<dyn Fn(String) -> Message + 'a>>,
     on_gesture: Option<Rc<dyn Fn(Gesture) -> Message + 'a>>,
 }
 
@@ -185,6 +187,7 @@ pub fn selectable_image<'a, Message>(
         found: Vec::new(),
         dragging: false,
         on_link: None,
+        on_link_menu: None,
         on_gesture: None,
     }
 }
@@ -222,6 +225,12 @@ impl<'a, Message> SelectableImage<'a, Message> {
         self
     }
 
+    /// Sent when a link is right-clicked, for its menu.
+    pub fn on_link_menu(mut self, on_link_menu: Rc<dyn Fn(String) -> Message + 'a>) -> Self {
+        self.on_link_menu = Some(on_link_menu);
+        self
+    }
+
     pub fn on_gesture(mut self, on_gesture: Rc<dyn Fn(Gesture) -> Message + 'a>) -> Self {
         self.on_gesture = Some(on_gesture);
         self
@@ -234,6 +243,9 @@ struct State {
     modifiers: keyboard::Modifiers,
     /// The link pressed, and where.
     link_pressed: Option<(String, Point)>,
+    hovered_link: Option<String>,
+    /// The hovered link's address in the window's corner.
+    link_status: link_status::Status,
 }
 
 impl<Message> Widget<Message, Theme, Renderer> for SelectableImage<'_, Message> {
@@ -325,9 +337,25 @@ impl<Message> Widget<Message, Theme, Renderer> for SelectableImage<'_, Message> 
         let state = tree.state.downcast_mut::<State>();
         let bounds = layout.bounds();
         let origin = bounds.position() - Point::ORIGIN;
+        let hovered_link = cursor
+            .position_in(bounds)
+            .and_then(|at| self.text.link_at(at));
+        if hovered_link != state.hovered_link.as_deref() {
+            state.hovered_link = hovered_link.map(str::to_owned);
+            shell.request_redraw();
+        }
         match event {
             Event::Keyboard(keyboard::Event::ModifiersChanged(modifiers)) => {
                 state.modifiers = *modifiers;
+            }
+            // The link's menu rather than whatever the image is in offers.
+            Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Right)) => {
+                if let Some(on_link_menu) = &self.on_link_menu
+                    && let Some(link) = hovered_link
+                {
+                    shell.publish(on_link_menu(link.to_owned()));
+                    shell.capture_event();
+                }
             }
             Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
                 let Some(at) = cursor.position_in(bounds) else {
@@ -420,6 +448,24 @@ impl<Message> Widget<Message, Theme, Renderer> for SelectableImage<'_, Message> 
             .reduce(|a, b| a.union(&b))
             .map_or(bounds, |rect| rect + (bounds.position() - Point::ORIGIN));
         operation.custom(Some(&Id::new(find::CURRENT)), rect, &mut ());
+    }
+
+    /// The address of the hovered link, if it can be clicked.
+    fn overlay<'b>(
+        &'b mut self,
+        tree: &'b mut Tree,
+        _layout: Layout<'b>,
+        _renderer: &Renderer,
+        _viewport: &Rectangle,
+        _translation: Vector,
+    ) -> Option<overlay::Element<'b, Message, Theme, Renderer>> {
+        let State {
+            hovered_link,
+            link_status,
+            ..
+        } = tree.state.downcast_mut::<State>();
+        let url = hovered_link.as_deref().filter(|_| self.on_link.is_some())?;
+        Some(link_status::overlay(url, link_status))
     }
 
     fn mouse_interaction(
@@ -551,6 +597,67 @@ mod tests {
         );
         // A double click selects a word in it.
         assert_eq!(text.word_at(pos(0, 5)), 4..6);
+    }
+
+    #[test]
+    fn links_show_their_address_and_open_their_menu() {
+        use iced::widget::{container, space};
+        use iced_test::simulator::Simulator;
+
+        #[derive(Clone, Debug, PartialEq)]
+        enum Clicked {
+            Link(String),
+            LinkMenu(String),
+            Menu,
+            Selecting,
+        }
+
+        const URL: &str = "https://example.org/data";
+        // "Next" is a link.
+        let mut linked = text();
+        linked.pieces[9].link = Some(URL.into());
+        let linked = Arc::new(linked);
+        let window = Size::new(400.0, 300.0);
+        let ui = || {
+            let image = selectable_image(space().width(100).height(50), linked.clone())
+                .on_link(Clicked::Link)
+                .on_link_menu(Rc::new(Clicked::LinkMenu))
+                .on_gesture(Rc::new(|_| Clicked::Selecting));
+            let view = crate::context_menu::context_menu(
+                container(image).padding(10),
+                None,
+                Clicked::Menu,
+            );
+            Simulator::with_size(crate::fonts::settings(), window, view)
+        };
+        let move_to = |ui: &mut Simulator<'_, Clicked>, x: f32, y: f32| {
+            ui.point_at((x, y));
+            let _ = ui.simulate([Event::Mouse(mouse::Event::CursorMoved {
+                position: Point::new(x, y),
+            })]);
+        };
+
+        // The address in the corner while over the link.
+        let mut hovering = ui();
+        assert!(hovering.find(URL).is_err(), "not before hovering");
+        move_to(&mut hovering, 20.0, 50.0);
+        let bounds = hovering.find(URL).expect("shown while hovered").bounds();
+        assert_eq!(bounds.x, 0.0);
+        assert_eq!(bounds.y + bounds.height, window.height);
+        move_to(&mut hovering, 20.0, 20.0);
+        assert!(hovering.find(URL).is_err(), "gone over other text");
+
+        // Right-clicked: the link's menu, else the message's.
+        let right_click = |x, y| {
+            let mut ui = ui();
+            move_to(&mut ui, x, y);
+            let _ = ui.simulate([Event::Mouse(mouse::Event::ButtonPressed(
+                mouse::Button::Right,
+            ))]);
+            ui.into_messages().collect::<Vec<_>>()
+        };
+        assert_eq!(right_click(20.0, 50.0), [Clicked::LinkMenu(URL.into())]);
+        assert_eq!(right_click(20.0, 20.0), [Clicked::Menu]);
     }
 
     #[test]

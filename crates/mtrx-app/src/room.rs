@@ -1125,6 +1125,7 @@ fn event_view<'a>(
                         }) => {
                             math_shown = true;
                             let select = select();
+                            let links = links();
                             selectable_image(
                                 image(handle.clone()).width(*width).height(*height),
                                 text.clone(),
@@ -1132,7 +1133,8 @@ fn event_view<'a>(
                             .selected(select.range)
                             .found(select.found)
                             .dragging(select.dragging)
-                            .on_link(Message::LinkClicked)
+                            .on_link(links.open)
+                            .on_link_menu(links.menu)
                             .on_gesture(select.on_gesture)
                             .into()
                         }
