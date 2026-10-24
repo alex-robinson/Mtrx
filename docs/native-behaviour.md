@@ -1,52 +1,148 @@
 # Behaving like a Mac app: to do
 
 Status: checklist, not started. What the text system and a native app give
-for free (a web view showed it: `docs/web-variant.md` on the
-`web-variant-dd34eb` branch), written down once so that it is done once,
-not found one issue at a time.
+for free, written down once so that it is done once, not found one issue
+at a time.
+
+## Why iced, and why this order
+
+A web view (`docs/web-variant.md`, branch `web-variant-dd34eb`) gave the
+composer, selection, accessibility and spell checking for free, at the
+price of three rendering engines (WebKit, WebKitGTK, WebView2), with Linux
+the weakest and most of our users on Mac and Linux. iced renders the same
+everywhere, so the gaps below are paid for once, in our code or in a copy
+of one iced widget.
+
+The list is grouped by where the fix lives, and ordered by what it buys
+per day:
+
+- **A. App code.** Cheap, no fork, each item on its own. Do these first.
+- **B. The composer.** iced's `text_editor` exposes no cursor by offset
+  and no history, so these need a vendored `iced_widget` (as
+  `vendor/iced_graphics` already is). One fork, one project, carrying
+  every item in B.
+- **C. Menu bar.** Needs `muda`; on macOS the menu's key equivalents are
+  matched before winit sees the key, so every Edit shortcut must be routed
+  back into the focused field. After B, not before.
+- **D. Text rendering.** Screenshot tests; fixes where they fail.
+- **E. Limits.** Not fixable in our code; listed so they are not
+  rediscovered.
 
 ## How
 
-- Go through it in tiers, an item at a time.
+- An item at a time, A before B before C.
 - Each item gets a test with simulated input (`iced_test`, as in
   `app/tests.rs`) where it can, so it stays done.
-- Fix a gap where it starts: the composer's gaps in one editor layer over
-  iced's `text_editor` (or upstream in iced), not a key binding here and
-  there.
+- Fix a gap where it starts: B in the editor layer, not a key binding
+  here and there.
 - `[x]` done, `[ ]` to do; "unchecked" means nobody has tried it yet.
 
-## Tier 1: writing and selecting
+## A. App code
 
-### 1. Editing in the composer
+### A1. Window
 
-iced's `text_editor` (0.14) has no undo, and of the macOS key bindings only
-the arrows (with ⌥, ⌘ and ⇧), Home/End, ⌘A/C/X/V and ⌃A/E/B/F/H/D.
+- [ ] ⌘W hides the window; the app keeps running and synced (dock badge
+      and notifications go on) and the Dock icon shows it again. Closing
+      quits the app now (`main.rs` already sets `exit_on_close_request:
+      false`; `Message::CloseWindow` goes offline and closes).
+- [ ] Size, position and display remembered.
+- [ ] Full screen, and tiling with the system's window layouts. Unchecked.
 
+### A2. Keyboard
+
+- [x] ⌘K: room search.
+- [x] ⌘+ ⌘− ⌘0: text size.
+- [ ] Shift with an arrow does not extend a selection (reported with
+      0.2.0). `shortcuts` in `app.rs` only acts when the event was
+      ignored; with the composer focused the editor takes Shift+arrows as
+      its own selection. Reproduce, decide, test.
+- [ ] ⇧⌘← and ⇧⌘→ extend to the start and end of the line, ⇧⌘↑ and ⇧⌘↓
+      to the first and last message on screen.
+- [ ] Page Up/Down and ⌥↑/⌥↓ scroll the timeline; ⌘↑/⌘↓ go to the oldest
+      loaded and the newest message (when the composer does not take them).
+- [ ] ⌥⌘↑ and ⌥⌘↓ (or ⌃Tab and ⌃⇧Tab) go to the room above and below;
+      ⌘1–⌘9 to the first nine rooms.
+- [ ] ⌘F: find in the room's loaded messages.
+- [ ] Typing with nothing focused goes to the composer.
+- [ ] ↑ in an empty composer edits our last message.
+
+### A3. Mouse
+
+- [x] Pointing hand over links and buttons, I-beam over selectable text.
+- [x] Drop files onto the window to attach them.
+- [ ] The link's address shows on hovering it (in a corner, as in a
+      browser).
+- [ ] Right-click a link: Open, Copy Link.
+- [ ] Right-click a picture: Copy Image, Save Image…. Math messages have
+      it (`message_menu.rs`); pictures do not.
+- [ ] Drag a picture or file out of a message into Finder or another app.
+
+### A4. Selection in the timeline
+
+`docs/text-selection.md` has what is done.
+
+- [x] Drag, double- and triple-click, Shift-click, ⌘A, ⌘C, across
+      messages; math as `$…$`.
+- [ ] Sender names, reply previews, notices and state lines selectable.
+- [ ] Links in typeset (math) messages clickable.
+- [ ] Code in math messages selectable by character.
+
+### A5. Clipboard and paste
+
+Paste is a binding we can replace (`Binding::Custom`, then
+`Action::Edit(Edit::Paste)`), and `arboard` reads pictures and HTML, so
+these stay outside the widget.
+
+- [x] Copy as text, math as `$…$`.
+- [ ] Copy as HTML as well, so pasting into Mail or a document keeps
+      formatting, links and lists.
+- [ ] ⌘V of a picture (a screenshot, say) attaches it, as dropping a file
+      does.
+- [ ] ⌘V of rich text (from a web page or Mail) as Markdown: links, lists,
+      emphasis.
+- [ ] ⌥⇧⌘V pastes as plain text.
+- [ ] Right-click in the composer: Cut, Copy, Paste, Select All (and
+      Emoji & Symbols). `context_menu.rs` has the menu.
+
+## B. The composer: inside `text_editor`
+
+iced 0.14's `text_editor` has no undo, and of the macOS key bindings only
+the arrows (with ⌥, ⌘ and ⇧), Home/End, ⌘A/C/X/V and ⌃A/E/B/F/H/D. Its
+`Content` gives the text, the selection and a line/column cursor: nothing
+to build an undo stack or a word deletion on from outside. So: vendor
+`iced_widget`, and do all of B in that copy, upstreaming what iced takes.
+
+### B1. Input methods
+
+The widget forwards every key press to the binding without looking at
+the preedit, so the first item is probably a bug, not unchecked.
+
+- [ ] Japanese and Chinese input: candidates next to the caret, and Enter
+      confirms the composition rather than sending.
+- [ ] Press-and-hold accent menu (#30). winit and the NSView, not the
+      widget; may need upstream winit.
+- [ ] Dead keys: ⌥E then E gives é. Unchecked.
+- [ ] Dictation (🎤 or Fn Fn). Unchecked.
+- [ ] ⌃⌘Space opens Emoji & Symbols and inserts the pick. Unchecked.
+
+### B2. Editing
+
+- [x] Double- and triple-click select a word and a line (iced).
 - [ ] ⌘Z undo, ⇧⌘Z redo; typing grouped into words, as in a text view.
 - [ ] ⌥⌫ and ⌥⌦ delete a word; ⌘⌫ deletes to the start of the line.
 - [ ] ⌘↑ and ⌘↓ go to the start and end of the draft (with ⇧, select).
 - [ ] ⌥↑ and ⌥↓ go to the start and end of the paragraph.
 - [ ] ⌃K deletes to the end of the line, ⌃Y yanks it back, ⌃T transposes,
       ⌃N and ⌃P move down and up, ⌃O opens a line.
-- [x] Double- and triple-click select a word and a line (iced).
 - [ ] Dragging selected text moves it; dropping text inserts it.
 
-### 2. Input methods
-
-iced 0.14 shows text being composed (preedit); the rest is unchecked.
-
-- [ ] Press-and-hold accent menu (#30).
-- [ ] Dead keys: ⌥E then E gives é. Unchecked.
-- [ ] Japanese and Chinese input: candidates next to the caret, Enter
-      confirms rather than sends. Unchecked.
-- [ ] Dictation (🎤 or Fn Fn). Unchecked.
-- [ ] ⌃⌘Space opens Emoji & Symbols and inserts the pick. Unchecked.
-
-### 3. Menu bar
+## C. Menu bar
 
 The app has no menu bar of its own (winit's default app menu only), so no
 Edit menu: none of its items, and no place to find shortcuts. `muda` adds
-native menus to a winit window.
+native menus to a winit window. Its accelerators take the key before the
+window does, so each one becomes a menu event routed to whatever is
+focused; do it once B's bindings exist to route to.
 
 - [ ] App menu: About, Settings… (⌘,), Hide, Quit.
 - [ ] Edit: Undo, Redo, Cut, Copy, Paste, Select All, Find (⌘F); macOS
@@ -55,68 +151,7 @@ native menus to a winit window.
 - [ ] Window: Minimize (⌘M), Zoom, Close (⌘W), Enter Full Screen (⌃⌘F).
 - [ ] Help: the website.
 
-### 4. Selection in the timeline
-
-`docs/text-selection.md` has what is done.
-
-- [ ] Shift with an arrow does not extend a selection (reported with
-      0.2.0), though `shortcuts` in `app.rs` handles it: reproduce, test.
-- [ ] ⇧⌘← and ⇧⌘→ extend to the start and end of the line, ⇧⌘↑ and ⇧⌘↓
-      to the first and last message on screen.
-- [ ] Sender names, reply previews, notices and state lines selectable.
-- [ ] Links in typeset (math) messages clickable.
-- [ ] Code in math messages selectable by character.
-
-### 5. Composer: menu and paste
-
-- [ ] Right-click: Cut, Copy, Paste, Select All (and Emoji & Symbols).
-- [ ] ⌘V of a picture (a screenshot, say) attaches it, as dropping a file
-      does.
-- [ ] ⌘V of rich text (from a web page or Mail) as Markdown: links, lists,
-      emphasis.
-- [ ] ⌥⇧⌘V pastes as plain text.
-
-## Tier 2: conventions
-
-### 6. Keyboard
-
-- [x] ⌘K: room search.
-- [x] ⌘+ ⌘− ⌘0: text size.
-- [ ] Page Up/Down and ⌥↑/⌥↓ scroll the timeline; ⌘↑/⌘↓ go to the oldest
-      loaded and the newest message (when the composer does not take them).
-- [ ] ⌥⌘↑ and ⌥⌘↓ (or ⌃Tab and ⌃⇧Tab) go to the room above and below;
-      ⌘1–⌘9 to the first nine rooms.
-- [ ] ⌘F: find in the room's loaded messages.
-- [ ] Typing with nothing focused goes to the composer.
-- [ ] Tab and ⇧Tab move between controls, with a visible focus ring;
-      Space presses the focused button.
-- [ ] ↑ in an empty composer edits our last message.
-
-### 7. Mouse
-
-- [x] Pointing hand over links and buttons, I-beam over selectable text.
-- [ ] The link's address shows on hovering it (in a corner, as in a
-      browser).
-- [ ] Right-click a link: Open, Copy Link.
-- [ ] Right-click a picture: Copy Image, Save Image….
-- [ ] Drag a picture or file out of a message into Finder or another app.
-- [x] Drop files onto the window to attach them.
-
-### 8. Clipboard
-
-- [x] Copy as text, math as `$…$` (`docs/text-selection.md`).
-- [ ] Copy as HTML as well, so pasting into Mail or a document keeps
-      formatting, links and lists.
-
-### 9. Window
-
-- [ ] Size, position and display remembered.
-- [ ] ⌘W closes the window and keeps the app running and synced (the dock
-      badge and notifications go on); the Dock icon opens it again.
-      Closing the window quits the app now.
-- [ ] Full screen, and tiling with the system's window layouts.
-
-## Tier 3: text rendering
+## D. Text rendering
 
 Screenshot tests (as in `app/tests.rs`) at each text size, in messages and
 in the composer. All unchecked.
@@ -128,9 +163,9 @@ in the composer. All unchecked.
 - [ ] Long words and URLs wrap within the message.
 - [ ] Math next to text in each of the above.
 
-## Limits of iced
+## E. Limits of iced
 
-Not fixable in our code alone; listed so they are known, not rediscovered.
+Not fixable in our code alone.
 
 - **Accessibility.** iced has no accessibility tree, so VoiceOver,
   Voice Control and Switch Control see nothing. Upstream work in iced.
@@ -138,3 +173,5 @@ Not fixable in our code alone; listed so they are known, not rediscovered.
   replacements, smart quotes, Writing Tools, Services and Look Up come with
   a native text view. Spell checking could be done with `NSSpellChecker`,
   but iced's editor cannot underline a word yet.
+- **Keyboard focus.** Tab and ⇧Tab between controls with a focus ring, and
+  Space to press a button: iced's buttons are not focusable.
