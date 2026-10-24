@@ -6,7 +6,7 @@
 use std::{io::Cursor, path::PathBuf, sync::Mutex};
 
 use arboard::ImageData;
-use iced::widget::text_editor::{Binding, KeyPress};
+use iced::widget::text_editor::{self, Binding, KeyPress};
 use mtrx_core::Attachment;
 use mtrx_format::{Block, Document, Inline, Style};
 
@@ -76,21 +76,39 @@ pub enum Pasted {
     Text(String),
 }
 
-/// Whether `press` pastes into an editor (⌘V, while focused).
-pub fn pastes(press: &KeyPress) -> bool {
+/// How to paste.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Paste {
+    /// ⌘V: files, pictures, rich text as Markdown.
+    Rich,
+    /// ⌥⇧⌘V (or ⇧⌘V, Ctrl+Shift+V elsewhere): the plain text only.
+    Plain,
+}
+
+/// How `press` pastes into an editor, while focused.
+pub fn paste(press: &KeyPress) -> Option<Paste> {
+    let focused = matches!(press.status, text_editor::Status::Focused { .. });
+    let v = press.key.to_latin(press.physical_key) == Some('v');
+    if focused && v && press.modifiers.command() && press.modifiers.shift() {
+        return Some(Paste::Plain);
+    }
     matches!(
         Binding::<()>::from_key_press(press.clone()),
         Some(Binding::Paste)
     )
+    .then_some(Paste::Rich)
 }
 
-/// What the clipboard holds, as pasted into the composer; `None` for
-/// nothing it can take.
-pub async fn read() -> Option<Pasted> {
-    tokio::task::spawn_blocking(|| {
+/// What the clipboard holds, as pasted into the composer `how`; `None`
+/// for nothing it can take.
+pub async fn read(how: Paste) -> Option<Pasted> {
+    tokio::task::spawn_blocking(move || {
         with(|clipboard| {
-            let files = clipboard.get().file_list().unwrap_or_default();
             let text = clipboard.get().text().ok();
+            if how == Paste::Plain {
+                return Ok(text.filter(|text| !text.is_empty()).map(Pasted::Text));
+            }
+            let files = clipboard.get().file_list().unwrap_or_default();
             let html = clipboard.get().html().ok();
             Ok(pasted(files, text, html, || clipboard.get().image().ok()))
         })
@@ -287,7 +305,7 @@ mod tests {
     #[derive(Clone, Debug, PartialEq)]
     enum Pressed {
         Edit,
-        Paste,
+        Paste(Paste),
     }
 
     /// What an editor bound as the composer is (see `room.rs`) sends for
@@ -296,8 +314,8 @@ mod tests {
         let content = Content::<iced::Renderer>::with_text("Melt");
         let editor: iced::Element<'_, Pressed> = iced::widget::text_editor(&content)
             .key_binding(|press| {
-                if pastes(&press) {
-                    Some(text_editor::Binding::Custom(Pressed::Paste))
+                if let Some(how) = paste(&press) {
+                    Some(text_editor::Binding::Custom(Pressed::Paste(how)))
                 } else {
                     text_editor::Binding::from_key_press(press)
                 }
@@ -321,9 +339,24 @@ mod tests {
     #[test]
     fn command_v_pastes_through_us() {
         let command_v = || press("v", Modifiers::COMMAND);
-        assert_eq!(editor_sends(true, vec![command_v()]), [Pressed::Paste]);
+        assert_eq!(
+            editor_sends(true, vec![command_v()]),
+            [Pressed::Paste(Paste::Rich)]
+        );
         // Not while another field has the focus.
         assert!(editor_sends(false, vec![command_v()]).is_empty());
+    }
+
+    #[test]
+    fn option_shift_command_v_pastes_plain_text() {
+        let plain = Modifiers::COMMAND | Modifiers::SHIFT;
+        for modifiers in [plain | Modifiers::ALT, plain] {
+            assert_eq!(
+                editor_sends(true, vec![press("v", modifiers)]),
+                [Pressed::Paste(Paste::Plain)]
+            );
+            assert!(editor_sends(false, vec![press("v", modifiers)]).is_empty());
+        }
     }
 
     fn picture() -> ImageData<'static> {

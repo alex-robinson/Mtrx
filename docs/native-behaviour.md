@@ -99,7 +99,7 @@ these stay outside the widget.
       does.
 - [x] ⌘V of rich text (from a web page or Mail) as Markdown: links, lists,
       emphasis.
-- [ ] ⌥⇧⌘V pastes as plain text.
+- [x] ⌥⇧⌘V pastes as plain text.
 - [ ] Right-click in the composer: Cut, Copy, Paste, Select All (and
       Emoji & Symbols). `context_menu.rs` has the menu.
 

@@ -698,6 +698,11 @@ impl Room {
             .on_action(Message::Composer)
             .key_binding(move |press| {
                 let custom = |message| Some(text_editor::Binding::Custom(message));
+                // Pictures, files and rich text too, which iced's clipboard
+                // lacks.
+                if let Some(how) = clipboard::paste(&press) {
+                    return custom(Message::Paste(how));
+                }
                 match press.key {
                     Key::Named(Named::ArrowUp) if completing => {
                         custom(Message::Mention(mention::Message::Up))
@@ -714,8 +719,6 @@ impl Room {
                     Key::Named(Named::Escape) if cancellable => {
                         custom(Message::Act(actions::Message::CancelCompose))
                     }
-                    // Pictures and files too, which iced's clipboard lacks.
-                    _ if clipboard::pastes(&press) => custom(Message::Paste),
                     _ => selection::editor_key(press, selected),
                 }
             })

@@ -185,8 +185,8 @@ pub enum Message {
     FileDropped(PathBuf),
     /// Files were read to attach to the message in a room.
     Attached(OwnedRoomId, Vec<Result<media::Attached, String>>),
-    /// ⌘V in the composer: read the clipboard.
-    Paste,
+    /// ⌘V (or ⌥⇧⌘V) in the composer: read the clipboard.
+    Paste(clipboard::Paste),
     /// What the clipboard held, to paste into a room's composer.
     Pasted(OwnedRoomId, Option<clipboard::Pasted>),
     /// Remove an attached file, by index.
@@ -1939,7 +1939,7 @@ impl App {
                 };
                 attach(room.id.clone(), vec![path])
             }
-            Message::Paste => {
+            Message::Paste(how) => {
                 let Screen::Main(main) = &self.screen else {
                     return Task::none();
                 };
@@ -1947,7 +1947,7 @@ impl App {
                     return Task::none();
                 };
                 let id = room.id.clone();
-                Task::perform(clipboard::read(), move |pasted| {
+                Task::perform(clipboard::read(how), move |pasted| {
                     Message::Pasted(id.clone(), pasted)
                 })
             }
