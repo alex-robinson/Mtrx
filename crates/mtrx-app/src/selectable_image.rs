@@ -1,7 +1,7 @@
 //! A typeset message (an image) whose text can be selected: the renderer
 //! says where each piece of text is drawn ([`mtrx_format::Piece`]), mapped
-//! here onto the message's units ([`crate::message::TextMap`]). Formulas and
-//! code are pieces selected whole, and copy as their source.
+//! here onto the message's units ([`crate::message::TextMap`]). Formulas are
+//! pieces selected whole, and copy as their source.
 
 use std::{ops::Range, rc::Rc, sync::Arc};
 
@@ -30,7 +30,7 @@ use crate::{
 pub struct Piece {
     pub unit: usize,
     pub range: Range<usize>,
-    /// A formula or code, only selected whole.
+    /// A formula, only selected whole.
     pub whole: bool,
     pub rect: Rectangle,
     /// The link it is in, if any.
@@ -466,6 +466,41 @@ mod tests {
             .map(|rect| rect.x)
             .collect();
         assert_eq!(lit, [30.0, 40.0, 45.0, 75.0, 80.0, 90.0, 0.0]);
+    }
+
+    #[test]
+    fn code_in_a_typeset_message_is_selected_by_character() {
+        use crate::math::{Math, Params, Rendered};
+        let document = mtrx_format::Document::from_html(
+            r#"Run <code>ls -l</code> for <span data-mx-maths="x"><code>x</code></span>"#,
+        );
+        let params = Params {
+            max_width: 600.0,
+            scale: 2.0,
+            text: iced::Color::BLACK,
+            link: iced::Color::BLACK,
+            muted: iced::Color::BLACK,
+        };
+        let mut math = Math::new();
+        math.render_now(&document, &params);
+        let Some(Rendered::Image { text, .. }) = math.get(&Math::key(&document, &params)) else {
+            panic!("not rendered");
+        };
+        assert_eq!(text.units, ["Run ls -l for $x$"]);
+        // The code's characters are pieces of their own; the formula is one.
+        let code: Vec<_> = (text.pieces.iter())
+            .filter(|p| (4..9).contains(&p.range.start))
+            .map(|p| (p.range.clone(), p.whole))
+            .collect();
+        let each: Vec<_> = (4..9).map(|i| (i..i + 1, false)).collect();
+        assert_eq!(code, each);
+        assert!(
+            text.pieces
+                .last()
+                .is_some_and(|p| p.whole && p.range == (14..17))
+        );
+        // A double click selects a word in it.
+        assert_eq!(text.word_at(pos(0, 5)), 4..6);
     }
 
     #[test]

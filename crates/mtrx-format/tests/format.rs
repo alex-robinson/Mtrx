@@ -172,6 +172,49 @@ mod render {
     }
 
     #[test]
+    fn code_is_drawn_by_character() {
+        use mtrx_format::{Block, Inline};
+        let renderer = Renderer::new::<Vec<u8>>([]);
+        let code = "let x = 1;\n\tif x {\n\t\tgo()";
+        let document = Document {
+            blocks: vec![
+                Block::Paragraph(vec![
+                    Inline::Text("Run ".into()),
+                    Inline::Code("ls -l".into()),
+                    Inline::Math("x".into()),
+                ]),
+                Block::CodeBlock {
+                    language: Some("rust".into()),
+                    code: format!("{code}\n"),
+                },
+            ],
+        };
+        let image = renderer.render(&document, &style(400.0)).unwrap();
+        let pieces = |leaf| -> Vec<_> {
+            let pieces = image.pieces.iter().filter(|p| p.leaf == leaf);
+            pieces.map(|p| (p.range.clone().unwrap(), p.rect)).collect()
+        };
+        // Inline code, a character each, left to right.
+        let inline = pieces(1);
+        let ranges: Vec<_> = inline.iter().map(|(r, _)| r.clone()).collect();
+        assert_eq!(ranges, (0..5).map(|i| i..i + 1).collect::<Vec<_>>());
+        assert!(inline.windows(2).all(|w| w[0].1[0] < w[1].1[0]));
+        // The code block: every character but the line breaks, once, in
+        // order; a tab is one piece.
+        let block = pieces(3);
+        let ranges: Vec<_> = block.iter().map(|(r, _)| r.clone()).collect();
+        let expected: Vec<_> = (code.char_indices())
+            .filter(|(_, c)| *c != '\n')
+            .map(|(i, c)| i..i + c.len_utf8())
+            .collect();
+        assert_eq!(ranges, expected);
+        // "go" is below "if", and further right (two tabs, not one).
+        let at = |offset| block.iter().find(|(r, _)| r.start == offset).unwrap().1;
+        let (r#if, go) = (at(code.find("if").unwrap()), at(code.find("go").unwrap()));
+        assert!(go[1] > r#if[1] && go[0] > r#if[0], "{if:?} {go:?}", if = r#if);
+    }
+
+    #[test]
     fn renders_common_latex() {
         let renderer = Renderer::new::<Vec<u8>>([]);
         for tex in [

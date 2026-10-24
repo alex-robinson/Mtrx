@@ -92,10 +92,13 @@ The renderer (`mtrx-format`) puts invisible `metadata` markers around
 each text leaf in the Typst source. A leaf is each text, inline code and
 inline math, and each code block and displayed math, in reading order.
 In the laid-out page, glyphs between a leaf's markers belong to that
-leaf. Text glyphs carry their byte offset within the leaf. Math and code
-are laid out from generated Typst, so they become one piece per line,
-selected whole. `Image::pieces` lists each piece's leaf, byte range and
-rectangle. `message::text_map` says where each leaf is in the units, so
+leaf. Text glyphs carry their byte offset within the leaf. Code glyphs
+(`raw`) carry their offset within their line, so a show rule on
+`raw.line` puts a marker with the line's number before each line, and
+the tabs `raw` turns into spaces are mapped back (all spaces of a tab are
+one piece, the tab). Math is laid out from generated Typst, so it becomes
+one piece per line, selected whole. `Image::pieces` lists each piece's
+leaf, byte range and rectangle. `message::text_map` says where each leaf is in the units, so
 the image is selected with the same units as native text, and formulas
 copy as `$…$`. The text map also says which link each leaf is in (a
 mention's too), so a piece of a link is clicked as in native text: a
@@ -104,7 +107,6 @@ hand over it.
 
 ## Left to do
 
-- Code inside math messages is selected whole.
 - Other text in the timeline is not selectable: sender names, reply
   previews, notices and state lines. Info cards are: names, IDs,
   addresses, links, read-only name and topic, and the facts line use
@@ -119,7 +121,8 @@ hand over it.
   (`selectable_image.rs`).
 - Simulated mouse: dragging, double and triple clicks, and dragging in a
   scrolled timeline (`message.rs`).
-- Renderer: pieces in reading order and in the right places
-  (`mtrx-format/tests/format.rs`).
+- Renderer: pieces in reading order and in the right places, code by
+  character (`mtrx-format/tests/format.rs`), tabs (`render.rs`); in the
+  app, code in a typeset message by character (`selectable_image.rs`).
 - Snapshot: a selection from inside a math message across three senders,
   with its copied text (`app/tests.rs`).

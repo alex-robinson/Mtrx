@@ -84,7 +84,7 @@ per day:
       messages; math as `$…$`.
 - [ ] Sender names, reply previews, notices and state lines selectable.
 - [x] Links in typeset (math) messages clickable.
-- [ ] Code in math messages selectable by character.
+- [x] Code in math messages selectable by character.
 
 ### A5. Clipboard and paste
 
