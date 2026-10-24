@@ -22,6 +22,10 @@ popover's panel); "⋯" opens it below the toolbar.
 | Copy image   | math messages that rendered | the picture, via `arboard` (iced's clipboard holds text only) |
 | Save image…  | math messages that rendered | PNG, dark text on white, 3× scale                  |
 
+Right-clicking a link opens the link's menu instead, at the cursor: Open
+and Copy link. Hovering a link shows its address in the window's bottom
+left corner (`link_status.rs`).
+
 Separate Copy text, Copy LaTeX and Copy link items were dropped: copying
 gives the same text, formulas included as `$…$`.
 The "Select text…" stopgap (the text in a read-only editor) was removed

@@ -2509,6 +2509,10 @@ impl App {
                 room.unsent = None;
                 Task::perform(async move { timeline.discard(&key).await }, done)
             }
+            Act::OpenLink(url) => {
+                room.menu = None;
+                Task::done(Message::LinkClicked(url))
+            }
             Act::Copy(text) => {
                 room.menu = None;
                 iced::clipboard::write(text)

@@ -52,6 +52,7 @@ pub struct Selectable<'a, Message> {
     focus: bool,
     dragging: bool,
     on_link: Option<fn(String) -> Message>,
+    on_link_menu: Option<Rc<dyn Fn(String) -> Message + 'a>>,
     on_gesture: Option<Rc<dyn Fn(Gesture) -> Message + 'a>>,
     /// Keeps its own selection, not the room's.
     own: bool,
@@ -81,6 +82,7 @@ pub fn selectable<'a, Message>(
         focus: false,
         dragging: false,
         on_link: None,
+        on_link_menu: None,
         on_gesture: None,
         own: false,
         wrapping: Wrapping::default(),
@@ -125,6 +127,12 @@ impl<'a, Message> Selectable<'a, Message> {
     /// Sent when a link is clicked (pressed and released without moving).
     pub fn on_link(mut self, on_link: fn(String) -> Message) -> Self {
         self.on_link = Some(on_link);
+        self
+    }
+
+    /// Sent when a link is right-clicked, for its menu.
+    pub fn on_link_menu(mut self, on_link_menu: Rc<dyn Fn(String) -> Message + 'a>) -> Self {
+        self.on_link_menu = Some(on_link_menu);
         self
     }
 
@@ -486,6 +494,15 @@ impl<Message> Widget<Message, Theme, Renderer> for Selectable<'_, Message> {
                     extend: state.modifiers.shift(),
                 }));
                 shell.capture_event();
+            }
+            // The link's menu rather than whatever the text is in offers.
+            Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Right)) => {
+                if let Some(on_link_menu) = &self.on_link_menu
+                    && let Some(link) = hovered_link.and_then(|span| self.spans[span].link.clone())
+                {
+                    shell.publish(on_link_menu(link));
+                    shell.capture_event();
+                }
             }
             Event::Mouse(mouse::Event::CursorMoved { .. }) => {
                 // The cursor, not the event: inside a scrollable, only the

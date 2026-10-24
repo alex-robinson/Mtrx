@@ -609,7 +609,7 @@ impl Room {
             hovered: self.hovered.as_deref(),
             marked: self.marked.as_deref(),
             picker: self.picker.as_ref().map(|(id, at)| (id.as_str(), *at)),
-            menu: self.menu.as_ref().map(|(id, at)| (id.as_str(), *at)),
+            menu: self.menu.as_ref().map(|(id, at)| (id.as_str(), at)),
             readers: self.readers.as_deref(),
             reactors: (self.reactors.as_ref()).map(|(id, key)| (id.as_str(), key.as_str())),
             unsent: self.unsent.as_deref(),
@@ -996,7 +996,7 @@ struct Context<'a, 'b> {
     hovered: Option<&'b str>,
     marked: Option<&'b str>,
     picker: Option<(&'b str, PickerAt)>,
-    menu: Option<(&'b str, MenuAt)>,
+    menu: Option<(&'b str, &'b MenuAt)>,
     /// The row whose readers are listed.
     readers: Option<&'b str>,
     /// The row and reaction key whose people are listed.
@@ -1061,6 +1061,15 @@ fn event_view<'a>(
             }),
         }
     };
+    let links = || {
+        let id = event.id.clone();
+        message::Links {
+            open: Message::LinkClicked,
+            menu: Rc::new(move |url| {
+                act(actions::Message::OpenMenu(id.clone(), MenuAt::Link(url)))
+            }),
+        }
+    };
     let body: Element<'a, Message> = match &event.content {
         EventContent::Message(m) => {
             let content: Element<'a, Message> = match (m.kind, m.document.has_math()) {
@@ -1089,7 +1098,7 @@ fn event_view<'a>(
                                 &m.document,
                                 theme,
                                 context.own_user,
-                                Message::LinkClicked,
+                                links(),
                                 select(),
                                 m.edited,
                             )
@@ -1102,7 +1111,7 @@ fn event_view<'a>(
                         &m.document,
                         theme,
                         context.own_user,
-                        Message::LinkClicked,
+                        links(),
                         select(),
                         m.edited,
                     )
@@ -1196,10 +1205,12 @@ fn event_view<'a>(
     let menu_items = message
         .map(|m| message_menu::items(m, math_shown, in_selection))
         .filter(|items| !items.is_empty());
-    let menu_view = |at| {
-        (menu_at == Some(at))
-            .then(|| menu_items.clone().map(message_menu::view))
-            .flatten()
+    let menu_view = |at| match menu_at {
+        Some(MenuAt::Link(url)) if at == MenuAt::Cursor => {
+            Some(message_menu::view(message_menu::link_items(url)))
+        }
+        Some(open) if *open == at => menu_items.clone().map(message_menu::view),
+        _ => None,
     };
     if context.confirm_delete == Some(event.id.as_str()) {
         item = item.push(actions::confirm_delete(event));
@@ -1271,7 +1282,7 @@ fn event_view<'a>(
         Some(m)
             if (hovered
                 || picking == Some(PickerAt::Toolbar)
-                || menu_at == Some(MenuAt::Toolbar))
+                || menu_at == Some(&MenuAt::Toolbar))
                 && event.event_id.is_some()
                 && edit.is_none() =>
         {

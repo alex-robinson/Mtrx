@@ -1,5 +1,6 @@
 //! A message's menu (right-click, or "⋯" in its toolbar): copying the
-//! selection or the message, math as a picture, and a file or image.
+//! selection or the message, math as a picture, and a file or image; or,
+//! right-clicking a link in it, the link's.
 
 use iced::{
     Element, Length,
@@ -17,12 +18,14 @@ use crate::{
 };
 
 /// Where a message's menu floats from.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MenuAt {
     /// Where the message was right-clicked.
     Cursor,
     /// The "⋯" of the hover toolbar.
     Toolbar,
+    /// Where a link in it was right-clicked: the link's menu instead.
+    Link(String),
 }
 
 /// Width of the menu.
@@ -73,6 +76,20 @@ pub fn items(
         ));
     }
     items
+}
+
+/// What the menu offers for a link.
+pub fn link_items(url: &str) -> Vec<(String, actions::Message)> {
+    vec![
+        (
+            "Open".to_owned(),
+            actions::Message::OpenLink(url.to_owned()),
+        ),
+        (
+            "Copy link".to_owned(),
+            actions::Message::Copy(url.to_owned()),
+        ),
+    ]
 }
 
 /// The menu showing `items`.
@@ -152,5 +169,14 @@ mod tests {
             labels(&super::items(&file, false, false)),
             ["Copy image", "Save image…"]
         );
+    }
+
+    #[test]
+    fn a_link_is_opened_or_copied() {
+        let url = "https://example.org/a";
+        let items = link_items(url);
+        assert_eq!(labels(&items), ["Open", "Copy link"]);
+        assert!(matches!(&items[0].1, actions::Message::OpenLink(open) if open == url));
+        assert!(matches!(&items[1].1, actions::Message::Copy(copied) if copied == url));
     }
 }

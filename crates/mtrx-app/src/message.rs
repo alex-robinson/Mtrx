@@ -40,19 +40,26 @@ pub struct Select<'a, M> {
     pub on_gesture: Rc<dyn Fn(Gesture) -> M + 'a>,
 }
 
+/// What clicking a link sends, and right-clicking one.
+pub struct Links<'a, M> {
+    pub open: fn(String) -> M,
+    /// Opens the link's menu.
+    pub menu: Rc<dyn Fn(String) -> M + 'a>,
+}
+
 /// `document`, its mentions of `own` (us) in bold; marked when `edited`.
 pub fn view<'a, M: Clone + 'a>(
     document: &Document,
     theme: &Theme,
     own: &UserId,
-    on_link: fn(String) -> M,
+    links: Links<'a, M>,
     select: Select<'a, M>,
     edited: bool,
 ) -> Element<'a, M> {
     let mut walk = Walk {
         theme,
         own: Some(own),
-        on_link: Some(on_link),
+        links: Some(links),
         select: Some(select),
         edited,
         map: TextMap::default(),
@@ -103,7 +110,7 @@ pub fn text_map(document: &Document) -> TextMap {
     let mut walk: Walk<'_, '_, ()> = Walk {
         theme: &Theme::Light,
         own: None,
-        on_link: None,
+        links: None,
         select: None,
         edited: false,
         map: TextMap::default(),
@@ -117,7 +124,7 @@ pub fn text_map(document: &Document) -> TextMap {
 struct Walk<'t, 'a, M> {
     theme: &'t Theme,
     own: Option<&'t UserId>,
-    on_link: Option<fn(String) -> M>,
+    links: Option<Links<'a, M>>,
     select: Option<Select<'a, M>>,
     /// The message is edited and its mark not yet shown.
     edited: bool,
@@ -281,8 +288,8 @@ impl<'a, M: Clone + 'a> Walk<'_, 'a, M> {
         if let Some(size) = size {
             unit = unit.size(Pixels(size));
         }
-        if let Some(on_link) = self.on_link {
-            unit = unit.on_link(on_link);
+        if let Some(links) = &self.links {
+            unit = unit.on_link(links.open).on_link_menu(links.menu.clone());
         }
         if let Some(select) = &self.select {
             unit = unit
@@ -455,13 +462,17 @@ mod tests {
         steps: &[((f32, f32), mouse::Event)],
     ) -> Vec<Gesture> {
         let own = OwnedUserId::try_from("@me:example.org").unwrap();
+        let link = |_| Gesture::Drag {
+            unit: usize::MAX,
+            offset: 0,
+        };
         let view = view(
             document,
             &Theme::Light,
             &own,
-            |_| Gesture::Drag {
-                unit: usize::MAX,
-                offset: 0,
+            Links {
+                open: link,
+                menu: Rc::new(link),
             },
             Select {
                 range: None,
@@ -576,6 +587,53 @@ mod tests {
             select(&document, false, &click.repeat(3)),
             "Hello you there"
         );
+    }
+
+    #[derive(Clone, Debug, PartialEq)]
+    enum Clicked {
+        Link(String),
+        LinkMenu(String),
+        Menu,
+        Selecting,
+    }
+
+    #[test]
+    fn right_click_on_a_link_opens_its_menu() {
+        let document =
+            Document::from_html(r#"<p><a href="https://example.org/a">Data</a> here</p>"#);
+        let own = OwnedUserId::try_from("@me:example.org").unwrap();
+        // The messages sent by right-clicking at `x`, in a message that
+        // has a menu of its own.
+        let right_click = |x: f32| -> Vec<Clicked> {
+            let view = view(
+                &document,
+                &Theme::Light,
+                &own,
+                Links {
+                    open: Clicked::Link,
+                    menu: Rc::new(Clicked::LinkMenu),
+                },
+                Select {
+                    range: None,
+                    focus: None,
+                    dragging: false,
+                    on_gesture: Rc::new(|_| Clicked::Selecting),
+                },
+                false,
+            );
+            let view = crate::context_menu::context_menu(view, None, Clicked::Menu);
+            let mut ui = Simulator::with_size(fonts::settings(), Size::new(400.0, 100.0), view);
+            ui.point_at((x, 8.0));
+            let _ = ui.simulate([Event::Mouse(mouse::Event::ButtonPressed(
+                mouse::Button::Right,
+            ))]);
+            ui.into_messages().collect()
+        };
+        assert_eq!(
+            right_click(10.0),
+            [Clicked::LinkMenu("https://example.org/a".into())]
+        );
+        assert_eq!(right_click(60.0), [Clicked::Menu]);
     }
 
     #[test]
