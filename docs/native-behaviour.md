@@ -1,6 +1,6 @@
 # Behaving like a Mac app: to do
 
-Status: A in progress. What the text system and a native app give
+Status: A done in code; two items wait on a check by hand. What the text system and a native app give
 for free, written down once so that it is done once, not found one issue
 at a time.
 
@@ -48,7 +48,10 @@ per day:
 - [x] Size, position and display remembered (`placement.rs`), and
       maximised; full screen is not, the window opens as it was before. A
       window left on a display since unplugged opens on the main one.
-- [ ] Full screen, and tiling with the system's window layouts. Unchecked.
+- [ ] Full screen, and tiling with the system's window layouts. Nothing
+      in the code blocks them; to check by hand: the green button, its
+      tiling layouts and dragging to a screen edge, double-clicking the
+      title bar, quitting in full screen.
 
 ### A2. Keyboard
 
@@ -104,7 +107,8 @@ these stay outside the widget.
       emphasis.
 - [x] ⌥⇧⌘V pastes as plain text.
 - [ ] Right-click in the composer: Cut, Copy, Paste, Select All (and
-      Emoji & Symbols). `context_menu.rs` has the menu.
+      Emoji & Symbols). Built (`edit_menu.rs`); to check by hand that an
+      emoji picked in Emoji & Symbols is typed into the field.
 
 ## B. The composer: inside `text_editor`
 
@@ -112,7 +116,8 @@ iced 0.14's `text_editor` has no undo, and of the macOS key bindings only
 the arrows (with ⌥, ⌘ and ⇧), Home/End, ⌘A/C/X/V and ⌃A/E/B/F/H/D. Its
 `Content` gives the text, the selection and a line/column cursor: nothing
 to build an undo stack or a word deletion on from outside. So: vendor
-`iced_widget`, and do all of B in that copy.
+`iced_widget`, and do all of B in that copy. Vendored with A2
+(`vendor/iced_widget`, its README lists our patches).
 
 Decided (2026-10-24): the patch first, ours to keep; whether to offer it
 upstream is judged once it works, so no feature waits on iced.
