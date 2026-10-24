@@ -62,8 +62,17 @@ pub enum Message {
     Extend(Step),
     /// Shift with ↑ (`true`) or ↓: move the end of the selection a line.
     ExtendLine(bool),
-    /// The end of the selection moved a line from this point to an offset
-    /// in its unit, or past it (`None`).
+    /// ⇧⌘← or ⇧⌘→ (`true`): move the end of the selection to the start or
+    /// end of its line.
+    ExtendToLineEdge(bool),
+    /// ⇧⌘↑ (`true`) or ⇧⌘↓: move the end of the selection to the start of
+    /// the first message on screen, or the end of the last.
+    ExtendToScreenEdge(bool),
+    /// The end of the selection moved to the start (`true`) or end of this
+    /// message.
+    ExtendToRow(String, bool),
+    /// The end of the selection moved from this point to an offset in its
+    /// unit, or a line up (`true`) or down past it (`None`).
     LineMoved(Point, bool, Option<usize>),
     All(String, String),
     Clear,
@@ -144,6 +153,9 @@ impl Selection {
             | Message::SelectAll
             | Message::Extend(_)
             | Message::ExtendLine(_)
+            | Message::ExtendToLineEdge(_)
+            | Message::ExtendToScreenEdge(_)
+            | Message::ExtendToRow(..)
             | Message::LineMoved(..) => {}
         }
     }
@@ -216,6 +228,14 @@ pub struct Unit {
     pub prefix: String,
     /// Put between the previous unit and this one.
     pub gap: &'static str,
+}
+
+/// After the last character of `units`.
+pub fn end_of(units: &[Unit]) -> Pos {
+    units.last().map_or_else(Pos::default, |last| Pos {
+        unit: units.len() - 1,
+        offset: last.text.len(),
+    })
 }
 
 /// The text of `units` between `from` and `to`.

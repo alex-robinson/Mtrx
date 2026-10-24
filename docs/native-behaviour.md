@@ -56,7 +56,7 @@ per day:
       0.2.0). `shortcuts` in `app.rs` only acts when the event was
       ignored; with the composer focused the editor takes Shift+arrows as
       its own selection. Reproduce, decide, test.
-- [ ] ⇧⌘← and ⇧⌘→ extend to the start and end of the line, ⇧⌘↑ and ⇧⌘↓
+- [x] ⇧⌘← and ⇧⌘→ extend to the start and end of the line, ⇧⌘↑ and ⇧⌘↓
       to the first and last message on screen.
 - [ ] Page Up/Down and ⌥↑/⌥↓ scroll the timeline; ⌘↑/⌘↓ go to the oldest
       loaded and the newest message (when the composer does not take them).

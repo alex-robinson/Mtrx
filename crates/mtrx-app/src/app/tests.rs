@@ -25,6 +25,8 @@ use crate::{
     selection::{Point, Pos, Selection},
 };
 
+mod keyboard;
+
 const TIMEOUT: Duration = Duration::from_secs(30);
 
 fn snapshot_dir() -> PathBuf {

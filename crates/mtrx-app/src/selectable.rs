@@ -256,6 +256,26 @@ impl State {
         Some(self.offset_at(Point::new(x, run.line_top + run.line_height / 2.0), size))
     }
 
+    /// The start or end (`forward`) of the line holding `offset`. An offset
+    /// where one line ends and the next starts (a word broken across them)
+    /// is the end of the first going forward and the start of the second
+    /// going back, so pressing again stays.
+    fn line_edge(&self, offset: usize, forward: bool) -> Option<usize> {
+        let mut lines = self.buffer().layout_runs().filter_map(|run| {
+            let start = self.line_starts.get(run.line_i).copied().unwrap_or(0);
+            // In either direction of writing.
+            let from = run.glyphs.iter().map(|g| g.start).min().unwrap_or(0);
+            let to = run.glyphs.iter().map(|g| g.end).max().unwrap_or(0);
+            let (from, to) = (start + from, start + to);
+            (from..=to).contains(&offset).then_some((from, to))
+        });
+        if forward {
+            lines.next().map(|(_, to)| to)
+        } else {
+            lines.last().map(|(from, _)| from)
+        }
+    }
+
     /// Rectangles covering `range`, relative to the text.
     fn highlight(&self, range: &Range<usize>, font_size: f32) -> Vec<Rectangle> {
         let runs: Vec<_> = self.buffer().layout_runs().collect();
@@ -615,21 +635,38 @@ fn update_own<Message>(
 /// moves a line up or down: `Some(None)` past the unit's first or last line,
 /// `None` if no text unit holds it (e.g. in a typeset message).
 pub fn line_step(offset: usize, up: bool) -> Task<Option<Option<usize>>> {
-    operate(LineStep {
-        offset,
-        up,
-        moved: None,
-    })
+    operate(AtFocus::new(move |state, size| {
+        state.line_step(offset, up, size)
+    }))
 }
 
-struct LineStep {
-    offset: usize,
-    up: bool,
-    moved: Option<Option<usize>>,
+/// Where the end of the selection, at `offset` in the unit holding it, is
+/// at the start or end (`forward`) of its line; `None` if no text unit holds
+/// it.
+pub fn line_edge(offset: usize, forward: bool) -> Task<Option<usize>> {
+    operate(AtFocus::new(move |state, _| {
+        state.line_edge(offset, forward)
+    }))
+    .map(Option::flatten)
 }
 
-impl Operation<Option<Option<usize>>> for LineStep {
-    fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn Operation<Option<Option<usize>>>)) {
+/// What `find` makes of the layout of the unit holding the end of the
+/// selection: `None` if no text unit holds it.
+struct AtFocus<T, F> {
+    find: F,
+    found: Option<T>,
+}
+
+impl<T, F: Fn(&State, Size) -> T> AtFocus<T, F> {
+    fn new(find: F) -> Self {
+        Self { find, found: None }
+    }
+}
+
+impl<T: Clone + Send + 'static, F: Fn(&State, Size) -> T + Send + 'static> Operation<Option<T>>
+    for AtFocus<T, F>
+{
+    fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn Operation<Option<T>>)) {
         operate(self);
     }
 
@@ -637,12 +674,12 @@ impl Operation<Option<Option<usize>>> for LineStep {
         if id == Some(&Id::new(FOCUS))
             && let Some(state) = state.downcast_ref::<State>()
         {
-            self.moved = Some(state.line_step(self.offset, self.up, bounds.size()));
+            self.found = Some((self.find)(state, bounds.size()));
         }
     }
 
-    fn finish(&self) -> Outcome<Option<Option<usize>>> {
-        Outcome::Some(self.moved)
+    fn finish(&self) -> Outcome<Option<T>> {
+        Outcome::Some(self.found.clone())
     }
 }
 
@@ -715,39 +752,49 @@ mod tests {
         assert_eq!(ui.simulate([command_c()]), [Status::Ignored]);
     }
 
-    #[test]
-    fn shift_up_and_down_move_by_line() {
-        use iced::advanced::{renderer::Headless, widget::operation::black_box};
-        use iced_runtime::user_interface::{Cache, UserInterface};
+    /// Wrapped over a few lines, the last after a line break.
+    const WRAPPED: &str = "Ice sheets flow towards the ocean, where they calve.\nMelt";
 
-        let mut renderer = iced::futures::executor::block_on(iced::Renderer::new(
+    fn renderer() -> Renderer {
+        use iced::advanced::renderer::Headless;
+        iced::futures::executor::block_on(Renderer::new(
             fonts::INTER,
             Pixels(style::TEXT_SIZE),
             None,
         ))
-        .unwrap();
-        // Wrapped over a few lines, the last after a line break.
-        let text = "Ice sheets flow towards the ocean, where they calve.\nMelt";
+        .unwrap()
+    }
+
+    /// What `find` makes of [`WRAPPED`] laid out 150 wide, as the unit
+    /// holding the end of the selection.
+    fn at_focus<T: Clone + Send + 'static>(
+        renderer: &mut Renderer,
+        find: impl Fn(&State, Size) -> T + Send + 'static,
+    ) -> T {
+        use iced::advanced::widget::operation::black_box;
+        use iced_runtime::user_interface::{Cache, UserInterface};
+
+        let view: Element<'_, ()> = iced::widget::container(
+            selectable::<()>(vec![Span::new(WRAPPED.to_owned())], 0).focus(true),
+        )
+        .width(150)
+        .into();
+        let mut ui =
+            UserInterface::build(view, Size::new(150.0, 400.0), Cache::default(), renderer);
+        let mut operation = AtFocus::new(find);
+        ui.operate(renderer, &mut black_box(&mut operation));
+        operation.found.expect("the focused unit reports itself")
+    }
+
+    #[test]
+    fn shift_up_and_down_move_by_line() {
+        let mut renderer = renderer();
         let mut step = |offset, up| {
-            let view: Element<'_, ()> = iced::widget::container(
-                selectable::<()>(vec![Span::new(text.to_owned())], 0).focus(true),
-            )
-            .width(150)
-            .into();
-            let mut ui = UserInterface::build(
-                view,
-                Size::new(150.0, 400.0),
-                Cache::default(),
-                &mut renderer,
-            );
-            let mut operation = LineStep {
-                offset,
-                up,
-                moved: None,
-            };
-            ui.operate(&renderer, &mut black_box(&mut operation));
-            operation.moved.expect("the focused unit reports itself")
+            at_focus(&mut renderer, move |state, size| {
+                state.line_step(offset, up, size)
+            })
         };
+        let text = WRAPPED;
         assert_eq!(step(2, true), None);
         let below = step(2, false).unwrap();
         assert!(below > 2 && below < text.find('\n').unwrap(), "{below}");
@@ -755,5 +802,30 @@ mod tests {
         let last = text.len() - 1;
         assert_eq!(step(last, false), None);
         assert!(step(last, true).unwrap() < text.find('\n').unwrap());
+    }
+
+    #[test]
+    fn shift_command_left_and_right_go_to_the_line_edges() {
+        let mut renderer = renderer();
+        let mut edge = |offset, forward| {
+            at_focus(&mut renderer, move |state, _| {
+                state.line_edge(offset, forward)
+            })
+            .unwrap()
+        };
+        let text = WRAPPED;
+        let first_end = edge(2, true);
+        assert!(
+            first_end > 2 && first_end < text.find('\n').unwrap(),
+            "{first_end}"
+        );
+        assert_eq!(edge(2, false), 0);
+        // Pressed again, it stays; back from there is the same line's start.
+        assert_eq!(edge(first_end, true), first_end);
+        assert_eq!(edge(first_end, false), 0);
+        // After the line break.
+        let last = text.len() - 1;
+        assert_eq!(edge(last, true), text.len());
+        assert_eq!(edge(last, false), text.find('\n').unwrap() + 1);
     }
 }

@@ -1124,6 +1124,16 @@ impl App {
                         return Task::none();
                     }
                     selection::Message::ExtendLine(up) => return room.extend_line(up),
+                    selection::Message::ExtendToLineEdge(forward) => {
+                        return room.extend_to_line_edge(forward);
+                    }
+                    selection::Message::ExtendToScreenEdge(up) => {
+                        return room.extend_to_screen_edge(up);
+                    }
+                    selection::Message::ExtendToRow(event, start) => {
+                        room.extend_to_row(event, start);
+                        return Task::none();
+                    }
                     selection::Message::LineMoved(from, up, offset) => {
                         room.line_moved(from, up, offset);
                         return Task::none();
@@ -3471,24 +3481,9 @@ fn shortcuts(
             {
                 Some(Message::Select(selection::Message::SelectAll))
             }
-            Key::Named(arrow @ (Named::ArrowLeft | Named::ArrowRight))
-                if modifiers.shift() && status == iced::event::Status::Ignored =>
-            {
-                let step = match (arrow == Named::ArrowRight, modifiers.alt()) {
-                    (false, false) => selection::Step::Back,
-                    (true, false) => selection::Step::Forward,
-                    (false, true) => selection::Step::WordBack,
-                    (true, true) => selection::Step::WordForward,
-                };
-                Some(Message::Select(selection::Message::Extend(step)))
-            }
-            Key::Named(arrow @ (Named::ArrowUp | Named::ArrowDown))
-                if modifiers.shift() && status == iced::event::Status::Ignored =>
-            {
-                Some(Message::Select(selection::Message::ExtendLine(
-                    arrow == Named::ArrowUp,
-                )))
-            }
+            Key::Named(
+                arrow @ (Named::ArrowLeft | Named::ArrowRight | Named::ArrowUp | Named::ArrowDown),
+            ) if status == iced::event::Status::Ignored => arrow_key(arrow, modifiers),
             Key::Character(c) if c == "k" && modifiers.command() => Some(Message::FocusSearch),
             Key::Character(c) if c == "r" && modifiers.command() => Some(Message::Reload),
             Key::Named(Named::Escape) => Some(Message::Escape),
@@ -3504,6 +3499,34 @@ fn shortcuts(
         iced::Event::Window(window::Event::Unfocused) => Some(Message::WindowFocused(false)),
         _ => None,
     }
+}
+
+/// An arrow key no field took. With Shift it moves the end of the
+/// timeline's selection: by a character (⌥: a word) or a line, and with ⌘
+/// to the edge of its line or of the screen.
+fn arrow_key(
+    arrow: iced::keyboard::key::Named,
+    modifiers: iced::keyboard::Modifiers,
+) -> Option<Message> {
+    use iced::keyboard::key::Named;
+    use selection::Message::{Extend, ExtendLine, ExtendToLineEdge, ExtendToScreenEdge};
+    let forward = matches!(arrow, Named::ArrowRight | Named::ArrowDown);
+    let across = matches!(arrow, Named::ArrowLeft | Named::ArrowRight);
+    if !modifiers.shift() {
+        return None;
+    }
+    let message = match (across, modifiers.command()) {
+        (true, true) => ExtendToLineEdge(forward),
+        (false, true) => ExtendToScreenEdge(!forward),
+        (true, false) => Extend(match (forward, modifiers.alt()) {
+            (false, false) => selection::Step::Back,
+            (true, false) => selection::Step::Forward,
+            (false, true) => selection::Step::WordBack,
+            (true, true) => selection::Step::WordForward,
+        }),
+        (false, false) => ExtendLine(!forward),
+    };
+    Some(Message::Select(message))
 }
 
 /// Keys, clicks and scrolling: we are here (see [`presence::Activity`]).

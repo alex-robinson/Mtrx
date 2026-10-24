@@ -433,17 +433,6 @@ impl Room {
     /// Move the end of the selection by `step`, on into the message before
     /// or after.
     pub fn extend(&mut self, step: Step) {
-        fn units(entry: &TimelineEntry) -> Option<(&str, Vec<selection::Unit>)> {
-            match entry {
-                TimelineEntry::Event(event) => match &event.content {
-                    EventContent::Message(m) => {
-                        Some((event.id.as_str(), message::text_map(&m.document).units))
-                    }
-                    _ => None,
-                },
-                _ => None,
-            }
-        }
         let Some(selection) = self.selection.as_mut() else {
             return;
         };
@@ -469,12 +458,10 @@ impl Room {
                 let Some((event, units)) = next else {
                     return;
                 };
-                let pos = match units.last() {
-                    Some(last) if !step.forward() => Pos {
-                        unit: units.len() - 1,
-                        offset: last.text.len(),
-                    },
-                    _ => Pos::default(),
+                let pos = if step.forward() {
+                    Pos::default()
+                } else {
+                    selection::end_of(&units)
                 };
                 Point {
                     event: event.to_owned(),
@@ -482,6 +469,53 @@ impl Room {
                 }
             }
         };
+    }
+
+    /// Move the end of the selection to the start or end (`forward`) of its
+    /// line, by the layout of the text holding it.
+    pub fn extend_to_line_edge(&self, forward: bool) -> Task<Message> {
+        let Some(focus) = self.selection.as_ref().map(|s| s.focus.clone()) else {
+            return Task::none();
+        };
+        selectable::line_edge(focus.pos.offset, forward).and_then(move |offset| {
+            Task::done(Message::Select(selection::Message::LineMoved(
+                focus.clone(),
+                !forward,
+                Some(offset),
+            )))
+        })
+    }
+
+    /// Move the end of the selection to the start of the first message on
+    /// screen (`up`), or the end of the last.
+    pub fn extend_to_screen_edge(&self, up: bool) -> Task<Message> {
+        if self.selection.is_none() {
+            return Task::none();
+        }
+        self.on_screen().and_then(move |(first, last)| {
+            let event = if up { first } else { last };
+            Task::done(Message::Select(selection::Message::ExtendToRow(event, up)))
+        })
+    }
+
+    /// Move the end of the selection to the start (`start`) or end of the
+    /// message `event`.
+    pub fn extend_to_row(&mut self, event: String, start: bool) {
+        let Some(selection) = self.selection.as_mut() else {
+            return;
+        };
+        let Some((_, units)) = (self.entries.iter())
+            .find(|e| matches!(e, TimelineEntry::Event(e) if e.id == event))
+            .and_then(units)
+        else {
+            return;
+        };
+        let pos = if start {
+            Pos::default()
+        } else {
+            selection::end_of(&units)
+        };
+        selection.focus = Point { event, pos };
     }
 
     /// Move the end of the selection a line up or down, by the layout of
@@ -1374,6 +1408,19 @@ impl Sending {
             }
             _ => None,
         })
+    }
+}
+
+/// A message's [`Event::id`] and selectable units.
+fn units(entry: &TimelineEntry) -> Option<(&str, Vec<selection::Unit>)> {
+    match entry {
+        TimelineEntry::Event(event) => match &event.content {
+            EventContent::Message(m) => {
+                Some((event.id.as_str(), message::text_map(&m.document).units))
+            }
+            _ => None,
+        },
+        _ => None,
     }
 }
 
