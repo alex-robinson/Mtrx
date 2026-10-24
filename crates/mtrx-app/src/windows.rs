@@ -110,3 +110,72 @@ fn icon(
         Ok(Owned::new(icon))
     }
 }
+
+/// The monitors' work areas (without the taskbar), the primary monitor
+/// first, in `window`'s logical pixels as winit counts them: physical pixels
+/// over the window's scale.
+pub fn work_areas(window: &dyn iced::window::Window) -> Option<Vec<iced::Rectangle>> {
+    use ::windows::{
+        Win32::{
+            Foundation::{HWND, LPARAM, RECT},
+            Graphics::Gdi::{EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITORINFO},
+            UI::{HiDpi::GetDpiForWindow, WindowsAndMessaging::MONITORINFOF_PRIMARY},
+        },
+        core::BOOL,
+    };
+    use iced::window::raw_window_handle::RawWindowHandle;
+
+    /// Adds a monitor's work area to the `Vec<(bool, RECT)>` at `areas`,
+    /// with whether it is the primary monitor.
+    unsafe extern "system" fn add(monitor: HMONITOR, _: HDC, _: *mut RECT, areas: LPARAM) -> BOOL {
+        let mut info = MONITORINFO {
+            cbSize: size_of::<MONITORINFO>() as u32,
+            ..Default::default()
+        };
+        // SAFETY: `monitor` is the one being listed; `areas` is the vector
+        // `work_areas` passed, borrowed for the listing.
+        unsafe {
+            if GetMonitorInfoW(monitor, &mut info).as_bool() {
+                let areas = &mut *(areas.0 as *mut Vec<(bool, RECT)>);
+                areas.push((info.dwFlags & MONITORINFOF_PRIMARY != 0, info.rcWork));
+            }
+        }
+        true.into()
+    }
+
+    let RawWindowHandle::Win32(handle) = window.window_handle().ok()?.as_raw() else {
+        return None;
+    };
+    let hwnd = HWND(handle.hwnd.get() as *mut std::ffi::c_void);
+    let mut areas: Vec<(bool, RECT)> = Vec::new();
+    // SAFETY: `add` reads `areas` only during the call; `hwnd` is the live
+    // window the runtime handed over.
+    let (listed, dpi) = unsafe {
+        (
+            EnumDisplayMonitors(
+                None,
+                None,
+                Some(add),
+                LPARAM(&mut areas as *mut Vec<(bool, RECT)> as isize),
+            ),
+            GetDpiForWindow(hwnd),
+        )
+    };
+    if !listed.as_bool() || dpi == 0 {
+        return None;
+    }
+    let scale = dpi as f32 / 96.0;
+    // The primary monitor first.
+    areas.sort_by_key(|(primary, _)| !primary);
+    Some(
+        areas
+            .into_iter()
+            .map(|(_, area)| iced::Rectangle {
+                x: area.left as f32 / scale,
+                y: area.top as f32 / scale,
+                width: (area.right - area.left) as f32 / scale,
+                height: (area.bottom - area.top) as f32 / scale,
+            })
+            .collect(),
+    )
+}

@@ -41,11 +41,13 @@ per day:
 
 ### A1. Window
 
-- [ ] ⌘W closes the window and so quits, as the close button does: there
+- [x] ⌘W closes the window and so quits, as the close button does: there
       is only ever one window (decided 2026-10-24). `main.rs` already sets
       `exit_on_close_request: false`; `Message::CloseWindow` goes offline
       and closes.
-- [ ] Size, position and display remembered.
+- [x] Size, position and display remembered (`placement.rs`), and
+      maximised; full screen is not, the window opens as it was before. A
+      window left on a display since unplugged opens on the main one.
 - [ ] Full screen, and tiling with the system's window layouts. Unchecked.
 
 ### A2. Keyboard
