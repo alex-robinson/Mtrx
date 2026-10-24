@@ -176,6 +176,42 @@ fn zoom_steps_the_text_size() {
     assert_eq!(app.pixel_scale(), 2.0);
 }
 
+/// ⌘F opens the find bar, ⌘G and ⇧⌘G go to the next and previous match,
+/// wherever the focus is.
+#[test]
+fn find_keys() {
+    use iced::{event::Status, keyboard};
+
+    let key = |c: &str, modifiers| {
+        let event = iced::Event::Keyboard(keyboard::Event::KeyPressed {
+            key: keyboard::Key::Character(c.into()),
+            modified_key: keyboard::Key::Character(c.into()),
+            physical_key: keyboard::key::Physical::Unidentified(
+                keyboard::key::NativeCode::Unidentified,
+            ),
+            location: keyboard::Location::Standard,
+            modifiers,
+            text: None,
+            repeat: false,
+        });
+        shortcuts(event, Status::Captured, window::Id::unique())
+    };
+    let command = keyboard::Modifiers::COMMAND;
+    assert!(matches!(
+        key("f", command),
+        Some(Message::Find(find::Message::Open))
+    ));
+    assert!(matches!(
+        key("g", command),
+        Some(Message::Find(find::Message::Next))
+    ));
+    assert!(matches!(
+        key("g", command | keyboard::Modifiers::SHIFT),
+        Some(Message::Find(find::Message::Previous))
+    ));
+    assert!(key("f", keyboard::Modifiers::empty()).is_none());
+}
+
 /// The window opens at the same size in logical pixels at any text size.
 #[test]
 fn window_opens_at_one_size() {
@@ -805,6 +841,33 @@ async fn main_screen_with_math() {
             };
             assert!(!main.room.as_ref().unwrap().calls.is_open());
         }
+        // ⌘F: every match highlighted, in text and typeset math, the
+        // newest one current; Esc closes the bar.
+        if let Screen::Main(main) = &mut app.screen {
+            main.room.as_mut().unwrap().selection = None;
+        }
+        let _ = app.update(Message::Find(find::Message::Open));
+        let _ = app.update(Message::Find(find::Message::Query("FLUX".into())));
+        let found = |app: &App| {
+            let Screen::Main(main) = &app.screen else {
+                unreachable!()
+            };
+            main.room
+                .as_ref()
+                .unwrap()
+                .find
+                .as_ref()
+                .map(|f| f.current().cloned())
+        };
+        assert!(found(&app).flatten().is_some());
+        let name = if mode == Mode::Dark {
+            "find-dark"
+        } else {
+            "find-light"
+        };
+        snapshot(&app, name);
+        let _ = app.update(Message::Escape);
+        assert_eq!(found(&app), None);
     }
 }
 
@@ -841,7 +904,11 @@ fn composer_keeps_focus(app: &mut App) {
     let mut cache = ui.into_cache();
 
     type Change = (&'static str, fn(&mut App));
-    let changes: [Change; 16] = [
+    let changes: [Change; 18] = [
+        ("the find bar opens", |app| {
+            room(app).find = Some(Find::default())
+        }),
+        ("and closes", |app| room(app).find = None),
         ("someone types", |app| room(app).typing = vec!["bob".into()]),
         ("they stop", |app| room(app).typing.clear()),
         ("an error below", |app| {

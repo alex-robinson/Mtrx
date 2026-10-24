@@ -68,6 +68,22 @@ pub fn selection(theme: &Theme) -> Color {
         .scale_alpha(0.55)
 }
 
+/// Behind text found (⌘F), and the current match: stronger and outlined.
+pub fn found(theme: &Theme, current: bool) -> (Color, Border) {
+    let palette = theme.extended_palette().warning;
+    if current {
+        (
+            palette.base.color.scale_alpha(0.6),
+            Border::default()
+                .rounded(2)
+                .width(1.5)
+                .color(palette.strong.color),
+        )
+    } else {
+        (palette.base.color.scale_alpha(0.3), Border::default())
+    }
+}
+
 pub fn muted(theme: &Theme) -> Color {
     theme.extended_palette().background.strong.color
 }

@@ -11,13 +11,14 @@ use iced::{
         Clipboard, Layout, Shell, Widget,
         layout::{Limits, Node},
         mouse, renderer,
-        widget::{Tree, tree},
+        widget::{Id, Operation, Tree, tree},
     },
     keyboard,
 };
 use unicode_segmentation::UnicodeSegmentation;
 
 use crate::{
+    find::{self, Found},
     message::TextMap,
     selectable::CLICK_SLOP,
     selection::{Gesture, Pos, unit_range},
@@ -165,6 +166,8 @@ pub struct SelectableImage<'a, Message> {
     image: Element<'a, Message>,
     text: Arc<Text>,
     selected: Option<(Pos, Pos)>,
+    /// Matches of the find bar.
+    found: Vec<Found>,
     dragging: bool,
     on_link: Option<fn(String) -> Message>,
     on_gesture: Option<Rc<dyn Fn(Gesture) -> Message + 'a>>,
@@ -179,16 +182,32 @@ pub fn selectable_image<'a, Message>(
         image: image.into(),
         text,
         selected: None,
+        found: Vec::new(),
         dragging: false,
         on_link: None,
         on_gesture: None,
     }
 }
 
+/// The part of a message a match covers.
+fn found_part(found: &Found) -> (Pos, Pos) {
+    let at = |offset| Pos {
+        unit: found.unit,
+        offset,
+    };
+    (at(found.range.start), at(found.range.end))
+}
+
 impl<'a, Message> SelectableImage<'a, Message> {
     /// The part of the message that is selected.
     pub fn selected(mut self, selected: Option<(Pos, Pos)>) -> Self {
         self.selected = selected;
+        self
+    }
+
+    /// Matches of the find bar, drawn over the pieces they are in.
+    pub fn found(mut self, found: Vec<Found>) -> Self {
+        self.found = found;
         self
     }
 
@@ -256,8 +275,21 @@ impl<Message> Widget<Message, Theme, Renderer> for SelectableImage<'_, Message> 
     ) {
         use iced::advanced::Renderer as _;
         let bounds = layout.bounds();
+        let translation = bounds.position() - Point::ORIGIN;
+        for found in &self.found {
+            let (color, border) = style::found(theme, found.current);
+            for rect in self.text.highlight(found_part(found)) {
+                renderer.fill_quad(
+                    renderer::Quad {
+                        bounds: rect + translation,
+                        border,
+                        ..Default::default()
+                    },
+                    color,
+                );
+            }
+        }
         if let Some(selected) = self.selected {
-            let translation = bounds.position() - Point::ORIGIN;
             for rect in self.text.highlight(selected) {
                 renderer.fill_quad(
                     renderer::Quad {
@@ -370,6 +402,24 @@ impl<Message> Widget<Message, Theme, Renderer> for SelectableImage<'_, Message> 
             }
             _ => {}
         }
+    }
+
+    fn operate(
+        &mut self,
+        _tree: &mut Tree,
+        layout: Layout<'_>,
+        _renderer: &Renderer,
+        operation: &mut dyn Operation,
+    ) {
+        let Some(current) = self.found.iter().find(|found| found.current) else {
+            return;
+        };
+        // The pieces it is in, or else the whole image.
+        let bounds = layout.bounds();
+        let rect = (self.text.highlight(found_part(current)))
+            .reduce(|a, b| a.union(&b))
+            .map_or(bounds, |rect| rect + (bounds.position() - Point::ORIGIN));
+        operation.custom(Some(&Id::new(find::CURRENT)), rect, &mut ());
     }
 
     fn mouse_interaction(

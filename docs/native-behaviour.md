@@ -62,7 +62,8 @@ per day:
       loaded and the newest message (when the composer does not take them).
 - [ ] ⌥⌘↑ and ⌥⌘↓ (or ⌃Tab and ⌃⇧Tab) go to the room above and below;
       ⌘1–⌘9 to the first nine rooms.
-- [ ] ⌘F: find in the room's loaded messages.
+- [x] ⌘F: find in the room's loaded messages (`find.rs`). Counted from
+      the newest; Enter and ⌘G go to older matches.
 - [ ] Typing with nothing focused goes to the composer.
 - [ ] ↑ in an empty composer edits our last message.
 
