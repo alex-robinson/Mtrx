@@ -21,6 +21,7 @@ use tokio::sync::Semaphore;
 
 use crate::{
     app::Message,
+    clipboard,
     context_menu::context_menu,
     ellipsis::ellipsis,
     fonts,
@@ -567,22 +568,10 @@ pub async fn copy_image(session: Arc<Session>, media: Media) -> Result<(), Strin
     tokio::task::spawn_blocking(move || {
         let picture = ::image::load_from_memory(&bytes)
             .map_err(|e| format!("Could not read {}: {e}", media.filename))?;
-        copy_picture(picture.to_rgba8())
+        clipboard::write_picture(picture.to_rgba8())
     })
     .await
     .map_err(|e| e.to_string())?
-}
-
-/// Put a picture on the clipboard (iced's clipboard holds text only).
-pub fn copy_picture(picture: ::image::RgbaImage) -> Result<(), String> {
-    let image = arboard::ImageData {
-        width: picture.width() as usize,
-        height: picture.height() as usize,
-        bytes: picture.into_raw().into(),
-    };
-    arboard::Clipboard::new()
-        .and_then(|mut clipboard| clipboard.set_image(image))
-        .map_err(|e| format!("Could not copy the picture: {e}"))
 }
 
 /// Ask where to save a message's file, then download it there. Cancelling
@@ -640,19 +629,25 @@ async fn read_one(path: &Path) -> Result<Attached, String> {
     let file = Attachment::read(path)
         .await
         .map_err(|e| format!("Could not attach {}: {e}", path.display()))?;
+    attached(file).await
+}
+
+/// `file` to attach, with a small picture of it if it is an image.
+pub async fn attached(file: Attachment) -> Result<Attached, String> {
     if !file.mimetype.starts_with("image/") {
         return Ok(Attached {
             file,
             preview: None,
         });
     }
+    let filename = file.filename.clone();
     let side = (2.0 * CHIP_HEIGHT) as u32;
     tokio::task::spawn_blocking(move || {
         let preview = decode(&file.bytes, side, side).map(|picture| picture.handle);
         Attached { file, preview }
     })
     .await
-    .map_err(|e| format!("Could not attach {}: {e}", path.display()))
+    .map_err(|e| format!("Could not attach {filename}: {e}"))
 }
 
 /// The attached files in a row, each with an × sending `remove` with its

@@ -741,7 +741,7 @@ async fn main_screen_with_math() {
             // From inside typeset math, formulas as LaTeX; each sender's
             // name and time first, the first not selected but put there; a
             // reply's quote before it.
-            let copied = open.selected_text(&Default::default()).unwrap();
+            let copied = open.selected(&Default::default()).unwrap().text;
             let name = |user: &mtrx_core::OwnedUserId| user.localpart().to_owned();
             assert!(copied.starts_with(&format!("{}, ", name(&alice.user_id()))));
             assert!(copied.contains(&format!("\n\n> {}: Morning! Draft", name(&alice.user_id()))));

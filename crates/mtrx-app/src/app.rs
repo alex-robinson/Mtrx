@@ -31,8 +31,9 @@ use crate::{
     avatar::{self, Avatars},
     badge::{self, Badge},
     calls,
+    clipboard::{self, Copied, Field, Pasted},
     dialog::{self, Dialog},
-    emoji,
+    edit_menu, emoji,
     find::{self, Find},
     hint::{Position, hint},
     info,
@@ -201,6 +202,12 @@ pub enum Message {
     FileDropped(PathBuf),
     /// Files were read to attach to the message in a room.
     Attached(OwnedRoomId, Vec<Result<media::Attached, String>>),
+    /// ⌘V (or ⌥⇧⌘V) in a field: read the clipboard.
+    Paste(Field, clipboard::Paste),
+    /// What the clipboard held, to paste into a field in a room.
+    Pasted(OwnedRoomId, Field, Option<clipboard::Pasted>),
+    /// The menu of a field one writes in.
+    EditMenu(Field, edit_menu::Message),
     /// Remove an attached file, by index.
     Unattach(usize),
     Arrange(arrange::Message),
@@ -1150,12 +1157,10 @@ impl App {
                     selection::Message::Copy => {
                         return room
                             .read_shown()
-                            .map(|shown| Message::Select(selection::Message::Copied(shown)));
+                            .map(|shown| Message::Select(selection::Message::CopyAsShown(shown)));
                     }
-                    selection::Message::Copied(shown) => {
-                        return room
-                            .selected_text(&shown)
-                            .map_or_else(Task::none, iced::clipboard::write);
+                    selection::Message::CopyAsShown(shown) => {
+                        return room.selected(&shown).map_or_else(Task::none, copy);
                     }
                     selection::Message::SelectAll => {
                         return room.on_screen().and_then(|(first, last)| {
@@ -1601,6 +1606,15 @@ impl App {
                         room.completion = None;
                     } else if let Some(room) = main.room.as_mut().filter(|r| r.menu.is_some()) {
                         room.menu = None;
+                    } else if let Some(room) = main.room.as_mut().filter(|r| r.composer_menu) {
+                        room.composer_menu = false;
+                    } else if let Some(edit) = main
+                        .room
+                        .as_mut()
+                        .and_then(|r| r.editing.as_mut())
+                        .filter(|e| e.menu)
+                    {
+                        edit.menu = false;
                     } else if let Some(room) = main.room.as_mut().filter(|r| r.readers.is_some()) {
                         room.readers = None;
                     } else if let Some(room) = main.room.as_mut().filter(|r| r.reactors.is_some()) {
@@ -2033,6 +2047,88 @@ impl App {
                     return Task::none();
                 };
                 attach(room.id.clone(), vec![path])
+            }
+            Message::Paste(field, how) => {
+                let Screen::Main(main) = &self.screen else {
+                    return Task::none();
+                };
+                let Some(room) = &main.room else {
+                    return Task::none();
+                };
+                let id = room.id.clone();
+                Task::perform(clipboard::read(how, field), move |pasted| {
+                    Message::Pasted(id.clone(), field, pasted)
+                })
+            }
+            Message::Pasted(id, field, pasted) => {
+                let Screen::Main(main) = &self.screen else {
+                    return Task::none();
+                };
+                if main.room.as_ref().is_none_or(|room| room.id != id) {
+                    return Task::none();
+                }
+                match pasted {
+                    // As if dropped.
+                    Some(Pasted::Files(paths)) => attach(id, paths),
+                    Some(Pasted::Image(file)) => {
+                        Task::perform(media::attached(file), move |attached| {
+                            Message::Attached(id.clone(), vec![attached])
+                        })
+                    }
+                    Some(Pasted::Text(text)) => self.update(in_field(
+                        field,
+                        text_editor::Action::Edit(text_editor::Edit::Paste(Arc::new(text))),
+                    )),
+                    None => Task::none(),
+                }
+            }
+            Message::EditMenu(field, message) => {
+                use edit_menu::Message as Menu;
+                use text_editor::{Action, Edit};
+
+                let Screen::Main(main) = &mut self.screen else {
+                    return Task::none();
+                };
+                let Some(room) = main.room.as_mut() else {
+                    return Task::none();
+                };
+                let open = message == Menu::Open;
+                let (selection, focus) = match field {
+                    Field::Composer => {
+                        room.composer_menu = open;
+                        (
+                            room.composer.selection(),
+                            iced::widget::operation::focus(room::COMPOSER),
+                        )
+                    }
+                    Field::Edit => {
+                        let edit = room.editing.as_mut();
+                        (
+                            edit.and_then(|edit| {
+                                edit.menu = open;
+                                edit.selection()
+                            }),
+                            InlineEdit::focus(),
+                        )
+                    }
+                };
+                // The field keeps the focus, as a text field does.
+                let done = match message {
+                    Menu::Open | Menu::Close => return Task::none(),
+                    Menu::Cut => Task::batch([
+                        selection.map_or_else(Task::none, iced::clipboard::write),
+                        self.update(in_field(field, Action::Edit(Edit::Delete))),
+                    ]),
+                    Menu::Copy => selection.map_or_else(Task::none, iced::clipboard::write),
+                    Menu::Paste => self.update(Message::Paste(field, clipboard::Paste::Rich)),
+                    Menu::SelectAll => self.update(in_field(field, Action::SelectAll)),
+                    #[cfg(target_os = "macos")]
+                    Menu::EmojiAndSymbols => {
+                        edit_menu::emoji_and_symbols();
+                        Task::none()
+                    }
+                };
+                Task::batch([focus, done])
             }
             Message::Attached(id, attached) => {
                 if let Screen::Main(main) = &mut self.screen
@@ -2611,9 +2707,13 @@ impl App {
                 room.menu = None;
                 Task::done(Message::LinkClicked(url))
             }
-            Act::Copy(text) => {
+            Act::Copy(copied) => {
                 room.menu = None;
-                iced::clipboard::write(text)
+                copy(copied)
+            }
+            Act::CopyLink(url) => {
+                room.menu = None;
+                iced::clipboard::write(url)
             }
             Act::CopySelection => {
                 room.menu = None;
@@ -2785,7 +2885,10 @@ impl App {
                 };
                 // Text selected on one line is looked for, as in Safari;
                 // else what was last.
-                let selected = (room.selected_text(&shown)).filter(|text| !text.contains('\n'));
+                let selected = room
+                    .selected(&shown)
+                    .map(|copied| copied.text)
+                    .filter(|text| !text.contains('\n'));
                 match (&mut room.find, selected) {
                     (Some(find), Some(text)) => {
                         find.query = text;
@@ -3723,6 +3826,21 @@ fn input(event: iced::Event, _status: iced::event::Status, _window: window::Id) 
         }
         _ => None,
     }
+}
+
+/// `action` performed in `field`.
+fn in_field(field: Field, action: text_editor::Action) -> Message {
+    match field {
+        Field::Composer => Message::Composer(action),
+        Field::Edit => Message::Act(actions::Message::EditAction(action)),
+    }
+}
+
+/// Put `copied` on the clipboard; a failure shows in the room.
+fn copy(copied: Copied) -> Task<Message> {
+    Task::perform(clipboard::write(copied), |result| {
+        Message::Act(actions::Message::Done(result))
+    })
 }
 
 /// Read files to attach to the message being written in `room`.

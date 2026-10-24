@@ -106,7 +106,7 @@ A reply's preview is cut to a few lines with "…", depending on the
 width, and is copied as shown. The room does not know the cut, so ⌘C
 (and the menu's Copy, and ⌘F with a selection) first reads what each
 preview shows from the view, by an operation (`Room::read_shown`), then
-copies (`selection::Message::Copied`). Shift+arrows step through a
+copies (`selection::Message::CopyAsShown`), text and HTML. Shift+arrows step through a
 preview as a whole text, not as cut.
 
 The mouse release that ends a drag is caught by a subscription, wherever

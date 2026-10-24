@@ -14,11 +14,12 @@ use mtrx_core::{OwnedUserId, UserId};
 use mtrx_format::{Block, Document, Inline, Style};
 
 use crate::{
+    clipboard::Copied,
     emoji,
     find::Found,
     fonts,
     selectable::{Selectable, selectable},
-    selection::{Gesture, Pos, Unit, unit_range},
+    selection::{Gesture, Pos, Unit, unit_range, units_text},
     style,
 };
 
@@ -124,6 +125,23 @@ pub fn text_map(document: &Document) -> TextMap {
     };
     let _ = walk.blocks(&document.blocks, "", "\n\n", true);
     walk.map
+}
+
+/// What copying `document` from `from` to `to` puts on the clipboard: the
+/// text as shown, and that part of the message as HTML.
+pub fn copied(document: &Document, from: Pos, to: Pos) -> Copied {
+    let map = text_map(document);
+    let part = document.clipped(|leaf| {
+        let leaf = map.leaves.get(leaf)?;
+        let unit = unit_range((from, to), leaf.unit, map.units[leaf.unit].text.len())?;
+        let start = unit.start.max(leaf.start);
+        let end = unit.end.min(leaf.start + leaf.len);
+        (start < end).then(|| start - leaf.start..end - leaf.start)
+    });
+    Copied {
+        text: units_text(&map.units, from, to),
+        html: part.to_html(),
+    }
 }
 
 /// Builds the view of blocks and records their units and leaves, in the
@@ -473,7 +491,7 @@ mod tests {
     use iced_test::simulator::Simulator;
 
     use super::*;
-    use crate::selection::{Message, Selection, units_text};
+    use crate::selection::{Message, Selection};
 
     /// Drives `document`'s view (marked if `edited`), in a scrollable
     /// `height` high, with mouse `steps` (a position and an event there);
@@ -516,27 +534,29 @@ mod tests {
         ui.into_messages().collect()
     }
 
-    /// The text selected by `steps` (see [`gestures`]).
+    /// What copying the selection made by `steps` (see [`gestures`])
+    /// copies.
     fn select_in(
         document: &Document,
         height: f32,
         dragging: bool,
         steps: &[((f32, f32), mouse::Event)],
-    ) -> String {
+    ) -> Copied {
         let mut selection = None;
         for gesture in gestures(document, false, height, dragging, steps) {
             Selection::update(&mut selection, Message::Gesture("$e".into(), gesture));
         }
         let order = HashMap::from([("$e", 0)]);
         let Some(bounds) = selection.and_then(|s| s.ordered(&order)) else {
-            return String::new();
+            return Copied::default();
         };
         let (from, to) = bounds.in_message(0).unwrap();
-        units_text(&text_map(document).units, from, to)
+        copied(document, from, to)
     }
 
+    /// The text selected by `steps`.
     fn select(document: &Document, dragging: bool, steps: &[((f32, f32), mouse::Event)]) -> String {
-        select_in(document, 400.0, dragging, steps)
+        select_in(document, 400.0, dragging, steps).text
     }
 
     #[test]
@@ -563,7 +583,8 @@ mod tests {
                     },
                 ),
             ],
-        );
+        )
+        .text;
         // Two neighbouring lines well below the first.
         let lines: Vec<u32> = selected
             .split("\n\n")
@@ -731,6 +752,45 @@ mod tests {
         let before = current(vec![found(4..7, true), found(17..20, false)]).unwrap();
         assert!(before.x < at.x && before.y == at.y, "{before:?}");
         assert_eq!(current(vec![found(4..7, false)]), None);
+    }
+
+    #[test]
+    fn copies_formatting_as_html_too() {
+        use mouse::{Button::Left, Event::*};
+        let document = Document::from_html(
+            r#"<p>Hello <b>you</b> there</p><ul><li>See <a href="https://example.org">docs</a></li><li>and $x$</li></ul>"#,
+        );
+        // Dragged from the start to right of the last item.
+        let copied = select_in(
+            &document,
+            400.0,
+            true,
+            &[
+                ((2.0, 8.0), ButtonPressed(Left)),
+                (
+                    (700.0, 58.0),
+                    CursorMoved {
+                        position: iced::Point::new(700.0, 58.0),
+                    },
+                ),
+            ],
+        );
+        assert_eq!(copied.text, "Hello you there\n\n- See docs\n- and $x$");
+        assert_eq!(
+            copied.html,
+            r#"<p>Hello <strong>you</strong> there</p><ul><li>See <a href="https://example.org">docs</a></li><li>and $x$</li></ul>"#
+        );
+        // From within "you" to within "docs".
+        let part = super::copied(
+            &document,
+            Pos { unit: 0, offset: 7 },
+            Pos { unit: 1, offset: 6 },
+        );
+        assert_eq!(part.text, "ou there\n\n- See do");
+        assert_eq!(
+            part.html,
+            r#"<p><strong>ou</strong> there</p><ul><li>See <a href="https://example.org">do</a></li></ul>"#
+        );
     }
 
     #[test]

@@ -28,8 +28,10 @@ use crate::{
     app::Message,
     avatar::{self, Avatars, Shape},
     calls::{self, RoomCalls},
+    clipboard::{self, Copied, Field},
     context_menu::context_menu,
     drag_scroll::drag_scroll,
+    edit_menu,
     ellipsis::ellipsis,
     emoji,
     find::{self, Find},
@@ -112,6 +114,8 @@ pub struct Room {
     pub emoji: Option<emoji::Panel>,
     /// The composer's emoji panel, while shown.
     pub composer_emoji: Option<emoji::Panel>,
+    /// The composer's menu is open.
+    pub composer_menu: bool,
     /// The timeline row whose deletion awaits confirmation.
     pub confirm_delete: Option<String>,
     /// Names of others typing.
@@ -169,6 +173,7 @@ impl Room {
             find: None,
             emoji: None,
             composer_emoji: None,
+            composer_menu: false,
             confirm_delete: None,
             typing: Vec::new(),
             member_list: None,
@@ -559,10 +564,11 @@ impl Room {
         .map(move |range| range.map(|(first, last)| (ends[first].0.clone(), ends[last].1.clone())))
     }
 
-    /// The selected text, as shown (`shown` says what reply previews show,
-    /// see [`Room::read_shown`]); with several messages, each sender's name
-    /// and time before their messages unless it is selected.
-    pub fn selected_text(&self, shown: &Shown) -> Option<String> {
+    /// The selected text, as shown and as HTML (`shown` says what reply
+    /// previews show, see [`Room::read_shown`]); with several messages,
+    /// each sender's name and time before their messages unless it is
+    /// selected.
+    pub fn selected(&self, shown: &Shown) -> Option<Copied> {
         let selection = self.selection.as_ref()?;
         let rows = rows::rows(self.visible());
         let parts = rows::parts(&rows);
@@ -672,6 +678,11 @@ impl Room {
             .on_action(Message::Composer)
             .key_binding(move |press| {
                 let custom = |message| Some(text_editor::Binding::Custom(message));
+                // Pictures, files and rich text too, which iced's clipboard
+                // lacks.
+                if let Some(how) = clipboard::paste(&press) {
+                    return custom(Message::Paste(Field::Composer, how));
+                }
                 match press.key {
                     Key::Named(Named::ArrowUp) if completing => {
                         custom(Message::Mention(mention::Message::Up))
@@ -701,6 +712,8 @@ impl Room {
                     }),
             )
             .max_height(200);
+        let composer =
+            edit_menu::with_menu(Field::Composer, composer, self.composer_menu, selected);
         let attach = hint(
             button(icons::paperclip(19.0, |theme| {
                 theme

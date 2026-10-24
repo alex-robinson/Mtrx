@@ -12,11 +12,12 @@ use std::{
 use chrono::{DateTime, Local};
 use iced::advanced::widget::Id;
 use mtrx_core::{Event, EventContent, MessageKind, Reply, TimelineEntry};
-use mtrx_format::Document;
+use mtrx_format::{Block, Document, Inline};
 
 use crate::{
+    clipboard::Copied,
     message, room,
-    selection::{Bounds, Shown, Unit, units_text},
+    selection::{Bounds, Pos, Shown, Unit, units_text},
 };
 
 /// A message this soon after the one before, by the same sender, goes
@@ -241,51 +242,68 @@ pub fn order<'p>(parts: &'p [Vec<Part<'_>>]) -> HashMap<&'p str, usize> {
         .collect()
 }
 
-/// The text of the parts of `rows` (see [`parts`]) from the start of
-/// `bounds` to its end, as shown (`shown` says what cut texts show). Parts
-/// of a row are a line apart, rows a blank line. With several messages,
-/// each sender's name and time go before their messages, unless their name
-/// is in it already.
+impl Part<'_> {
+    /// What copying it from `from` to `to` gives: a message's text and its
+    /// HTML, other text as a paragraph of it.
+    fn copied(&self, from: Pos, to: Pos, shown: &Shown) -> Copied {
+        if let Text::Message(document) = &self.text {
+            return message::copied(document, from, to);
+        }
+        let text = units_text(&self.units(shown), from, to);
+        let html = Document {
+            blocks: vec![Block::Paragraph(vec![Inline::Text(text.clone())])],
+        }
+        .to_html();
+        Copied { text, html }
+    }
+}
+
+/// What copying the parts of `rows` (see [`parts`]) from the start of
+/// `bounds` to its end gives, as shown (`shown` says what cut texts show).
+/// Parts of a row are a line apart, rows a blank line. With several
+/// messages, each sender's name and time go before their messages, unless
+/// their name is in it already.
 pub fn copied(
     rows: &[Row<'_>],
     parts: &[Vec<Part<'_>>],
     bounds: Bounds,
     shown: &Shown,
-) -> Option<String> {
+) -> Option<Copied> {
     let parts = in_order(parts);
-    let texts: Vec<_> = (bounds.start.0..=bounds.end.0)
+    let copies: Vec<_> = (bounds.start.0..=bounds.end.0)
         .filter_map(|i| {
             let (row, part) = parts.get(i)?;
             let (from, to) = bounds.in_message(i)?;
-            let text = units_text(&part.units(shown), from, to);
-            (!text.is_empty()).then_some((*row, *part, text))
+            let copied = part.copied(from, to, shown);
+            (!copied.text.is_empty()).then_some((*row, *part, copied))
         })
         .collect();
-    let mut messages: Vec<usize> = (texts.iter())
+    let mut messages: Vec<usize> = (copies.iter())
         .filter(|(row, ..)| rows[*row].event().is_some())
         .map(|(row, ..)| *row)
         .collect();
     messages.dedup();
     let several = messages.len() > 1;
-    let mut out = String::new();
+    let mut out = Copied::default();
     let mut sender = None;
     let mut last_row = None;
-    for (row, part, text) in texts {
-        if let Some(last) = last_row {
-            out.push_str(if last == row { "\n" } else { "\n\n" });
-        }
+    for (row, part, mut copied) in copies {
         match (&part.text, rows[row].event()) {
             (Text::Sender(event), _) => sender = Some(&event.sender),
             (_, Some(event)) if several && sender != Some(&event.sender) => {
-                out.push_str(&format!("{}, {}\n", display_name(event), time(event)));
+                copied = Copied::byline(&display_name(event), &time(event)).then(copied);
                 sender = Some(&event.sender);
             }
             _ => {}
         }
-        out.push_str(&text);
+        if last_row == Some(row) {
+            out.push_line(copied);
+        } else {
+            out.push(copied);
+        }
         last_row = Some(row);
     }
-    (!out.is_empty()).then_some(out)
+    (!out.text.is_empty()).then_some(out)
 }
 
 /// The name of the sender of a reply's message and the start of it, as
@@ -395,7 +413,7 @@ mod tests {
             dragging: false,
         };
         let bounds = selection.ordered(&order(&parts)).unwrap();
-        copied(&rows, &parts, bounds, shown).unwrap_or_default()
+        (copied(&rows, &parts, bounds, shown)).map_or_else(String::new, |copied| copied.text)
     }
 
     #[test]
@@ -452,6 +470,25 @@ mod tests {
                 at("$c")
             )
         );
+        // As HTML too: lines as paragraphs, the messages' parts in theirs.
+        let rows = rows(&entries);
+        let parts = parts(&rows);
+        let all = Selection {
+            anchor: Point {
+                event: "day/0".into(),
+                pos: Pos::default(),
+            },
+            focus: Point {
+                event: "$e".into(),
+                pos: Pos::END,
+            },
+            dragging: false,
+        };
+        let bounds = all.ordered(&order(&parts)).unwrap();
+        let html = copied(&rows, &parts, bounds, &none).unwrap().html;
+        for shown in ["dave joined", "Message deleted", "First", "Fourth"] {
+            assert!(html.contains(shown), "{shown}: {html}");
+        }
         // From her name: as selected.
         assert_eq!(
             copy(&entries, ("$a/sender", pos(0, 0)), ("$a", Pos::END), &none),

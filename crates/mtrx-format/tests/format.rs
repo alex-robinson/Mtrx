@@ -477,3 +477,56 @@ fn matrix_links_to_users_are_mentions() {
         ])]
     );
 }
+
+#[test]
+fn copied_as_html_with_math_as_latex() {
+    let doc = Document::from_html(
+        r#"<p>Flux <b>q</b> <span data-mx-maths="q=-k\nabla T"><code>q</code></span>, see <a href="https://example.org/a">data</a> &amp; <a href="https://matrix.to/#/@ana:x.org">Ana</a></p><ol start="3"><li>one</li><li>two<br>lines</li></ol><pre><code class="language-rust">fn x() {}
+</code></pre><div data-mx-maths="x^2"><code>x^2</code></div>"#,
+    );
+    assert_eq!(
+        doc.to_html(),
+        r#"<p>Flux <strong>q</strong> $q=-k\nabla T$, see <a href="https://example.org/a">data</a> &amp; <a href="https://matrix.to/#/@ana:x.org">Ana</a></p><ol start="3"><li>one</li><li>two<br>lines</li></ol><pre><code class="language-rust">fn x() {}
+</code></pre><p>$$x^2$$</p>"#
+    );
+}
+
+#[test]
+fn clipped_to_a_selection() {
+    // Leaves: "Hello ", "bold", " world", "one", "two", "three".
+    let doc = Document::from_html(
+        "<p>Hello <b>bold</b> world</p><hr><ul><li>one</li><li>two</li><li>three</li></ul>",
+    );
+    let part = doc.clipped(|leaf| match leaf {
+        1 => Some(2..4),
+        2 => Some(0..6),
+        3 => Some(0..3),
+        4 => Some(0..2),
+        _ => None,
+    });
+    assert_eq!(
+        part.to_html(),
+        "<p><strong>ld</strong> world</p><ul><li>one</li><li>tw</li></ul>"
+    );
+    // All of it, but the rule.
+    let mut all = doc.clone();
+    all.blocks.remove(1);
+    assert_eq!(doc.clipped(|_| Some(0..usize::MAX)), all);
+
+    // Numbered from the first item kept.
+    let list = Document::from_html("<ol><li>a</li><li>b</li><li>c</li></ol>");
+    let part = list.clipped(|leaf| (leaf == 1).then_some(0..1));
+    assert_eq!(part.to_html(), r#"<ol start="2"><li>b</li></ol>"#);
+
+    // Part of a formula is text, as shown; all of it stays math.
+    let math = Document::from_html(
+        r#"Energy <span data-mx-maths="E=mc^2"><code>E=mc^2</code></span><br>and more"#,
+    );
+    let part = math.clipped(|leaf| (leaf == 1).then_some(0..4));
+    assert_eq!(
+        part.blocks,
+        [Block::Paragraph(vec![Inline::Text("$E=m".into())])]
+    );
+    let part = math.clipped(|leaf| (leaf == 1).then_some(0..8));
+    assert_eq!(part.to_html(), "<p>$E=mc^2$</p>", "without the line break");
+}

@@ -12,7 +12,7 @@ use ::image::{DynamicImage, ImageFormat, RgbImage};
 use iced::{Task, widget::image};
 use mtrx_format::{Document, RenderStyle, Renderer};
 
-use crate::{fonts, media, message, selectable_image, style};
+use crate::{clipboard, fonts, message, selectable_image, style};
 
 /// Identifies one rendering: same content, width and colours give the same image.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -132,7 +132,9 @@ impl Math {
         let renderer = self.renderer.clone();
         let document = document.clone();
         blocking(move || {
-            media::copy_picture(DynamicImage::ImageRgb8(picture(&renderer, &document)?).to_rgba8())
+            clipboard::write_picture(
+                DynamicImage::ImageRgb8(picture(&renderer, &document)?).to_rgba8(),
+            )
         })
     }
 }

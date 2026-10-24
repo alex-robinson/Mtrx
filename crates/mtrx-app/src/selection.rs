@@ -62,7 +62,7 @@ pub enum Message {
     /// ⌘C: put the selected text on the clipboard.
     Copy,
     /// What the texts cut to fit show, read for copying.
-    Copied(Shown),
+    CopyAsShown(Shown),
     /// ⌘A: select the messages on screen, from the first to the last.
     SelectAll,
     /// Shift with ← or →: move the end of the selection.
@@ -148,7 +148,7 @@ impl Selection {
             }
             // Handled by the room, which has the text and the view.
             Message::Copy
-            | Message::Copied(_)
+            | Message::CopyAsShown(_)
             | Message::SelectAll
             | Message::Extend(_)
             | Message::ExtendLine(_)
