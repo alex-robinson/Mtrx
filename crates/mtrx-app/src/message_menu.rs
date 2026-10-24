@@ -6,7 +6,7 @@ use iced::{
     Element, Length,
     widget::{button, column, container},
 };
-use mtrx_core::{MediaKind, Message, MessageKind};
+use mtrx_core::{Media, MediaKind, Message, MessageKind};
 
 use crate::{
     actions::{self, act},
@@ -53,17 +53,7 @@ pub fn items(
         items.push(("Copy".to_owned(), actions::Message::Copy(all)));
     }
     if let Some(media) = &message.media {
-        if media.kind == MediaKind::Image {
-            items.push((
-                "Copy image".to_owned(),
-                actions::Message::CopyMediaImage(media.clone()),
-            ));
-        }
-        let save = match media.kind {
-            MediaKind::Image => "Save image…",
-            _ => "Save…",
-        };
-        items.push((save.to_owned(), actions::Message::SaveMedia(media.clone())));
+        items.extend(media_items(media));
     }
     if math_shown {
         items.push((
@@ -75,6 +65,24 @@ pub fn items(
             actions::Message::SaveImage(document.clone()),
         ));
     }
+    items
+}
+
+/// What the menu offers for a message's file, also where an image is shown
+/// large: copying an image, and saving the file as it was sent.
+pub fn media_items(media: &Media) -> Vec<(String, actions::Message)> {
+    let mut items = Vec::new();
+    if media.kind == MediaKind::Image {
+        items.push((
+            "Copy image".to_owned(),
+            actions::Message::CopyMediaImage(media.clone()),
+        ));
+    }
+    let save = match media.kind {
+        MediaKind::Image => "Save image…",
+        _ => "Save…",
+    };
+    items.push((save.to_owned(), actions::Message::SaveMedia(media.clone())));
     items
 }
 

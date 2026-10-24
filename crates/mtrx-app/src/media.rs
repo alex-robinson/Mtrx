@@ -21,10 +21,11 @@ use tokio::sync::Semaphore;
 
 use crate::{
     app::Message,
+    context_menu::context_menu,
     ellipsis::ellipsis,
     fonts,
     hint::{Position, hint},
-    icons, pdf, style,
+    icons, message_menu, pdf, style,
 };
 
 /// Largest size of an image in the timeline, in logical pixels.
@@ -428,6 +429,8 @@ pub struct Viewer {
     /// The whole image, once loaded; until then the preview shows.
     full: Option<Picture>,
     pub error: Option<String>,
+    /// The image's menu is open (right-click).
+    pub menu: bool,
 }
 
 impl Viewer {
@@ -436,6 +439,7 @@ impl Viewer {
             media,
             full: None,
             error: None,
+            menu: false,
         }
     }
 
@@ -491,6 +495,11 @@ impl Viewer {
                     .into(),
                 None => placeholder(size),
             };
+            let menu = self
+                .menu
+                .then(|| message_menu::view(message_menu::media_items(&self.media)));
+            let shown = context_menu(shown, menu, Message::ViewerMenu(true))
+                .on_dismiss(Message::ViewerMenu(false));
             let bar_width = size.width.max(VIEWER_BAR_MIN_WIDTH).min(available.width);
             container(
                 column![opaque(shown), opaque(self.bar(bar_width))]
@@ -557,19 +566,23 @@ pub async fn copy_image(session: Arc<Session>, media: Media) -> Result<(), Strin
         .map_err(|e| format!("Could not download {}: {e}", media.filename))?;
     tokio::task::spawn_blocking(move || {
         let picture = ::image::load_from_memory(&bytes)
-            .map_err(|e| format!("Could not read {}: {e}", media.filename))?
-            .to_rgba8();
-        let image = arboard::ImageData {
-            width: picture.width() as usize,
-            height: picture.height() as usize,
-            bytes: picture.into_raw().into(),
-        };
-        arboard::Clipboard::new()
-            .and_then(|mut clipboard| clipboard.set_image(image))
-            .map_err(|e| format!("Could not copy the picture: {e}"))
+            .map_err(|e| format!("Could not read {}: {e}", media.filename))?;
+        copy_picture(picture.to_rgba8())
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+/// Put a picture on the clipboard (iced's clipboard holds text only).
+pub fn copy_picture(picture: ::image::RgbaImage) -> Result<(), String> {
+    let image = arboard::ImageData {
+        width: picture.width() as usize,
+        height: picture.height() as usize,
+        bytes: picture.into_raw().into(),
+    };
+    arboard::Clipboard::new()
+        .and_then(|mut clipboard| clipboard.set_image(image))
+        .map_err(|e| format!("Could not copy the picture: {e}"))
 }
 
 /// Ask where to save a message's file, then download it there. Cancelling
@@ -715,6 +728,12 @@ pub fn dropped_files() -> Subscription<Message> {
 
 #[cfg(test)]
 mod tests {
+    use iced::advanced::{clipboard, renderer::Headless};
+    use iced_runtime::user_interface::{Cache, UserInterface};
+    use iced_test::simulator::{Simulator, click as left_click};
+
+    use crate::actions::Message as Act;
+
     use super::*;
 
     #[test]
@@ -726,6 +745,93 @@ mod tests {
         assert_eq!(human_size(99_960), "100 kB");
         assert_eq!(human_size(999_960), "1.0 MB");
         assert_eq!(human_size(345_000_000), "345 MB");
+    }
+
+    /// The messages sent by right-clicking `view` at `at`.
+    fn right_click(view: Element<'_, Message>, at: (f32, f32)) -> Vec<Message> {
+        let mut ui = Simulator::with_size(fonts::settings(), Size::new(800.0, 600.0), view);
+        ui.point_at(at);
+        let _ = ui.simulate([iced::Event::Mouse(mouse::Event::ButtonPressed(
+            mouse::Button::Right,
+        ))]);
+        ui.into_messages().collect()
+    }
+
+    #[test]
+    fn right_clicking_a_picture_offers_its_menu() {
+        let media = Media {
+            kind: MediaKind::Image,
+            filename: "ice.png".into(),
+            size: None,
+            mimetype: None,
+            width: Some(200),
+            height: Some(100),
+            source: MediaRef::plain("mxc://example.org/a"),
+        };
+        let previews = Previews::new();
+        // In the timeline, the image leaves the click to its message's menu.
+        let inline = context_menu(
+            view(&media, &media.filename, &previews, false),
+            None,
+            Message::CloseImage,
+        );
+        assert!(matches!(
+            right_click(inline.into(), (50.0, 50.0))[..],
+            [Message::CloseImage]
+        ));
+        // Shown large, it has a menu of its own, not around it.
+        let mut viewer = Viewer::new(media.clone());
+        assert!(right_click(viewer.view(&previews), (100.0, 100.0)).is_empty());
+        let mut renderer = iced::futures::executor::block_on(iced::Renderer::new(
+            fonts::INTER,
+            iced::Pixels(style::TEXT_SIZE),
+            None,
+        ))
+        .unwrap();
+        let window = Size::new(800.0, 600.0);
+        let mut ui = UserInterface::build(
+            viewer.view(&previews),
+            window,
+            Cache::default(),
+            &mut renderer,
+        );
+        let right = [iced::Event::Mouse(mouse::Event::ButtonPressed(
+            mouse::Button::Right,
+        ))];
+        let sent = send(&mut ui, &mut renderer, &right, (400.0, 270.0));
+        assert!(matches!(sent[..], [Message::ViewerMenu(true)]));
+        // Its first item, just below where it was right-clicked.
+        let cache = ui.into_cache();
+        viewer.menu = true;
+        let mut ui = UserInterface::build(viewer.view(&previews), window, cache, &mut renderer);
+        let sent = send(
+            &mut ui,
+            &mut renderer,
+            &left_click().collect::<Vec<_>>(),
+            (420.0, 285.0),
+        );
+        assert!(
+            matches!(&sent[..], [Message::Act(Act::CopyMediaImage(copied))] if *copied == media),
+            "{sent:?}"
+        );
+    }
+
+    /// The messages `events` at `at` send.
+    fn send(
+        ui: &mut UserInterface<'_, Message, Theme, iced::Renderer>,
+        renderer: &mut iced::Renderer,
+        events: &[iced::Event],
+        at: (f32, f32),
+    ) -> Vec<Message> {
+        let mut sent = Vec::new();
+        let _ = ui.update(
+            events,
+            mouse::Cursor::Available(at.into()),
+            renderer,
+            &mut clipboard::Null,
+            &mut sent,
+        );
+        sent
     }
 
     #[test]
