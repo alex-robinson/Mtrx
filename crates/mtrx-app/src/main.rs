@@ -40,6 +40,7 @@ mod placement;
 mod popover;
 mod presence;
 mod room;
+mod rows;
 mod selectable;
 mod selectable_image;
 mod selection;

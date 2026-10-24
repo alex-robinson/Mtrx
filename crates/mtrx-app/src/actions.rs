@@ -4,9 +4,13 @@
 
 use iced::{
     Alignment, Element, Length, Padding, Theme,
+    advanced::widget::Id,
     keyboard::{Key, key::Named},
     mouse,
-    widget::{button, column, container, mouse_area, row, scrollable, space, text, text_editor},
+    widget::{
+        button, column, container, mouse_area, row, scrollable, space, span, text, text::Wrapping,
+        text_editor,
+    },
 };
 use mtrx_core::{Event, EventKey, Media, MxcUri, OwnedEventId, Reaction, Reader, Reply, SendState};
 use mtrx_format::Document;
@@ -17,10 +21,12 @@ use crate::{
     ellipsis::ellipsis,
     emoji, fonts,
     hint::{Position, hint, hint_with},
-    icons, info, mention,
+    icons, info, mention, message,
     message_menu::MenuAt,
     popover::{Edge, Side, popover},
-    selection, style,
+    selectable::selectable,
+    selection::{self, Unit},
+    style,
 };
 
 /// Read markers shown per message before "+N".
@@ -522,42 +528,48 @@ fn pill<'a>(
     hint_with(pill, label, Position::Top)
 }
 
-/// The message a reply answers, in a few lines; a click goes to it.
-pub fn quote<'a>(reply: &'a Reply) -> Element<'a, app::Message> {
-    let sender = reply
-        .sender_name
-        .as_deref()
-        .or(reply.sender.as_ref().map(|s| s.localpart()))
-        .unwrap_or("…");
-    let preview = reply.preview.as_deref().unwrap_or(if reply.failed {
-        "Could not load the message"
-    } else {
-        "Loading…"
-    });
+/// The message a reply answers, in a few lines: its sender's name and the
+/// start of it (`units`, see [`crate::rows::Text::Reply`]), selected as
+/// `select` says. The start is cut to fit, and reports what it shows under
+/// `shown`. A click goes to the message; a drag selects.
+pub fn quote<'a>(
+    reply: &'a Reply,
+    units: &[Unit],
+    select: message::Select<'a, app::Message>,
+    shown: Id,
+) -> Element<'a, app::Message> {
+    let go = (!reply.failed).then(|| app::Message::GoTo(reply.event_id.clone()));
+    let unit = |index: usize, spans| {
+        let unit = selectable(spans, index).size(12);
+        let unit = select.apply(unit, index, units[index].text.len());
+        match &go {
+            Some(go) => unit.on_click(go.clone()),
+            None => unit,
+        }
+    };
+    let sender = unit(0, vec![span(units[0].text.clone()).font(fonts::SEMIBOLD)]);
+    let preview = unit(1, vec![span(units[1].text.clone())])
+        .style(text::secondary)
+        .lines(QUOTE_LINES)
+        .wrapping(Wrapping::WordOrGlyph)
+        .id(shown);
     let quote = row![
         container(space())
             .width(3)
             .height(Length::Fill)
             .style(style::quote_accent),
-        row![
-            text(sender).size(12).font(fonts::SEMIBOLD),
-            ellipsis(preview)
-                .lines(QUOTE_LINES)
-                .size(12)
-                .style(text::secondary)
-                .width(Length::Fill),
-        ]
-        .spacing(6),
+        row![sender, preview].spacing(6),
     ]
     .spacing(8)
     .height(Length::Shrink);
-    if reply.failed {
+    let Some(go) = go else {
         return quote.into();
-    }
+    };
+    // Also beside the text.
     hint(
         mouse_area(quote)
             .interaction(mouse::Interaction::Pointer)
-            .on_press(app::Message::GoTo(reply.event_id.clone())),
+            .on_press(go),
         "Go to the original message",
         Position::Top,
     )
@@ -824,6 +836,80 @@ mod tests {
     const NAMES: [&str; 10] = [
         "Alice", "Bob", "Carol", "Dan", "Eve", "Fay", "Gus", "Hal", "Ivy", "Jo",
     ];
+
+    #[test]
+    fn a_quote_goes_to_its_message_on_a_click_and_selects_on_a_drag() {
+        use std::rc::Rc;
+
+        use iced::{Event, Point, Size, mouse};
+        use iced_test::simulator::Simulator;
+        use mtrx_core::Reply;
+
+        use crate::{
+            app::Message,
+            fonts, message,
+            selection::{self, Gesture, Unit},
+        };
+
+        let reply = Reply {
+            event_id: "$original:x".try_into().unwrap(),
+            sender: Some("@carol:x".try_into().unwrap()),
+            sender_name: None,
+            preview: Some("Where is the data from?".into()),
+            kind: None,
+            failed: false,
+        };
+        let unit = |text: &str| Unit {
+            text: text.into(),
+            prefix: String::new(),
+            gap: "",
+        };
+        let units = [unit("carol"), unit("Where is the data from?")];
+        // Pressed on the start of the quote, released at `to`.
+        let messages = |to: f32| -> Vec<Message> {
+            let select = message::Select {
+                range: None,
+                focus: None,
+                dragging: true,
+                on_gesture: Rc::new(|gesture| {
+                    Message::Select(selection::Message::Gesture("$r/reply".into(), gesture))
+                }),
+                found: Vec::new(),
+            };
+            let quote = super::quote(&reply, &units, select, crate::rows::shown_id("$r/reply"));
+            let mut ui = Simulator::with_size(fonts::settings(), Size::new(400.0, 100.0), quote);
+            ui.point_at((60.0, 8.0));
+            let _ = ui.simulate([Event::Mouse(mouse::Event::ButtonPressed(
+                mouse::Button::Left,
+            ))]);
+            ui.point_at((to, 8.0));
+            let _ = ui.simulate([
+                Event::Mouse(mouse::Event::CursorMoved {
+                    position: Point::new(to, 8.0),
+                }),
+                Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)),
+            ]);
+            ui.into_messages().collect()
+        };
+        let went = |messages: &[Message]| {
+            (messages.iter()).any(|m| matches!(m, Message::GoTo(id) if id == "$original:x"))
+        };
+        let dragged = |messages: &[Message]| {
+            (messages.iter()).any(|m| {
+                matches!(
+                    m,
+                    Message::Select(selection::Message::Gesture(
+                        _,
+                        Gesture::Drag { unit: 1, .. }
+                    ))
+                )
+            })
+        };
+        let clicked = messages(61.0);
+        assert!(went(&clicked), "{clicked:?}");
+        let selecting = messages(150.0);
+        assert!(!went(&selecting) && dragged(&selecting), "{selecting:?}");
+    }
 
     #[test]
     fn read_by_names_up_to_five() {

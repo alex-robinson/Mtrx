@@ -6,7 +6,7 @@
 //! same way. Elsewhere ([`selectable_text`]) it keeps its own
 //! selection and copies it with ⌘C.
 
-use std::{any::Any, ops::Range, rc::Rc};
+use std::{any::Any, borrow::Cow, ops::Range, rc::Rc};
 
 use iced::{
     Color, Element, Event, Font, Length, Pixels, Point, Rectangle, Renderer, Size, Task, Theme,
@@ -30,7 +30,7 @@ use iced_graphics::text::{
 };
 use unicode_segmentation::UnicodeSegmentation;
 
-use crate::{find, link_status, selection::Gesture, style};
+use crate::{ellipsis, find, link_status, selection::Gesture, style};
 
 /// How far the cursor may move between pressing and releasing a link for it
 /// to count as a click rather than the start of a selection.
@@ -58,10 +58,16 @@ pub struct Selectable<'a, Message> {
     on_link: Option<fn(String) -> Message>,
     on_link_menu: Option<Rc<dyn Fn(String) -> Message + 'a>>,
     on_gesture: Option<Rc<dyn Fn(Gesture) -> Message + 'a>>,
+    /// Sent when it is clicked (pressed and released without moving).
+    on_click: Option<Rc<dyn Fn() -> Message + 'a>>,
     /// Keeps its own selection, not the room's.
     own: bool,
     wrapping: Wrapping,
     style: Option<fn(&Theme) -> core_widget_text::Style>,
+    /// At most this many lines, ending in "…" when cut.
+    lines: Option<usize>,
+    /// Reports the text shown (see [`Selectable::id`]).
+    id: Option<Id>,
 }
 
 /// Text with its own selection, copied with ⌘C, e.g. in info cards.
@@ -89,9 +95,12 @@ pub fn selectable<'a, Message>(
         on_link: None,
         on_link_menu: None,
         on_gesture: None,
+        on_click: None,
         own: false,
         wrapping: Wrapping::default(),
         style: None,
+        lines: None,
+        id: None,
     }
 }
 
@@ -167,21 +176,50 @@ impl<'a, Message> Selectable<'a, Message> {
         self.on_gesture = Some(on_gesture);
         self
     }
+
+    /// Sent when it is clicked, as a link is: pressed and released without
+    /// moving. Dragging still selects.
+    pub fn on_click(mut self, message: Message) -> Self
+    where
+        Message: Clone + 'a,
+    {
+        self.on_click = Some(Rc::new(move || message.clone()));
+        self
+    }
+
+    /// At most `lines` lines, the text cut to end in "…" when it does not
+    /// fit, as [`crate::ellipsis`] does; for text of one span. What is
+    /// shown is then its text.
+    pub fn lines(mut self, lines: usize) -> Self {
+        self.lines = Some(lines.max(1));
+        self
+    }
+
+    /// Reports the text it shows to [`Operation::text`] under `id`, e.g.
+    /// as cut to fit.
+    pub fn id(mut self, id: Id) -> Self {
+        self.id = Some(id);
+        self
+    }
 }
 
 #[derive(Default)]
 struct State {
+    /// The spans given, and the width their text was cut to fit.
     spans: Vec<Span<'static, String, Font>>,
+    fitted_width: Option<f32>,
     text_len: Option<usize>,
     paragraph: Paragraph,
-    /// Its text (the spans' text but what is only shown after it), and where
-    /// each line of the spans' text starts.
+    /// Its text as shown (the spans' text but what is only shown after it),
+    /// and where each line of the spans' text starts.
     text: String,
     line_starts: Vec<usize>,
     last_click: Option<mouse::Click>,
     modifiers: keyboard::Modifiers,
     /// The link span pressed, and where.
     link_pressed: Option<(usize, Point)>,
+    /// Pressed where a click does something ([`Selectable::on_click`]).
+    click_pressed: Option<Point>,
     hovered_link: Option<usize>,
     /// The hovered link's address in the window's corner.
     link_status: link_status::Status,
@@ -191,11 +229,48 @@ struct State {
     own_dragging: bool,
 }
 
+type Spans = [Span<'static, String, Font>];
+
+/// `text`, which lays out the spans it is given (its type said here, as a
+/// closure cannot say its result borrows from its argument).
+fn laid_out<F>(text: F) -> F
+where
+    F: for<'s> Fn(&'s Spans) -> core_text::Text<&'s Spans>,
+{
+    text
+}
+
+/// `spans`, or if they do not `fit`, their text cut to end in "…", styled as
+/// the first span.
+fn cut(
+    spans: &[Span<'static, String, Font>],
+    fits: impl Fn(&[Span<'static, String, Font>]) -> bool,
+) -> Vec<Span<'static, String, Font>> {
+    let Some(first) = spans.first() else {
+        return Vec::new();
+    };
+    let span = |text: &str| Span {
+        text: text.to_owned().into(),
+        ..first.clone()
+    };
+    let full: String = spans.iter().map(|s| s.text.as_ref()).collect();
+    match ellipsis::shorten(&full, |text| fits(&[span(text)])) {
+        Cow::Borrowed(_) => spans.to_vec(),
+        Cow::Owned(text) => vec![span(&text)],
+    }
+}
+
 impl State {
-    fn set_spans(&mut self, spans: &[Span<'static, String, Font>], text_len: Option<usize>) {
+    /// Laid out as `shown`, the `spans` given (cut to fit, say).
+    fn set_spans(
+        &mut self,
+        spans: &[Span<'static, String, Font>],
+        shown: &[Span<'static, String, Font>],
+        text_len: Option<usize>,
+    ) {
         self.spans = spans.to_vec();
         self.text_len = text_len;
-        let mut shown: String = spans.iter().map(|s| s.text.as_ref()).collect();
+        let mut shown: String = shown.iter().map(|s| s.text.as_ref()).collect();
         self.line_starts = std::iter::once(0)
             .chain(shown.match_indices('\n').map(|(i, _)| i + 1))
             .collect();
@@ -333,27 +408,44 @@ impl<Message> Widget<Message, Theme, Renderer> for Selectable<'_, Message> {
         use iced::advanced::text::Renderer as _;
         let state = tree.state.downcast_mut::<State>();
         layout::sized(limits, Length::Shrink, Length::Shrink, |limits| {
-            let text = |spans| core_text::Text {
+            let size = self.size.unwrap_or_else(|| renderer.default_size());
+            let text = laid_out(|spans| core_text::Text {
                 content: spans,
                 bounds: limits.max(),
-                size: self.size.unwrap_or_else(|| renderer.default_size()),
+                size,
                 line_height: LineHeight::default(),
                 font: renderer.default_font(),
                 align_x: core_text::Alignment::Default,
                 align_y: alignment::Vertical::Top,
                 shaping: Shaping::Advanced,
                 wrapping: self.wrapping,
-            };
-            if state.spans != self.spans || state.text_len != self.text_len {
-                state.paragraph = Paragraph::with_spans(text(self.spans.as_slice()));
-                state.set_spans(&self.spans, self.text_len);
+            });
+            // Cut to fit again at another width.
+            let changed = state.spans != self.spans
+                || state.text_len != self.text_len
+                || self.lines.is_some() && state.fitted_width != Some(limits.max().width);
+            let difference = if changed {
+                core_text::Difference::Shape
             } else {
-                match state.paragraph.compare(text(&[]).with_content(())) {
-                    core_text::Difference::None => {}
-                    core_text::Difference::Bounds => state.paragraph.resize(limits.max()),
-                    core_text::Difference::Shape => {
-                        state.paragraph = Paragraph::with_spans(text(self.spans.as_slice()));
-                    }
+                state.paragraph.compare(text(&[]).with_content(()))
+            };
+            match difference {
+                core_text::Difference::None => {}
+                core_text::Difference::Bounds => state.paragraph.resize(limits.max()),
+                core_text::Difference::Shape => {
+                    let shown = match self.lines {
+                        Some(lines) => {
+                            let line = LineHeight::default().to_absolute(size).0;
+                            cut(&self.spans, |spans| {
+                                let height = Paragraph::with_spans(text(spans)).min_bounds().height;
+                                height <= lines as f32 * line + 0.5
+                            })
+                        }
+                        None => self.spans.clone(),
+                    };
+                    state.paragraph = Paragraph::with_spans(text(&shown));
+                    state.set_spans(&self.spans, &shown, self.text_len);
+                    state.fitted_width = Some(limits.max().width);
                 }
             }
             state.paragraph.min_bounds()
@@ -503,8 +595,9 @@ impl<Message> Widget<Message, Theme, Renderer> for Selectable<'_, Message> {
                 if let Some(span) = hovered_link {
                     state.link_pressed = Some((span, position));
                 }
+                state.click_pressed = self.on_click.is_some().then_some(position);
                 let Some(on_gesture) = &self.on_gesture else {
-                    if hovered_link.is_some() {
+                    if hovered_link.is_some() || state.click_pressed.is_some() {
                         shell.capture_event();
                     }
                     return;
@@ -538,6 +631,12 @@ impl<Message> Widget<Message, Theme, Renderer> for Selectable<'_, Message> {
                 {
                     state.link_pressed = None;
                 }
+                if state
+                    .click_pressed
+                    .is_some_and(|pressed| pressed.distance(position) > CLICK_SLOP)
+                {
+                    state.click_pressed = None;
+                }
                 // Over its lines, also left or right of the text.
                 let beside = position.y >= bounds.y && position.y < bounds.y + bounds.height;
                 if self.dragging
@@ -558,6 +657,12 @@ impl<Message> Widget<Message, Theme, Renderer> for Selectable<'_, Message> {
                     && let Some(link) = self.spans.get(span).and_then(|s| s.link.clone())
                 {
                     shell.publish(on_link(link));
+                }
+                if state.click_pressed.take().is_some()
+                    && cursor.is_over(bounds)
+                    && let Some(on_click) = &self.on_click
+                {
+                    shell.publish(on_click());
                 }
             }
             _ => {}
@@ -580,6 +685,10 @@ impl<Message> Widget<Message, Theme, Renderer> for Selectable<'_, Message> {
                 let bounds = rect + translation(layout.bounds());
                 operation.custom(Some(&Id::new(find::CURRENT)), bounds, &mut ());
             }
+        }
+        if let Some(id) = &self.id {
+            let state = tree.state.downcast_ref::<State>();
+            operation.text(Some(id), layout.bounds(), &state.text);
         }
         if self.focus {
             let state: &mut dyn Any = tree.state.downcast_mut::<State>();
@@ -613,7 +722,8 @@ impl<Message> Widget<Message, Theme, Renderer> for Selectable<'_, Message> {
         _renderer: &Renderer,
     ) -> mouse::Interaction {
         let state = tree.state.downcast_ref::<State>();
-        if state.hovered_link.is_some() && self.on_link.is_some() {
+        let clicks = self.on_click.is_some() && !self.dragging && cursor.is_over(layout.bounds());
+        if state.hovered_link.is_some() && self.on_link.is_some() || clicks {
             mouse::Interaction::Pointer
         } else if (self.on_gesture.is_some() || self.own)
             && (self.dragging || state.own_dragging || cursor.is_over(layout.bounds()))
@@ -782,6 +892,90 @@ mod tests {
             mouse::Button::Left,
         ))]);
         assert_eq!(ui.simulate([command_c()]), [Status::Ignored]);
+    }
+
+    #[test]
+    fn a_click_does_its_action_and_a_drag_selects() {
+        #[derive(Clone, Debug, PartialEq)]
+        enum Did {
+            Open,
+            Selecting,
+        }
+        let clicked = |to: f32| -> Vec<Did> {
+            let view: Element<'_, Did> = selectable(vec![Span::new("Alice Smith".to_owned())], 0)
+                .on_click(Did::Open)
+                .on_gesture(Rc::new(|_| Did::Selecting))
+                .dragging(true)
+                .into();
+            let mut ui = Simulator::with_size(fonts::settings(), Size::new(400.0, 100.0), view);
+            ui.point_at((5.0, 8.0));
+            let _ = ui.simulate([Event::Mouse(mouse::Event::ButtonPressed(
+                mouse::Button::Left,
+            ))]);
+            ui.point_at((to, 8.0));
+            let _ = ui.simulate([
+                Event::Mouse(mouse::Event::CursorMoved {
+                    position: Point::new(to, 8.0),
+                }),
+                Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)),
+            ]);
+            ui.into_messages().filter(|did| *did == Did::Open).collect()
+        };
+        assert_eq!(clicked(6.0), [Did::Open]);
+        assert!(clicked(40.0).is_empty(), "dragged: selecting");
+    }
+
+    #[test]
+    fn cut_to_its_lines_and_reports_what_it_shows() {
+        use iced::advanced::{renderer::Headless, widget::operation::black_box};
+        use iced_runtime::user_interface::{Cache, UserInterface};
+
+        /// The text reported under `SHOWN`.
+        struct Shown(Option<String>);
+
+        impl Operation for Shown {
+            fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn Operation)) {
+                operate(self);
+            }
+
+            fn text(&mut self, id: Option<&Id>, _bounds: Rectangle, text: &str) {
+                if id == Some(&Id::new("shown")) {
+                    self.0 = Some(text.to_owned());
+                }
+            }
+        }
+
+        let mut renderer = iced::futures::executor::block_on(iced::Renderer::new(
+            fonts::INTER,
+            Pixels(style::TEXT_SIZE),
+            None,
+        ))
+        .unwrap();
+        let full = "Ice sheets flow towards the ocean, where they calve into icebergs.";
+        let mut shown = |width: f32| {
+            let view: Element<'_, ()> = iced::widget::container(
+                selectable::<()>(vec![Span::new(full.to_owned())], 0)
+                    .lines(2)
+                    .id(Id::new("shown")),
+            )
+            .width(width)
+            .into();
+            let mut ui = UserInterface::build(
+                view,
+                Size::new(width, 400.0),
+                Cache::default(),
+                &mut renderer,
+            );
+            let mut operation = Shown(None);
+            ui.operate(&renderer, &mut black_box(&mut operation));
+            operation.0.expect("reported")
+        };
+        // Wide enough: all of it.
+        assert_eq!(shown(1000.0), full);
+        // Narrow: its start and "…".
+        let cut = shown(120.0);
+        let start = cut.strip_suffix('…').expect("ends in …");
+        assert!(full.starts_with(start) && start.len() > 10, "{cut}");
     }
 
     #[test]

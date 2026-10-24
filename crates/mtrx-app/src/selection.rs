@@ -1,8 +1,8 @@
 //! Selecting text in the timeline, across messages: where a selection
-//! starts and ends, which part of each message it covers, and the text it
-//! copies. Messages are split into units (paragraphs, headings, code
-//! blocks), each drawn by a [`crate::selectable`] widget. See
-//! `docs/text-selection.md`.
+//! starts and ends, which part of each message (or other part of the
+//! timeline's text, see [`crate::rows`]) it covers, and the text it copies.
+//! Messages are split into units (paragraphs, headings, code blocks), each
+//! drawn by a [`crate::selectable`] widget. See `docs/text-selection.md`.
 
 use std::collections::HashMap;
 
@@ -27,10 +27,15 @@ impl Pos {
 /// A place in the timeline.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Point {
-    /// [`mtrx_core::Event::id`] of the message.
+    /// The part of the timeline's text ([`crate::rows::Part::key`]): for a
+    /// message's text, [`mtrx_core::Event::id`] of the message.
     pub event: String,
     pub pos: Pos,
 }
+
+/// What texts cut to fit show (a reply's preview), by
+/// [`crate::rows::Part::key`]; those not there show all their text.
+pub type Shown = HashMap<String, String>;
 
 /// What a selectable unit reports.
 #[derive(Clone, Debug)]
@@ -56,6 +61,8 @@ pub enum Message {
     End,
     /// ⌘C: put the selected text on the clipboard.
     Copy,
+    /// What the texts cut to fit show, read for copying.
+    Copied(Shown),
     /// ⌘A: select the messages on screen, from the first to the last.
     SelectAll,
     /// Shift with ← or →: move the end of the selection.
@@ -141,6 +148,7 @@ impl Selection {
             }
             // Handled by the room, which has the text and the view.
             Message::Copy
+            | Message::Copied(_)
             | Message::SelectAll
             | Message::Extend(_)
             | Message::ExtendLine(_)

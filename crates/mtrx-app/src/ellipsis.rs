@@ -97,35 +97,35 @@ impl Ellipsis<'_> {
         }
     }
 
-    /// The longest prefix (whole graphemes) plus "…" within `max_width`
-    /// and the lines allowed.
+    /// The text shortened to fit `max_width` and the lines allowed.
     fn fit<P: core_text::Paragraph<Font = Font>>(&self, max_width: f32) -> P {
-        let full: P = self.paragraph(&self.content, max_width);
-        if self.fits(&full, max_width) {
-            return full;
-        }
-        let cuts: Vec<usize> = self
-            .content
-            .grapheme_indices(true)
-            .map(|(i, _)| i)
-            .collect();
-        let shortened = |n: usize| -> P {
-            let prefix = self.content[..cuts[n]].trim_end();
-            self.paragraph(&format!("{prefix}{ELLIPSIS}"), max_width)
-        };
-        // The largest grapheme count whose shortened text fits; cutting
-        // after zero graphemes (just "…") is the floor.
-        let (mut low, mut high) = (0, cuts.len() - 1);
-        while low < high {
-            let middle = (low + high).div_ceil(2);
-            if self.fits(&shortened(middle), max_width) {
-                low = middle;
-            } else {
-                high = middle - 1;
-            }
-        }
-        shortened(low)
+        let fitted = shorten(&self.content, |text| {
+            self.fits(&self.paragraph::<P>(text, max_width), max_width)
+        });
+        self.paragraph(&fitted, max_width)
     }
+}
+
+/// `content` if it `fits`, else its longest prefix (whole graphemes) plus
+/// "…" that does.
+pub fn shorten<'c>(content: &'c str, fits: impl Fn(&str) -> bool) -> Cow<'c, str> {
+    if fits(content) {
+        return Cow::Borrowed(content);
+    }
+    let cuts: Vec<usize> = content.grapheme_indices(true).map(|(i, _)| i).collect();
+    let shortened = |n: usize| format!("{}{ELLIPSIS}", content[..cuts[n]].trim_end());
+    // The largest grapheme count whose shortened text fits; cutting after
+    // zero graphemes (just "…") is the floor.
+    let (mut low, mut high) = (0, cuts.len() - 1);
+    while low < high {
+        let middle = (low + high).div_ceil(2);
+        if fits(&shortened(middle)) {
+            low = middle;
+        } else {
+            high = middle - 1;
+        }
+    }
+    Cow::Owned(shortened(low))
 }
 
 struct State<P> {

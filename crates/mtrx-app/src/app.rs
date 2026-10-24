@@ -1146,9 +1146,15 @@ impl App {
                     return Task::none();
                 };
                 match message {
+                    // What reply previews show first, as they are cut to fit.
                     selection::Message::Copy => {
                         return room
-                            .selected_text()
+                            .read_shown()
+                            .map(|shown| Message::Select(selection::Message::Copied(shown)));
+                    }
+                    selection::Message::Copied(shown) => {
+                        return room
+                            .selected_text(&shown)
                             .map_or_else(Task::none, iced::clipboard::write);
                     }
                     selection::Message::SelectAll => {
@@ -2611,8 +2617,7 @@ impl App {
             }
             Act::CopySelection => {
                 room.menu = None;
-                room.selected_text()
-                    .map_or_else(Task::none, iced::clipboard::write)
+                Task::done(Message::Select(selection::Message::Copy))
             }
             Act::CopyImage(document) => {
                 room.menu = None;
@@ -2766,10 +2771,21 @@ impl App {
         };
         let mut focus = Task::none();
         match message {
-            find::Message::Open => {
+            // With a selection, what reply previews show first, as it may
+            // be in one.
+            find::Message::Open if room.selection.is_some() => {
+                return room
+                    .read_shown()
+                    .map(|shown| Message::Find(find::Message::Opened(shown)));
+            }
+            find::Message::Open | find::Message::Opened(_) => {
+                let shown = match message {
+                    find::Message::Opened(shown) => shown,
+                    _ => selection::Shown::new(),
+                };
                 // Text selected on one line is looked for, as in Safari;
                 // else what was last.
-                let selected = room.selected_text().filter(|text| !text.contains('\n'));
+                let selected = (room.selected_text(&shown)).filter(|text| !text.contains('\n'));
                 match (&mut room.find, selected) {
                     (Some(find), Some(text)) => {
                         find.query = text;

@@ -17,7 +17,7 @@ use crate::{
     emoji,
     find::Found,
     fonts,
-    selectable::selectable,
+    selectable::{Selectable, selectable},
     selection::{Gesture, Pos, Unit, unit_range},
     style,
 };
@@ -31,11 +31,12 @@ struct Flags {
     code: bool,
 }
 
-/// How a message's text can be selected.
+/// How a message's text, or another part of the timeline's text (see
+/// [`crate::rows::Part`]), can be selected.
 pub struct Select<'a, M> {
-    /// The part of this message that is selected.
+    /// The part of this text that is selected.
     pub range: Option<(Pos, Pos)>,
-    /// Where in this message the selection ends, if it does.
+    /// Where in this text the selection ends, if it does.
     pub focus: Option<Pos>,
     /// A selection is being dragged, so moving over the text extends it.
     pub dragging: bool,
@@ -302,19 +303,26 @@ impl<'a, M: Clone + 'a> Walk<'_, 'a, M> {
             unit = unit.on_link(links.open).on_link_menu(links.menu.clone());
         }
         if let Some(select) = &self.select {
-            unit = unit
-                .selected(select.range.and_then(|range| unit_range(range, index, len)))
-                .focus(select.focus.is_some_and(|focus| focus.unit == index))
-                .dragging(select.dragging)
-                .on_gesture(select.on_gesture.clone())
-                .found(
-                    (select.found.iter())
-                        .filter(|found| found.unit == index)
-                        .map(|found| (found.range.clone(), found.current))
-                        .collect(),
-                );
+            unit = select.apply(unit, index, len);
         }
         unit.into()
+    }
+}
+
+impl<'a, M: 'a> Select<'a, M> {
+    /// `unit`, unit `index` (of `len` bytes) of the text, selected and
+    /// with the find bar's matches as this says.
+    pub fn apply(&self, unit: Selectable<'a, M>, index: usize, len: usize) -> Selectable<'a, M> {
+        unit.selected(self.range.and_then(|range| unit_range(range, index, len)))
+            .focus(self.focus.is_some_and(|focus| focus.unit == index))
+            .dragging(self.dragging)
+            .on_gesture(self.on_gesture.clone())
+            .found(
+                (self.found.iter())
+                    .filter(|found| found.unit == index)
+                    .map(|found| (found.range.clone(), found.current))
+                    .collect(),
+            )
     }
 }
 
