@@ -1,19 +1,13 @@
 //! A message's menu (right-click, or "⋯" in its toolbar): copying the
 //! selection or the message, math as a picture, and a file or image.
 
-use iced::{
-    Element, Length,
-    widget::{button, column, container},
-};
+use iced::Element;
 use mtrx_core::{MediaKind, Message, MessageKind};
 
 use crate::{
     actions::{self, act},
-    app,
-    ellipsis::ellipsis,
-    message,
+    app, context_menu, message,
     selection::Pos,
-    style,
 };
 
 /// Where a message's menu floats from.
@@ -24,9 +18,6 @@ pub enum MenuAt {
     /// The "⋯" of the hover toolbar.
     Toolbar,
 }
-
-/// Width of the menu.
-const WIDTH: f32 = 170.0;
 
 /// What the menu offers for a message: label and action, in order.
 /// `in_selection`: the message is (partly) in the timeline's selection,
@@ -77,19 +68,11 @@ pub fn items(
 
 /// The menu showing `items`.
 pub fn view<'a>(items: Vec<(String, actions::Message)>) -> Element<'a, app::Message> {
-    let entries = items.into_iter().map(|(label, message)| {
-        button(ellipsis(label).size(13))
-            .width(Length::Fill)
-            .padding([4, 10])
-            .style(style::list_item(false))
-            .on_press(act(message))
-            .into()
-    });
-    container(column(entries).spacing(1))
-        .width(WIDTH)
-        .padding(4)
-        .style(style::toolbar)
-        .into()
+    context_menu::menu(
+        items
+            .into_iter()
+            .map(|(label, message)| (label, act(message))),
+    )
 }
 
 #[cfg(test)]

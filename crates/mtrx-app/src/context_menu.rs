@@ -10,10 +10,36 @@ use iced::{
         widget::{Operation, Tree, tree},
     },
     mouse,
-    widget::space,
+    widget::{button, column, container, space},
 };
 
-use crate::popover::{Edge, Side, floating};
+use crate::{
+    ellipsis::ellipsis,
+    popover::{Edge, Side, floating},
+    style,
+};
+
+/// Width of a menu.
+const WIDTH: f32 = 170.0;
+
+/// A menu of `items`, each a label and what choosing it sends.
+pub fn menu<'a, Message: Clone + 'a>(
+    items: impl IntoIterator<Item = (String, Message)>,
+) -> Element<'a, Message> {
+    let entries = items.into_iter().map(|(label, message)| {
+        button(ellipsis(label).size(13))
+            .width(Length::Fill)
+            .padding([4, 10])
+            .style(style::list_item(false))
+            .on_press(message)
+            .into()
+    });
+    container(column(entries).spacing(1))
+        .width(WIDTH)
+        .padding(4)
+        .style(style::toolbar)
+        .into()
+}
 
 pub struct ContextMenu<'a, Message> {
     content: Element<'a, Message>,

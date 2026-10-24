@@ -30,6 +30,7 @@ use crate::{
     avatar::{self, Avatars, Shape},
     calls::{self, RoomCalls},
     clipboard::{self, Copied},
+    composer_menu,
     context_menu::context_menu,
     drag_scroll::drag_scroll,
     ellipsis::ellipsis,
@@ -111,6 +112,8 @@ pub struct Room {
     pub emoji: Option<emoji::Panel>,
     /// The composer's emoji panel, while shown.
     pub composer_emoji: Option<emoji::Panel>,
+    /// The composer's menu is open.
+    pub composer_menu: bool,
     /// The timeline row whose deletion awaits confirmation.
     pub confirm_delete: Option<String>,
     /// Names of others typing.
@@ -167,6 +170,7 @@ impl Room {
             selection: None,
             emoji: None,
             composer_emoji: None,
+            composer_menu: false,
             confirm_delete: None,
             typing: Vec::new(),
             member_list: None,
@@ -732,6 +736,12 @@ impl Room {
                     }),
             )
             .max_height(200);
+        let composer = context_menu(
+            composer,
+            self.composer_menu.then(|| composer_menu::view(selected)),
+            Message::ComposerMenu(composer_menu::Message::Open),
+        )
+        .on_dismiss(Message::ComposerMenu(composer_menu::Message::Close));
         let attach = hint(
             button(icons::paperclip(19.0, |theme| {
                 theme

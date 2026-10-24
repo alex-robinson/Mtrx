@@ -32,6 +32,7 @@ use crate::{
     badge::{self, Badge},
     calls,
     clipboard::{self, Copied, Pasted},
+    composer_menu,
     dialog::{self, Dialog},
     emoji,
     hint::{Position, hint},
@@ -189,6 +190,7 @@ pub enum Message {
     Paste(clipboard::Paste),
     /// What the clipboard held, to paste into a room's composer.
     Pasted(OwnedRoomId, Option<clipboard::Pasted>),
+    ComposerMenu(composer_menu::Message),
     /// Remove an attached file, by index.
     Unattach(usize),
     Arrange(arrange::Message),
@@ -1558,6 +1560,8 @@ impl App {
                         room.completion = None;
                     } else if let Some(room) = main.room.as_mut().filter(|r| r.menu.is_some()) {
                         room.menu = None;
+                    } else if let Some(room) = main.room.as_mut().filter(|r| r.composer_menu) {
+                        room.composer_menu = false;
                     } else if let Some(room) = main.room.as_mut().filter(|r| r.readers.is_some()) {
                         room.readers = None;
                     } else if let Some(room) = main.room.as_mut().filter(|r| r.reactors.is_some()) {
@@ -1971,6 +1975,37 @@ impl App {
                     )),
                     None => Task::none(),
                 }
+            }
+            Message::ComposerMenu(message) => {
+                use composer_menu::Message as Menu;
+                use text_editor::{Action, Edit};
+
+                let Screen::Main(main) = &mut self.screen else {
+                    return Task::none();
+                };
+                let Some(room) = main.room.as_mut() else {
+                    return Task::none();
+                };
+                room.composer_menu = message == Menu::Open;
+                let selection = room.composer.selection();
+                // The composer keeps the focus, as a text field does.
+                let focus = iced::widget::operation::focus(room::COMPOSER);
+                let done = match message {
+                    Menu::Open | Menu::Close => return Task::none(),
+                    Menu::Cut => Task::batch([
+                        selection.map_or_else(Task::none, iced::clipboard::write),
+                        self.update(Message::Composer(Action::Edit(Edit::Delete))),
+                    ]),
+                    Menu::Copy => selection.map_or_else(Task::none, iced::clipboard::write),
+                    Menu::Paste => self.update(Message::Paste(clipboard::Paste::Rich)),
+                    Menu::SelectAll => self.update(Message::Composer(Action::SelectAll)),
+                    #[cfg(target_os = "macos")]
+                    Menu::EmojiAndSymbols => {
+                        composer_menu::emoji_and_symbols();
+                        Task::none()
+                    }
+                };
+                Task::batch([focus, done])
             }
             Message::Attached(id, attached) => {
                 if let Screen::Main(main) = &mut self.screen

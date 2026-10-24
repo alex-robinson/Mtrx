@@ -13,6 +13,7 @@ mod avatar;
 mod badge;
 mod calls;
 mod clipboard;
+mod composer_menu;
 mod context_menu;
 mod dialog;
 mod drag_scroll;
