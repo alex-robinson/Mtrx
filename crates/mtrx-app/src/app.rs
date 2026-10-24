@@ -141,7 +141,7 @@ pub enum Message {
     /// A desktop notification about the room was clicked.
     NotificationClicked(OwnedRoomId),
     WindowFocused(bool),
-    /// The window's close button (or Alt+F4, ...) was pressed.
+    /// The window's close button (or ⌘W, Alt+F4, ...) was pressed.
     CloseWindow(window::Id),
     /// Others' presence, and ours.
     Presence(presence::Message),
@@ -2893,12 +2893,7 @@ impl App {
             window::close_requests().map(Message::CloseWindow),
             iced::system::theme_changes().map(Message::ThemeMode),
             // Also on the sign-in screen.
-            iced::event::listen_with(|event, _, _| match event {
-                iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
-                    key, modifiers, ..
-                }) => Zoom::from_key(&key, modifiers).map(Message::Zoom),
-                _ => None,
-            }),
+            iced::event::listen_with(window_keys),
         ];
         if let Screen::Main(main) = &self.screen {
             subscriptions.push(
@@ -3447,6 +3442,25 @@ async fn run_request(
     }
     .await;
     result.map_err(|e: mtrx_core::Error| e.to_string())
+}
+
+/// Keys on every screen, whatever is focused: ⌘+ ⌘− ⌘0 zoom, and ⌘W closes
+/// the window as its close button does (Ctrl on Windows and Linux).
+fn window_keys(
+    event: iced::Event,
+    _status: iced::event::Status,
+    window: window::Id,
+) -> Option<Message> {
+    use iced::keyboard::{self, Key};
+    match event {
+        iced::Event::Keyboard(keyboard::Event::KeyPressed { key, modifiers, .. }) => match key {
+            Key::Character(c) if c == "w" && modifiers.command() => {
+                Some(Message::CloseWindow(window))
+            }
+            _ => Zoom::from_key(&key, modifiers).map(Message::Zoom),
+        },
+        _ => None,
+    }
 }
 
 /// ⌘K / Ctrl+K focuses the room search, Esc closes the viewer or clears the

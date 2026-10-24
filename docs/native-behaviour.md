@@ -41,7 +41,7 @@ per day:
 
 ### A1. Window
 
-- [ ] ⌘W closes the window and so quits, as the close button does: there
+- [x] ⌘W closes the window and so quits, as the close button does: there
       is only ever one window (decided 2026-10-24). `main.rs` already sets
       `exit_on_close_request: false`; `Message::CloseWindow` goes offline
       and closes.

@@ -241,6 +241,30 @@ fn closing_the_window_cancels_a_browser_sign_in() {
     assert!(handle.is_aborted());
 }
 
+/// ⌘W closes the window as its close button does, also with the composer
+/// or another field focused, and on the sign-in screen.
+#[test]
+fn command_w_closes_the_window() {
+    use iced::{event::Status, keyboard};
+
+    let id = window::Id::unique();
+    let press = |with: keyboard::Modifiers| {
+        let mut event =
+            iced_test::simulator::press_key(keyboard::Key::Character("w".into()), Some("w".into()));
+        if let iced::Event::Keyboard(keyboard::Event::KeyPressed { modifiers, .. }) = &mut event {
+            *modifiers = with;
+        }
+        event
+    };
+    assert!(window_keys(press(keyboard::Modifiers::empty()), Status::Ignored, id).is_none());
+    let close = window_keys(press(keyboard::Modifiers::COMMAND), Status::Captured, id);
+    assert!(matches!(close, Some(Message::CloseWindow(closed)) if closed == id));
+
+    let mut app = app(Screen::Login(Login::default()), Mode::Light);
+    let _ = app.update(close.unwrap());
+    assert!(matches!(app.screen, Screen::Closing));
+}
+
 /// [`Event::id`](mtrx_core::Event::id) of message `event` in `entries`.
 fn room_row(entries: &[TimelineEntry], event: &mtrx_core::OwnedEventId) -> Option<String> {
     entries.iter().find_map(|e| match e {
