@@ -813,9 +813,6 @@ impl App {
                 let Screen::Main(main) = &mut self.screen else {
                     return Task::none();
                 };
-                if matches!(message, arrange::Message::NewCategory(_)) {
-                    main.add_menu = false;
-                }
                 let context = arrange::Context {
                     session: &main.session,
                     space: main.space.as_ref(),
@@ -1098,9 +1095,11 @@ impl App {
             }
             Message::Later(message) => self.later(message),
             Message::Act(message) => self.act(message),
+            // The timeline is anchored at the bottom, so its offset counts
+            // upwards.
             Message::ScrollTimeline(dy) => iced::widget::operation::scroll_by(
                 room::TIMELINE,
-                iced::widget::scrollable::AbsoluteOffset { x: 0.0, y: dy },
+                iced::widget::scrollable::AbsoluteOffset { x: 0.0, y: -dy },
             ),
             Message::Select(message) => {
                 let Screen::Main(main) = &mut self.screen else {
@@ -1119,6 +1118,15 @@ impl App {
                         return room.on_screen().and_then(|(first, last)| {
                             Task::done(Message::Select(selection::Message::All(first, last)))
                         });
+                    }
+                    selection::Message::Extend(step) => {
+                        room.extend(step);
+                        return Task::none();
+                    }
+                    selection::Message::ExtendLine(up) => return room.extend_line(up),
+                    selection::Message::LineMoved(from, up, offset) => {
+                        room.line_moved(from, up, offset);
+                        return Task::none();
                     }
                     _ => {}
                 }
@@ -1154,7 +1162,9 @@ impl App {
                 main.add_menu = false;
                 main.info = None;
                 let near = near_spaces(&kind, &main.rooms.rooms, main.space.as_ref());
+                main.arrange.escape();
                 let mut dialog = Dialog::new(kind);
+                dialog.fill_category(&main.arrange.categories);
                 if !dialog.picks_people() {
                     main.dialog = Some(dialog);
                     return Task::none();
@@ -1511,7 +1521,12 @@ impl App {
                 let Screen::Main(main) = &mut self.screen else {
                     return Task::none();
                 };
-                match sidebar::first_match(&main.rooms.rooms, &main.filter) {
+                match sidebar::first_match(
+                    &main.rooms.rooms,
+                    main.space.as_ref(),
+                    &main.arrange,
+                    &main.filter,
+                ) {
                     Some(room) => {
                         let id = room.id.clone();
                         main.filter.clear();
@@ -1997,6 +2012,10 @@ impl App {
                 .abortable();
                 dialog.search = Some(handle);
                 task
+            }
+            dialog::Action::Arrange(message) => {
+                main.dialog = None;
+                self.update(Message::Arrange(message))
             }
             dialog::Action::Submit(request) => Task::perform(run_request(session, request), |r| {
                 Message::Dialog(dialog::Message::Done(r))
@@ -3025,7 +3044,7 @@ impl App {
                     )
                 } else if let Some(dialog) = &main.dialog {
                     (
-                        dialog.view(&main.rooms.rooms),
+                        dialog.view(&main.rooms.rooms, &main.arrange),
                         Message::Dialog(dialog::Message::Cancel),
                     )
                 } else if let Some(card) = &main.info {
@@ -3431,7 +3450,8 @@ async fn run_request(
 }
 
 /// ⌘K / Ctrl+K focuses the room search, Esc closes the viewer or clears the
-/// search; window focus.
+/// search, ⌘C, ⌘A and Shift with an arrow act on the timeline's selection;
+/// window focus.
 fn shortcuts(
     event: iced::Event,
     status: iced::event::Status,
@@ -3450,6 +3470,24 @@ fn shortcuts(
                 if c == "a" && modifiers.command() && status == iced::event::Status::Ignored =>
             {
                 Some(Message::Select(selection::Message::SelectAll))
+            }
+            Key::Named(arrow @ (Named::ArrowLeft | Named::ArrowRight))
+                if modifiers.shift() && status == iced::event::Status::Ignored =>
+            {
+                let step = match (arrow == Named::ArrowRight, modifiers.alt()) {
+                    (false, false) => selection::Step::Back,
+                    (true, false) => selection::Step::Forward,
+                    (false, true) => selection::Step::WordBack,
+                    (true, true) => selection::Step::WordForward,
+                };
+                Some(Message::Select(selection::Message::Extend(step)))
+            }
+            Key::Named(arrow @ (Named::ArrowUp | Named::ArrowDown))
+                if modifiers.shift() && status == iced::event::Status::Ignored =>
+            {
+                Some(Message::Select(selection::Message::ExtendLine(
+                    arrow == Named::ArrowUp,
+                )))
             }
             Key::Character(c) if c == "k" && modifiers.command() => Some(Message::FocusSearch),
             Key::Character(c) if c == "r" && modifiers.command() => Some(Message::Reload),

@@ -81,11 +81,17 @@ fn sections<'a>(view: &RoomListView<'a>) -> Vec<(Section, Vec<&'a RoomSummary>)>
         .group(listed, &view.grouping)
 }
 
-/// Rooms and chats whose name contains `filter` (lower case), names starting
-/// with it first.
-fn search<'a>(rooms: &'a [RoomSummary], filter: &str) -> Vec<&'a RoomSummary> {
-    let mut found: Vec<_> = rooms
-        .iter()
+/// What the search finds in `space`, or everywhere at Home: rooms and chats
+/// whose name contains `filter` (lower case), names starting with it first.
+pub fn search<'a>(
+    rooms: &'a [RoomSummary],
+    space: Option<&OwnedRoomId>,
+    arrange: &Arrange,
+    filter: &str,
+) -> Vec<&'a RoomSummary> {
+    let mut found: Vec<_> = arrange
+        .listed(rooms, space)
+        .into_iter()
         .filter(|r| r.kind != RoomKind::Space)
         .filter_map(|r| {
             let name = r.name.to_lowercase();
@@ -97,8 +103,13 @@ fn search<'a>(rooms: &'a [RoomSummary], filter: &str) -> Vec<&'a RoomSummary> {
 }
 
 /// The room the search field's Enter opens.
-pub fn first_match<'a>(rooms: &'a [RoomSummary], filter: &str) -> Option<&'a RoomSummary> {
-    search(rooms, &filter.trim().to_lowercase())
+pub fn first_match<'a>(
+    rooms: &'a [RoomSummary],
+    space: Option<&OwnedRoomId>,
+    arrange: &Arrange,
+    filter: &str,
+) -> Option<&'a RoomSummary> {
+    search(rooms, space, arrange, &filter.trim().to_lowercase())
         .into_iter()
         .next()
 }
@@ -113,7 +124,7 @@ fn listed<'a>(view: &RoomListView<'a>) -> Vec<&'a RoomSummary> {
             .flat_map(|(_, entries)| entries)
             .collect()
     } else {
-        search(view.rooms, &filter)
+        search(view.rooms, view.selected_space, view.arrange, &filter)
     }
 }
 
@@ -309,13 +320,16 @@ pub fn room_list<'a>(view: RoomListView<'a>) -> Element<'a, Message> {
     }
     list = list.push(
         container(
-            text_input(&format!("Search rooms  ({})", shortcut("K")), filter)
-                .id(SEARCH)
-                .on_input(Message::RoomFilter)
-                .on_submit(Message::OpenFirstMatch)
-                .style(style::input)
-                .padding([5, 8])
-                .size(13),
+            text_input(
+                &format!("Search rooms and chats  ({})", shortcut("K")),
+                filter,
+            )
+            .id(SEARCH)
+            .on_input(Message::RoomFilter)
+            .on_submit(Message::OpenFirstMatch)
+            .style(style::input)
+            .padding([5, 8])
+            .size(13),
         )
         .padding([4, 0]),
     );
@@ -326,11 +340,14 @@ pub fn room_list<'a>(view: RoomListView<'a>) -> Element<'a, Message> {
         }
         list = list.extend(arranged(&view));
     } else {
-        let found = search(rooms, &filter);
+        let found = search(rooms, selected_space, view.arrange, &filter);
         if found.is_empty() {
-            list = list.push(
-                container(text("No rooms match.").size(12).style(text::secondary)).padding([8, 8]),
-            );
+            let none = if selected_space.is_some() {
+                "No rooms or chats in this space match."
+            } else {
+                "No rooms or chats match."
+            };
+            list = list.push(container(text(none).size(12).style(text::secondary)).padding([8, 8]));
         } else {
             list = list.push(
                 container(section_title("Results")).padding(Padding::new(8.0).top(14).bottom(4)),
@@ -355,7 +372,7 @@ pub fn room_list<'a>(view: RoomListView<'a>) -> Element<'a, Message> {
         .into()
 }
 
-/// The sections of the room list, with menus, the category being named,
+/// The sections of the room list, with menus, the category being renamed,
 /// and drop targets while dragging.
 fn arranged<'a>(view: &RoomListView<'a>) -> Vec<Element<'a, Message>> {
     let arrange = view.arrange;
@@ -363,14 +380,9 @@ fn arranged<'a>(view: &RoomListView<'a>) -> Vec<Element<'a, Message>> {
         .categories
         .layout(view.selected_space.map(|s| s.as_ref()));
     let dragging = arrange.dragging().is_some();
+    let space = view.selected_space;
     let mut elements = Vec::new();
     for (section, entries) in sections(view) {
-        // A new category appears after the others.
-        if section == Section::Rooms
-            && let Some(naming) = arrange.naming.as_ref().filter(|n| n.category.is_none())
-        {
-            elements.push(name_input(&naming.name, "New category"));
-        }
         let shown = match section {
             Section::Invites => !entries.is_empty(),
             Section::Category(_) => true,
@@ -380,17 +392,18 @@ fn arranged<'a>(view: &RoomListView<'a>) -> Vec<Element<'a, Message>> {
             continue;
         }
         let collapsed = layout.is_collapsed(&section);
-        let renaming = arrange.naming.as_ref().filter(
-            |n| matches!(&section, Section::Category(id) if n.category.as_ref() == Some(id)),
-        );
+        let renaming = arrange
+            .naming
+            .as_ref()
+            .filter(|n| matches!(&section, Section::Category(id) if n.category == *id));
         let mut block = column![match renaming {
-            Some(naming) => name_input(&naming.name, "Category name"),
+            Some(naming) => name_input(&naming.name),
             None => section_header(layout, &section, collapsed, arrange),
         }];
         if let Section::Category(id) = &section
             && arrange.category_menu.as_ref() == Some(id)
         {
-            block = block.push(category_menu(layout, id));
+            block = block.push(category_menu(layout, space, id));
         }
         let empty = entries.is_empty();
         for room in entries {
@@ -400,7 +413,7 @@ fn arranged<'a>(view: &RoomListView<'a>) -> Vec<Element<'a, Message>> {
             }
             block = block.push(view.room_entry(room));
             if arrange.room_menu.as_ref() == Some(&room.id) {
-                block = block.push(room_menu(room, layout, &view.grouping));
+                block = block.push(room_menu(room, space, layout, &view.grouping));
             }
         }
         if empty && !collapsed && matches!(section, Section::Category(_)) {
@@ -493,10 +506,10 @@ fn section_title<'a>(title: &str) -> Element<'a, Message> {
         .into()
 }
 
-/// The field naming a new or renamed category: Enter saves, Esc cancels.
-fn name_input<'a>(name: &str, placeholder: &str) -> Element<'a, Message> {
+/// The field renaming a category: Enter saves, Esc cancels.
+fn name_input<'a>(name: &str) -> Element<'a, Message> {
     container(
-        text_input(placeholder, name)
+        text_input("Category name", name)
             .id(NAME_INPUT)
             .on_input(|name| arrange_message(arrange::Message::Name(name)))
             .on_submit(arrange_message(arrange::Message::SaveName))
@@ -526,7 +539,12 @@ fn menu<'a>(items: Vec<(String, Message)>) -> Element<'a, Message> {
 
 /// Settings, low priority and categories for a room (the star next to the
 /// menu makes it a favourite).
-fn room_menu<'a>(room: &RoomSummary, layout: &Layout, grouping: &Grouping) -> Element<'a, Message> {
+fn room_menu<'a>(
+    room: &RoomSummary,
+    space: Option<&OwnedRoomId>,
+    layout: &Layout,
+    grouping: &Grouping,
+) -> Element<'a, Message> {
     let move_to = |section| arrange_message(arrange::Message::MoveTo(room.id.clone(), section));
     let mut items = Vec::new();
     if room.kind == RoomKind::Direct {
@@ -558,19 +576,37 @@ fn room_menu<'a>(room: &RoomSummary, layout: &Layout, grouping: &Grouping) -> El
     }
     items.push((
         "New category…".into(),
-        arrange_message(arrange::Message::NewCategory(Some(room.id.clone()))),
+        Message::OpenDialog(Kind::Category {
+            space: space.cloned(),
+            category: None,
+            room: Some(room.id.clone()),
+        }),
     ));
     menu(items)
 }
 
-/// Rename, sort, reorder and delete a category.
-fn category_menu<'a>(layout: &Layout, id: &str) -> Element<'a, Message> {
+/// Rename, choose rooms, sort, reorder and delete a category.
+fn category_menu<'a>(
+    layout: &Layout,
+    in_space: Option<&OwnedRoomId>,
+    id: &str,
+) -> Element<'a, Message> {
     let Some(at) = layout.categories.iter().position(|c| c.id == id) else {
         return space().into();
     };
     let id = id.to_owned();
     let item = |label: &str, message| (label.to_owned(), arrange_message(message));
-    let mut items = vec![item("Rename…", arrange::Message::Rename(id.clone()))];
+    let mut items = vec![
+        item("Rename…", arrange::Message::Rename(id.clone())),
+        (
+            "Choose rooms…".to_owned(),
+            Message::OpenDialog(Kind::Category {
+                space: in_space.cloned(),
+                category: Some(id.clone()),
+                room: None,
+            }),
+        ),
+    ];
     items.push(match layout.categories[at].sort {
         Sort::Activity => item("Sort A–Z", arrange::Message::Sort(id.clone(), Sort::Name)),
         Sort::Name => item(
@@ -650,9 +686,13 @@ fn add_menu_view<'a>(space: Option<(OwnedRoomId, String)>) -> Element<'a, Messag
     ));
     menu = menu
         .push(dialog("New direct chat".into(), Kind::DirectChat))
-        .push(item(
-            "New category".into(),
-            arrange_message(arrange::Message::NewCategory(None)),
+        .push(dialog(
+            "New category…".into(),
+            Kind::Category {
+                space: space.as_ref().map(|(id, _)| id.clone()),
+                category: None,
+                room: None,
+            },
         ))
         .push(dialog("Join a room…".into(), Kind::Join));
     if let Some((id, name)) = space {
@@ -1235,6 +1275,28 @@ mod tests {
             .loaded(space(), 0, HashSet::from([bob]));
         assert!(unread(&rooms, Some(&space()), &arrange));
         assert!(unread(&rooms, None, &arrange));
+    }
+
+    #[test]
+    fn search_finds_what_the_space_lists_and_everything_at_home() {
+        let rooms = rooms();
+        let arrange = Arrange::default();
+        let found = |space: Option<&OwnedRoomId>| -> Vec<&str> {
+            search(&rooms, space, &arrange, "")
+                .iter()
+                .map(|r| r.id.as_str())
+                .collect()
+        };
+        assert_eq!(found(Some(&space())), ["!inside:x"]);
+        assert_eq!(found(None), ["!bob:x", "!inside:x", "!loose:x"]);
+        assert_eq!(
+            first_match(&rooms, Some(&space()), &arrange, " LOO").map(|r| r.id.as_str()),
+            None
+        );
+        assert_eq!(
+            first_match(&rooms, None, &arrange, " LOO").map(|r| r.id.as_str()),
+            Some("!loose:x")
+        );
     }
 
     #[test]

@@ -43,8 +43,9 @@ use crate::{
     message_menu::{self, MenuAt},
     popover::{Edge, Side, popover},
     presence::{self, Presences},
+    selectable,
     selectable_image::selectable_image,
-    selection::{self, Bounds, Selection, units_text},
+    selection::{self, Bounds, Point, Pos, Selection, Step, units_text},
     send_later::{self, SendLater},
     style::{
         self, GUTTER_SPACING, HEADER_AVATAR, MESSAGE_PADDING, SENDER_AVATAR, TEXT_MARGIN,
@@ -429,6 +430,92 @@ impl Room {
         })
     }
 
+    /// Move the end of the selection by `step`, on into the message before
+    /// or after.
+    pub fn extend(&mut self, step: Step) {
+        fn units(entry: &TimelineEntry) -> Option<(&str, Vec<selection::Unit>)> {
+            match entry {
+                TimelineEntry::Event(event) => match &event.content {
+                    EventContent::Message(m) => {
+                        Some((event.id.as_str(), message::text_map(&m.document).units))
+                    }
+                    _ => None,
+                },
+                _ => None,
+            }
+        }
+        let Some(selection) = self.selection.as_mut() else {
+            return;
+        };
+        let Some(at) = (self.entries.iter())
+            .position(|e| matches!(e, TimelineEntry::Event(e) if e.id == selection.focus.event))
+        else {
+            return;
+        };
+        let Some((_, here)) = units(&self.entries[at]) else {
+            return;
+        };
+        selection.focus = match selection::step(&here, selection.focus.pos, step) {
+            Some(pos) => Point {
+                pos,
+                ..selection.focus.clone()
+            },
+            None => {
+                let next = if step.forward() {
+                    self.entries[at + 1..].iter().find_map(units)
+                } else {
+                    self.entries[..at].iter().rev().find_map(units)
+                };
+                let Some((event, units)) = next else {
+                    return;
+                };
+                let pos = match units.last() {
+                    Some(last) if !step.forward() => Pos {
+                        unit: units.len() - 1,
+                        offset: last.text.len(),
+                    },
+                    _ => Pos::default(),
+                };
+                Point {
+                    event: event.to_owned(),
+                    pos,
+                }
+            }
+        };
+    }
+
+    /// Move the end of the selection a line up or down, by the layout of
+    /// the text holding it.
+    pub fn extend_line(&self, up: bool) -> Task<Message> {
+        let Some(focus) = self.selection.as_ref().map(|s| s.focus.clone()) else {
+            return Task::none();
+        };
+        selectable::line_step(focus.pos.offset, up).map(move |moved| {
+            Message::Select(selection::Message::LineMoved(
+                focus.clone(),
+                up,
+                moved.flatten(),
+            ))
+        })
+    }
+
+    /// The end of the selection moved from `from` a line up or down to
+    /// `offset` in its unit, or past the unit (`None`): on into the one
+    /// before or after.
+    pub fn line_moved(&mut self, from: Point, up: bool, offset: Option<usize>) {
+        let Some(selection) = self.selection.as_mut().filter(|s| s.focus == from) else {
+            return;
+        };
+        match offset {
+            Some(offset) => selection.focus.pos.offset = offset,
+            None => {
+                // From the unit's edge, a step goes on into the next one.
+                selection.focus.pos.offset = if up { 0 } else { usize::MAX };
+                self.extend(if up { Step::Back } else { Step::Forward });
+            }
+        }
+    }
+
     /// Each message's index in the timeline, for ordering a selection.
     fn order(&self) -> HashMap<&str, usize> {
         self.entries
@@ -529,6 +616,7 @@ impl Room {
             newest_own: self.newest_own(),
             sending: &self.sending,
             selected,
+            focus: self.selection.as_ref().map(|s| &s.focus),
             dragging: self.selection.as_ref().is_some_and(|s| s.dragging),
             emoji: self.emoji.as_ref(),
             frequent_emoji: look.frequent_emoji,
@@ -603,6 +691,7 @@ impl Room {
         let cancellable = self.compose.cancellable();
         let candidates = self.candidates(look.own_user);
         let completing = !candidates.is_empty();
+        let selected = self.composer.selection().is_some();
         let composer = text_editor(&self.composer)
             .id(COMPOSER)
             .highlight_with::<mention::Highlighter>(self.mentions.clone(), mention::format)
@@ -627,7 +716,7 @@ impl Room {
                     Key::Named(Named::Escape) if cancellable => {
                         custom(Message::Act(actions::Message::CancelCompose))
                     }
-                    _ => text_editor::Binding::from_key_press(press),
+                    _ => selection::editor_key(press, selected),
                 }
             })
             .padding(
@@ -920,6 +1009,8 @@ struct Context<'a, 'b> {
     sending: &'b Sending,
     /// The selection, with each message's index in the timeline.
     selected: Option<(Bounds, &'b HashMap<&'b str, usize>)>,
+    /// Where the selection ends.
+    focus: Option<&'b Point>,
     dragging: bool,
     emoji: Option<&'a emoji::Panel>,
     /// The user's most used emoji.
@@ -960,6 +1051,10 @@ fn event_view<'a>(
             range: context
                 .selected
                 .and_then(|(bounds, order)| bounds.in_message(*order.get(event.id.as_str())?)),
+            focus: context
+                .focus
+                .filter(|focus| focus.event == event.id)
+                .map(|focus| focus.pos),
             dragging: context.dragging,
             on_gesture: Rc::new(move |gesture| {
                 Message::Select(selection::Message::Gesture(id.clone(), gesture))
@@ -1067,6 +1162,7 @@ fn event_view<'a>(
         // Rendered as summaries by `state_line`.
         EventContent::Membership { .. }
         | EventContent::DisplayNameChange { .. }
+        | EventContent::CallLink { .. }
         | EventContent::OtherState { .. } => return space().into(),
     };
 
@@ -1537,6 +1633,10 @@ fn state_summary(events: &[&Event]) -> String {
                 Some(new) => format!("{} is now {new}", user.localpart()),
                 None => format!("{} removed their display name", user.localpart()),
             },
+            EventContent::CallLink { url: Some(url) } => {
+                format!("{name} changed the call link to {url}")
+            }
+            EventContent::CallLink { url: None } => format!("{name} removed the call link"),
             _ => continue,
         };
         if parts.last() != Some(&part) {
@@ -1557,6 +1657,23 @@ mod tests {
     use iced::{Point, Size};
 
     use super::*;
+
+    #[test]
+    fn summarises_call_link_changes() {
+        let alice: mtrx_core::OwnedUserId = "@alice:x".try_into().unwrap();
+        let change = |id: &str, url: Option<&str>| Event {
+            content: EventContent::CallLink {
+                url: url.map(Into::into),
+            },
+            ..Event::test_message(id, alice.clone(), "")
+        };
+        let set = change("$a", Some("https://meet.jit.si/ice"));
+        let removed = change("$b", None);
+        assert_eq!(
+            state_summary(&[&set, &removed]),
+            "alice changed the call link to https://meet.jit.si/ice · alice removed the call link"
+        );
+    }
 
     #[test]
     fn finds_the_messages_on_screen() {

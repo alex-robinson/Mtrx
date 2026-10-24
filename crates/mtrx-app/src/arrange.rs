@@ -47,8 +47,8 @@ pub enum Message {
     /// Favourite (the star), low priority or neither, keeping the room's
     /// category.
     Tag(OwnedRoomId, RoomTag),
-    /// Name a new category, then put the room in it if there is one.
-    NewCategory(Option<OwnedRoomId>),
+    /// Create or change a category, from its dialog.
+    SaveCategory(CategoryEdit),
     Rename(String),
     Name(String),
     SaveName,
@@ -67,13 +67,51 @@ pub struct Drag {
     pub active: bool,
 }
 
-/// A category being named.
+/// A category being renamed.
 pub struct Naming {
-    /// `None` for a new one.
+    pub category: String,
+    pub name: String,
+}
+
+/// A new category, or a changed one (`category`), of `space` (Home for
+/// `None`): its name and rooms.
+#[derive(Debug, Clone)]
+pub struct CategoryEdit {
+    pub space: Option<OwnedRoomId>,
     pub category: Option<String>,
     pub name: String,
-    /// Put into the new category.
-    room: Option<OwnedRoomId>,
+    pub rooms: Vec<OwnedRoomId>,
+}
+
+impl CategoryEdit {
+    /// Make the change in `categories`.
+    fn apply(&self, categories: &mut RoomCategories) {
+        let layout = categories.layout_mut(self.space.as_deref());
+        let id = match &self.category {
+            Some(id) => {
+                let Some(category) = layout.category_mut(id) else {
+                    return;
+                };
+                category.name = self.name.clone();
+                // Rooms no longer in it go back to their default section.
+                let gone: Vec<_> = (category.rooms.iter())
+                    .filter(|r| !self.rooms.contains(r))
+                    .cloned()
+                    .collect();
+                for room in gone {
+                    layout.place(&room, None);
+                }
+                id.clone()
+            }
+            None => layout.add_category(&self.name),
+        };
+        for room in &self.rooms {
+            // Those already in it keep their place.
+            if layout.category_of(room).map(|c| &c.id) != Some(&id) {
+                layout.place(room, Some(&id));
+            }
+        }
+    }
 }
 
 struct PendingTag {
@@ -278,23 +316,39 @@ impl Arrange {
                 };
                 return self.set_tag(summary, tag, context.session);
             }
-            Message::NewCategory(room) => {
-                self.room_menu = None;
-                self.naming = Some(Naming {
-                    category: None,
-                    name: String::new(),
-                    room,
-                });
-                return iced::widget::operation::focus(NAME_INPUT);
+            Message::SaveCategory(edit) => {
+                let Context {
+                    session,
+                    rooms,
+                    grouping,
+                    ..
+                } = context;
+                let layout = self.categories.layout(edit.space.as_deref());
+                let placed: Vec<OwnedRoomId> = (edit.rooms.iter())
+                    .filter(|room| {
+                        edit.category.is_none()
+                            || layout.category_of(room).map(|c| &c.id) != edit.category.as_ref()
+                    })
+                    .cloned()
+                    .collect();
+                // Rooms put into it are tagged as if dragged there.
+                let mut tasks: Vec<_> = (rooms.iter_mut())
+                    .filter(|r| placed.contains(&r.id))
+                    .map(|summary| {
+                        let tag = tag_elsewhere(summary.tag, grouping);
+                        self.set_tag(summary, tag, session)
+                    })
+                    .collect();
+                tasks.push(self.change(session, move |c| edit.apply(c)));
+                return Task::batch(tasks);
             }
             Message::Rename(id) => {
                 self.category_menu = None;
                 let layout = self.categories.layout(space.as_deref());
                 let name = layout.category(&id).map(|c| c.name.clone());
                 self.naming = Some(Naming {
-                    category: Some(id),
+                    category: id,
                     name: name.unwrap_or_default(),
-                    room: None,
                 });
                 return iced::widget::operation::focus(NAME_INPUT);
             }
@@ -312,19 +366,11 @@ impl Arrange {
                     return Task::none();
                 }
                 return self.change(context.session, move |c| {
-                    let layout = c.layout_mut(space.as_deref());
-                    match &naming.category {
-                        Some(id) => {
-                            if let Some(category) = layout.category_mut(id) {
-                                category.name = name;
-                            }
-                        }
-                        None => {
-                            let id = layout.add_category(&name);
-                            if let Some(room) = &naming.room {
-                                layout.place(room, Some(&id));
-                            }
-                        }
+                    if let Some(category) = c
+                        .layout_mut(space.as_deref())
+                        .category_mut(&naming.category)
+                    {
+                        category.name = name;
                     }
                 });
             }
@@ -388,16 +434,7 @@ impl Arrange {
             Section::Category(id) => Some(id.clone()),
             _ => None,
         };
-        // A tag that decides the section goes when moving elsewhere.
-        let tag = match section {
-            Section::Favourites => RoomTag::Favourite,
-            Section::LowPriority => RoomTag::LowPriority,
-            _ => match summary.tag {
-                RoomTag::Favourite if grouping.favourites => RoomTag::None,
-                RoomTag::LowPriority if grouping.low_priority => RoomTag::None,
-                tag => tag,
-            },
-        };
+        let tag = tag_in(&section, summary.tag, grouping);
         let mut tasks = vec![self.set_tag(summary, tag, session)];
         let layout = self.categories.layout(space.map(|s| s.as_ref()));
         if layout.category_of(&room).map(|c| &c.id) != category.as_ref() {
@@ -476,6 +513,84 @@ impl Arrange {
     }
 }
 
+/// The tag of a room with `tag` moved into `section`.
+fn tag_in(section: &Section, tag: RoomTag, grouping: Grouping) -> RoomTag {
+    match section {
+        Section::Favourites => RoomTag::Favourite,
+        Section::LowPriority => RoomTag::LowPriority,
+        _ => tag_elsewhere(tag, grouping),
+    }
+}
+
+/// The tag of a room with `tag` moved out of its tag's section: a tag that
+/// decides the section goes.
+fn tag_elsewhere(tag: RoomTag, grouping: Grouping) -> RoomTag {
+    match tag {
+        RoomTag::Favourite if grouping.favourites => RoomTag::None,
+        RoomTag::LowPriority if grouping.low_priority => RoomTag::None,
+        tag => tag,
+    }
+}
+
 fn failed(error: String) -> Task<app::Message> {
     Task::done(app::Message::ArrangeFailed(error))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn room(id: &str) -> OwnedRoomId {
+        format!("!{id}:x").try_into().unwrap()
+    }
+
+    fn rooms_of(categories: &RoomCategories, id: &str) -> Vec<OwnedRoomId> {
+        categories.home.category(id).unwrap().rooms.clone()
+    }
+
+    #[test]
+    fn a_category_is_created_and_changed_with_its_rooms() {
+        let mut categories = RoomCategories::default();
+        let teaching = categories.home.add_category("Teaching");
+        categories.home.place(&room("seminar"), Some(&teaching));
+
+        // New, empty.
+        CategoryEdit {
+            space: None,
+            category: None,
+            name: "Empty".into(),
+            rooms: Vec::new(),
+        }
+        .apply(&mut categories);
+        assert_eq!(categories.home.categories[1].name, "Empty");
+        assert!(categories.home.categories[1].rooms.is_empty());
+
+        // New, taking a room from another category.
+        CategoryEdit {
+            space: None,
+            category: None,
+            name: "Papers".into(),
+            rooms: vec![room("paper-a"), room("seminar")],
+        }
+        .apply(&mut categories);
+        let papers = categories.home.categories[2].id.clone();
+        assert_eq!(
+            rooms_of(&categories, &papers),
+            [room("paper-a"), room("seminar")]
+        );
+        assert!(rooms_of(&categories, &teaching).is_empty());
+
+        // Renamed, one room out and one in; those staying keep their place.
+        CategoryEdit {
+            space: None,
+            category: Some(papers.clone()),
+            name: "Drafts".into(),
+            rooms: vec![room("paper-b"), room("seminar")],
+        }
+        .apply(&mut categories);
+        let drafts = categories.home.category(&papers).unwrap();
+        assert_eq!(drafts.name, "Drafts");
+        assert_eq!(drafts.rooms, [room("seminar"), room("paper-b")]);
+        assert_eq!(categories.home.category_of(&room("paper-a")), None);
+    }
 }

@@ -535,6 +535,9 @@ impl From<&core::EventContent> for EventContent {
                 user_id: user.to_string(),
                 new_name: new_name.clone(),
             },
+            core::EventContent::CallLink { .. } => Self::OtherState {
+                event_type: "org.mtrx.call_link".into(),
+            },
             core::EventContent::OtherState { event_type } => Self::OtherState {
                 event_type: event_type.clone(),
             },

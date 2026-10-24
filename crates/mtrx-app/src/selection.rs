@@ -6,6 +6,9 @@
 
 use std::collections::HashMap;
 
+use iced::widget::text_editor::{Binding, KeyPress};
+use unicode_segmentation::UnicodeSegmentation;
+
 /// A place in a message: a unit and a byte offset into its text.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Pos {
@@ -55,6 +58,13 @@ pub enum Message {
     Copy,
     /// ⌘A: select the messages on screen, from the first to the last.
     SelectAll,
+    /// Shift with ← or →: move the end of the selection.
+    Extend(Step),
+    /// Shift with ↑ (`true`) or ↓: move the end of the selection a line.
+    ExtendLine(bool),
+    /// The end of the selection moved a line from this point to an offset
+    /// in its unit, or past it (`None`).
+    LineMoved(Point, bool, Option<usize>),
     All(String, String),
     Clear,
 }
@@ -130,7 +140,11 @@ impl Selection {
                 }
             }
             // Handled by the room, which has the text and the view.
-            Message::Copy | Message::SelectAll => {}
+            Message::Copy
+            | Message::SelectAll
+            | Message::Extend(_)
+            | Message::ExtendLine(_)
+            | Message::LineMoved(..) => {}
         }
     }
 
@@ -225,6 +239,79 @@ pub fn units_text(units: &[Unit], from: Pos, to: Pos) -> String {
     out
 }
 
+/// An editor's binding for `press`, except that ⌘C with nothing selected in
+/// the editor is left to the timeline, which may have a selection.
+pub fn editor_key<Message>(press: KeyPress, selected: bool) -> Option<Binding<Message>> {
+    match Binding::from_key_press(press)? {
+        Binding::Copy if !selected => None,
+        binding => Some(binding),
+    }
+}
+
+/// Shift with ← or →, with ⌥ by word: where the end of a selection moves.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Step {
+    Back,
+    Forward,
+    WordBack,
+    WordForward,
+}
+
+impl Step {
+    pub fn forward(self) -> bool {
+        matches!(self, Step::Forward | Step::WordForward)
+    }
+}
+
+/// `pos` moved by `step` within a message of `units`; `None` past its start
+/// or end. The end of one unit and the start of the next are a step apart,
+/// like a line break.
+pub fn step(units: &[Unit], pos: Pos, step: Step) -> Option<Pos> {
+    let last = units.len().checked_sub(1)?;
+    // Pos::END and other places past the text, at the end of their unit.
+    let pos = if pos.unit > last {
+        Pos {
+            unit: last,
+            offset: usize::MAX,
+        }
+    } else {
+        pos
+    };
+    let text = units[pos.unit].text.as_str();
+    let offset = pos.offset.min(text.len());
+    let at = |offset| Some(Pos { offset, ..pos });
+    match step {
+        Step::Back | Step::WordBack if offset == 0 => {
+            let unit = pos.unit.checked_sub(1)?;
+            Some(Pos {
+                unit,
+                offset: units[unit].text.len(),
+            })
+        }
+        Step::Forward | Step::WordForward if offset == text.len() => {
+            (pos.unit < last).then_some(Pos {
+                unit: pos.unit + 1,
+                offset: 0,
+            })
+        }
+        Step::Back => at(text[..offset]
+            .grapheme_indices(true)
+            .next_back()
+            .map_or(0, |(i, _)| i)),
+        Step::Forward => at(offset + text[offset..].graphemes(true).next().map_or(0, str::len)),
+        // To the start of the word before, as text fields do.
+        Step::WordBack => at(text[..offset]
+            .split_word_bound_indices()
+            .rfind(|(_, word)| word.chars().any(char::is_alphanumeric))
+            .map_or(0, |(i, _)| i)),
+        // To the end of the next word.
+        Step::WordForward => at(text[offset..]
+            .split_word_bound_indices()
+            .find(|(_, word)| word.chars().any(char::is_alphanumeric))
+            .map_or(text.len(), |(i, word)| offset + i + word.len())),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -290,5 +377,81 @@ mod tests {
             dragging: true,
         };
         assert_eq!(click.ordered(&order), None);
+    }
+
+    #[test]
+    fn steps_by_character_and_word_across_units() {
+        let units = [unit("Ice flows", "", ""), unit("é", "", "\n\n")];
+        let at = |p| step(&units, p, Step::Forward);
+        assert_eq!(at(pos(0, 0)), Some(pos(0, 1)));
+        // To the next unit, and a whole grapheme.
+        assert_eq!(at(pos(0, 9)), Some(pos(1, 0)));
+        assert_eq!(at(pos(1, 0)), Some(pos(1, 2)));
+        assert_eq!(at(pos(1, 2)), None);
+        assert_eq!(step(&units, pos(1, 0), Step::Back), Some(pos(0, 9)));
+        assert_eq!(step(&units, pos(0, 0), Step::Back), None);
+        // From the end of a whole message (⌘A).
+        assert_eq!(step(&units, Pos::END, Step::Back), Some(pos(1, 0)));
+        assert_eq!(step(&units, pos(0, 1), Step::WordForward), Some(pos(0, 3)));
+        assert_eq!(step(&units, pos(0, 3), Step::WordForward), Some(pos(0, 9)));
+        assert_eq!(step(&units, pos(0, 9), Step::WordBack), Some(pos(0, 4)));
+        assert_eq!(step(&units, pos(0, 4), Step::WordBack), Some(pos(0, 0)));
+    }
+
+    #[test]
+    fn editors_leave_copy_to_the_timeline_without_a_selection() {
+        use iced::{
+            Event, Size,
+            event::Status,
+            keyboard::{self, Key},
+            mouse,
+            widget::text_editor::{self, Content},
+        };
+        use iced_test::simulator::{Simulator, press_key};
+
+        let command_c = || match press_key(Key::Character("c".into()), None) {
+            Event::Keyboard(keyboard::Event::KeyPressed {
+                key,
+                modified_key,
+                physical_key,
+                location,
+                text,
+                repeat,
+                ..
+            }) => Event::Keyboard(keyboard::Event::KeyPressed {
+                key,
+                modified_key,
+                physical_key,
+                location,
+                modifiers: keyboard::Modifiers::COMMAND,
+                text,
+                repeat,
+            }),
+            _ => unreachable!(),
+        };
+        let mut content = Content::<iced::Renderer>::with_text("Melt");
+        for selected in [false, true] {
+            if selected {
+                content.perform(text_editor::Action::SelectAll);
+            }
+            let has = content.selection().is_some();
+            let editor: iced::Element<'_, ()> = iced::widget::text_editor(&content)
+                .key_binding(move |press| editor_key(press, has))
+                .on_action(|_| ())
+                .into();
+            let mut ui =
+                Simulator::with_size(crate::fonts::settings(), Size::new(300.0, 100.0), editor);
+            // Focused by a click.
+            ui.point_at((290.0, 10.0));
+            let _ = ui.simulate([Event::Mouse(mouse::Event::ButtonPressed(
+                mouse::Button::Left,
+            ))]);
+            let expected = if selected {
+                Status::Captured
+            } else {
+                Status::Ignored
+            };
+            assert_eq!(ui.simulate([command_c()]), [expected]);
+        }
     }
 }

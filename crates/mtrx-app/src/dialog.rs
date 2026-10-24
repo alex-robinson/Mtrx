@@ -1,18 +1,26 @@
-//! Dialogs for managing rooms: create a room, space or direct chat, join,
-//! invite, add rooms to a space, leave.
+//! Dialogs for managing rooms: create a room, space, direct chat or
+//! category, choose a category's rooms, join, invite, add rooms to a space,
+//! leave.
 
 use std::time::{Duration, Instant};
 
 use iced::{
     Alignment, Element, Length,
     task::Handle,
-    widget::{button, column, container, row, scrollable, space, text, text_input, toggler},
+    widget::{
+        button, checkbox, column, container, row, scrollable, space, text, text_input, toggler,
+    },
 };
 use mtrx_core::{
-    Contact, NewRoom, OwnedRoomId, OwnedUserId, Permissions, RoomSummary, UserId, UserSummary,
+    Contact, NewRoom, OwnedRoomId, OwnedUserId, Permissions, RoomCategories, RoomSummary, UserId,
+    UserSummary,
 };
 
-use crate::{app, fonts, style};
+use crate::{
+    app,
+    arrange::{self, Arrange, CategoryEdit},
+    fonts, sidebar, style,
+};
 
 /// Which dialog is open.
 #[derive(Clone, Debug)]
@@ -37,6 +45,13 @@ pub enum Kind {
         name: String,
     },
     SignOut,
+    /// A new category of `space` (Home for `None`), with `room` in it if
+    /// given, or the rooms of an existing one.
+    Category {
+        space: Option<OwnedRoomId>,
+        category: Option<String>,
+        room: Option<OwnedRoomId>,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -55,6 +70,8 @@ pub enum Message {
     Pick(UserSummary),
     Unpick(usize),
     ToggleRoom(OwnedRoomId),
+    /// Tick all of these rooms.
+    TickAll(Vec<OwnedRoomId>),
     Submit,
     Cancel,
     /// The request finished; on success, possibly with a room to show.
@@ -80,6 +97,8 @@ pub enum Action {
     Search(String),
     Submit(Request),
     Finished(Opened),
+    /// Close, and change the room list's arrangement.
+    Arrange(arrange::Message),
 }
 
 /// A request for the server, made by the app.
@@ -163,6 +182,28 @@ impl Dialog {
                 name: Some("Notes to self".into()),
                 avatar: None,
             });
+        }
+    }
+
+    /// The name and rooms of the category being changed; the room to put
+    /// into a new one.
+    pub fn fill_category(&mut self, categories: &RoomCategories) {
+        let Kind::Category {
+            space,
+            category,
+            room,
+        } = &self.kind
+        else {
+            return;
+        };
+        match category {
+            Some(id) => {
+                if let Some(category) = categories.layout(space.as_deref()).category(id) {
+                    self.name = category.name.clone();
+                    self.rooms = category.rooms.clone();
+                }
+            }
+            None => self.rooms = room.iter().cloned().collect(),
         }
     }
 
@@ -255,6 +296,8 @@ impl Dialog {
                 (format!("Left {name}."), format!("Could not leave {name}"))
             }
             Kind::SignOut => ("Signed out.".into(), "Could not sign out".into()),
+            // Saved without waiting, like other changes to the room list.
+            Kind::Category { .. } => (String::new(), String::new()),
         };
         (done, failed)
     }
@@ -270,6 +313,7 @@ impl Dialog {
             Kind::AddExisting { .. } => "Adding the rooms…",
             Kind::Leave { .. } => "Leaving…",
             Kind::SignOut => "Signing out…",
+            Kind::Category { .. } => "Saving…",
         };
         let elapsed = self.now.saturating_duration_since(since);
         let mut status = column![
@@ -307,7 +351,7 @@ impl Dialog {
                     search.abort();
                 }
                 self.directory.clear();
-                if query.trim().trim_start_matches('@').len() >= 2 {
+                if self.picks_people() && query.trim().trim_start_matches('@').len() >= 2 {
                     return Action::Search(query.trim().to_owned());
                 }
             }
@@ -337,6 +381,18 @@ impl Dialog {
                 }
                 None => self.rooms.push(room),
             },
+            Message::TickAll(rooms) => {
+                for room in rooms {
+                    if !self.rooms.contains(&room) {
+                        self.rooms.push(room);
+                    }
+                }
+            }
+            Message::Submit if matches!(self.kind, Kind::Category { .. }) => {
+                if let Some(edit) = self.category_edit() {
+                    return Action::Arrange(arrange::Message::SaveCategory(edit));
+                }
+            }
             Message::Submit => {
                 if let Some(request) = self.request().filter(|_| !self.busy()) {
                     self.busy = Some(Instant::now());
@@ -400,6 +456,25 @@ impl Dialog {
             Kind::AddExisting { .. } => return None,
             Kind::Leave { room, .. } => Request::Leave(room.clone()),
             Kind::SignOut => Request::SignOut,
+            // Not for the server: see `category_edit`.
+            Kind::Category { .. } => return None,
+        })
+    }
+
+    /// The category the dialog describes, if named; rooms are optional.
+    fn category_edit(&self) -> Option<CategoryEdit> {
+        let Kind::Category {
+            space, category, ..
+        } = &self.kind
+        else {
+            return None;
+        };
+        let name = self.name.trim();
+        (!name.is_empty()).then(|| CategoryEdit {
+            space: space.clone(),
+            category: category.clone(),
+            name: name.to_owned(),
+            rooms: self.rooms.clone(),
         })
     }
 
@@ -411,8 +486,13 @@ impl Dialog {
             .or_else(|| OwnedUserId::try_from(self.query.trim()).ok())
     }
 
-    /// `rooms` are the joined rooms, for adding existing ones to a space.
-    pub fn view<'a>(&'a self, rooms: &'a [RoomSummary]) -> Element<'a, app::Message> {
+    /// `rooms` are the joined rooms, for adding existing ones to a space or
+    /// putting them into a category (`arrange`).
+    pub fn view<'a>(
+        &'a self,
+        rooms: &'a [RoomSummary],
+        arrange: &'a Arrange,
+    ) -> Element<'a, app::Message> {
         let (title, submit) = match &self.kind {
             Kind::NewRoom {
                 space: Some((_, space)),
@@ -425,6 +505,8 @@ impl Dialog {
             Kind::AddExisting { name, .. } => (format!("Add rooms to {name}"), "Add"),
             Kind::Leave { name, .. } => (format!("Leave {name}?"), "Leave"),
             Kind::SignOut => ("Sign out?".into(), "Sign out"),
+            Kind::Category { category: None, .. } => ("New category".into(), "Create"),
+            Kind::Category { .. } => ("Edit category".into(), "Save"),
         };
         let mut body = column![text(title).size(18).font(fonts::SEMIBOLD)].spacing(12);
         body = match &self.kind {
@@ -466,6 +548,9 @@ impl Dialog {
                 .spacing(4),
             ),
             Kind::AddExisting { space, .. } => body.push(self.rooms_view(space, rooms)),
+            Kind::Category { space, .. } => body
+                .push(self.field("Name", &self.name, Message::Name))
+                .push(self.category_rooms_view(space.as_ref(), rooms, arrange)),
             Kind::Leave { .. } => body.push(
                 text("You can only come back if the room is public or someone invites you.")
                     .size(13),
@@ -485,7 +570,7 @@ impl Dialog {
         if let Some(error) = &self.error {
             body = body.push(text(error).size(12).style(text::danger));
         }
-        let ready = self.request().is_some() && !self.busy();
+        let ready = (self.request().is_some() || self.category_edit().is_some()) && !self.busy();
         let slow = self
             .busy
             .is_some_and(|since| self.now.saturating_duration_since(since) >= SLOW);
@@ -614,6 +699,86 @@ impl Dialog {
     }
 }
 
+impl Dialog {
+    /// The rooms and chats `space` lists that the search finds, to tick,
+    /// with the category each is in now.
+    fn category_rooms_view<'a>(
+        &'a self,
+        space: Option<&OwnedRoomId>,
+        rooms: &'a [RoomSummary],
+        arrange: &'a Arrange,
+    ) -> Element<'a, app::Message> {
+        let layout = arrange.categories.layout(space.map(|s| s.as_ref()));
+        let editing = match &self.kind {
+            Kind::Category { category, .. } => category.as_deref(),
+            _ => None,
+        };
+        let found: Vec<_> =
+            sidebar::search(rooms, space, arrange, &self.query.trim().to_lowercase())
+                .into_iter()
+                .filter(|r| !r.invited)
+                .collect();
+        let unticked: Vec<OwnedRoomId> = (found.iter())
+            .filter(|r| !self.rooms.contains(&r.id))
+            .map(|r| r.id.clone())
+            .collect();
+        let chosen = match self.rooms.len() {
+            0 => "No rooms chosen; you can also drag them in later.".to_owned(),
+            1 => "1 room chosen".to_owned(),
+            n => format!("{n} rooms chosen"),
+        };
+        let tick_all = button(text("Choose all shown").size(13))
+            .padding([3, 8])
+            .style(style::secondary_button)
+            .on_press_maybe((!unticked.is_empty()).then(|| message(Message::TickAll(unticked))));
+        let list = found.into_iter().map(|room| {
+            let ticked = self.rooms.contains(&room.id);
+            let toggle = message(Message::ToggleRoom(room.id.clone()));
+            let mut line = row![
+                checkbox(ticked).on_toggle({
+                    let toggle = toggle.clone();
+                    move |_| toggle.clone()
+                }),
+                text(&room.name).width(Length::Fill),
+            ]
+            .spacing(8)
+            .align_y(Alignment::Center);
+            // Ticking moves a room out of the category it is in.
+            if let Some(other) = layout
+                .category_of(&room.id)
+                .filter(|c| Some(c.id.as_str()) != editing)
+            {
+                line = line.push(
+                    text(format!("in {}", other.name))
+                        .size(12)
+                        .style(text::secondary),
+                );
+            }
+            button(line)
+                .width(Length::Fill)
+                .padding([4, 8])
+                .style(style::list_item(false))
+                .on_press(toggle)
+                .into()
+        });
+        column![
+            self.field("Search rooms and chats", &self.query, Message::Query),
+            row![
+                text(chosen)
+                    .size(12)
+                    .style(text::secondary)
+                    .width(Length::Fill),
+                tick_all,
+            ]
+            .spacing(8)
+            .align_y(Alignment::Center),
+            scrollable(column(list).spacing(2)).height(260),
+        ]
+        .spacing(8)
+        .into()
+    }
+}
+
 fn list_heading<'a>(heading: &'a str) -> Element<'a, app::Message> {
     container(
         text(heading)
@@ -668,4 +833,62 @@ fn option<'a>(
 
 fn message(message: Message) -> app::Message {
     app::Message::Dialog(message)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn room(id: &str) -> OwnedRoomId {
+        format!("!{id}:x").try_into().unwrap()
+    }
+
+    fn saved(action: Action) -> CategoryEdit {
+        match action {
+            Action::Arrange(arrange::Message::SaveCategory(edit)) => edit,
+            _ => panic!("not saved"),
+        }
+    }
+
+    #[test]
+    fn a_category_needs_a_name_only() {
+        let mut dialog = Dialog::new(Kind::Category {
+            space: None,
+            category: None,
+            room: Some(room("seminar")),
+        });
+        dialog.fill_category(&RoomCategories::default());
+        // The search is local: no user directory.
+        assert!(matches!(
+            dialog.update(Message::Query("pap".into())),
+            Action::None
+        ));
+        assert!(matches!(dialog.update(Message::Submit), Action::None));
+        dialog.update(Message::Name(" Papers ".into()));
+        dialog.update(Message::TickAll(vec![room("paper-a"), room("seminar")]));
+        dialog.update(Message::ToggleRoom(room("seminar")));
+        let edit = saved(dialog.update(Message::Submit));
+        assert_eq!(edit.name, "Papers");
+        assert_eq!(edit.category, None);
+        assert_eq!(edit.rooms, [room("paper-a")]);
+    }
+
+    #[test]
+    fn editing_starts_from_the_category() {
+        let mut categories = RoomCategories::default();
+        let id = categories.home.add_category("Teaching");
+        categories.home.place(&room("seminar"), Some(&id));
+        let mut dialog = Dialog::new(Kind::Category {
+            space: None,
+            category: Some(id.clone()),
+            room: None,
+        });
+        dialog.fill_category(&categories);
+        // No rooms is fine too.
+        dialog.update(Message::ToggleRoom(room("seminar")));
+        let edit = saved(dialog.update(Message::Submit));
+        assert_eq!(edit.name, "Teaching");
+        assert_eq!(edit.category, Some(id));
+        assert!(edit.rooms.is_empty());
+    }
 }

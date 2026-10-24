@@ -61,3 +61,4 @@ codegen-units = 1
 # mitex 0.2.4 ignores a custom command spec when writing output; patched copy.
 [patch.crates-io]
 mitex = { path = "vendor/mitex" }
+iced_graphics = { path = "vendor/iced_graphics" }
