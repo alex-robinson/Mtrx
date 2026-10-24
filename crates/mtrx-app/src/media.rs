@@ -21,6 +21,7 @@ use tokio::sync::Semaphore;
 
 use crate::{
     app::Message,
+    clipboard,
     context_menu::context_menu,
     ellipsis::ellipsis,
     fonts,
@@ -567,22 +568,10 @@ pub async fn copy_image(session: Arc<Session>, media: Media) -> Result<(), Strin
     tokio::task::spawn_blocking(move || {
         let picture = ::image::load_from_memory(&bytes)
             .map_err(|e| format!("Could not read {}: {e}", media.filename))?;
-        copy_picture(picture.to_rgba8())
+        clipboard::write_picture(picture.to_rgba8())
     })
     .await
     .map_err(|e| e.to_string())?
-}
-
-/// Put a picture on the clipboard (iced's clipboard holds text only).
-pub fn copy_picture(picture: ::image::RgbaImage) -> Result<(), String> {
-    let image = arboard::ImageData {
-        width: picture.width() as usize,
-        height: picture.height() as usize,
-        bytes: picture.into_raw().into(),
-    };
-    arboard::Clipboard::new()
-        .and_then(|mut clipboard| clipboard.set_image(image))
-        .map_err(|e| format!("Could not copy the picture: {e}"))
 }
 
 /// Ask where to save a message's file, then download it there. Cancelling

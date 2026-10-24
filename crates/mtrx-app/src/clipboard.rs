@@ -1,5 +1,5 @@
-//! The system clipboard beyond iced's plain text: text copied from the
-//! timeline goes as HTML too, so that Mail or a document keeps its
+//! The system clipboard beyond iced's plain text: pictures; text copied
+//! from the timeline goes as HTML too, so that Mail or a document keeps its
 //! formatting, links and lists; pictures and files pasted into the
 //! composer are attached, and rich text comes in as Markdown.
 
@@ -63,6 +63,18 @@ pub async fn write(copied: Copied) -> Result<(), String> {
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+/// Put a picture on the clipboard (iced's clipboard holds text only).
+/// Blocks: run it off the UI thread.
+pub fn write_picture(picture: image::RgbaImage) -> Result<(), String> {
+    let image = ImageData {
+        width: picture.width() as usize,
+        height: picture.height() as usize,
+        bytes: picture.into_raw().into(),
+    };
+    with(|clipboard| clipboard.set_image(image))
+        .map_err(|e| format!("Could not copy the picture: {e}"))
 }
 
 /// What ⌘V in the composer pastes.
