@@ -737,3 +737,37 @@ async fn enter_sends_only_from_the_composer() {
     assert_eq!(ui.press(enter(), Modifiers::empty()), Status::Captured);
     assert_eq!(ui.room().composer.text(), "");
 }
+
+/// Shortcuts type nothing in a field (macOS gives the key's text with ⌘
+/// too): ⌘1 in the room search goes to the first room, ⌘K in the composer
+/// to the search.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs local Synapse (testserver/run.sh)"]
+async fn shortcuts_type_nothing_in_fields() {
+    let (mut ui, _dir) = room_with("search", &[]).await;
+    let open = ui.room().id.clone();
+    let other: OwnedRoomId = "!other:localhost".try_into().unwrap();
+    ui.main().rooms.rooms = vec![summary(&other, "other"), summary(&open, "open")];
+    let typed = |ui: &mut Ui, key: &str, modifiers| {
+        let (_, messages) = ui.messages(&[press(Key::Character(key.into()), modifiers)]);
+        format!("{messages:?}")
+    };
+
+    ui.run(iced::widget::operation::focus(sidebar::SEARCH));
+    assert_eq!(
+        typed(&mut ui, "o", Modifiers::empty()),
+        r#"[RoomFilter("o")]"#
+    );
+    assert_eq!(
+        typed(&mut ui, "1", Modifiers::COMMAND),
+        "[GoToRoom(Row(0))]"
+    );
+
+    ui.run(iced::widget::operation::focus(room::COMPOSER));
+    assert_eq!(typed(&mut ui, "k", Modifiers::COMMAND), "[FocusSearch]");
+    // Typing still types, also with ⌥.
+    assert_eq!(
+        typed(&mut ui, "é", Modifiers::ALT),
+        "[Composer(Edit(Insert('é')))]"
+    );
+}

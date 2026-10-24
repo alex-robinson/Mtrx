@@ -1218,7 +1218,8 @@ impl<Message> Binding<Message> {
             }
             keyboard::Key::Named(key::Named::Escape) => Some(Self::Unfocus),
             _ => {
-                if let Some(text) = text {
+                // Mtrx patch: not the text of a shortcut.
+                if let Some(text) = text.filter(|_| !is_shortcut(modifiers)) {
                     let c = text.chars().find(|c| !c.is_control())?;
 
                     Some(Self::Insert(c))
@@ -1507,6 +1508,17 @@ pub fn default(theme: &Theme, status: Status) -> Style {
             placeholder: palette.background.strongest.color,
             ..active
         },
+    }
+}
+
+/// Mtrx patch: whether a key pressed with `modifiers` is a shortcut, whose
+/// text is not typed: macOS gives the text of ⌘1 or ⌘K too. Elsewhere Ctrl,
+/// but not with Alt: Ctrl+Alt is AltGr on Windows, which types.
+pub(crate) fn is_shortcut(modifiers: keyboard::Modifiers) -> bool {
+    if cfg!(target_os = "macos") {
+        modifiers.logo()
+    } else {
+        modifiers.control() && !modifiers.alt()
     }
 }
 

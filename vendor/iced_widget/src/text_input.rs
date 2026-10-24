@@ -903,6 +903,7 @@ where
                 text,
                 modified_key,
                 physical_key,
+                modifiers: pressed_modifiers,
                 ..
             }) => {
                 let state = state::<Renderer>(tree);
@@ -1012,7 +1013,10 @@ where
                         _ => {}
                     }
 
-                    if let Some(text) = text {
+                    // Mtrx patch: not the text of a shortcut.
+                    if let Some(text) = text.as_ref().filter(|_| {
+                        !crate::text_editor::is_shortcut(*pressed_modifiers)
+                    }) {
                         let Some(on_input) = &self.on_input else {
                             return;
                         };

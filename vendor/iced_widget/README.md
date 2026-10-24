@@ -11,3 +11,6 @@ section B). Each is marked "Mtrx patch" in the code:
   has no focus, and a custom binding was published then: Enter sent the
   composer's draft with nothing focused. Custom bindings now act only
   while focused, as the default ones.
+- `src/text_editor.rs`, `src/text_input.rs`: macOS gives a key's text also
+  with ⌘, so ⌘K typed "k" in the composer and ⌘1 "1" in the room search.
+  The text of a shortcut (`is_shortcut`) is no longer typed.
