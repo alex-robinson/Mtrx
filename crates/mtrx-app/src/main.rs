@@ -23,6 +23,7 @@ mod hint;
 mod icons;
 mod info;
 mod last_view;
+mod link_status;
 #[cfg(target_os = "linux")]
 mod linux;
 mod login;

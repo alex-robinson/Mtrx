@@ -21,6 +21,16 @@ popover's panel); "⋯" opens it below the toolbar.
 | Copy         | text messages               | the selection if the message is in it, else the whole message as a selection copies it (math as `$…$`) |
 | Copy image   | math messages that rendered | the picture, via `arboard` (iced's clipboard holds text only) |
 | Save image…  | math messages that rendered | PNG, dark text on white, 3× scale                  |
+| Copy image   | pictures                    | the picture, decoded, as for math                  |
+| Save image…  | pictures                    | the file as sent, under its own name              |
+| Save…        | other files                 | the file as sent, under its own name              |
+
+A picture shown large (the viewer) has Copy image and Save image… on
+right-click too.
+
+Right-clicking a link opens the link's menu instead, at the cursor: Open
+and Copy link. Hovering a link shows its address in the window's bottom
+left corner (`link_status.rs`).
 
 Separate Copy text, Copy LaTeX and Copy link items were dropped: copying
 gives the same text, formulas included as `$…$`.

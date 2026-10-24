@@ -12,7 +12,7 @@ use ::image::{DynamicImage, ImageFormat, RgbImage};
 use iced::{Task, widget::image};
 use mtrx_format::{Document, RenderStyle, Renderer};
 
-use crate::{fonts, message, selectable_image, style};
+use crate::{fonts, media, message, selectable_image, style};
 
 /// Identifies one rendering: same content, width and colours give the same image.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -132,15 +132,7 @@ impl Math {
         let renderer = self.renderer.clone();
         let document = document.clone();
         blocking(move || {
-            let picture = DynamicImage::ImageRgb8(picture(&renderer, &document)?).to_rgba8();
-            let image = arboard::ImageData {
-                width: picture.width() as usize,
-                height: picture.height() as usize,
-                bytes: picture.into_raw().into(),
-            };
-            arboard::Clipboard::new()
-                .and_then(|mut clipboard| clipboard.set_image(image))
-                .map_err(|e| format!("Could not copy the picture: {e}"))
+            media::copy_picture(DynamicImage::ImageRgb8(picture(&renderer, &document)?).to_rgba8())
         })
     }
 }

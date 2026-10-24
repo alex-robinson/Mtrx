@@ -73,11 +73,11 @@ per day:
 
 - [x] Pointing hand over links and buttons, I-beam over selectable text.
 - [x] Drop files onto the window to attach them.
-- [ ] The link's address shows on hovering it (in a corner, as in a
+- [x] The link's address shows on hovering it (in a corner, as in a
       browser).
-- [ ] Right-click a link: Open, Copy Link.
-- [ ] Right-click a picture: Copy Image, Save Image…. Math messages have
-      it (`message_menu.rs`); pictures do not.
+- [x] Right-click a link: Open, Copy Link.
+- [x] Right-click a picture: Copy Image, Save Image…, in the timeline
+      and in the viewer, sharing math's clipboard code (`message_menu.rs`).
 
 ### A4. Selection in the timeline
 

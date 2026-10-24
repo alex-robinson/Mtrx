@@ -184,6 +184,8 @@ pub enum Message {
     /// Show an image large.
     OpenImage(Media),
     CloseImage,
+    /// Open or close the menu of the image in the viewer.
+    ViewerMenu(bool),
     /// The whole image for the viewer.
     ImageLoaded(MediaRef, Result<media::Picture, String>),
     /// A PDF in the viewer was loaded, with its first page drawn.
@@ -1572,11 +1574,13 @@ impl App {
                 }
             }
             Message::FocusSearch => iced::widget::operation::focus(sidebar::SEARCH),
-            // Closes the topmost thing: the image viewer, a drag, menu or
-            // category name, else the search.
+            // Closes the topmost thing: the image viewer's menu, the
+            // viewer, a drag, menu or category name, else the search.
             Message::Escape => {
                 if let Screen::Main(main) = &mut self.screen {
-                    if main.viewer.is_some() || main.pdf.is_some() {
+                    if let Some(viewer) = main.viewer.as_mut().filter(|v| v.menu) {
+                        viewer.menu = false;
+                    } else if main.viewer.is_some() || main.pdf.is_some() {
                         main.viewer = None;
                         main.pdf = None;
                     } else if main.info.is_some() {
@@ -1945,6 +1949,14 @@ impl App {
                 let load = viewer.load(main.session.clone());
                 main.viewer = Some(viewer);
                 load
+            }
+            Message::ViewerMenu(open) => {
+                if let Screen::Main(main) = &mut self.screen
+                    && let Some(viewer) = &mut main.viewer
+                {
+                    viewer.menu = open;
+                }
+                Task::none()
             }
             Message::CloseImage => {
                 if let Screen::Main(main) = &mut self.screen {
@@ -2589,6 +2601,10 @@ impl App {
                 room.unsent = None;
                 Task::perform(async move { timeline.discard(&key).await }, done)
             }
+            Act::OpenLink(url) => {
+                room.menu = None;
+                Task::done(Message::LinkClicked(url))
+            }
             Act::Copy(text) => {
                 room.menu = None;
                 iced::clipboard::write(text)
@@ -2606,12 +2622,20 @@ impl App {
             }
             Act::CopyMediaImage(file) => {
                 room.menu = None;
+                // Also chosen from the image viewer's menu.
+                if let Some(viewer) = &mut main.viewer {
+                    viewer.menu = false;
+                }
                 Task::perform(media::copy_image(main.session.clone(), file), |result| {
                     Message::Act(Act::Done(result))
                 })
             }
             Act::SaveMedia(file) => {
                 room.menu = None;
+                // Also chosen from the image viewer's menu.
+                if let Some(viewer) = &mut main.viewer {
+                    viewer.menu = false;
+                }
                 Task::done(Message::SaveMedia(file))
             }
             Act::SaveImage(document) => {
