@@ -110,18 +110,24 @@ iced 0.14's `text_editor` has no undo, and of the macOS key bindings only
 the arrows (with ⌥, ⌘ and ⇧), Home/End, ⌘A/C/X/V and ⌃A/E/B/F/H/D. Its
 `Content` gives the text, the selection and a line/column cursor: nothing
 to build an undo stack or a word deletion on from outside. So: vendor
-`iced_widget`, and do all of B in that copy, upstreaming what iced takes.
+`iced_widget`, and do all of B in that copy.
+
+Decided (2026-10-24): the patch first, ours to keep; whether to offer it
+upstream is judged once it works, so no feature waits on iced.
 
 ### B1. Input methods
 
-The widget forwards every key press to the binding without looking at
-the preedit, so the first item is probably a bug, not unchecked.
+The group writes European languages, so accents come first. Chinese,
+Japanese and Korean go through an input method (type, pick a candidate,
+Enter confirms), which nobody here uses: correct, not urgent. The widget
+forwards every key press to the binding without looking at the preedit,
+so that Enter probably sends the half-composed text today.
 
-- [ ] Japanese and Chinese input: candidates next to the caret, and Enter
-      confirms the composition rather than sending.
+- [ ] Dead keys: ⌥E then E gives é. Unchecked.
 - [ ] Press-and-hold accent menu (#30). winit and the NSView, not the
       widget; may need upstream winit.
-- [ ] Dead keys: ⌥E then E gives é. Unchecked.
+- [ ] Chinese, Japanese and Korean input: candidates next to the caret,
+      and Enter confirms the composition rather than sending.
 - [ ] Dictation (🎤 or Fn Fn). Unchecked.
 - [ ] ⌃⌘Space opens Emoji & Symbols and inserts the pick. Unchecked.
 
