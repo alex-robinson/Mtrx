@@ -1383,6 +1383,13 @@ impl<Message> Update<Message> {
                 } else {
                     Binding::from_key_press(key_press)
                 }
+                // Mtrx patch: a custom binding (Enter sends, say) only while
+                // focused, as the default bindings; the bindings are asked
+                // also without the focus, and a custom one was published.
+                .filter(|binding| {
+                    state.focus.is_some()
+                        || !matches!(binding, Binding::Custom(_))
+                })
                 .map(Self::Binding)
             }
             _ => None,

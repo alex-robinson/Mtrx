@@ -707,3 +707,33 @@ async fn shift_arrow_extends_a_selection_made_after_typing() {
     assert_eq!(after.event, before.event);
     assert_eq!(after.pos.offset, before.pos.offset + 1);
 }
+
+/// The composer's keys are its own only while it has the focus: Enter
+/// elsewhere does not send the draft, Esc elsewhere still cancels a reply
+/// (the window's Esc).
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs local Synapse (testserver/run.sh)"]
+async fn enter_sends_only_from_the_composer() {
+    let (mut ui, _dir) = room_with("enter", &["Hello"]).await;
+    let enter = || Key::Named(Named::Enter);
+    ui.room().set_composer(typed("Draft"));
+    ui.send(&[]);
+    assert!(!ui.composer_focused());
+    assert_eq!(ui.press(enter(), Modifiers::empty()), Status::Ignored);
+    assert_eq!(ui.room().composer.text(), "Draft");
+
+    // Replying, Esc with nothing focused cancels the reply.
+    let hello = ui.room().entries.iter().find_map(|entry| match entry {
+        TimelineEntry::Event(event) if event.event_id.is_some() => {
+            crate::actions::Target::of(event, "alice".into(), "Hello".into())
+        }
+        _ => None,
+    });
+    ui.room().compose = Compose::Reply(hello.expect("a message"));
+    ui.press(Key::Named(Named::Escape), Modifiers::empty());
+    assert!(!ui.room().compose.cancellable());
+
+    ui.run(iced::widget::operation::focus(room::COMPOSER));
+    assert_eq!(ui.press(enter(), Modifiers::empty()), Status::Captured);
+    assert_eq!(ui.room().composer.text(), "");
+}

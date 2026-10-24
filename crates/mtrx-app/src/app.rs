@@ -1687,6 +1687,9 @@ impl App {
                         main.room.as_mut().filter(|r| r.composer_emoji.is_some())
                     {
                         room.composer_emoji = None;
+                    } else if main.room.as_ref().is_some_and(|r| r.compose.cancellable()) {
+                        // From the composer its own Esc does it first.
+                        return Task::done(Message::Act(actions::Message::CancelCompose));
                     } else if let Some(edit) = main
                         .room
                         .as_mut()

@@ -7,3 +7,7 @@ section B). Each is marked "Mtrx patch" in the code:
   timeline never reached the composer under its paperclip and smiley, which
   kept the focus and took Shift with the arrows. The layers now get a shell
   of their own.
+- `src/text_editor.rs`: the key bindings are asked also when the editor
+  has no focus, and a custom binding was published then: Enter sent the
+  composer's draft with nothing focused. Custom bindings now act only
+  while focused, as the default ones.
