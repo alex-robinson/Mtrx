@@ -82,8 +82,12 @@ pub enum Message {
     Retry(EventKey),
     /// Drop a message that was not sent.
     Discard(EventKey),
+    /// Open a link from its menu.
+    OpenLink(String),
     /// Put a message's text on the clipboard, as text and HTML.
     Copy(Copied),
+    /// Put a link's address on the clipboard.
+    CopyLink(String),
     /// Put the text selected in the timeline on the clipboard.
     CopySelection,
     /// Put a message with math on the clipboard as a picture.

@@ -119,6 +119,8 @@ fn app(screen: Screen, mode: Mode) -> App {
         settings: Settings::default(),
         settings_file: None,
         view_file: None,
+        placement: Placement::default(),
+        placement_file: None,
         resizing: false,
         settings_panel: None,
         screen,
@@ -176,26 +178,113 @@ fn zoom_steps_the_text_size() {
     assert_eq!(app.pixel_scale(), 2.0);
 }
 
-/// The window opens at the same size in logical pixels at any text size.
+/// ⌘F opens the find bar, ⌘G and ⇧⌘G go to the next and previous match,
+/// wherever the focus is.
+#[test]
+fn find_keys() {
+    use iced::{event::Status, keyboard};
+
+    let key = |c: &str, modifiers| {
+        let event = iced::Event::Keyboard(keyboard::Event::KeyPressed {
+            key: keyboard::Key::Character(c.into()),
+            modified_key: keyboard::Key::Character(c.into()),
+            physical_key: keyboard::key::Physical::Unidentified(
+                keyboard::key::NativeCode::Unidentified,
+            ),
+            location: keyboard::Location::Standard,
+            modifiers,
+            text: None,
+            repeat: false,
+        });
+        shortcuts(event, Status::Captured, window::Id::unique())
+    };
+    let command = keyboard::Modifiers::COMMAND;
+    assert!(matches!(
+        key("f", command),
+        Some(Message::Find(find::Message::Open))
+    ));
+    assert!(matches!(
+        key("g", command),
+        Some(Message::Find(find::Message::Next))
+    ));
+    assert!(matches!(
+        key("g", command | keyboard::Modifiers::SHIFT),
+        Some(Message::Find(find::Message::Previous))
+    ));
+    assert!(key("f", keyboard::Modifiers::empty()).is_none());
+}
+
+/// The window opens at the same size in logical pixels at any text size,
+/// the first time and as it was left.
 #[test]
 fn window_opens_at_one_size() {
     use crate::text_size::TextSize;
 
     let profile = app(Screen::Starting, Mode::Light).profile;
-    for text_size in TextSize::ALL {
-        let environment = Environment {
-            profile: profile.clone(),
-            data_root: snapshot_dir(),
-            secrets: SecretStore::File,
-            settings: Settings {
-                text_size,
-                ..Settings::default()
+    let left = Frame::new(iced::Point::new(40.0, 60.0), Size::new(900.0, 700.0));
+    for (placement, size) in [
+        (Placement::default(), placement::DEFAULT_SIZE),
+        (
+            Placement {
+                frame: Some(left),
+                maximized: false,
             },
-        };
-        let opened = environment.window_size() * text_size.scale();
-        assert!((opened.width - WINDOW.width).abs() < 1e-3, "{text_size}");
-        assert!((opened.height - WINDOW.height).abs() < 1e-3, "{text_size}");
+            left.size(),
+        ),
+    ] {
+        for text_size in TextSize::ALL {
+            let environment = Environment {
+                profile: profile.clone(),
+                data_root: snapshot_dir(),
+                secrets: SecretStore::File,
+                settings: Settings {
+                    text_size,
+                    ..Settings::default()
+                },
+                placement,
+            };
+            let opened = environment.window().size * text_size.scale();
+            assert!((opened.width - size.width).abs() < 1e-3, "{text_size}");
+            assert!((opened.height - size.height).abs() < 1e-3, "{text_size}");
+        }
     }
+}
+
+/// Moved and resized, the window is saved where it is; maximised, its frame
+/// from before is kept to go back to.
+#[test]
+fn window_placement_is_saved() {
+    let dir = TempDir::new().unwrap();
+    let file = dir.path().join("window.json");
+    let mut app = app(Screen::Login(Login::default()), Mode::Light);
+    app.placement_file = Some(file.clone());
+    app.scale = 2.0;
+    app.settings.text_size = crate::text_size::TextSize::Large;
+    let placed = |maximized| Message::WindowPlaced {
+        position: Some(iced::Point::new(1800.0, 200.0)),
+        maximized,
+        fullscreen: false,
+    };
+
+    // Reported in layout units.
+    let _ = app.update(Message::WindowResized(
+        Size::new(1000.0, 700.0) / app.scale_factor(),
+    ));
+    let _ = app.update(placed(false));
+    let left = Frame::new(iced::Point::new(1800.0, 200.0), Size::new(1000.0, 700.0));
+    let saved = Placement::load(&file);
+    assert!(!saved.maximized);
+    let frame = saved.frame.unwrap();
+    assert_eq!(frame.position(), left.position());
+    assert!((frame.width - left.width).abs() < 1e-3 && (frame.height - left.height).abs() < 1e-3);
+
+    let _ = app.update(Message::WindowResized(
+        Size::new(1512.0, 920.0) / app.scale_factor(),
+    ));
+    let _ = app.update(placed(true));
+    let saved = Placement::load(&file);
+    assert!(saved.maximized);
+    assert_eq!(saved.frame, Some(frame));
 }
 
 /// iced drops the app only after its runtime has stopped, when the SDK's
@@ -239,6 +328,67 @@ fn closing_the_window_cancels_a_browser_sign_in() {
     login.browser_started(handle.clone());
     let _ = app.update(Message::CloseWindow(window::Id::unique()));
     assert!(handle.is_aborted());
+}
+
+/// A window left on a display since unplugged opens on the main display,
+/// as the first time; one on a display still attached stays.
+#[test]
+fn window_left_off_screen_opens_on_the_main_display() {
+    use iced_runtime::{Action, task, window::Action as Window};
+
+    let moves = |task: Task<Message>| -> Vec<iced::Point> {
+        let Some(stream) = task::into_stream(task) else {
+            return Vec::new();
+        };
+        iced::futures::executor::block_on(stream.collect::<Vec<_>>())
+            .into_iter()
+            .filter_map(|action| match action {
+                Action::Window(Window::Move(_, position)) => Some(position),
+                _ => None,
+            })
+            .collect()
+    };
+    let laptop = Rectangle::new(iced::Point::new(0.0, 25.0), Size::new(1512.0, 920.0));
+    let monitor = Rectangle::new(iced::Point::new(1512.0, 0.0), Size::new(2560.0, 1415.0));
+    let left = iced::Point::new(1800.0, 200.0);
+    let mut app = app(Screen::Login(Login::default()), Mode::Light);
+    app.placement.frame = Some(Frame::new(left, Size::new(1000.0, 700.0)));
+    let id = window::Id::unique();
+
+    let both = app.update(Message::WindowOpened(
+        id,
+        Some(vec![laptop, monitor]),
+        Some(left),
+    ));
+    assert_eq!(moves(both), []);
+    let unknown = app.update(Message::WindowOpened(id, None, Some(left)));
+    assert_eq!(moves(unknown), []);
+    let unplugged = app.update(Message::WindowOpened(id, Some(vec![laptop]), Some(left)));
+    assert_eq!(moves(unplugged), [iced::Point::new(156.0, 85.0)]);
+}
+
+/// ⌘W closes the window as its close button does, also with the composer
+/// or another field focused, and on the sign-in screen.
+#[test]
+fn command_w_closes_the_window() {
+    use iced::{event::Status, keyboard};
+
+    let id = window::Id::unique();
+    let press = |with: keyboard::Modifiers| {
+        let mut event =
+            iced_test::simulator::press_key(keyboard::Key::Character("w".into()), Some("w".into()));
+        if let iced::Event::Keyboard(keyboard::Event::KeyPressed { modifiers, .. }) = &mut event {
+            *modifiers = with;
+        }
+        event
+    };
+    assert!(window_keys(press(keyboard::Modifiers::empty()), Status::Ignored, id).is_none());
+    let close = window_keys(press(keyboard::Modifiers::COMMAND), Status::Captured, id);
+    assert!(matches!(close, Some(Message::CloseWindow(closed)) if closed == id));
+
+    let mut app = app(Screen::Login(Login::default()), Mode::Light);
+    let _ = app.update(close.unwrap());
+    assert!(matches!(app.screen, Screen::Closing));
 }
 
 /// [`Event::id`](mtrx_core::Event::id) of message `event` in `entries`.
@@ -805,6 +955,33 @@ async fn main_screen_with_math() {
             };
             assert!(!main.room.as_ref().unwrap().calls.is_open());
         }
+        // ⌘F: every match highlighted, in text and typeset math, the
+        // newest one current; Esc closes the bar.
+        if let Screen::Main(main) = &mut app.screen {
+            main.room.as_mut().unwrap().selection = None;
+        }
+        let _ = app.update(Message::Find(find::Message::Open));
+        let _ = app.update(Message::Find(find::Message::Query("FLUX".into())));
+        let found = |app: &App| {
+            let Screen::Main(main) = &app.screen else {
+                unreachable!()
+            };
+            main.room
+                .as_ref()
+                .unwrap()
+                .find
+                .as_ref()
+                .map(|f| f.current().cloned())
+        };
+        assert!(found(&app).flatten().is_some());
+        let name = if mode == Mode::Dark {
+            "find-dark"
+        } else {
+            "find-light"
+        };
+        snapshot(&app, name);
+        let _ = app.update(Message::Escape);
+        assert_eq!(found(&app), None);
     }
 }
 
@@ -841,7 +1018,11 @@ fn composer_keeps_focus(app: &mut App) {
     let mut cache = ui.into_cache();
 
     type Change = (&'static str, fn(&mut App));
-    let changes: [Change; 16] = [
+    let changes: [Change; 18] = [
+        ("the find bar opens", |app| {
+            room(app).find = Some(Find::default())
+        }),
+        ("and closes", |app| room(app).find = None),
         ("someone types", |app| room(app).typing = vec!["bob".into()]),
         ("they stop", |app| room(app).typing.clear()),
         ("an error below", |app| {

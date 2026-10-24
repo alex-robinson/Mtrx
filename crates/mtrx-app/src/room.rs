@@ -34,7 +34,9 @@ use crate::{
     context_menu::context_menu,
     drag_scroll::drag_scroll,
     ellipsis::ellipsis,
-    emoji, fonts,
+    emoji,
+    find::{self, Find},
+    fonts,
     hint::{Position, hint},
     icons, info,
     math::{self, Math, Rendered},
@@ -108,6 +110,8 @@ pub struct Room {
     sending: Sending,
     /// Text selected in the timeline.
     pub selection: Option<Selection>,
+    /// The find bar (⌘F), while open.
+    pub find: Option<Find>,
     /// All emoji in the reaction picker, while shown.
     pub emoji: Option<emoji::Panel>,
     /// The composer's emoji panel, while shown.
@@ -168,6 +172,7 @@ impl Room {
             unsent: None,
             sending: Sending::already(&entries),
             selection: None,
+            find: None,
             emoji: None,
             composer_emoji: None,
             composer_menu: false,
@@ -309,6 +314,33 @@ impl Room {
         self.unsent = None;
         self.confirm_delete = None;
         self.error = None;
+        self.find_again();
+    }
+
+    /// Search the entries again for the find bar's text, as they changed.
+    pub fn find_again(&mut self) {
+        if let Some(find) = &mut self.find {
+            find.search(&self.entries);
+        }
+    }
+
+    /// Render the message with the current match of the find bar, and
+    /// scroll to the match.
+    pub fn show_found(&mut self) -> Task<Message> {
+        let Some(event) = self
+            .find
+            .as_ref()
+            .and_then(Find::current)
+            .map(|m| m.event.clone())
+        else {
+            return Task::none();
+        };
+        if let Some(index) = (self.entries.iter())
+            .position(|e| matches!(e, TimelineEntry::Event(e) if e.id == event))
+        {
+            self.shown = self.shown.max(self.entries.len() - index);
+        }
+        scroll_to_found(&event)
     }
 
     /// Follow which of our messages are being sent, once the entries
@@ -611,13 +643,14 @@ impl Room {
             hovered: self.hovered.as_deref(),
             marked: self.marked.as_deref(),
             picker: self.picker.as_ref().map(|(id, at)| (id.as_str(), *at)),
-            menu: self.menu.as_ref().map(|(id, at)| (id.as_str(), *at)),
+            menu: self.menu.as_ref().map(|(id, at)| (id.as_str(), at)),
             readers: self.readers.as_deref(),
             reactors: (self.reactors.as_ref()).map(|(id, key)| (id.as_str(), key.as_str())),
             unsent: self.unsent.as_deref(),
             newest_own: self.newest_own(),
             sending: &self.sending,
             selected,
+            found: self.find.as_ref(),
             focus: self.selection.as_ref().map(|s| &s.focus),
             dragging: self.selection.as_ref().is_some_and(|s| s.dragging),
             emoji: self.emoji.as_ref(),
@@ -860,7 +893,13 @@ impl Room {
         .spacing(6)
         .padding([8.0, TIMELINE_PADDING + MESSAGE_PADDING]);
 
-        let main = column![timeline, bottom].width(Length::Fill);
+        // Always there, so the timeline and composer keep their state.
+        let mut find_bar = column![];
+        if let Some(find) = &self.find {
+            find_bar = find_bar.push(find.view(Message::Find));
+            find_bar = find_bar.push(rule::horizontal(1));
+        }
+        let main = column![find_bar, timeline, bottom].width(Length::Fill);
         // The member list comes after, so it does not move the composer.
         let mut body = row![main];
         if look.show_members {
@@ -1009,7 +1048,7 @@ struct Context<'a, 'b> {
     hovered: Option<&'b str>,
     marked: Option<&'b str>,
     picker: Option<(&'b str, PickerAt)>,
-    menu: Option<(&'b str, MenuAt)>,
+    menu: Option<(&'b str, &'b MenuAt)>,
     /// The row whose readers are listed.
     readers: Option<&'b str>,
     /// The row and reaction key whose people are listed.
@@ -1022,6 +1061,8 @@ struct Context<'a, 'b> {
     sending: &'b Sending,
     /// The selection, with each message's index in the timeline.
     selected: Option<(Bounds, &'b HashMap<&'b str, usize>)>,
+    /// The find bar, to highlight its matches.
+    found: Option<&'b Find>,
     /// Where the selection ends.
     focus: Option<&'b Point>,
     dragging: bool,
@@ -1072,6 +1113,16 @@ fn event_view<'a>(
             on_gesture: Rc::new(move |gesture| {
                 Message::Select(selection::Message::Gesture(id.clone(), gesture))
             }),
+            found: (context.found).map_or_else(Vec::new, |find| find.in_message(&event.id)),
+        }
+    };
+    let links = || {
+        let id = event.id.clone();
+        message::Links {
+            open: Message::LinkClicked,
+            menu: Rc::new(move |url| {
+                act(actions::Message::OpenMenu(id.clone(), MenuAt::Link(url)))
+            }),
         }
     };
     let body: Element<'a, Message> = match &event.content {
@@ -1092,7 +1143,9 @@ fn event_view<'a>(
                                 text.clone(),
                             )
                             .selected(select.range)
+                            .found(select.found)
                             .dragging(select.dragging)
+                            .on_link(Message::LinkClicked)
                             .on_gesture(select.on_gesture)
                             .into()
                         }
@@ -1102,7 +1155,7 @@ fn event_view<'a>(
                                 &m.document,
                                 theme,
                                 context.own_user,
-                                Message::LinkClicked,
+                                links(),
                                 select(),
                                 m.edited,
                             )
@@ -1115,7 +1168,7 @@ fn event_view<'a>(
                         &m.document,
                         theme,
                         context.own_user,
-                        Message::LinkClicked,
+                        links(),
                         select(),
                         m.edited,
                     )
@@ -1209,10 +1262,12 @@ fn event_view<'a>(
     let menu_items = message
         .map(|m| message_menu::items(m, math_shown, in_selection))
         .filter(|items| !items.is_empty());
-    let menu_view = |at| {
-        (menu_at == Some(at))
-            .then(|| menu_items.clone().map(message_menu::view))
-            .flatten()
+    let menu_view = |at| match menu_at {
+        Some(MenuAt::Link(url)) if at == MenuAt::Cursor => {
+            Some(message_menu::view(message_menu::link_items(url)))
+        }
+        Some(open) if *open == at => menu_items.clone().map(message_menu::view),
+        _ => None,
     };
     if context.confirm_delete == Some(event.id.as_str()) {
         item = item.push(actions::confirm_delete(event));
@@ -1284,7 +1339,7 @@ fn event_view<'a>(
         Some(m)
             if (hovered
                 || picking == Some(PickerAt::Toolbar)
-                || menu_at == Some(MenuAt::Toolbar))
+                || menu_at == Some(&MenuAt::Toolbar))
                 && event.event_id.is_some()
                 && edit.is_none() =>
         {
@@ -1448,11 +1503,92 @@ impl Operation<Option<f32>> for FindRow {
     }
 
     fn finish(&self) -> operation::Outcome<Option<f32>> {
-        operation::Outcome::Some(self.view.zip(self.found).map(|((view, content), row)| {
-            // From the top, then from the bottom.
-            let top = row.y - view.y - (view.height - row.height).max(0.0) / 2.0;
-            ((content - view.height).max(0.0) - top.max(0.0)).max(0.0)
-        }))
+        operation::Outcome::Some(
+            (self.view.zip(self.found)).map(|((view, content), row)| centred(view, content, row)),
+        )
+    }
+}
+
+/// The offset of a timeline (`view`, with `content` high) from the bottom,
+/// where it is anchored, with `target` in the middle.
+fn centred(view: Rectangle, content: f32, target: Rectangle) -> f32 {
+    // From the top, then from the bottom.
+    let top = target.y - view.y - (view.height - target.height).max(0.0) / 2.0;
+    ((content - view.height).max(0.0) - top.max(0.0)).max(0.0)
+}
+
+/// Scroll the timeline to the current match of the find bar, in message
+/// `event`, unless it is in view: to the middle, as browsers do.
+fn scroll_to_found(event: &str) -> Task<Message> {
+    iced::advanced::widget::operate(FindFound {
+        row: row_id(event),
+        view: None,
+        found: None,
+        row_found: None,
+    })
+    .then(|offset| match offset {
+        Some(y) => iced::widget::operation::scroll_to(
+            TIMELINE,
+            scrollable::AbsoluteOffset {
+                x: None,
+                y: Some(y),
+            },
+        ),
+        None => Task::none(),
+    })
+}
+
+/// Where the timeline should be scrolled to show the current match, if it
+/// is not in view.
+struct FindFound {
+    /// The row of its message, for when its text does not report it (e.g.
+    /// while being edited).
+    row: Id,
+    /// The timeline's bounds, content height and how far it is scrolled.
+    view: Option<(Rectangle, f32, Vector)>,
+    found: Option<Rectangle>,
+    row_found: Option<Rectangle>,
+}
+
+impl Operation<Option<f32>> for FindFound {
+    fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn Operation<Option<f32>>)) {
+        operate(self);
+    }
+
+    fn scrollable(
+        &mut self,
+        id: Option<&Id>,
+        bounds: Rectangle,
+        content_bounds: Rectangle,
+        translation: Vector,
+        _state: &mut dyn operation::Scrollable,
+    ) {
+        if id == Some(&Id::new(TIMELINE)) {
+            self.view = Some((bounds, content_bounds.height, translation));
+        }
+    }
+
+    fn container(&mut self, id: Option<&Id>, bounds: Rectangle) {
+        if id == Some(&self.row) {
+            self.row_found = Some(bounds);
+        }
+    }
+
+    fn custom(&mut self, id: Option<&Id>, bounds: Rectangle, _state: &mut dyn std::any::Any) {
+        if id == Some(&Id::new(find::CURRENT)) {
+            self.found = Some(bounds);
+        }
+    }
+
+    fn finish(&self) -> operation::Outcome<Option<f32>> {
+        let target = self.found.or(self.row_found);
+        operation::Outcome::Some(self.view.zip(target).and_then(
+            |((view, content, scrolled), target)| {
+                let top = view.y + scrolled.y;
+                let shown = target.y >= top && target.y + target.height <= top + view.height;
+                (!shown).then(|| centred(view, content, target))
+            },
+        ))
     }
 }
 
@@ -1706,6 +1842,30 @@ mod tests {
         // Partly shown rows count.
         assert_eq!(on_screen(view, 450.0, &rows), Some((4, 7)));
         assert_eq!(on_screen(view, 5000.0, &rows), None);
+    }
+
+    #[test]
+    fn scrolls_to_a_match_out_of_view() {
+        // A timeline at y 100, 300 high, scrolled 500 down, 2000 of content.
+        let view = Rectangle::new(Point::new(0.0, 100.0), Size::new(800.0, 300.0));
+        let offset = |y| {
+            let find = FindFound {
+                row: row_id("$a"),
+                view: Some((view, 2000.0, Vector::new(0.0, 500.0))),
+                found: Some(Rectangle::new(Point::new(40.0, y), Size::new(30.0, 20.0))),
+                row_found: None,
+            };
+            match find.finish() {
+                operation::Outcome::Some(offset) => offset,
+                _ => unreachable!(),
+            }
+        };
+        // In view: stays.
+        assert_eq!(offset(700.0), None);
+        // Above: in the middle, counted from the bottom.
+        assert_eq!(offset(300.0), Some(2000.0 - 300.0 - (200.0 - 140.0)));
+        // Partly below.
+        assert!(offset(890.0).is_some());
     }
 
     fn own_message(id: &str, send_state: SendState) -> TimelineEntry {

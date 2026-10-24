@@ -5171,6 +5171,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "unicode-normalization",
  "unicode-segmentation",
  "windows 0.62.2",
  "winresource",
@@ -5266,6 +5267,7 @@ dependencies = [
  "typst-assets",
  "typst-layout",
  "typst-render",
+ "unicode-segmentation",
 ]
 
 [[package]]

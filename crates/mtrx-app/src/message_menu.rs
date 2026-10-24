@@ -1,8 +1,9 @@
 //! A message's menu (right-click, or "⋯" in its toolbar): copying the
-//! selection or the message, math as a picture, and a file or image.
+//! selection or the message, math as a picture, and a file or image; or,
+//! right-clicking a link in it, the link's.
 
 use iced::Element;
-use mtrx_core::{MediaKind, Message, MessageKind};
+use mtrx_core::{Media, MediaKind, Message, MessageKind};
 
 use crate::{
     actions::{self, act},
@@ -11,12 +12,14 @@ use crate::{
 };
 
 /// Where a message's menu floats from.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MenuAt {
     /// Where the message was right-clicked.
     Cursor,
     /// The "⋯" of the hover toolbar.
     Toolbar,
+    /// Where a link in it was right-clicked: the link's menu instead.
+    Link(String),
 }
 
 /// What the menu offers for a message: label and action, in order.
@@ -41,17 +44,7 @@ pub fn items(
         items.push(("Copy".to_owned(), actions::Message::Copy(all)));
     }
     if let Some(media) = &message.media {
-        if media.kind == MediaKind::Image {
-            items.push((
-                "Copy image".to_owned(),
-                actions::Message::CopyMediaImage(media.clone()),
-            ));
-        }
-        let save = match media.kind {
-            MediaKind::Image => "Save image…",
-            _ => "Save…",
-        };
-        items.push((save.to_owned(), actions::Message::SaveMedia(media.clone())));
+        items.extend(media_items(media));
     }
     if math_shown {
         items.push((
@@ -64,6 +57,38 @@ pub fn items(
         ));
     }
     items
+}
+
+/// What the menu offers for a message's file, also where an image is shown
+/// large: copying an image, and saving the file as it was sent.
+pub fn media_items(media: &Media) -> Vec<(String, actions::Message)> {
+    let mut items = Vec::new();
+    if media.kind == MediaKind::Image {
+        items.push((
+            "Copy image".to_owned(),
+            actions::Message::CopyMediaImage(media.clone()),
+        ));
+    }
+    let save = match media.kind {
+        MediaKind::Image => "Save image…",
+        _ => "Save…",
+    };
+    items.push((save.to_owned(), actions::Message::SaveMedia(media.clone())));
+    items
+}
+
+/// What the menu offers for a link.
+pub fn link_items(url: &str) -> Vec<(String, actions::Message)> {
+    vec![
+        (
+            "Open".to_owned(),
+            actions::Message::OpenLink(url.to_owned()),
+        ),
+        (
+            "Copy link".to_owned(),
+            actions::Message::CopyLink(url.to_owned()),
+        ),
+    ]
 }
 
 /// The menu showing `items`.
@@ -139,5 +164,14 @@ mod tests {
             labels(&super::items(&file, false, false)),
             ["Copy image", "Save image…"]
         );
+    }
+
+    #[test]
+    fn a_link_is_opened_or_copied() {
+        let url = "https://example.org/a";
+        let items = link_items(url);
+        assert_eq!(labels(&items), ["Open", "Copy link"]);
+        assert!(matches!(&items[0].1, actions::Message::OpenLink(open) if open == url));
+        assert!(matches!(&items[1].1, actions::Message::CopyLink(copied) if copied == url));
     }
 }

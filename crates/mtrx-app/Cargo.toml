@@ -22,6 +22,8 @@ open = "5.4.4"
 serde.workspace = true
 serde_json.workspace = true
 unicode-segmentation = "1.13.3"
+# Finding text without its accents (⌘F).
+unicode-normalization = "0.1.26"
 # Same version as typst-render's, for previewing PDFs.
 hayro = "0.7.1"
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
@@ -37,15 +39,17 @@ htmd = "0.5.6"
 # Same version as iced's: the text layout of its paragraphs, for selecting.
 iced_graphics = "0.14.0"
 
-# The unread count on the Dock icon; the app's light or dark appearance.
+# The unread count on the Dock icon; the app's light or dark appearance;
+# the displays, to open the window on one.
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6.5"
-objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSAppearance", "NSApplication", "NSDockTile", "NSResponder"] }
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSAppearance", "NSApplication", "NSDockTile", "NSResponder", "NSScreen"] }
 objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSString"] }
 
-# The unread count on the taskbar button.
+# The unread count on the taskbar button; the monitors, to open the window
+# on one.
 [target.'cfg(windows)'.dependencies]
-windows = { version = "0.62.2", features = ["Win32_System_Com", "Win32_UI_HiDpi", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
+windows = { version = "0.62.2", features = ["Win32_Graphics_Gdi", "Win32_System_Com", "Win32_UI_HiDpi", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
 
 # Icon and version information in the .exe (build.rs).
 [target.'cfg(windows)'.build-dependencies]
