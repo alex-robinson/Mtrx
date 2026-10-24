@@ -58,7 +58,7 @@ per day:
       its own selection. Reproduce, decide, test.
 - [x] ⇧⌘← and ⇧⌘→ extend to the start and end of the line, ⇧⌘↑ and ⇧⌘↓
       to the first and last message on screen.
-- [ ] Page Up/Down and ⌥↑/⌥↓ scroll the timeline; ⌘↑/⌘↓ go to the oldest
+- [x] Page Up/Down and ⌥↑/⌥↓ scroll the timeline; ⌘↑/⌘↓ go to the oldest
       loaded and the newest message (when the composer does not take them).
 - [ ] ⌥⌘↑ and ⌥⌘↓ (or ⌃Tab and ⌃⇧Tab) go to the room above and below;
       ⌘1–⌘9 to the first nine rooms.

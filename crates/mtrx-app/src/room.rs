@@ -345,6 +345,11 @@ impl Room {
         self.shown += WINDOW_STEP;
     }
 
+    /// Render every loaded entry, to go to the oldest.
+    pub fn show_all(&mut self) {
+        self.shown = self.shown.max(self.entries.len());
+    }
+
     /// Render the message `event` if it is loaded; its [`Event::id`].
     pub fn reveal(&mut self, event: &OwnedEventId) -> Option<String> {
         let index = self.entries.iter().position(
@@ -1446,6 +1451,74 @@ pub fn scroll_to_row(id: &str) -> Task<Message> {
         ),
         None => Task::none(),
     })
+}
+
+/// Where the keys scroll the timeline.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Scroll {
+    /// Page Up, ⌥↑.
+    PageUp,
+    /// Page Down, ⌥↓.
+    PageDown,
+    /// ⌘↑: the top, once all loaded entries are shown ([`Room::show_all`]).
+    Oldest,
+    /// ⌘↓: the bottom, following new messages from there.
+    Newest,
+}
+
+/// The share of the view a page scrolls, so a little of it stays in view.
+const PAGE: f32 = 0.9;
+
+/// Scroll the timeline.
+pub fn scroll(scroll: Scroll) -> Task<Message> {
+    iced::advanced::widget::operate(ScrollTimeline(scroll)).discard()
+}
+
+struct ScrollTimeline(Scroll);
+
+impl Operation for ScrollTimeline {
+    fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn Operation)) {
+        operate(self);
+    }
+
+    fn scrollable(
+        &mut self,
+        id: Option<&Id>,
+        bounds: Rectangle,
+        content_bounds: Rectangle,
+        _translation: Vector,
+        state: &mut dyn operation::Scrollable,
+    ) {
+        if id != Some(&Id::new(TIMELINE)) {
+            return;
+        }
+        // Anchored at the bottom: offsets count upwards from there.
+        let page = bounds.height * PAGE;
+        match self.0 {
+            Scroll::PageUp | Scroll::PageDown => {
+                let y = if self.0 == Scroll::PageUp {
+                    page
+                } else {
+                    -page
+                };
+                state.scroll_by(
+                    scrollable::AbsoluteOffset { x: 0.0, y },
+                    bounds,
+                    content_bounds,
+                );
+            }
+            // Where the top is now: as older entries load above, the view
+            // stays rather than going on to the top.
+            Scroll::Oldest => state.scroll_to(scrollable::AbsoluteOffset {
+                x: None,
+                y: Some((content_bounds.height - bounds.height).max(0.0)),
+            }),
+            Scroll::Newest => state.snap_to(scrollable::RelativeOffset {
+                x: None,
+                y: Some(0.0),
+            }),
+        }
+    }
 }
 
 /// The offset of the timeline (from the bottom, where it is anchored)

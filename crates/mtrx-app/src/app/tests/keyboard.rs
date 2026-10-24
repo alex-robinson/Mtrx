@@ -184,59 +184,54 @@ fn row_of(room: &Room, body: &str) -> String {
         .unwrap_or_else(|| panic!("no message {body:?}"))
 }
 
-#[test]
-fn shift_and_arrows_move_the_end_of_the_selection() {
-    use selection::{Message::*, Step};
-
-    let shift = Modifiers::SHIFT;
-    let cases = [
-        (Named::ArrowLeft, shift, Extend(Step::Back)),
-        (
-            Named::ArrowRight,
-            shift | Modifiers::ALT,
-            Extend(Step::WordForward),
-        ),
-        (Named::ArrowUp, shift, ExtendLine(true)),
-        (
-            Named::ArrowLeft,
-            shift | Modifiers::COMMAND,
-            ExtendToLineEdge(false),
-        ),
-        (
-            Named::ArrowRight,
-            shift | Modifiers::COMMAND,
-            ExtendToLineEdge(true),
-        ),
-        (
-            Named::ArrowUp,
-            shift | Modifiers::COMMAND,
-            ExtendToScreenEdge(true),
-        ),
-        (
-            Named::ArrowDown,
-            shift | Modifiers::COMMAND,
-            ExtendToScreenEdge(false),
-        ),
-    ];
-    for (arrow, modifiers, expected) in cases {
+/// The shortcuts give `expected` for each key with its modifiers when no
+/// widget took it, and nothing when one did.
+fn assert_shortcuts(cases: Vec<(Key, Modifiers, Message)>) {
+    for (key, modifiers, expected) in cases {
         let message = shortcuts(
-            press(Key::Named(arrow), modifiers),
+            press(key.clone(), modifiers),
             Status::Ignored,
             window::Id::unique(),
         );
         assert_eq!(
             format!("{message:?}"),
-            format!("{:?}", Some(Message::Select(expected))),
-            "{arrow:?} with {modifiers:?}"
+            format!("{:?}", Some(expected)),
+            "{key:?} with {modifiers:?}"
         );
-        // Not when a field took it.
         let taken = shortcuts(
-            press(Key::Named(arrow), modifiers),
+            press(key.clone(), modifiers),
             Status::Captured,
             window::Id::unique(),
         );
-        assert!(taken.is_none(), "{arrow:?} with {modifiers:?}");
+        assert!(taken.is_none(), "{key:?} with {modifiers:?}");
     }
+}
+
+#[test]
+fn shift_and_arrows_move_the_end_of_the_selection() {
+    use selection::{Message::*, Step};
+
+    let (shift, command) = (Modifiers::SHIFT, Modifiers::SHIFT | Modifiers::COMMAND);
+    let arrow = Key::Named;
+    let cases = [
+        (arrow(Named::ArrowLeft), shift, Extend(Step::Back)),
+        (
+            arrow(Named::ArrowRight),
+            shift | Modifiers::ALT,
+            Extend(Step::WordForward),
+        ),
+        (arrow(Named::ArrowUp), shift, ExtendLine(true)),
+        (arrow(Named::ArrowLeft), command, ExtendToLineEdge(false)),
+        (arrow(Named::ArrowRight), command, ExtendToLineEdge(true)),
+        (arrow(Named::ArrowUp), command, ExtendToScreenEdge(true)),
+        (arrow(Named::ArrowDown), command, ExtendToScreenEdge(false)),
+    ];
+    assert_shortcuts(
+        cases
+            .into_iter()
+            .map(|(key, modifiers, message)| (key, modifiers, Message::Select(message)))
+            .collect(),
+    );
 }
 
 /// ⇧⌘← and ⇧⌘→ move the end of the selection to the edges of its line,
@@ -273,4 +268,115 @@ async fn shift_command_arrows_extend_to_the_edges() {
     assert_eq!(focus(&mut ui), at(&last, "Sea ice".len()));
     // The anchor stays.
     assert_eq!(ui.room().selection.as_ref().unwrap().anchor, at(&middle, 2));
+}
+
+#[test]
+fn page_keys_and_arrows_scroll_the_timeline() {
+    use room::Scroll;
+
+    let key = Key::Named;
+    let cases = [
+        (key(Named::PageUp), Modifiers::empty(), Scroll::PageUp),
+        (key(Named::PageDown), Modifiers::empty(), Scroll::PageDown),
+        (key(Named::ArrowUp), Modifiers::ALT, Scroll::PageUp),
+        (key(Named::ArrowDown), Modifiers::ALT, Scroll::PageDown),
+        (key(Named::ArrowUp), Modifiers::COMMAND, Scroll::Oldest),
+        (key(Named::ArrowDown), Modifiers::COMMAND, Scroll::Newest),
+    ];
+    assert_shortcuts(
+        cases
+            .into_iter()
+            .map(|(key, modifiers, scroll)| (key, modifiers, Message::ScrollKey(scroll)))
+            .collect(),
+    );
+}
+
+/// The timeline's view height, content height and how far it is scrolled
+/// from the top, once operated.
+#[derive(Default)]
+struct Timeline(Option<(f32, f32, f32)>);
+
+impl iced::advanced::widget::Operation for Timeline {
+    fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn iced::advanced::widget::Operation)) {
+        operate(self);
+    }
+
+    fn scrollable(
+        &mut self,
+        id: Option<&iced::advanced::widget::Id>,
+        bounds: iced::Rectangle,
+        content_bounds: iced::Rectangle,
+        translation: iced::Vector,
+        _state: &mut dyn iced::advanced::widget::operation::Scrollable,
+    ) {
+        if id == Some(&iced::advanced::widget::Id::new(room::TIMELINE)) {
+            self.0 = Some((bounds.height, content_bounds.height, translation.y));
+        }
+    }
+}
+
+impl Ui {
+    /// The timeline's view height, content height and how far it is
+    /// scrolled from the top.
+    fn timeline(&mut self) -> (f32, f32, f32) {
+        let mut timeline = Timeline::default();
+        let mut ui = UserInterface::build(
+            self.app.view(),
+            SIZE,
+            std::mem::take(&mut self.cache),
+            &mut self.renderer,
+        );
+        ui.operate(&self.renderer, &mut timeline);
+        self.cache = ui.into_cache();
+        timeline.0.expect("a timeline")
+    }
+
+    fn scrolled(&mut self) -> f32 {
+        self.timeline().2
+    }
+}
+
+/// Page Up and ⌥↑ scroll the timeline up a page, Page Down and ⌥↓ down;
+/// ⌘↑ goes to the oldest loaded message, ⌘↓ to the newest. Not while the
+/// composer has the keys.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs local Synapse (testserver/run.sh)"]
+async fn keys_scroll_the_timeline() {
+    let messages: Vec<String> = (0..90).map(|i| format!("Message {i}")).collect();
+    let messages: Vec<&str> = messages.iter().map(String::as_str).collect();
+    let (mut ui, _dir) = room_with("pages", &messages).await;
+    let (view, height, bottom) = ui.timeline();
+    assert_near(bottom, height - view);
+    let page = view * 0.9;
+
+    ui.press(Named::PageUp, Modifiers::empty());
+    assert_near(ui.scrolled(), bottom - page);
+    ui.press(Named::ArrowUp, Modifiers::ALT);
+    assert_near(ui.scrolled(), bottom - 2.0 * page);
+    ui.press(Named::ArrowDown, Modifiers::ALT);
+    assert_near(ui.scrolled(), bottom - page);
+    ui.press(Named::PageDown, Modifiers::empty());
+    assert_near(ui.scrolled(), bottom);
+
+    // All loaded messages are shown, from the top.
+    ui.press(Named::ArrowUp, Modifiers::COMMAND);
+    let (_, all, top) = ui.timeline();
+    assert_near(top, 0.0);
+    assert!(all > height, "{all} {height}");
+    ui.press(Named::ArrowDown, Modifiers::COMMAND);
+    assert_near(ui.scrolled(), all - view);
+
+    // The composer takes them.
+    ui.run(iced::widget::operation::focus(room::COMPOSER));
+    assert_eq!(
+        ui.press(Named::PageUp, Modifiers::empty()),
+        Status::Captured
+    );
+    assert_near(ui.scrolled(), all - view);
+}
+
+/// Offsets, to within rounding.
+#[track_caller]
+fn assert_near(offset: f32, expected: f32) {
+    assert!((offset - expected).abs() < 0.5, "{offset}, not {expected}");
 }

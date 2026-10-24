@@ -107,6 +107,8 @@ pub enum Message {
     ColoursMoved(Result<(), String>),
     /// Scroll the timeline by this much, while dragging a selection.
     ScrollTimeline(f32),
+    /// Page Up and Down, ⌥↑ and ⌥↓, ⌘↑ and ⌘↓ outside a field.
+    ScrollKey(room::Scroll),
     /// Names of others typing in a room.
     Typing(OwnedRoomId, Vec<String>),
     Scheduled(Vec<ScheduledMessage>),
@@ -1101,6 +1103,24 @@ impl App {
                 room::TIMELINE,
                 iced::widget::scrollable::AbsoluteOffset { x: 0.0, y: -dy },
             ),
+            Message::ScrollKey(scroll) => {
+                let Screen::Main(main) = &mut self.screen else {
+                    return Task::none();
+                };
+                let Some(room) = main.room.as_mut() else {
+                    return Task::none();
+                };
+                if scroll != room::Scroll::Oldest {
+                    return room::scroll(scroll);
+                }
+                room.show_all();
+                Task::batch([
+                    room::scroll(scroll),
+                    self.render_math(),
+                    self.load_avatars(),
+                    self.load_previews(),
+                ])
+            }
             Message::Select(message) => {
                 let Screen::Main(main) = &mut self.screen else {
                     return Task::none();
@@ -3484,6 +3504,15 @@ fn shortcuts(
             Key::Named(
                 arrow @ (Named::ArrowLeft | Named::ArrowRight | Named::ArrowUp | Named::ArrowDown),
             ) if status == iced::event::Status::Ignored => arrow_key(arrow, modifiers),
+            Key::Named(page @ (Named::PageUp | Named::PageDown))
+                if status == iced::event::Status::Ignored =>
+            {
+                Some(Message::ScrollKey(if page == Named::PageUp {
+                    room::Scroll::PageUp
+                } else {
+                    room::Scroll::PageDown
+                }))
+            }
             Key::Character(c) if c == "k" && modifiers.command() => Some(Message::FocusSearch),
             Key::Character(c) if c == "r" && modifiers.command() => Some(Message::Reload),
             Key::Named(Named::Escape) => Some(Message::Escape),
@@ -3501,9 +3530,10 @@ fn shortcuts(
     }
 }
 
-/// An arrow key no field took. With Shift it moves the end of the
-/// timeline's selection: by a character (⌥: a word) or a line, and with ⌘
-/// to the edge of its line or of the screen.
+/// An arrow key no field took. ⌥↑ and ⌥↓ scroll the timeline a page, ⌘↑
+/// and ⌘↓ to the oldest and newest message. With Shift it moves the end of
+/// the timeline's selection: by a character (⌥: a word) or a line, and with
+/// ⌘ to the edge of its line or of the screen.
 fn arrow_key(
     arrow: iced::keyboard::key::Named,
     modifiers: iced::keyboard::Modifiers,
@@ -3513,7 +3543,14 @@ fn arrow_key(
     let forward = matches!(arrow, Named::ArrowRight | Named::ArrowDown);
     let across = matches!(arrow, Named::ArrowLeft | Named::ArrowRight);
     if !modifiers.shift() {
-        return None;
+        let scroll = match (modifiers.alt(), modifiers.command(), forward) {
+            (true, false, false) => room::Scroll::PageUp,
+            (true, false, true) => room::Scroll::PageDown,
+            (false, true, false) => room::Scroll::Oldest,
+            (false, true, true) => room::Scroll::Newest,
+            _ => return None,
+        };
+        return (!across).then_some(Message::ScrollKey(scroll));
     }
     let message = match (across, modifiers.command()) {
         (true, true) => ExtendToLineEdge(forward),
