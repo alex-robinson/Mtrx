@@ -17,6 +17,7 @@ mod dialog;
 mod drag_scroll;
 mod ellipsis;
 mod emoji;
+mod find;
 mod fonts;
 mod hint;
 mod icons;

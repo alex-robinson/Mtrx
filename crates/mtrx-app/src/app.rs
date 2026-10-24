@@ -33,6 +33,7 @@ use crate::{
     calls,
     dialog::{self, Dialog},
     emoji,
+    find::{self, Find},
     hint::{Position, hint},
     info,
     last_view::LastView,
@@ -101,6 +102,8 @@ pub enum Message {
     Act(actions::Message),
     /// Selecting text in the timeline.
     Select(selection::Message),
+    /// The find bar (⌘F).
+    Find(find::Message),
     /// The room list's colours changed, here or on another device.
     Colours(RoomListColours),
     /// Colours from the settings file were moved to the account, or not.
@@ -906,6 +909,7 @@ impl App {
                 };
                 let grew = entries.len() != room.entries.len();
                 room.entries = entries;
+                room.find_again();
                 let read = if grew { mark_read(room) } else { Task::none() };
                 let clocks = room.sending_changed().into_iter().map(|row| {
                     let id = id.clone();
@@ -1133,6 +1137,7 @@ impl App {
                 Selection::update(&mut room.selection, message);
                 Task::none()
             }
+            Message::Find(message) => self.find(message),
             Message::Typing(room_id, names) => {
                 if let Screen::Main(main) = &mut self.screen
                     && let Some(room) = main.room.as_mut().filter(|r| r.id == room_id)
@@ -1561,6 +1566,8 @@ impl App {
                         room.reactors = None;
                     } else if let Some(room) = main.room.as_mut().filter(|r| r.unsent.is_some()) {
                         room.unsent = None;
+                    } else if let Some(room) = main.room.as_mut().filter(|r| r.find.is_some()) {
+                        room.find = None;
                     } else if let Some(room) = main.room.as_mut().filter(|r| r.selection.is_some())
                     {
                         room.selection = None;
@@ -2652,6 +2659,63 @@ impl App {
         }
     }
 
+    /// The open room's find bar.
+    fn find(&mut self, message: find::Message) -> Task<Message> {
+        let Screen::Main(main) = &mut self.screen else {
+            return Task::none();
+        };
+        let Some(room) = main.room.as_mut() else {
+            return Task::none();
+        };
+        let mut focus = Task::none();
+        match message {
+            find::Message::Open => {
+                // Text selected on one line is looked for, as in Safari;
+                // else what was last.
+                let selected = room.selected_text().filter(|text| !text.contains('\n'));
+                match (&mut room.find, selected) {
+                    (Some(find), Some(text)) => {
+                        find.query = text;
+                        find.search(&room.entries);
+                    }
+                    (Some(_), None) => {}
+                    (None, selected) => {
+                        room.find = Some(Find::new(selected.unwrap_or_default(), &room.entries));
+                    }
+                }
+                focus = Task::batch([
+                    iced::widget::operation::focus(find::FIELD),
+                    iced::widget::operation::select_all(find::FIELD),
+                ]);
+            }
+            find::Message::Query(query) => {
+                if let Some(find) = &mut room.find {
+                    find.query = query;
+                    find.search(&room.entries);
+                }
+            }
+            find::Message::Next | find::Message::Previous => {
+                let next = matches!(message, find::Message::Next);
+                if let Some(find) = &mut room.find {
+                    find.step(next);
+                }
+            }
+            find::Message::Close => {
+                room.find = None;
+                return Task::none();
+            }
+        }
+        let scroll = room.show_found();
+        // The match may be in a message not rendered before.
+        Task::batch([
+            focus,
+            scroll,
+            self.render_math(),
+            self.load_avatars(),
+            self.load_previews(),
+        ])
+    }
+
     fn later(&mut self, message: send_later::Message) -> Task<Message> {
         use send_later::Message as Later;
         let Screen::Main(main) = &mut self.screen else {
@@ -3490,6 +3554,16 @@ fn shortcuts(
                 )))
             }
             Key::Character(c) if c == "k" && modifiers.command() => Some(Message::FocusSearch),
+            Key::Character(c) if c == "f" && modifiers.command() => {
+                Some(Message::Find(find::Message::Open))
+            }
+            Key::Character(c) if c == "g" && modifiers.command() => {
+                Some(Message::Find(if modifiers.shift() {
+                    find::Message::Previous
+                } else {
+                    find::Message::Next
+                }))
+            }
             Key::Character(c) if c == "r" && modifiers.command() => Some(Message::Reload),
             Key::Named(Named::Escape) => Some(Message::Escape),
             _ => None,

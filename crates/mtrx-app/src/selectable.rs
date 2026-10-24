@@ -2,7 +2,8 @@
 //! layout and drawing it follows) plus hit-testing and highlighting through
 //! the paragraph's cosmic-text layout. In the timeline the selection lives
 //! in the room ([`crate::selection`]): the widget reports gestures and draws
-//! the part it is given. Elsewhere ([`selectable_text`]) it keeps its own
+//! the part it is given, and the find bar's matches ([`crate::find`]) the
+//! same way. Elsewhere ([`selectable_text`]) it keeps its own
 //! selection and copies it with ⌘C.
 
 use std::{any::Any, ops::Range, rc::Rc};
@@ -29,7 +30,7 @@ use iced_graphics::text::{
 };
 use unicode_segmentation::UnicodeSegmentation;
 
-use crate::{selection::Gesture, style};
+use crate::{find, selection::Gesture, style};
 
 /// How far the cursor may move between pressing and releasing a link for it
 /// to count as a click rather than the start of a selection.
@@ -48,6 +49,9 @@ pub struct Selectable<'a, Message> {
     size: Option<Pixels>,
     /// The selected part of its text, in bytes.
     selected: Option<Range<usize>>,
+    /// Matches of the find bar in its text, and whether each is the current
+    /// one.
+    found: Vec<(Range<usize>, bool)>,
     /// The selection ends in it.
     focus: bool,
     dragging: bool,
@@ -78,6 +82,7 @@ pub fn selectable<'a, Message>(
         unit,
         size: None,
         selected: None,
+        found: Vec::new(),
         focus: false,
         dragging: false,
         on_link: None,
@@ -130,6 +135,11 @@ impl<'a, Message> Selectable<'a, Message> {
 
     pub fn selected(mut self, range: Option<Range<usize>>) -> Self {
         self.selected = range;
+        self
+    }
+
+    pub fn found(mut self, found: Vec<(Range<usize>, bool)>) -> Self {
+        self.found = found;
         self
     }
 
@@ -359,6 +369,19 @@ impl<Message> Widget<Message, Theme, Renderer> for Selectable<'_, Message> {
         let translation = bounds.position() - Point::ORIGIN;
         let size = self.size.unwrap_or_else(|| renderer.default_size());
 
+        for (range, current) in &self.found {
+            let (color, border) = style::found(theme, *current);
+            for rect in state.highlight(range, size.0) {
+                renderer.fill_quad(
+                    renderer::Quad {
+                        bounds: rect + translation,
+                        border,
+                        ..Default::default()
+                    },
+                    color,
+                );
+            }
+        }
         let selected = if self.own {
             state.own_range()
         } else {
@@ -526,9 +549,19 @@ impl<Message> Widget<Message, Theme, Renderer> for Selectable<'_, Message> {
         &mut self,
         tree: &mut Tree,
         layout: Layout<'_>,
-        _renderer: &Renderer,
+        renderer: &Renderer,
         operation: &mut dyn Operation,
     ) {
+        use iced::advanced::text::Renderer as _;
+        if let Some((range, _)) = self.found.iter().find(|(_, current)| *current) {
+            let state = tree.state.downcast_ref::<State>();
+            let size = self.size.unwrap_or_else(|| renderer.default_size());
+            let rects = state.highlight(range, size.0).into_iter();
+            if let Some(rect) = rects.reduce(|a, b| a.union(&b)) {
+                let bounds = rect + translation(layout.bounds());
+                operation.custom(Some(&Id::new(find::CURRENT)), bounds, &mut ());
+            }
+        }
         if self.focus {
             let state: &mut dyn Any = tree.state.downcast_mut::<State>();
             operation.custom(Some(&Id::new(FOCUS)), layout.bounds(), state);

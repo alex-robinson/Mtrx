@@ -14,7 +14,9 @@ use mtrx_core::{OwnedUserId, UserId};
 use mtrx_format::{Block, Document, Inline, Style};
 
 use crate::{
-    emoji, fonts,
+    emoji,
+    find::Found,
+    fonts,
     selectable::selectable,
     selection::{Gesture, Pos, Unit, unit_range},
     style,
@@ -38,6 +40,8 @@ pub struct Select<'a, M> {
     /// A selection is being dragged, so moving over the text extends it.
     pub dragging: bool,
     pub on_gesture: Rc<dyn Fn(Gesture) -> M + 'a>,
+    /// Matches of the find bar in this message, drawn as a selection is.
+    pub found: Vec<Found>,
 }
 
 /// `document`, its mentions of `own` (us) in bold; marked when `edited`.
@@ -289,7 +293,13 @@ impl<'a, M: Clone + 'a> Walk<'_, 'a, M> {
                 .selected(select.range.and_then(|range| unit_range(range, index, len)))
                 .focus(select.focus.is_some_and(|focus| focus.unit == index))
                 .dragging(select.dragging)
-                .on_gesture(select.on_gesture.clone());
+                .on_gesture(select.on_gesture.clone())
+                .found(
+                    (select.found.iter())
+                        .filter(|found| found.unit == index)
+                        .map(|found| (found.range.clone(), found.current))
+                        .collect(),
+                );
         }
         unit.into()
     }
@@ -468,6 +478,7 @@ mod tests {
                 focus: None,
                 dragging,
                 on_gesture: Rc::new(|gesture| gesture),
+                found: Vec::new(),
             },
             edited,
         );
@@ -576,6 +587,73 @@ mod tests {
             select(&document, false, &click.repeat(3)),
             "Hello you there"
         );
+    }
+
+    #[test]
+    fn reports_where_the_current_match_is() {
+        use iced::{
+            Rectangle,
+            advanced::{
+                renderer::Headless,
+                widget::{Id, Operation, operation::black_box},
+            },
+        };
+        use iced_runtime::user_interface::{Cache, UserInterface};
+
+        /// Where the current match was reported.
+        struct Current(Option<Rectangle>);
+
+        impl Operation for Current {
+            fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn Operation)) {
+                operate(self);
+            }
+
+            fn custom(&mut self, id: Option<&Id>, bounds: Rectangle, _: &mut dyn std::any::Any) {
+                if id == Some(&Id::new(crate::find::CURRENT)) {
+                    self.0 = Some(bounds);
+                }
+            }
+        }
+
+        let mut renderer = iced::futures::executor::block_on(iced::Renderer::new(
+            fonts::INTER,
+            Pixels(style::TEXT_SIZE),
+            None,
+        ))
+        .unwrap();
+        let own = OwnedUserId::try_from("@me:example.org").unwrap();
+        let document = Document::from_html("<p>Ice</p><p>Sea ice and more ice</p>");
+        let mut current = |found| {
+            let select = Select {
+                range: None,
+                focus: None,
+                dragging: false,
+                on_gesture: Rc::new(|_| ()),
+                found,
+            };
+            let view = view(&document, &Theme::Light, &own, |_| (), select, false);
+            let mut ui = UserInterface::build(
+                view,
+                Size::new(400.0, 400.0),
+                Cache::default(),
+                &mut renderer,
+            );
+            let mut operation = Current(None);
+            ui.operate(&renderer, &mut black_box(&mut operation));
+            operation.0
+        };
+        let found = |range, current| Found {
+            unit: 1,
+            range,
+            current,
+        };
+        let at = current(vec![found(4..7, false), found(17..20, true)]).unwrap();
+        // The second line's last word.
+        assert!(at.y > 15.0 && at.x > 80.0, "{at:?}");
+        assert!(at.width > 10.0 && at.width < 40.0, "{at:?}");
+        let before = current(vec![found(4..7, true), found(17..20, false)]).unwrap();
+        assert!(before.x < at.x && before.y == at.y, "{before:?}");
+        assert_eq!(current(vec![found(4..7, false)]), None);
     }
 
     #[test]
