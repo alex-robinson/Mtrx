@@ -1,6 +1,6 @@
 # Behaving like a Mac app: to do
 
-Status: checklist, not started. What the text system and a native app give
+Status: A in progress. What the text system and a native app give
 for free, written down once so that it is done once, not found one issue
 at a time.
 
@@ -41,10 +41,10 @@ per day:
 
 ### A1. Window
 
-- [ ] ⌘W hides the window; the app keeps running and synced (dock badge
-      and notifications go on) and the Dock icon shows it again. Closing
-      quits the app now (`main.rs` already sets `exit_on_close_request:
-      false`; `Message::CloseWindow` goes offline and closes).
+- [ ] ⌘W closes the window and so quits, as the close button does: there
+      is only ever one window (decided 2026-10-24). `main.rs` already sets
+      `exit_on_close_request: false`; `Message::CloseWindow` goes offline
+      and closes.
 - [ ] Size, position and display remembered.
 - [ ] Full screen, and tiling with the system's window layouts. Unchecked.
 
@@ -75,7 +75,6 @@ per day:
 - [ ] Right-click a link: Open, Copy Link.
 - [ ] Right-click a picture: Copy Image, Save Image…. Math messages have
       it (`message_menu.rs`); pictures do not.
-- [ ] Drag a picture or file out of a message into Finder or another app.
 
 ### A4. Selection in the timeline
 
@@ -179,5 +178,8 @@ Not fixable in our code alone.
   replacements, smart quotes, Writing Tools, Services and Look Up come with
   a native text view. Spell checking could be done with `NSSpellChecker`,
   but iced's editor cannot underline a word yet.
+- **Dragging out of the window.** winit cannot start a drag, so a picture
+  or file cannot be dragged into Finder or another app; it would take a
+  native drag session per platform (decided 2026-10-24: not now).
 - **Keyboard focus.** Tab and ⇧Tab between controls with a focus ring, and
   Space to press a button: iced's buttons are not focusable.
