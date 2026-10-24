@@ -152,7 +152,9 @@ native menus to a winit window. Its accelerators take the key before the
 window does, so each one becomes a menu event routed to whatever is
 focused; do it once B's bindings exist to route to.
 
-- [ ] App menu: About, Settings… (⌘,), Hide, Quit.
+- [ ] App menu: About, Settings… (⌘,), Hide, Quit. Quit (⌘Q) goes
+      through `Message::CloseWindow`, as closing does: winit's own Quit
+      exits without going offline or ending the session.
 - [ ] Edit: Undo, Redo, Cut, Copy, Paste, Select All, Find (⌘F); macOS
       adds Emoji & Symbols, Start Dictation and AutoFill.
 - [ ] View: Bigger, Smaller, Actual Size (⌘+ ⌘− ⌘0, already keys).
