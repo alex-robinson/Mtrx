@@ -31,7 +31,7 @@ use crate::{
     avatar::{self, Avatars},
     badge::{self, Badge},
     calls,
-    clipboard::{self, Copied},
+    clipboard::{self, Copied, Pasted},
     dialog::{self, Dialog},
     emoji,
     hint::{Position, hint},
@@ -185,6 +185,10 @@ pub enum Message {
     FileDropped(PathBuf),
     /// Files were read to attach to the message in a room.
     Attached(OwnedRoomId, Vec<Result<media::Attached, String>>),
+    /// ⌘V in the composer: read the clipboard.
+    Paste,
+    /// What the clipboard held, to paste into a room's composer.
+    Pasted(OwnedRoomId, Option<clipboard::Pasted>),
     /// Remove an attached file, by index.
     Unattach(usize),
     Arrange(arrange::Message),
@@ -1934,6 +1938,39 @@ impl App {
                     return Task::none();
                 };
                 attach(room.id.clone(), vec![path])
+            }
+            Message::Paste => {
+                let Screen::Main(main) = &self.screen else {
+                    return Task::none();
+                };
+                let Some(room) = &main.room else {
+                    return Task::none();
+                };
+                let id = room.id.clone();
+                Task::perform(clipboard::read(), move |pasted| {
+                    Message::Pasted(id.clone(), pasted)
+                })
+            }
+            Message::Pasted(id, pasted) => {
+                let Screen::Main(main) = &self.screen else {
+                    return Task::none();
+                };
+                if main.room.as_ref().is_none_or(|room| room.id != id) {
+                    return Task::none();
+                }
+                match pasted {
+                    // As if dropped.
+                    Some(Pasted::Files(paths)) => attach(id, paths),
+                    Some(Pasted::Image(file)) => {
+                        Task::perform(media::attached(file), move |attached| {
+                            Message::Attached(id.clone(), vec![attached])
+                        })
+                    }
+                    Some(Pasted::Text(text)) => self.update(Message::Composer(
+                        text_editor::Action::Edit(text_editor::Edit::Paste(Arc::new(text))),
+                    )),
+                    None => Task::none(),
+                }
             }
             Message::Attached(id, attached) => {
                 if let Screen::Main(main) = &mut self.screen

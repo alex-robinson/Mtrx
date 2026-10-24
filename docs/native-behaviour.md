@@ -95,7 +95,7 @@ these stay outside the widget.
 - [x] Copy as text, math as `$…$`.
 - [x] Copy as HTML as well, so pasting into Mail or a document keeps
       formatting, links and lists.
-- [ ] ⌘V of a picture (a screenshot, say) attaches it, as dropping a file
+- [x] ⌘V of a picture (a screenshot, say) attaches it, as dropping a file
       does.
 - [ ] ⌘V of rich text (from a web page or Mail) as Markdown: links, lists,
       emphasis.

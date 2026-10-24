@@ -29,7 +29,7 @@ use crate::{
     app::Message,
     avatar::{self, Avatars, Shape},
     calls::{self, RoomCalls},
-    clipboard::Copied,
+    clipboard::{self, Copied},
     context_menu::context_menu,
     drag_scroll::drag_scroll,
     ellipsis::ellipsis,
@@ -714,6 +714,8 @@ impl Room {
                     Key::Named(Named::Escape) if cancellable => {
                         custom(Message::Act(actions::Message::CancelCompose))
                     }
+                    // Pictures and files too, which iced's clipboard lacks.
+                    _ if clipboard::pastes(&press) => custom(Message::Paste),
                     _ => selection::editor_key(press, selected),
                 }
             })

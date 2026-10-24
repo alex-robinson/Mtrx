@@ -627,19 +627,25 @@ async fn read_one(path: &Path) -> Result<Attached, String> {
     let file = Attachment::read(path)
         .await
         .map_err(|e| format!("Could not attach {}: {e}", path.display()))?;
+    attached(file).await
+}
+
+/// `file` to attach, with a small picture of it if it is an image.
+pub async fn attached(file: Attachment) -> Result<Attached, String> {
     if !file.mimetype.starts_with("image/") {
         return Ok(Attached {
             file,
             preview: None,
         });
     }
+    let filename = file.filename.clone();
     let side = (2.0 * CHIP_HEIGHT) as u32;
     tokio::task::spawn_blocking(move || {
         let preview = decode(&file.bytes, side, side).map(|picture| picture.handle);
         Attached { file, preview }
     })
     .await
-    .map_err(|e| format!("Could not attach {}: {e}", path.display()))
+    .map_err(|e| format!("Could not attach {filename}: {e}"))
 }
 
 /// The attached files in a row, each with an × sending `remove` with its
