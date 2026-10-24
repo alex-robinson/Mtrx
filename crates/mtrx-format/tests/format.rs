@@ -172,6 +172,49 @@ mod render {
     }
 
     #[test]
+    fn code_is_drawn_by_character() {
+        use mtrx_format::{Block, Inline};
+        let renderer = Renderer::new::<Vec<u8>>([]);
+        let code = "let x = 1;\n\tif x {\n\t\tgo()";
+        let document = Document {
+            blocks: vec![
+                Block::Paragraph(vec![
+                    Inline::Text("Run ".into()),
+                    Inline::Code("ls -l".into()),
+                    Inline::Math("x".into()),
+                ]),
+                Block::CodeBlock {
+                    language: Some("rust".into()),
+                    code: format!("{code}\n"),
+                },
+            ],
+        };
+        let image = renderer.render(&document, &style(400.0)).unwrap();
+        let pieces = |leaf| -> Vec<_> {
+            let pieces = image.pieces.iter().filter(|p| p.leaf == leaf);
+            pieces.map(|p| (p.range.clone().unwrap(), p.rect)).collect()
+        };
+        // Inline code, a character each, left to right.
+        let inline = pieces(1);
+        let ranges: Vec<_> = inline.iter().map(|(r, _)| r.clone()).collect();
+        assert_eq!(ranges, (0..5).map(|i| i..i + 1).collect::<Vec<_>>());
+        assert!(inline.windows(2).all(|w| w[0].1[0] < w[1].1[0]));
+        // The code block: every character but the line breaks, once, in
+        // order; a tab is one piece.
+        let block = pieces(3);
+        let ranges: Vec<_> = block.iter().map(|(r, _)| r.clone()).collect();
+        let expected: Vec<_> = (code.char_indices())
+            .filter(|(_, c)| *c != '\n')
+            .map(|(i, c)| i..i + c.len_utf8())
+            .collect();
+        assert_eq!(ranges, expected);
+        // "go" is below "if", and further right (two tabs, not one).
+        let at = |offset| block.iter().find(|(r, _)| r.start == offset).unwrap().1;
+        let (r#if, go) = (at(code.find("if").unwrap()), at(code.find("go").unwrap()));
+        assert!(go[1] > r#if[1] && go[0] > r#if[0], "{if:?} {go:?}", if = r#if);
+    }
+
+    #[test]
     fn renders_common_latex() {
         let renderer = Renderer::new::<Vec<u8>>([]);
         for tex in [
@@ -433,4 +476,57 @@ fn matrix_links_to_users_are_mentions() {
             mention("@weitzel:server.org", "Nils Weitzel"),
         ])]
     );
+}
+
+#[test]
+fn copied_as_html_with_math_as_latex() {
+    let doc = Document::from_html(
+        r#"<p>Flux <b>q</b> <span data-mx-maths="q=-k\nabla T"><code>q</code></span>, see <a href="https://example.org/a">data</a> &amp; <a href="https://matrix.to/#/@ana:x.org">Ana</a></p><ol start="3"><li>one</li><li>two<br>lines</li></ol><pre><code class="language-rust">fn x() {}
+</code></pre><div data-mx-maths="x^2"><code>x^2</code></div>"#,
+    );
+    assert_eq!(
+        doc.to_html(),
+        r#"<p>Flux <strong>q</strong> $q=-k\nabla T$, see <a href="https://example.org/a">data</a> &amp; <a href="https://matrix.to/#/@ana:x.org">Ana</a></p><ol start="3"><li>one</li><li>two<br>lines</li></ol><pre><code class="language-rust">fn x() {}
+</code></pre><p>$$x^2$$</p>"#
+    );
+}
+
+#[test]
+fn clipped_to_a_selection() {
+    // Leaves: "Hello ", "bold", " world", "one", "two", "three".
+    let doc = Document::from_html(
+        "<p>Hello <b>bold</b> world</p><hr><ul><li>one</li><li>two</li><li>three</li></ul>",
+    );
+    let part = doc.clipped(|leaf| match leaf {
+        1 => Some(2..4),
+        2 => Some(0..6),
+        3 => Some(0..3),
+        4 => Some(0..2),
+        _ => None,
+    });
+    assert_eq!(
+        part.to_html(),
+        "<p><strong>ld</strong> world</p><ul><li>one</li><li>tw</li></ul>"
+    );
+    // All of it, but the rule.
+    let mut all = doc.clone();
+    all.blocks.remove(1);
+    assert_eq!(doc.clipped(|_| Some(0..usize::MAX)), all);
+
+    // Numbered from the first item kept.
+    let list = Document::from_html("<ol><li>a</li><li>b</li><li>c</li></ol>");
+    let part = list.clipped(|leaf| (leaf == 1).then_some(0..1));
+    assert_eq!(part.to_html(), r#"<ol start="2"><li>b</li></ol>"#);
+
+    // Part of a formula is text, as shown; all of it stays math.
+    let math = Document::from_html(
+        r#"Energy <span data-mx-maths="E=mc^2"><code>E=mc^2</code></span><br>and more"#,
+    );
+    let part = math.clipped(|leaf| (leaf == 1).then_some(0..4));
+    assert_eq!(
+        part.blocks,
+        [Block::Paragraph(vec![Inline::Text("$E=m".into())])]
+    );
+    let part = math.clipped(|leaf| (leaf == 1).then_some(0..8));
+    assert_eq!(part.to_html(), "<p>$E=mc^2$</p>", "without the line break");
 }

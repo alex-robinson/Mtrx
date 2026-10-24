@@ -10,10 +10,36 @@ use iced::{
         widget::{Operation, Tree, tree},
     },
     mouse,
-    widget::space,
+    widget::{button, column, container, space},
 };
 
-use crate::popover::{Edge, Side, floating};
+use crate::{
+    ellipsis::ellipsis,
+    popover::{Edge, Side, floating},
+    style,
+};
+
+/// Width of a menu.
+const WIDTH: f32 = 170.0;
+
+/// A menu of `items`, each a label and what choosing it sends.
+pub fn menu<'a, Message: Clone + 'a>(
+    items: impl IntoIterator<Item = (String, Message)>,
+) -> Element<'a, Message> {
+    let entries = items.into_iter().map(|(label, message)| {
+        button(ellipsis(label).size(13))
+            .width(Length::Fill)
+            .padding([4, 10])
+            .style(style::list_item(false))
+            .on_press(message)
+            .into()
+    });
+    container(column(entries).spacing(1))
+        .width(WIDTH)
+        .padding(4)
+        .style(style::toolbar)
+        .into()
+}
 
 pub struct ContextMenu<'a, Message> {
     content: Element<'a, Message>,
@@ -25,7 +51,8 @@ pub struct ContextMenu<'a, Message> {
     on_dismiss: Option<Message>,
 }
 
-/// `content`, sending `on_open` when right-clicked; while `menu` is given,
+/// `content`, sending `on_open` when right-clicked (unless something in it
+/// took the click, as a link does for its own menu); while `menu` is given,
 /// it floats where that click was.
 pub fn context_menu<'a, Message: Clone + 'a>(
     content: impl Into<Element<'a, Message>>,
@@ -107,15 +134,16 @@ impl<'a, Message: Clone + 'a> Widget<Message, Theme, Renderer> for ContextMenu<'
             shell,
             viewport,
         );
-        if shell.is_event_captured() {
-            return;
-        }
         if let Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Right)) = event
             && let Some(at) = cursor.position_in(layout.bounds())
         {
+            // Also when the content took the click for a menu of its own
+            // (a link's), given here in place of this one.
             tree.state.downcast_mut::<State>().at = at;
-            shell.publish(self.on_open.clone());
-            shell.capture_event();
+            if !shell.is_event_captured() {
+                shell.publish(self.on_open.clone());
+                shell.capture_event();
+            }
         }
     }
 
@@ -212,5 +240,80 @@ impl<'a, Message: Clone + 'a> Widget<Message, Theme, Renderer> for ContextMenu<'
 impl<'a, Message: Clone + 'a> From<ContextMenu<'a, Message>> for Element<'a, Message> {
     fn from(menu: ContextMenu<'a, Message>) -> Self {
         Element::new(menu)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use iced::{
+        Pixels,
+        advanced::{
+            clipboard,
+            renderer::Headless,
+            widget::{self, operation::black_box},
+        },
+        widget::{mouse_area, text},
+    };
+    use iced_runtime::user_interface::{Cache, UserInterface};
+
+    use super::*;
+    use crate::{fonts, style};
+
+    #[derive(Clone, Debug, PartialEq)]
+    enum Clicked {
+        Inside,
+        Menu,
+    }
+
+    /// Where the text "Open" is.
+    struct FindOpen(Option<Rectangle>);
+
+    impl Operation for FindOpen {
+        fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn Operation)) {
+            operate(self);
+        }
+
+        fn text(&mut self, _id: Option<&widget::Id>, bounds: Rectangle, text: &str) {
+            if text == "Open" {
+                self.0 = Some(bounds);
+            }
+        }
+    }
+
+    #[test]
+    fn a_menu_the_content_opens_floats_where_it_was_clicked() {
+        let mut renderer = iced::futures::executor::block_on(iced::Renderer::new(
+            fonts::INTER,
+            Pixels(style::TEXT_SIZE),
+            None,
+        ))
+        .unwrap();
+        let size = Size::new(400.0, 300.0);
+        // Content taking right-clicks for a menu of its own.
+        let view = |open: bool| -> Element<'static, Clicked> {
+            let content = mouse_area(space().width(Length::Fill).height(Length::Fill))
+                .on_right_press(Clicked::Inside);
+            let menu = open.then(|| text("Open").into());
+            context_menu(content, menu, Clicked::Menu).into()
+        };
+        let mut ui = UserInterface::build(view(false), size, Cache::default(), &mut renderer);
+        let mut messages = Vec::new();
+        let _ = ui.update(
+            &[Event::Mouse(mouse::Event::ButtonPressed(
+                mouse::Button::Right,
+            ))],
+            mouse::Cursor::Available(Point::new(120.0, 80.0)),
+            &mut renderer,
+            &mut clipboard::Null,
+            &mut messages,
+        );
+        assert_eq!(messages, [Clicked::Inside], "not this menu");
+        let cache = ui.into_cache();
+        let mut ui = UserInterface::build(view(true), size, cache, &mut renderer);
+        let mut find = FindOpen(None);
+        ui.operate(&renderer, &mut black_box(&mut find));
+        let open = find.0.expect("the menu is shown");
+        assert_eq!(open.x, 120.0);
+        assert!((80.0..90.0).contains(&open.y), "{open:?}");
     }
 }

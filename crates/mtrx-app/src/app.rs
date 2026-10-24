@@ -10,7 +10,7 @@ use std::{
 
 use futures_util::{SinkExt, StreamExt};
 use iced::{
-    Element, Length, Size, Subscription, Task, Theme, mouse,
+    Element, Length, Point, Rectangle, Size, Subscription, Task, Theme, mouse,
     theme::Mode,
     widget::{
         button, column, container, image, mouse_area, opaque, row, scrollable::Viewport, stack,
@@ -31,8 +31,10 @@ use crate::{
     avatar::{self, Avatars},
     badge::{self, Badge},
     calls,
+    clipboard::{self, Copied, Field, Pasted},
     dialog::{self, Dialog},
-    emoji,
+    edit_menu, emoji,
+    find::{self, Find},
     hint::{Position, hint},
     info,
     last_view::LastView,
@@ -40,6 +42,7 @@ use crate::{
     math::{self, Math, Rendered},
     media::{self, Previews, Viewer},
     members, mention, message, pdf_viewer,
+    placement::{self, Frame, Placement},
     presence::{self, Activity, Presences},
     room::{self, Look, Older, Room},
     selection::{self, Selection},
@@ -103,6 +106,8 @@ pub enum Message {
     Act(actions::Message),
     /// Selecting text in the timeline.
     Select(selection::Message),
+    /// The find bar (⌘F).
+    Find(find::Message),
     /// The room list's colours changed, here or on another device.
     Colours(RoomListColours),
     /// Colours from the settings file were moved to the account, or not.
@@ -147,7 +152,7 @@ pub enum Message {
     /// A desktop notification about the room was clicked.
     NotificationClicked(OwnedRoomId),
     WindowFocused(bool),
-    /// The window's close button (or Alt+F4, ...) was pressed.
+    /// The window's close button (or ⌘W, Alt+F4, ...) was pressed.
     CloseWindow(window::Id),
     /// Others' presence, and ours.
     Presence(presence::Message),
@@ -159,6 +164,17 @@ pub enum Message {
     MathRendered(math::Key, Rendered),
     LinkClicked(String),
     WindowResized(Size),
+    /// The window opened at `.2` (its outer position), with these displays
+    /// attached (`None` where the platform does not say).
+    WindowOpened(window::Id, Option<Vec<Rectangle>>, Option<Point>),
+    /// The window was moved or resized.
+    WindowMoved(window::Id),
+    /// Where the window now is, to open there next time.
+    WindowPlaced {
+        position: Option<Point>,
+        maximized: bool,
+        fullscreen: bool,
+    },
     ScaleFactor(f32),
     /// Text size, or the PDF viewer's zoom while it is open.
     Zoom(Zoom),
@@ -175,6 +191,8 @@ pub enum Message {
     /// Show an image large.
     OpenImage(Media),
     CloseImage,
+    /// Open or close the menu of the image in the viewer.
+    ViewerMenu(bool),
     /// The whole image for the viewer.
     ImageLoaded(MediaRef, Result<media::Picture, String>),
     /// A PDF in the viewer was loaded, with its first page drawn.
@@ -190,6 +208,12 @@ pub enum Message {
     FileDropped(PathBuf),
     /// Files were read to attach to the message in a room.
     Attached(OwnedRoomId, Vec<Result<media::Attached, String>>),
+    /// ⌘V (or ⌥⇧⌘V) in a field: read the clipboard.
+    Paste(Field, clipboard::Paste),
+    /// What the clipboard held, to paste into a field in a room.
+    Pasted(OwnedRoomId, Field, Option<clipboard::Pasted>),
+    /// The menu of a field one writes in.
+    EditMenu(Field, edit_menu::Message),
     /// Remove an attached file, by index.
     Unattach(usize),
     Arrange(arrange::Message),
@@ -239,6 +263,10 @@ pub struct App {
     settings_file: Option<PathBuf>,
     /// Where the last space and room shown are saved; `None` in tests.
     view_file: Option<PathBuf>,
+    /// The window's size and position, to open it there again.
+    placement: Placement,
+    /// Where the placement is saved; `None` in tests.
+    placement_file: Option<PathBuf>,
     /// The room list's edge is being dragged.
     resizing: bool,
     /// The settings panel, while open.
@@ -496,18 +524,17 @@ impl Main {
     }
 }
 
-/// The window's size on opening, in logical pixels.
-const WINDOW: Size = Size::new(1200.0, 800.0);
-
 /// What the app starts with: profile and data directory from the same
-/// environment variables the CLI reads, and the saved settings, read before
-/// the window opens as its size depends on the text size.
+/// environment variables the CLI reads, and the saved settings and window
+/// placement, read before the window opens as its size depends on the text
+/// size.
 #[derive(Clone)]
 pub struct Environment {
     profile: Profile,
     data_root: PathBuf,
     secrets: SecretStore,
     settings: Settings,
+    placement: Placement,
 }
 
 impl Environment {
@@ -524,18 +551,21 @@ impl Environment {
         let profile =
             Profile::new(&name, &data_root, secrets.clone()).map_err(|e| e.to_string())?;
         let settings = Settings::load(&Settings::path(&data_root));
+        let placement = Placement::load(&Placement::path(&profile));
         Ok(Self {
             profile,
             data_root,
             secrets,
             settings,
+            placement,
         })
     }
 
-    /// The window's size on opening, in layout units, which iced scales by
-    /// the text size: [`WINDOW`] in logical pixels at any text size.
-    pub fn window_size(&self) -> Size {
-        WINDOW / self.settings.text_size.scale()
+    /// The window's size, position and whether it is maximised on opening,
+    /// as it was left. Its size is in layout units, which iced scales by the
+    /// text size: the same in logical pixels at any text size.
+    pub fn window(&self) -> window::Settings {
+        self.placement.settings(self.settings.text_size.scale())
     }
 }
 
@@ -546,6 +576,7 @@ impl App {
             data_root,
             secrets,
             settings,
+            placement,
         } = environment;
         let settings_file = Settings::path(&data_root);
         #[cfg(target_os = "macos")]
@@ -557,11 +588,15 @@ impl App {
             settings,
             settings_file: Some(settings_file),
             view_file: Some(LastView::path(&profile)),
+            placement_file: Some(Placement::path(&profile)),
+            window: placement
+                .frame
+                .map_or(placement::DEFAULT_SIZE, |frame| frame.size()),
+            placement,
             resizing: false,
             settings_panel: None,
             screen: Screen::Starting,
             system_mode: Mode::Light,
-            window: WINDOW,
             scale: 1.0,
             math: Math::new(),
             badge: Badge::default(),
@@ -575,7 +610,15 @@ impl App {
             None => Task::none(),
         });
         let mode = iced::system::theme().map(Message::ThemeMode);
-        (app, Task::batch([restore, scale, mode]))
+        // Whether the window opened on a display, see `Message::WindowOpened`.
+        let opened = window::oldest().then(|id| match id {
+            Some(id) => window::run(id, placement::displays).then(move |displays| {
+                window::position(id)
+                    .map(move |position| Message::WindowOpened(id, displays.clone(), position))
+            }),
+            None => Task::none(),
+        });
+        (app, Task::batch([restore, scale, mode, opened]))
     }
 
     /// The theme the app is drawn in.
@@ -912,6 +955,7 @@ impl App {
                 };
                 let grew = entries.len() != room.entries.len();
                 room.entries = entries;
+                room.find_again();
                 let read = if grew { mark_read(room) } else { Task::none() };
                 let clocks = room.sending_changed().into_iter().map(|row| {
                     let id = id.clone();
@@ -1145,9 +1189,7 @@ impl App {
                 };
                 match message {
                     selection::Message::Copy => {
-                        return room
-                            .selected_text()
-                            .map_or_else(Task::none, iced::clipboard::write);
+                        return room.selected().map_or_else(Task::none, copy);
                     }
                     selection::Message::SelectAll => {
                         return room.on_screen().and_then(|(first, last)| {
@@ -1178,6 +1220,7 @@ impl App {
                 Selection::update(&mut room.selection, message);
                 Task::none()
             }
+            Message::Find(message) => self.find(message),
             Message::Typing(room_id, names) => {
                 if let Screen::Main(main) = &mut self.screen
                     && let Some(room) = main.room.as_mut().filter(|r| r.id == room_id)
@@ -1593,11 +1636,13 @@ impl App {
                 }
             }
             Message::FocusSearch => iced::widget::operation::focus(sidebar::SEARCH),
-            // Closes the topmost thing: the image viewer, a drag, menu or
-            // category name, else the search.
+            // Closes the topmost thing: the image viewer's menu, the
+            // viewer, a drag, menu or category name, else the search.
             Message::Escape => {
                 if let Screen::Main(main) = &mut self.screen {
-                    if main.viewer.is_some() || main.pdf.is_some() {
+                    if let Some(viewer) = main.viewer.as_mut().filter(|v| v.menu) {
+                        viewer.menu = false;
+                    } else if main.viewer.is_some() || main.pdf.is_some() {
                         main.viewer = None;
                         main.pdf = None;
                     } else if main.info.is_some() {
@@ -1612,12 +1657,23 @@ impl App {
                         room.completion = None;
                     } else if let Some(room) = main.room.as_mut().filter(|r| r.menu.is_some()) {
                         room.menu = None;
+                    } else if let Some(room) = main.room.as_mut().filter(|r| r.composer_menu) {
+                        room.composer_menu = false;
+                    } else if let Some(edit) = main
+                        .room
+                        .as_mut()
+                        .and_then(|r| r.editing.as_mut())
+                        .filter(|e| e.menu)
+                    {
+                        edit.menu = false;
                     } else if let Some(room) = main.room.as_mut().filter(|r| r.readers.is_some()) {
                         room.readers = None;
                     } else if let Some(room) = main.room.as_mut().filter(|r| r.reactors.is_some()) {
                         room.reactors = None;
                     } else if let Some(room) = main.room.as_mut().filter(|r| r.unsent.is_some()) {
                         room.unsent = None;
+                    } else if let Some(room) = main.room.as_mut().filter(|r| r.find.is_some()) {
+                        room.find = None;
                     } else if let Some(room) = main.room.as_mut().filter(|r| r.selection.is_some())
                     {
                         room.selection = None;
@@ -1847,6 +1903,48 @@ impl App {
                 self.window = size * self.scale_factor();
                 self.rescaled()
             }
+            Message::WindowOpened(id, Some(displays), Some(position)) => {
+                // Left on a display since unplugged, the window opens on the
+                // main one instead, as the first time.
+                let Some(left) = self.placement.frame else {
+                    return Task::none();
+                };
+                if Frame::new(position, left.size()).reachable(&displays) {
+                    return Task::none();
+                }
+                let Some(frame) = Frame::fallback(&displays) else {
+                    return Task::none();
+                };
+                Task::batch([
+                    window::maximize(id, false),
+                    window::resize(id, frame.size() / self.scale_factor()),
+                    window::move_to(id, frame.position()),
+                ])
+            }
+            Message::WindowOpened(..) => Task::none(),
+            Message::WindowMoved(id) => window::is_maximized(id).then(move |maximized| {
+                window::mode(id).then(move |mode| {
+                    window::position(id).map(move |position| Message::WindowPlaced {
+                        position,
+                        maximized,
+                        fullscreen: mode == window::Mode::Fullscreen,
+                    })
+                })
+            }),
+            Message::WindowPlaced {
+                position: Some(position),
+                maximized,
+                fullscreen,
+            } => {
+                let frame = Frame::new(position, self.window);
+                if self.placement.follow(frame, maximized, fullscreen)
+                    && let Some(file) = &self.placement_file
+                {
+                    self.placement.save(file);
+                }
+                Task::none()
+            }
+            Message::WindowPlaced { position: None, .. } => Task::none(),
             Message::ScaleFactor(scale) => {
                 self.scale = scale;
                 self.rescaled()
@@ -1923,6 +2021,14 @@ impl App {
                 main.viewer = Some(viewer);
                 load
             }
+            Message::ViewerMenu(open) => {
+                if let Screen::Main(main) = &mut self.screen
+                    && let Some(viewer) = &mut main.viewer
+                {
+                    viewer.menu = open;
+                }
+                Task::none()
+            }
             Message::CloseImage => {
                 if let Screen::Main(main) = &mut self.screen {
                     main.viewer = None;
@@ -1992,6 +2098,88 @@ impl App {
                     return Task::none();
                 };
                 attach(room.id.clone(), vec![path])
+            }
+            Message::Paste(field, how) => {
+                let Screen::Main(main) = &self.screen else {
+                    return Task::none();
+                };
+                let Some(room) = &main.room else {
+                    return Task::none();
+                };
+                let id = room.id.clone();
+                Task::perform(clipboard::read(how, field), move |pasted| {
+                    Message::Pasted(id.clone(), field, pasted)
+                })
+            }
+            Message::Pasted(id, field, pasted) => {
+                let Screen::Main(main) = &self.screen else {
+                    return Task::none();
+                };
+                if main.room.as_ref().is_none_or(|room| room.id != id) {
+                    return Task::none();
+                }
+                match pasted {
+                    // As if dropped.
+                    Some(Pasted::Files(paths)) => attach(id, paths),
+                    Some(Pasted::Image(file)) => {
+                        Task::perform(media::attached(file), move |attached| {
+                            Message::Attached(id.clone(), vec![attached])
+                        })
+                    }
+                    Some(Pasted::Text(text)) => self.update(in_field(
+                        field,
+                        text_editor::Action::Edit(text_editor::Edit::Paste(Arc::new(text))),
+                    )),
+                    None => Task::none(),
+                }
+            }
+            Message::EditMenu(field, message) => {
+                use edit_menu::Message as Menu;
+                use text_editor::{Action, Edit};
+
+                let Screen::Main(main) = &mut self.screen else {
+                    return Task::none();
+                };
+                let Some(room) = main.room.as_mut() else {
+                    return Task::none();
+                };
+                let open = message == Menu::Open;
+                let (selection, focus) = match field {
+                    Field::Composer => {
+                        room.composer_menu = open;
+                        (
+                            room.composer.selection(),
+                            iced::widget::operation::focus(room::COMPOSER),
+                        )
+                    }
+                    Field::Edit => {
+                        let edit = room.editing.as_mut();
+                        (
+                            edit.and_then(|edit| {
+                                edit.menu = open;
+                                edit.selection()
+                            }),
+                            InlineEdit::focus(),
+                        )
+                    }
+                };
+                // The field keeps the focus, as a text field does.
+                let done = match message {
+                    Menu::Open | Menu::Close => return Task::none(),
+                    Menu::Cut => Task::batch([
+                        selection.map_or_else(Task::none, iced::clipboard::write),
+                        self.update(in_field(field, Action::Edit(Edit::Delete))),
+                    ]),
+                    Menu::Copy => selection.map_or_else(Task::none, iced::clipboard::write),
+                    Menu::Paste => self.update(Message::Paste(field, clipboard::Paste::Rich)),
+                    Menu::SelectAll => self.update(in_field(field, Action::SelectAll)),
+                    #[cfg(target_os = "macos")]
+                    Menu::EmojiAndSymbols => {
+                        edit_menu::emoji_and_symbols();
+                        Task::none()
+                    }
+                };
+                Task::batch([focus, done])
             }
             Message::Attached(id, attached) => {
                 if let Screen::Main(main) = &mut self.screen
@@ -2579,14 +2767,21 @@ impl App {
                 room.unsent = None;
                 Task::perform(async move { timeline.discard(&key).await }, done)
             }
-            Act::Copy(text) => {
+            Act::OpenLink(url) => {
                 room.menu = None;
-                iced::clipboard::write(text)
+                Task::done(Message::LinkClicked(url))
+            }
+            Act::Copy(copied) => {
+                room.menu = None;
+                copy(copied)
+            }
+            Act::CopyLink(url) => {
+                room.menu = None;
+                iced::clipboard::write(url)
             }
             Act::CopySelection => {
                 room.menu = None;
-                room.selected_text()
-                    .map_or_else(Task::none, iced::clipboard::write)
+                room.selected().map_or_else(Task::none, copy)
             }
             Act::CopyImage(document) => {
                 room.menu = None;
@@ -2596,12 +2791,20 @@ impl App {
             }
             Act::CopyMediaImage(file) => {
                 room.menu = None;
+                // Also chosen from the image viewer's menu.
+                if let Some(viewer) = &mut main.viewer {
+                    viewer.menu = false;
+                }
                 Task::perform(media::copy_image(main.session.clone(), file), |result| {
                     Message::Act(Act::Done(result))
                 })
             }
             Act::SaveMedia(file) => {
                 room.menu = None;
+                // Also chosen from the image viewer's menu.
+                if let Some(viewer) = &mut main.viewer {
+                    viewer.menu = false;
+                }
                 Task::done(Message::SaveMedia(file))
             }
             Act::SaveImage(document) => {
@@ -2727,6 +2930,66 @@ impl App {
                 Task::none()
             }
         }
+    }
+
+    /// The open room's find bar.
+    fn find(&mut self, message: find::Message) -> Task<Message> {
+        let Screen::Main(main) = &mut self.screen else {
+            return Task::none();
+        };
+        let Some(room) = main.room.as_mut() else {
+            return Task::none();
+        };
+        let mut focus = Task::none();
+        match message {
+            find::Message::Open => {
+                // Text selected on one line is looked for, as in Safari;
+                // else what was last.
+                let selected = room
+                    .selected()
+                    .map(|copied| copied.text)
+                    .filter(|text| !text.contains('\n'));
+                match (&mut room.find, selected) {
+                    (Some(find), Some(text)) => {
+                        find.query = text;
+                        find.search(&room.entries);
+                    }
+                    (Some(_), None) => {}
+                    (None, selected) => {
+                        room.find = Some(Find::new(selected.unwrap_or_default(), &room.entries));
+                    }
+                }
+                focus = Task::batch([
+                    iced::widget::operation::focus(find::FIELD),
+                    iced::widget::operation::select_all(find::FIELD),
+                ]);
+            }
+            find::Message::Query(query) => {
+                if let Some(find) = &mut room.find {
+                    find.query = query;
+                    find.search(&room.entries);
+                }
+            }
+            find::Message::Next | find::Message::Previous => {
+                let next = matches!(message, find::Message::Next);
+                if let Some(find) = &mut room.find {
+                    find.step(next);
+                }
+            }
+            find::Message::Close => {
+                room.find = None;
+                return Task::none();
+            }
+        }
+        let scroll = room.show_found();
+        // The match may be in a message not rendered before.
+        Task::batch([
+            focus,
+            scroll,
+            self.render_math(),
+            self.load_avatars(),
+            self.load_previews(),
+        ])
     }
 
     fn later(&mut self, message: send_later::Message) -> Task<Message> {
@@ -2967,15 +3230,16 @@ impl App {
     pub fn subscription(&self) -> Subscription<Message> {
         let mut subscriptions = vec![
             window::resize_events().map(|(_, size)| Message::WindowResized(size)),
+            window::events().filter_map(|(id, event)| match event {
+                window::Event::Moved(_) | window::Event::Resized(_) => {
+                    Some(Message::WindowMoved(id))
+                }
+                _ => None,
+            }),
             window::close_requests().map(Message::CloseWindow),
             iced::system::theme_changes().map(Message::ThemeMode),
             // Also on the sign-in screen.
-            iced::event::listen_with(|event, _, _| match event {
-                iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
-                    key, modifiers, ..
-                }) => Zoom::from_key(&key, modifiers).map(Message::Zoom),
-                _ => None,
-            }),
+            iced::event::listen_with(window_keys),
         ];
         if let Screen::Main(main) = &self.screen {
             subscriptions.push(
@@ -3526,6 +3790,25 @@ async fn run_request(
     result.map_err(|e: mtrx_core::Error| e.to_string())
 }
 
+/// Keys on every screen, whatever is focused: ⌘+ ⌘− ⌘0 zoom, and ⌘W closes
+/// the window as its close button does (Ctrl on Windows and Linux).
+fn window_keys(
+    event: iced::Event,
+    _status: iced::event::Status,
+    window: window::Id,
+) -> Option<Message> {
+    use iced::keyboard::{self, Key};
+    match event {
+        iced::Event::Keyboard(keyboard::Event::KeyPressed { key, modifiers, .. }) => match key {
+            Key::Character(c) if c == "w" && modifiers.command() => {
+                Some(Message::CloseWindow(window))
+            }
+            _ => Zoom::from_key(&key, modifiers).map(Message::Zoom),
+        },
+        _ => None,
+    }
+}
+
 /// ⌘K / Ctrl+K focuses the room search, Esc closes the viewer or clears the
 /// search, ⌘C, ⌘A and Shift with an arrow act on the timeline's selection;
 /// window focus.
@@ -3574,6 +3857,16 @@ fn shortcuts(
                 }))
             }
             Key::Character(c) if c == "k" && modifiers.command() => Some(Message::FocusSearch),
+            Key::Character(c) if c == "f" && modifiers.command() => {
+                Some(Message::Find(find::Message::Open))
+            }
+            Key::Character(c) if c == "g" && modifiers.command() => {
+                Some(Message::Find(if modifiers.shift() {
+                    find::Message::Previous
+                } else {
+                    find::Message::Next
+                }))
+            }
             Key::Character(c) if c == "r" && modifiers.command() => Some(Message::Reload),
             Key::Named(Named::Escape) => Some(Message::Escape),
             // Typed with nothing focused: a character, not a shortcut.
@@ -3644,6 +3937,21 @@ fn input(event: iced::Event, _status: iced::event::Status, _window: window::Id) 
         }
         _ => None,
     }
+}
+
+/// `action` performed in `field`.
+fn in_field(field: Field, action: text_editor::Action) -> Message {
+    match field {
+        Field::Composer => Message::Composer(action),
+        Field::Edit => Message::Act(actions::Message::EditAction(action)),
+    }
+}
+
+/// Put `copied` on the clipboard; a failure shows in the room.
+fn copy(copied: Copied) -> Task<Message> {
+    Task::perform(clipboard::write(copied), |result| {
+        Message::Act(actions::Message::Done(result))
+    })
 }
 
 /// Read files to attach to the message being written in `room`.

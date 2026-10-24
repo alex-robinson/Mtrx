@@ -1,32 +1,26 @@
 //! A message's menu (right-click, or "⋯" in its toolbar): copying the
-//! selection or the message, math as a picture, and a file or image.
+//! selection or the message, math as a picture, and a file or image; or,
+//! right-clicking a link in it, the link's.
 
-use iced::{
-    Element, Length,
-    widget::{button, column, container},
-};
-use mtrx_core::{MediaKind, Message, MessageKind};
+use iced::Element;
+use mtrx_core::{Media, MediaKind, Message, MessageKind};
 
 use crate::{
     actions::{self, act},
-    app,
-    ellipsis::ellipsis,
-    message,
-    selection::{Pos, units_text},
-    style,
+    app, context_menu, message,
+    selection::Pos,
 };
 
 /// Where a message's menu floats from.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MenuAt {
     /// Where the message was right-clicked.
     Cursor,
     /// The "⋯" of the hover toolbar.
     Toolbar,
+    /// Where a link in it was right-clicked: the link's menu instead.
+    Link(String),
 }
-
-/// Width of the menu.
-const WIDTH: f32 = 170.0;
 
 /// What the menu offers for a message: label and action, in order.
 /// `in_selection`: the message is (partly) in the timeline's selection,
@@ -46,21 +40,11 @@ pub fn items(
     if in_selection {
         items.push(("Copy".to_owned(), actions::Message::CopySelection));
     } else if is_text {
-        let all = units_text(&message::text_map(document).units, Pos::default(), Pos::END);
+        let all = message::copied(document, Pos::default(), Pos::END);
         items.push(("Copy".to_owned(), actions::Message::Copy(all)));
     }
     if let Some(media) = &message.media {
-        if media.kind == MediaKind::Image {
-            items.push((
-                "Copy image".to_owned(),
-                actions::Message::CopyMediaImage(media.clone()),
-            ));
-        }
-        let save = match media.kind {
-            MediaKind::Image => "Save image…",
-            _ => "Save…",
-        };
-        items.push((save.to_owned(), actions::Message::SaveMedia(media.clone())));
+        items.extend(media_items(media));
     }
     if math_shown {
         items.push((
@@ -75,21 +59,45 @@ pub fn items(
     items
 }
 
+/// What the menu offers for a message's file, also where an image is shown
+/// large: copying an image, and saving the file as it was sent.
+pub fn media_items(media: &Media) -> Vec<(String, actions::Message)> {
+    let mut items = Vec::new();
+    if media.kind == MediaKind::Image {
+        items.push((
+            "Copy image".to_owned(),
+            actions::Message::CopyMediaImage(media.clone()),
+        ));
+    }
+    let save = match media.kind {
+        MediaKind::Image => "Save image…",
+        _ => "Save…",
+    };
+    items.push((save.to_owned(), actions::Message::SaveMedia(media.clone())));
+    items
+}
+
+/// What the menu offers for a link.
+pub fn link_items(url: &str) -> Vec<(String, actions::Message)> {
+    vec![
+        (
+            "Open".to_owned(),
+            actions::Message::OpenLink(url.to_owned()),
+        ),
+        (
+            "Copy link".to_owned(),
+            actions::Message::CopyLink(url.to_owned()),
+        ),
+    ]
+}
+
 /// The menu showing `items`.
 pub fn view<'a>(items: Vec<(String, actions::Message)>) -> Element<'a, app::Message> {
-    let entries = items.into_iter().map(|(label, message)| {
-        button(ellipsis(label).size(13))
-            .width(Length::Fill)
-            .padding([4, 10])
-            .style(style::list_item(false))
-            .on_press(act(message))
-            .into()
-    });
-    container(column(entries).spacing(1))
-        .width(WIDTH)
-        .padding(4)
-        .style(style::toolbar)
-        .into()
+    context_menu::menu(
+        items
+            .into_iter()
+            .map(|(label, message)| (label, act(message))),
+    )
 }
 
 #[cfg(test)]
@@ -133,8 +141,12 @@ mod tests {
         let items = items(&text, true, false);
         assert_eq!(labels(&items), ["Copy", "Copy image", "Save image…"]);
         assert!(
-            matches!(&items[0].1, actions::Message::Copy(all) if all == r"Flux $q=-k\nabla T$, see data"),
+            matches!(&items[0].1, actions::Message::Copy(all) if all.text == r"Flux $q=-k\nabla T$, see data"),
             "as shown, math as LaTeX"
+        );
+        assert!(
+            matches!(&items[0].1, actions::Message::Copy(all) if all.html == r#"<p>Flux $q=-k\nabla T$, see <a href="https://example.org/a">data</a></p>"#),
+            "and as HTML, with the link"
         );
         // Until the math is typeset, there is no picture.
         assert_eq!(labels(&super::items(&text, false, false)), ["Copy"]);
@@ -152,5 +164,14 @@ mod tests {
             labels(&super::items(&file, false, false)),
             ["Copy image", "Save image…"]
         );
+    }
+
+    #[test]
+    fn a_link_is_opened_or_copied() {
+        let url = "https://example.org/a";
+        let items = link_items(url);
+        assert_eq!(labels(&items), ["Open", "Copy link"]);
+        assert!(matches!(&items[0].1, actions::Message::OpenLink(open) if open == url));
+        assert!(matches!(&items[1].1, actions::Message::CopyLink(copied) if copied == url));
     }
 }

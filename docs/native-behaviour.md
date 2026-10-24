@@ -41,11 +41,13 @@ per day:
 
 ### A1. Window
 
-- [ ] ⌘W closes the window and so quits, as the close button does: there
+- [x] ⌘W closes the window and so quits, as the close button does: there
       is only ever one window (decided 2026-10-24). `main.rs` already sets
       `exit_on_close_request: false`; `Message::CloseWindow` goes offline
       and closes.
-- [ ] Size, position and display remembered.
+- [x] Size, position and display remembered (`placement.rs`), and
+      maximised; full screen is not, the window opens as it was before. A
+      window left on a display since unplugged opens on the main one.
 - [ ] Full screen, and tiling with the system's window layouts. Unchecked.
 
 ### A2. Keyboard
@@ -62,7 +64,8 @@ per day:
       loaded and the newest message (when the composer does not take them).
 - [x] ⌥⌘↑ and ⌥⌘↓ (or ⌃Tab and ⌃⇧Tab) go to the room above and below;
       ⌘1–⌘9 to the first nine rooms.
-- [ ] ⌘F: find in the room's loaded messages.
+- [x] ⌘F: find in the room's loaded messages (`find.rs`). Counted from
+      the newest; Enter and ⌘G go to older matches.
 - [x] Typing with nothing focused goes to the composer.
 - [x] ↑ in an empty composer edits our last message.
 
@@ -70,11 +73,11 @@ per day:
 
 - [x] Pointing hand over links and buttons, I-beam over selectable text.
 - [x] Drop files onto the window to attach them.
-- [ ] The link's address shows on hovering it (in a corner, as in a
+- [x] The link's address shows on hovering it (in a corner, as in a
       browser).
-- [ ] Right-click a link: Open, Copy Link.
-- [ ] Right-click a picture: Copy Image, Save Image…. Math messages have
-      it (`message_menu.rs`); pictures do not.
+- [x] Right-click a link: Open, Copy Link.
+- [x] Right-click a picture: Copy Image, Save Image…, in the timeline
+      and in the viewer, sharing math's clipboard code (`message_menu.rs`).
 
 ### A4. Selection in the timeline
 
@@ -83,8 +86,8 @@ per day:
 - [x] Drag, double- and triple-click, Shift-click, ⌘A, ⌘C, across
       messages; math as `$…$`.
 - [ ] Sender names, reply previews, notices and state lines selectable.
-- [ ] Links in typeset (math) messages clickable.
-- [ ] Code in math messages selectable by character.
+- [x] Links in typeset (math) messages clickable.
+- [x] Code in math messages selectable by character.
 
 ### A5. Clipboard and paste
 
@@ -93,13 +96,13 @@ Paste is a binding we can replace (`Binding::Custom`, then
 these stay outside the widget.
 
 - [x] Copy as text, math as `$…$`.
-- [ ] Copy as HTML as well, so pasting into Mail or a document keeps
+- [x] Copy as HTML as well, so pasting into Mail or a document keeps
       formatting, links and lists.
-- [ ] ⌘V of a picture (a screenshot, say) attaches it, as dropping a file
+- [x] ⌘V of a picture (a screenshot, say) attaches it, as dropping a file
       does.
-- [ ] ⌘V of rich text (from a web page or Mail) as Markdown: links, lists,
+- [x] ⌘V of rich text (from a web page or Mail) as Markdown: links, lists,
       emphasis.
-- [ ] ⌥⇧⌘V pastes as plain text.
+- [x] ⌥⇧⌘V pastes as plain text.
 - [ ] Right-click in the composer: Cut, Copy, Paste, Select All (and
       Emoji & Symbols). `context_menu.rs` has the menu.
 
@@ -149,7 +152,9 @@ native menus to a winit window. Its accelerators take the key before the
 window does, so each one becomes a menu event routed to whatever is
 focused; do it once B's bindings exist to route to.
 
-- [ ] App menu: About, Settings… (⌘,), Hide, Quit.
+- [ ] App menu: About, Settings… (⌘,), Hide, Quit. Quit (⌘Q) goes
+      through `Message::CloseWindow`, as closing does: winit's own Quit
+      exits without going offline or ending the session.
 - [ ] Edit: Undo, Redo, Cut, Copy, Paste, Select All, Find (⌘F); macOS
       adds Emoji & Symbols, Start Dictation and AutoFill.
 - [ ] View: Bigger, Smaller, Actual Size (⌘+ ⌘− ⌘0, already keys).

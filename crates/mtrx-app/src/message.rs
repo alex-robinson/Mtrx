@@ -14,9 +14,12 @@ use mtrx_core::{OwnedUserId, UserId};
 use mtrx_format::{Block, Document, Inline, Style};
 
 use crate::{
-    emoji, fonts,
+    clipboard::Copied,
+    emoji,
+    find::Found,
+    fonts,
     selectable::selectable,
-    selection::{Gesture, Pos, Unit, unit_range},
+    selection::{Gesture, Pos, Unit, unit_range, units_text},
     style,
 };
 
@@ -38,6 +41,15 @@ pub struct Select<'a, M> {
     /// A selection is being dragged, so moving over the text extends it.
     pub dragging: bool,
     pub on_gesture: Rc<dyn Fn(Gesture) -> M + 'a>,
+    /// Matches of the find bar in this message, drawn as a selection is.
+    pub found: Vec<Found>,
+}
+
+/// What clicking a link sends, and right-clicking one.
+pub struct Links<'a, M> {
+    pub open: fn(String) -> M,
+    /// Opens the link's menu.
+    pub menu: Rc<dyn Fn(String) -> M + 'a>,
 }
 
 /// `document`, its mentions of `own` (us) in bold; marked when `edited`.
@@ -45,14 +57,14 @@ pub fn view<'a, M: Clone + 'a>(
     document: &Document,
     theme: &Theme,
     own: &UserId,
-    on_link: fn(String) -> M,
+    links: Links<'a, M>,
     select: Select<'a, M>,
     edited: bool,
 ) -> Element<'a, M> {
     let mut walk = Walk {
         theme,
         own: Some(own),
-        on_link: Some(on_link),
+        links: Some(links),
         select: Some(select),
         edited,
         map: TextMap::default(),
@@ -91,19 +103,21 @@ pub struct TextMap {
     pub leaves: Vec<Leaf>,
 }
 
-/// Where a text leaf is shown: its unit, and its bytes there.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Where a text leaf is shown: its unit, and its bytes there; and the link
+/// it is in, if any (a mention's too).
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Leaf {
     pub unit: usize,
     pub start: usize,
     pub len: usize,
+    pub link: Option<String>,
 }
 
 pub fn text_map(document: &Document) -> TextMap {
     let mut walk: Walk<'_, '_, ()> = Walk {
         theme: &Theme::Light,
         own: None,
-        on_link: None,
+        links: None,
         select: None,
         edited: false,
         map: TextMap::default(),
@@ -112,12 +126,29 @@ pub fn text_map(document: &Document) -> TextMap {
     walk.map
 }
 
+/// What copying `document` from `from` to `to` puts on the clipboard: the
+/// text as shown, and that part of the message as HTML.
+pub fn copied(document: &Document, from: Pos, to: Pos) -> Copied {
+    let map = text_map(document);
+    let part = document.clipped(|leaf| {
+        let leaf = map.leaves.get(leaf)?;
+        let unit = unit_range((from, to), leaf.unit, map.units[leaf.unit].text.len())?;
+        let start = unit.start.max(leaf.start);
+        let end = unit.end.min(leaf.start + leaf.len);
+        (start < end).then(|| start - leaf.start..end - leaf.start)
+    });
+    Copied {
+        text: units_text(&map.units, from, to),
+        html: part.to_html(),
+    }
+}
+
 /// Builds the view of blocks and records their units and leaves, in the
 /// same order.
 struct Walk<'t, 'a, M> {
     theme: &'t Theme,
     own: Option<&'t UserId>,
-    on_link: Option<fn(String) -> M>,
+    links: Option<Links<'a, M>>,
     select: Option<Select<'a, M>>,
     /// The message is edited and its mark not yet shown.
     edited: bool,
@@ -237,11 +268,14 @@ impl<'a, M: Clone + 'a> Walk<'_, 'a, M> {
         };
         spans(content, flags, None, &look, &mut out, &mut leaves);
         let unit = self.map.units.len();
-        self.map.leaves.extend(
-            leaves
-                .into_iter()
-                .map(|(start, len)| Leaf { unit, start, len }),
-        );
+        self.map
+            .leaves
+            .extend(leaves.into_iter().map(|(start, len, link)| Leaf {
+                unit,
+                start,
+                len,
+                link,
+            }));
         self.unit(out, size, prefix, gap, last)
     }
 
@@ -251,6 +285,7 @@ impl<'a, M: Clone + 'a> Walk<'_, 'a, M> {
             unit: self.map.units.len(),
             start: 0,
             len,
+            link: None,
         });
     }
 
@@ -281,15 +316,21 @@ impl<'a, M: Clone + 'a> Walk<'_, 'a, M> {
         if let Some(size) = size {
             unit = unit.size(Pixels(size));
         }
-        if let Some(on_link) = self.on_link {
-            unit = unit.on_link(on_link);
+        if let Some(links) = &self.links {
+            unit = unit.on_link(links.open).on_link_menu(links.menu.clone());
         }
         if let Some(select) = &self.select {
             unit = unit
                 .selected(select.range.and_then(|range| unit_range(range, index, len)))
                 .focus(select.focus.is_some_and(|focus| focus.unit == index))
                 .dragging(select.dragging)
-                .on_gesture(select.on_gesture.clone());
+                .on_gesture(select.on_gesture.clone())
+                .found(
+                    (select.found.iter())
+                        .filter(|found| found.unit == index)
+                        .map(|found| (found.range.clone(), found.current))
+                        .collect(),
+                );
         }
         unit.into()
     }
@@ -303,21 +344,21 @@ struct Look<'t> {
 }
 
 /// Styled spans of `content` into `out`; each leaf's start and length in
-/// their text into `leaves`.
+/// their text, and the link each is in, into `leaves`.
 fn spans(
     content: &[Inline],
     flags: Flags,
     link: Option<&str>,
     look: &Look<'_>,
     out: &mut Vec<Span<'static, String, Font>>,
-    leaves: &mut Vec<(usize, usize)>,
+    leaves: &mut Vec<(usize, usize, Option<String>)>,
 ) {
     let theme = look.theme;
     for inline in content {
         let start: usize = out.iter().map(|s| s.text.len()).sum();
         match inline {
             Inline::Text(t) => {
-                leaves.push((start, t.len()));
+                leaves.push((start, t.len(), link.map(str::to_owned)));
                 for (is_emoji, run) in emoji::runs(t) {
                     let run = styled(span(run), flags, link, theme);
                     out.push(if is_emoji {
@@ -340,7 +381,7 @@ fn spans(
                 spans(content, f, link, look, out, leaves);
             }
             Inline::Code(code) => {
-                leaves.push((start, code.len()));
+                leaves.push((start, code.len(), link.map(str::to_owned)));
                 out.push(styled(
                     span(code.clone()),
                     Flags {
@@ -355,9 +396,9 @@ fn spans(
                 spans(content, flags, Some(url), look, out, leaves);
             }
             Inline::Mention { user_id, name } => {
-                leaves.push((start, name.len()));
                 let own = look.own.is_some_and(|own| own.as_str() == user_id);
                 let url = mention_url(user_id);
+                leaves.push((start, name.len(), Some(url.clone())));
                 for (is_emoji, run) in emoji::runs(name) {
                     let run = mention(span(run), flags, own, theme).link(url.clone());
                     out.push(if is_emoji {
@@ -369,7 +410,7 @@ fn spans(
             }
             Inline::Math(tex) => {
                 let shown = format!("${tex}$");
-                leaves.push((start, shown.len()));
+                leaves.push((start, shown.len(), link.map(str::to_owned)));
                 out.push(styled(
                     span(shown),
                     Flags {
@@ -442,7 +483,7 @@ mod tests {
     use iced_test::simulator::Simulator;
 
     use super::*;
-    use crate::selection::{Message, Selection, units_text};
+    use crate::selection::{Message, Selection};
 
     /// Drives `document`'s view (marked if `edited`), in a scrollable
     /// `height` high, with mouse `steps` (a position and an event there);
@@ -455,19 +496,24 @@ mod tests {
         steps: &[((f32, f32), mouse::Event)],
     ) -> Vec<Gesture> {
         let own = OwnedUserId::try_from("@me:example.org").unwrap();
+        let link = |_| Gesture::Drag {
+            unit: usize::MAX,
+            offset: 0,
+        };
         let view = view(
             document,
             &Theme::Light,
             &own,
-            |_| Gesture::Drag {
-                unit: usize::MAX,
-                offset: 0,
+            Links {
+                open: link,
+                menu: Rc::new(link),
             },
             Select {
                 range: None,
                 focus: None,
                 dragging,
                 on_gesture: Rc::new(|gesture| gesture),
+                found: Vec::new(),
             },
             edited,
         );
@@ -480,27 +526,29 @@ mod tests {
         ui.into_messages().collect()
     }
 
-    /// The text selected by `steps` (see [`gestures`]).
+    /// What copying the selection made by `steps` (see [`gestures`])
+    /// copies.
     fn select_in(
         document: &Document,
         height: f32,
         dragging: bool,
         steps: &[((f32, f32), mouse::Event)],
-    ) -> String {
+    ) -> Copied {
         let mut selection = None;
         for gesture in gestures(document, false, height, dragging, steps) {
             Selection::update(&mut selection, Message::Gesture("$e".into(), gesture));
         }
         let order = HashMap::from([("$e", 0)]);
         let Some(bounds) = selection.and_then(|s| s.ordered(&order)) else {
-            return String::new();
+            return Copied::default();
         };
         let (from, to) = bounds.in_message(0).unwrap();
-        units_text(&text_map(document).units, from, to)
+        copied(document, from, to)
     }
 
+    /// The text selected by `steps`.
     fn select(document: &Document, dragging: bool, steps: &[((f32, f32), mouse::Event)]) -> String {
-        select_in(document, 400.0, dragging, steps)
+        select_in(document, 400.0, dragging, steps).text
     }
 
     #[test]
@@ -527,7 +575,8 @@ mod tests {
                     },
                 ),
             ],
-        );
+        )
+        .text;
         // Two neighbouring lines well below the first.
         let lines: Vec<u32> = selected
             .split("\n\n")
@@ -575,6 +624,164 @@ mod tests {
         assert_eq!(
             select(&document, false, &click.repeat(3)),
             "Hello you there"
+        );
+    }
+
+    #[derive(Clone, Debug, PartialEq)]
+    enum Clicked {
+        Link(String),
+        LinkMenu(String),
+        Menu,
+        Selecting,
+    }
+
+    #[test]
+    fn right_click_on_a_link_opens_its_menu() {
+        let document =
+            Document::from_html(r#"<p><a href="https://example.org/a">Data</a> here</p>"#);
+        let own = OwnedUserId::try_from("@me:example.org").unwrap();
+        // The messages sent by right-clicking at `x`, in a message that
+        // has a menu of its own.
+        let right_click = |x: f32| -> Vec<Clicked> {
+            let view = view(
+                &document,
+                &Theme::Light,
+                &own,
+                Links {
+                    open: Clicked::Link,
+                    menu: Rc::new(Clicked::LinkMenu),
+                },
+                Select {
+                    range: None,
+                    focus: None,
+                    dragging: false,
+                    on_gesture: Rc::new(|_| Clicked::Selecting),
+                    found: Vec::new(),
+                },
+                false,
+            );
+            let view = crate::context_menu::context_menu(view, None, Clicked::Menu);
+            let mut ui = Simulator::with_size(fonts::settings(), Size::new(400.0, 100.0), view);
+            ui.point_at((x, 8.0));
+            let _ = ui.simulate([Event::Mouse(mouse::Event::ButtonPressed(
+                mouse::Button::Right,
+            ))]);
+            ui.into_messages().collect()
+        };
+        assert_eq!(
+            right_click(10.0),
+            [Clicked::LinkMenu("https://example.org/a".into())]
+        );
+        assert_eq!(right_click(60.0), [Clicked::Menu]);
+    }
+
+    #[test]
+    fn reports_where_the_current_match_is() {
+        use iced::{
+            Rectangle,
+            advanced::{
+                renderer::Headless,
+                widget::{Id, Operation, operation::black_box},
+            },
+        };
+        use iced_runtime::user_interface::{Cache, UserInterface};
+
+        /// Where the current match was reported.
+        struct Current(Option<Rectangle>);
+
+        impl Operation for Current {
+            fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn Operation)) {
+                operate(self);
+            }
+
+            fn custom(&mut self, id: Option<&Id>, bounds: Rectangle, _: &mut dyn std::any::Any) {
+                if id == Some(&Id::new(crate::find::CURRENT)) {
+                    self.0 = Some(bounds);
+                }
+            }
+        }
+
+        let mut renderer = iced::futures::executor::block_on(iced::Renderer::new(
+            fonts::INTER,
+            Pixels(style::TEXT_SIZE),
+            None,
+        ))
+        .unwrap();
+        let own = OwnedUserId::try_from("@me:example.org").unwrap();
+        let document = Document::from_html("<p>Ice</p><p>Sea ice and more ice</p>");
+        let mut current = |found| {
+            let select = Select {
+                range: None,
+                focus: None,
+                dragging: false,
+                on_gesture: Rc::new(|_| ()),
+                found,
+            };
+            let links = Links {
+                open: |_| (),
+                menu: Rc::new(|_| ()),
+            };
+            let view = view(&document, &Theme::Light, &own, links, select, false);
+            let mut ui = UserInterface::build(
+                view,
+                Size::new(400.0, 400.0),
+                Cache::default(),
+                &mut renderer,
+            );
+            let mut operation = Current(None);
+            ui.operate(&renderer, &mut black_box(&mut operation));
+            operation.0
+        };
+        let found = |range, current| Found {
+            unit: 1,
+            range,
+            current,
+        };
+        let at = current(vec![found(4..7, false), found(17..20, true)]).unwrap();
+        // The second line's last word.
+        assert!(at.y > 15.0 && at.x > 80.0, "{at:?}");
+        assert!(at.width > 10.0 && at.width < 40.0, "{at:?}");
+        let before = current(vec![found(4..7, true), found(17..20, false)]).unwrap();
+        assert!(before.x < at.x && before.y == at.y, "{before:?}");
+        assert_eq!(current(vec![found(4..7, false)]), None);
+    }
+
+    #[test]
+    fn copies_formatting_as_html_too() {
+        use mouse::{Button::Left, Event::*};
+        let document = Document::from_html(
+            r#"<p>Hello <b>you</b> there</p><ul><li>See <a href="https://example.org">docs</a></li><li>and $x$</li></ul>"#,
+        );
+        // Dragged from the start to right of the last item.
+        let copied = select_in(
+            &document,
+            400.0,
+            true,
+            &[
+                ((2.0, 8.0), ButtonPressed(Left)),
+                (
+                    (700.0, 58.0),
+                    CursorMoved {
+                        position: iced::Point::new(700.0, 58.0),
+                    },
+                ),
+            ],
+        );
+        assert_eq!(copied.text, "Hello you there\n\n- See docs\n- and $x$");
+        assert_eq!(
+            copied.html,
+            r#"<p>Hello <strong>you</strong> there</p><ul><li>See <a href="https://example.org">docs</a></li><li>and $x$</li></ul>"#
+        );
+        // From within "you" to within "docs".
+        let part = super::copied(
+            &document,
+            Pos { unit: 0, offset: 7 },
+            Pos { unit: 1, offset: 6 },
+        );
+        assert_eq!(part.text, "ou there\n\n- See do");
+        assert_eq!(
+            part.html,
+            r#"<p><strong>ou</strong> there</p><ul><li>See <a href="https://example.org">do</a></li></ul>"#
         );
     }
 
@@ -631,13 +838,17 @@ mod tests {
         // Rooms and other links open as before.
         assert_eq!(mentioned_user("https://matrix.to/#/!room:server.org"), None);
         assert_eq!(mentioned_user("https://example.org/@nils"), None);
-        // A mention is one leaf of text.
+        // A mention is one leaf of text, with its link, as other links.
         let document = Document::from_html(
-            r#"Ask <a href="https://matrix.to/#/@nils:server.org">Nils</a> now"#,
+            r#"Ask <a href="https://matrix.to/#/@nils:server.org">Nils</a> or <a href="https://x.org">here</a>"#,
         );
         let map = text_map(&document);
-        assert_eq!(map.units[0].text, "Ask Nils now");
-        assert_eq!(map.leaves.len(), 3);
+        assert_eq!(map.units[0].text, "Ask Nils or here");
+        let links: Vec<_> = map.leaves.iter().map(|l| l.link.as_deref()).collect();
+        assert_eq!(
+            links,
+            [None, Some(url.as_str()), None, Some("https://x.org")]
+        );
     }
 
     #[test]
