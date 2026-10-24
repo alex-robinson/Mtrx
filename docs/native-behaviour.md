@@ -63,7 +63,7 @@ per day:
 - [x] ⌥⌘↑ and ⌥⌘↓ (or ⌃Tab and ⌃⇧Tab) go to the room above and below;
       ⌘1–⌘9 to the first nine rooms.
 - [ ] ⌘F: find in the room's loaded messages.
-- [ ] Typing with nothing focused goes to the composer.
+- [x] Typing with nothing focused goes to the composer.
 - [ ] ↑ in an empty composer edits our last message.
 
 ### A3. Mouse

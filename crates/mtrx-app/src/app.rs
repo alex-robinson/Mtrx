@@ -93,6 +93,8 @@ pub enum Message {
     Scrolled(Viewport),
     Paginated(OwnedRoomId, Result<(), String>),
     Composer(text_editor::Action),
+    /// Typed with nothing focused: goes on in the composer.
+    TypeInComposer(String),
     Send,
     Sent(OwnedRoomId, Result<(), String>),
     /// Our message in a timeline row started sending a while ago.
@@ -1010,6 +1012,17 @@ impl App {
                     Task::none()
                 };
                 Task::batch([members, typing, avatars])
+            }
+            Message::TypeInComposer(text) => {
+                let shown = matches!(&self.screen, Screen::Main(main) if main.room.is_some());
+                if !shown || self.covered() {
+                    return Task::none();
+                }
+                let edit = text_editor::Action::Edit(text_editor::Edit::Paste(Arc::new(text)));
+                Task::batch([
+                    self.update(Message::Composer(edit)),
+                    iced::widget::operation::focus(room::COMPOSER),
+                ])
             }
             Message::Mention(message) => {
                 let Screen::Main(main) = &mut self.screen else {
@@ -2421,6 +2434,19 @@ impl App {
     }
 
     /// Permission and space call service of a newly opened room.
+    /// Something shows over the main view, as [`App::view`] puts it there:
+    /// the settings, a dialog, an info card or a viewer.
+    fn covered(&self) -> bool {
+        let Screen::Main(main) = &self.screen else {
+            return false;
+        };
+        self.settings_panel.is_some()
+            || main.dialog.is_some()
+            || main.info.is_some()
+            || main.viewer.is_some()
+            || main.pdf.is_some()
+    }
+
     fn load_room_calls(&self, room_id: &OwnedRoomId) -> Task<Message> {
         let Screen::Main(main) = &self.screen else {
             return Task::none();
@@ -3511,7 +3537,12 @@ fn shortcuts(
         }) if let Some(go) = sidebar::Go::from_key(&key, physical_key, modifiers) => {
             Some(Message::GoToRoom(go))
         }
-        iced::Event::Keyboard(keyboard::Event::KeyPressed { key, modifiers, .. }) => match key {
+        iced::Event::Keyboard(keyboard::Event::KeyPressed {
+            key,
+            modifiers,
+            text,
+            ..
+        }) => match key {
             // Unless a text field copies its own selection.
             Key::Character(c)
                 if c == "c" && modifiers.command() && status == iced::event::Status::Ignored =>
@@ -3538,6 +3569,14 @@ fn shortcuts(
             Key::Character(c) if c == "k" && modifiers.command() => Some(Message::FocusSearch),
             Key::Character(c) if c == "r" && modifiers.command() => Some(Message::Reload),
             Key::Named(Named::Escape) => Some(Message::Escape),
+            // Typed with nothing focused: a character, not a shortcut.
+            _ if status == iced::event::Status::Ignored
+                && !modifiers.command()
+                && !modifiers.control() =>
+            {
+                text.filter(|text| !text.is_empty() && !text.chars().any(char::is_control))
+                    .map(|text| Message::TypeInComposer(text.to_string()))
+            }
             _ => None,
         },
         iced::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {

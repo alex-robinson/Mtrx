@@ -469,3 +469,81 @@ async fn keys_go_to_other_rooms_from_the_composer() {
         assert_eq!(ui.room().composer.text(), "");
     }
 }
+
+#[test]
+fn characters_typed_with_nothing_focused_go_to_the_composer() {
+    let typed = |key: &str, modifiers, status| {
+        let key = Key::Character(key.into());
+        format!(
+            "{:?}",
+            shortcuts(press(key, modifiers), status, window::Id::unique())
+        )
+    };
+    let to_composer = |text: &str| format!("{:?}", Some(Message::TypeInComposer(text.into())));
+    assert_eq!(
+        typed("h", Modifiers::empty(), Status::Ignored),
+        to_composer("h")
+    );
+    assert_eq!(
+        typed("H", Modifiers::SHIFT, Status::Ignored),
+        to_composer("H")
+    );
+    // ⌥E, E: é.
+    assert_eq!(
+        typed("é", Modifiers::empty(), Status::Ignored),
+        to_composer("é")
+    );
+    // A field took it.
+    assert_eq!(typed("h", Modifiers::empty(), Status::Captured), "None");
+    // Shortcuts.
+    assert_eq!(typed("j", Modifiers::COMMAND, Status::Ignored), "None");
+    assert_eq!(typed("j", Modifiers::CTRL, Status::Ignored), "None");
+    // Not a character.
+    let enter = press(Key::Named(Named::Enter), Modifiers::empty());
+    assert!(shortcuts(enter, Status::Ignored, window::Id::unique()).is_none());
+}
+
+impl Ui {
+    /// Whether the composer has the focus.
+    fn composer_focused(&mut self) -> bool {
+        let mut focused = super::ComposerFocused(None);
+        let mut ui = UserInterface::build(
+            self.app.view(),
+            SIZE,
+            std::mem::take(&mut self.cache),
+            &mut self.renderer,
+        );
+        ui.operate(&self.renderer, &mut focused);
+        self.cache = ui.into_cache();
+        focused.0 == Some(true)
+    }
+}
+
+/// Typing with nothing focused goes to the composer, from the first
+/// character on; not while something shows over the room.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs local Synapse (testserver/run.sh)"]
+async fn typing_with_nothing_focused_goes_to_the_composer() {
+    let (mut ui, _dir) = room_with("typing", &["Hello"]).await;
+    assert!(!ui.composer_focused());
+    assert_eq!(
+        ui.press(Key::Character("O".into()), Modifiers::SHIFT),
+        Status::Ignored
+    );
+    assert!(ui.composer_focused());
+    // From here the composer has the keys.
+    assert_eq!(
+        ui.press(Key::Character("k".into()), Modifiers::empty()),
+        Status::Captured
+    );
+    assert_eq!(ui.room().composer.text(), "Ok");
+
+    // Nothing focused, under the settings: nothing.
+    ui.app.settings_panel = Some(settings::Panel::default());
+    ui.run(iced::widget::operation::focus("nothing"));
+    assert_eq!(
+        ui.press(Key::Character("x".into()), Modifiers::empty()),
+        Status::Ignored
+    );
+    assert_eq!(ui.room().composer.text(), "Ok");
+}
