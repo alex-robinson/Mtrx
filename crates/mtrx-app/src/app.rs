@@ -31,10 +31,9 @@ use crate::{
     avatar::{self, Avatars},
     badge::{self, Badge},
     calls,
-    clipboard::{self, Copied, Pasted},
-    composer_menu,
+    clipboard::{self, Copied, Field, Pasted},
     dialog::{self, Dialog},
-    emoji,
+    edit_menu, emoji,
     find::{self, Find},
     hint::{Position, hint},
     info,
@@ -203,11 +202,12 @@ pub enum Message {
     FileDropped(PathBuf),
     /// Files were read to attach to the message in a room.
     Attached(OwnedRoomId, Vec<Result<media::Attached, String>>),
-    /// ⌘V (or ⌥⇧⌘V) in the composer: read the clipboard.
-    Paste(clipboard::Paste),
-    /// What the clipboard held, to paste into a room's composer.
-    Pasted(OwnedRoomId, Option<clipboard::Pasted>),
-    ComposerMenu(composer_menu::Message),
+    /// ⌘V (or ⌥⇧⌘V) in a field: read the clipboard.
+    Paste(Field, clipboard::Paste),
+    /// What the clipboard held, to paste into a field in a room.
+    Pasted(OwnedRoomId, Field, Option<clipboard::Pasted>),
+    /// The menu of a field one writes in.
+    EditMenu(Field, edit_menu::Message),
     /// Remove an attached file, by index.
     Unattach(usize),
     Arrange(arrange::Message),
@@ -1602,6 +1602,13 @@ impl App {
                         room.menu = None;
                     } else if let Some(room) = main.room.as_mut().filter(|r| r.composer_menu) {
                         room.composer_menu = false;
+                    } else if let Some(edit) = main
+                        .room
+                        .as_mut()
+                        .and_then(|r| r.editing.as_mut())
+                        .filter(|e| e.menu)
+                    {
+                        edit.menu = false;
                     } else if let Some(room) = main.room.as_mut().filter(|r| r.readers.is_some()) {
                         room.readers = None;
                     } else if let Some(room) = main.room.as_mut().filter(|r| r.reactors.is_some()) {
@@ -2035,7 +2042,7 @@ impl App {
                 };
                 attach(room.id.clone(), vec![path])
             }
-            Message::Paste(how) => {
+            Message::Paste(field, how) => {
                 let Screen::Main(main) = &self.screen else {
                     return Task::none();
                 };
@@ -2043,11 +2050,11 @@ impl App {
                     return Task::none();
                 };
                 let id = room.id.clone();
-                Task::perform(clipboard::read(how), move |pasted| {
-                    Message::Pasted(id.clone(), pasted)
+                Task::perform(clipboard::read(how, field), move |pasted| {
+                    Message::Pasted(id.clone(), field, pasted)
                 })
             }
-            Message::Pasted(id, pasted) => {
+            Message::Pasted(id, field, pasted) => {
                 let Screen::Main(main) = &self.screen else {
                     return Task::none();
                 };
@@ -2062,14 +2069,15 @@ impl App {
                             Message::Attached(id.clone(), vec![attached])
                         })
                     }
-                    Some(Pasted::Text(text)) => self.update(Message::Composer(
+                    Some(Pasted::Text(text)) => self.update(in_field(
+                        field,
                         text_editor::Action::Edit(text_editor::Edit::Paste(Arc::new(text))),
                     )),
                     None => Task::none(),
                 }
             }
-            Message::ComposerMenu(message) => {
-                use composer_menu::Message as Menu;
+            Message::EditMenu(field, message) => {
+                use edit_menu::Message as Menu;
                 use text_editor::{Action, Edit};
 
                 let Screen::Main(main) = &mut self.screen else {
@@ -2078,22 +2086,39 @@ impl App {
                 let Some(room) = main.room.as_mut() else {
                     return Task::none();
                 };
-                room.composer_menu = message == Menu::Open;
-                let selection = room.composer.selection();
-                // The composer keeps the focus, as a text field does.
-                let focus = iced::widget::operation::focus(room::COMPOSER);
+                let open = message == Menu::Open;
+                let (selection, focus) = match field {
+                    Field::Composer => {
+                        room.composer_menu = open;
+                        (
+                            room.composer.selection(),
+                            iced::widget::operation::focus(room::COMPOSER),
+                        )
+                    }
+                    Field::Edit => {
+                        let edit = room.editing.as_mut();
+                        (
+                            edit.and_then(|edit| {
+                                edit.menu = open;
+                                edit.selection()
+                            }),
+                            InlineEdit::focus(),
+                        )
+                    }
+                };
+                // The field keeps the focus, as a text field does.
                 let done = match message {
                     Menu::Open | Menu::Close => return Task::none(),
                     Menu::Cut => Task::batch([
                         selection.map_or_else(Task::none, iced::clipboard::write),
-                        self.update(Message::Composer(Action::Edit(Edit::Delete))),
+                        self.update(in_field(field, Action::Edit(Edit::Delete))),
                     ]),
                     Menu::Copy => selection.map_or_else(Task::none, iced::clipboard::write),
-                    Menu::Paste => self.update(Message::Paste(clipboard::Paste::Rich)),
-                    Menu::SelectAll => self.update(Message::Composer(Action::SelectAll)),
+                    Menu::Paste => self.update(Message::Paste(field, clipboard::Paste::Rich)),
+                    Menu::SelectAll => self.update(in_field(field, Action::SelectAll)),
                     #[cfg(target_os = "macos")]
                     Menu::EmojiAndSymbols => {
-                        composer_menu::emoji_and_symbols();
+                        edit_menu::emoji_and_symbols();
                         Task::none()
                     }
                 };
@@ -3783,6 +3808,14 @@ fn input(event: iced::Event, _status: iced::event::Status, _window: window::Id) 
             Some(Message::Presence(presence::Message::Input))
         }
         _ => None,
+    }
+}
+
+/// `action` performed in `field`.
+fn in_field(field: Field, action: text_editor::Action) -> Message {
+    match field {
+        Field::Composer => Message::Composer(action),
+        Field::Edit => Message::Act(actions::Message::EditAction(action)),
     }
 }
 

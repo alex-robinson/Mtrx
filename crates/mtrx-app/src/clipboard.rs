@@ -77,7 +77,7 @@ pub fn write_picture(picture: image::RgbaImage) -> Result<(), String> {
         .map_err(|e| format!("Could not copy the picture: {e}"))
 }
 
-/// What ⌘V in the composer pastes.
+/// What ⌘V pastes.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Pasted {
     /// Files copied in the Finder or Explorer: attached, as if dropped.
@@ -86,6 +86,16 @@ pub enum Pasted {
     Image(Attachment),
     /// Text: typed in.
     Text(String),
+}
+
+/// A field one writes in, which pastes, and has a menu of its own.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Field {
+    /// The composer, which also attaches files and pictures.
+    Composer,
+    /// A message being edited in place: text only, as an edit cannot add
+    /// files.
+    Edit,
 }
 
 /// How to paste.
@@ -111,17 +121,20 @@ pub fn paste(press: &KeyPress) -> Option<Paste> {
     .then_some(Paste::Rich)
 }
 
-/// What the clipboard holds, as pasted into the composer `how`; `None`
-/// for nothing it can take.
-pub async fn read(how: Paste) -> Option<Pasted> {
+/// What the clipboard holds, as pasted `how` into `field`; `None` for
+/// nothing it can take.
+pub async fn read(how: Paste, field: Field) -> Option<Pasted> {
     tokio::task::spawn_blocking(move || {
         with(|clipboard| {
             let text = clipboard.get().text().ok();
             if how == Paste::Plain {
                 return Ok(text.filter(|text| !text.is_empty()).map(Pasted::Text));
             }
-            let files = clipboard.get().file_list().unwrap_or_default();
             let html = clipboard.get().html().ok();
+            if field == Field::Edit {
+                return Ok(pasted(Vec::new(), text, html, || None));
+            }
+            let files = clipboard.get().file_list().unwrap_or_default();
             Ok(pasted(files, text, html, || clipboard.get().image().ok()))
         })
         .ok()

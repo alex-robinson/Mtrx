@@ -29,10 +29,10 @@ use crate::{
     app::Message,
     avatar::{self, Avatars, Shape},
     calls::{self, RoomCalls},
-    clipboard::{self, Copied},
-    composer_menu,
+    clipboard::{self, Copied, Field},
     context_menu::context_menu,
     drag_scroll::drag_scroll,
+    edit_menu,
     ellipsis::ellipsis,
     emoji,
     find::{self, Find},
@@ -738,7 +738,7 @@ impl Room {
                 // Pictures, files and rich text too, which iced's clipboard
                 // lacks.
                 if let Some(how) = clipboard::paste(&press) {
-                    return custom(Message::Paste(how));
+                    return custom(Message::Paste(Field::Composer, how));
                 }
                 match press.key {
                     Key::Named(Named::ArrowUp) if completing => {
@@ -769,12 +769,8 @@ impl Room {
                     }),
             )
             .max_height(200);
-        let composer = context_menu(
-            composer,
-            self.composer_menu.then(|| composer_menu::view(selected)),
-            Message::ComposerMenu(composer_menu::Message::Open),
-        )
-        .on_dismiss(Message::ComposerMenu(composer_menu::Message::Close));
+        let composer =
+            edit_menu::with_menu(Field::Composer, composer, self.composer_menu, selected);
         let attach = hint(
             button(icons::paperclip(19.0, |theme| {
                 theme

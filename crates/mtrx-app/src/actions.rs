@@ -14,7 +14,8 @@ use mtrx_format::Document;
 use crate::{
     app,
     avatar::{Avatars, Shape},
-    clipboard::Copied,
+    clipboard::{self, Copied, Field},
+    edit_menu,
     ellipsis::ellipsis,
     emoji, fonts,
     hint::{Position, hint, hint_with},
@@ -203,6 +204,8 @@ pub struct InlineEdit {
     content: text_editor::Content,
     /// Its emoji panel, while shown.
     pub emoji: Option<emoji::Panel>,
+    /// Its menu (right-click) is open.
+    pub menu: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -220,6 +223,7 @@ impl InlineEdit {
             target,
             content,
             emoji: None,
+            menu: false,
         }
     }
 
@@ -240,6 +244,11 @@ impl InlineEdit {
         self.content.text().trim_end().to_owned()
     }
 
+    /// The text selected in it.
+    pub fn selection(&self) -> Option<String> {
+        self.content.selection()
+    }
+
     /// The editor, with emoji, Save and Cancel; Enter saves, Esc cancels.
     pub fn view<'a>(&'a self, frequent: &[String]) -> Element<'a, app::Message> {
         let selected = self.content.selection().is_some();
@@ -248,14 +257,22 @@ impl InlineEdit {
             .highlight_with::<mention::Highlighter>(Default::default(), mention::format)
             .style(style::editor)
             .on_action(|action| act(Message::EditAction(action)))
-            .key_binding(move |press| match press.key {
-                Key::Named(Named::Enter) if !press.modifiers.shift() => {
-                    Some(text_editor::Binding::Custom(act(Message::SaveEdit)))
+            .key_binding(move |press| {
+                let custom = |message| Some(text_editor::Binding::Custom(message));
+                // Rich text as Markdown, as in the composer.
+                if let Some(how) = clipboard::paste(&press) {
+                    return custom(app::Message::Paste(Field::Edit, how));
                 }
-                _ => selection::editor_key(press, selected),
+                match press.key {
+                    Key::Named(Named::Enter) if !press.modifiers.shift() => {
+                        custom(act(Message::SaveEdit))
+                    }
+                    _ => selection::editor_key(press, selected),
+                }
             })
             .padding(iced::Padding::new(6.0).right(emoji::FIELD_INSET_COMPACT))
             .max_height(240);
+        let editor = edit_menu::with_menu(Field::Edit, editor, self.menu, selected);
         let editor = emoji::in_field(
             editor,
             self.emoji.is_some(),

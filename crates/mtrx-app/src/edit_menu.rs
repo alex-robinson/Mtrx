@@ -1,9 +1,14 @@
-//! The composer's menu (right-click): Cut, Copy, Paste, Select All and,
-//! on macOS, Emoji & Symbols.
+//! The menu of a field one writes in (right-click), the composer or a
+//! message being edited: Cut, Copy, Paste, Select All and, on macOS,
+//! Emoji & Symbols.
 
 use iced::Element;
 
-use crate::{app, context_menu};
+use crate::{
+    app,
+    clipboard::Field,
+    context_menu::{self, context_menu},
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Message {
@@ -14,7 +19,7 @@ pub enum Message {
     Paste,
     SelectAll,
     /// The system's window of emoji and symbols; what is picked there goes
-    /// into the composer.
+    /// into the field.
     #[cfg(target_os = "macos")]
     EmojiAndSymbols,
 }
@@ -34,13 +39,24 @@ pub fn items(selected: bool) -> Vec<(&'static str, Message)> {
     items
 }
 
-/// The menu, with text `selected` or not.
-pub fn view<'a>(selected: bool) -> Element<'a, app::Message> {
-    context_menu::menu(
-        items(selected)
-            .into_iter()
-            .map(|(label, message)| (label.to_owned(), app::Message::ComposerMenu(message))),
-    )
+/// `editor`, which is `field`, with its menu on right-click: shown while
+/// `open`, Cut and Copy with text `selected`.
+pub fn with_menu<'a>(
+    field: Field,
+    editor: impl Into<Element<'a, app::Message>>,
+    open: bool,
+    selected: bool,
+) -> Element<'a, app::Message> {
+    let menu = open.then(|| {
+        context_menu::menu(
+            items(selected)
+                .into_iter()
+                .map(|(label, message)| (label.to_owned(), app::Message::EditMenu(field, message))),
+        )
+    });
+    context_menu(editor, menu, app::Message::EditMenu(field, Message::Open))
+        .on_dismiss(app::Message::EditMenu(field, Message::Close))
+        .into()
 }
 
 /// Open the system's Emoji & Symbols window, which types what is picked
@@ -66,7 +82,6 @@ mod tests {
     use iced_test::simulator::Simulator;
 
     use super::*;
-    use crate::context_menu::context_menu;
 
     fn labels(selected: bool) -> Vec<&'static str> {
         items(selected)
@@ -85,24 +100,19 @@ mod tests {
         assert_eq!(labels(false), expected[2..]);
     }
 
-    /// What an editor wrapped as the composer is, its menu `open` (at its
-    /// corner, as nothing was right-clicked yet), sends for `button`
-    /// clicked at `at`.
+    /// What an editor wrapped as a message being edited is, its menu `open`
+    /// (at its corner, as nothing was right-clicked yet), sends for
+    /// `button` clicked at `at`.
     fn sends(open: bool, button: mouse::Button, at: (f32, f32)) -> Vec<app::Message> {
         let content = Content::<iced::Renderer>::with_text("Melt");
         let editor = iced::widget::text_editor(&content)
             .on_action(app::Message::Composer)
             .key_binding(text_editor::Binding::from_key_press);
-        let composer = context_menu(
-            editor,
-            open.then(|| view(true)),
-            app::Message::ComposerMenu(Message::Open),
-        )
-        .on_dismiss(app::Message::ComposerMenu(Message::Close));
+        let field = with_menu(Field::Edit, editor, open, true);
         let mut ui = Simulator::with_size(
             crate::fonts::settings(),
             Size::new(400.0, 300.0),
-            iced::widget::column![composer],
+            iced::widget::column![field],
         );
         ui.point_at(at);
         let _ = ui.simulate([
@@ -116,15 +126,24 @@ mod tests {
 
     #[test]
     fn right_click_opens_it_and_an_item_is_chosen() {
-        use app::Message::ComposerMenu as Menu;
+        use app::Message::EditMenu as Menu;
         use mouse::Button::{Left, Right};
         let sent = sends(false, Right, (20.0, 10.0));
-        assert!(matches!(sent[..], [Menu(Message::Open)]), "{sent:?}");
+        assert!(
+            matches!(sent[..], [Menu(Field::Edit, Message::Open)]),
+            "{sent:?}"
+        );
         // The third entry, Paste.
         let sent = sends(true, Left, (60.0, 4.0 + 2.5 * 26.0));
-        assert!(matches!(sent[..], [Menu(Message::Paste)]), "{sent:?}");
+        assert!(
+            matches!(sent[..], [Menu(Field::Edit, Message::Paste)]),
+            "{sent:?}"
+        );
         // A click beside it closes it.
         let sent = sends(true, Left, (380.0, 280.0));
-        assert!(matches!(sent[..], [Menu(Message::Close)]), "{sent:?}");
+        assert!(
+            matches!(sent[..], [Menu(Field::Edit, Message::Close)]),
+            "{sent:?}"
+        );
     }
 }
