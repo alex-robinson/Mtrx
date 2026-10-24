@@ -97,7 +97,7 @@ these stay outside the widget.
       formatting, links and lists.
 - [x] ⌘V of a picture (a screenshot, say) attaches it, as dropping a file
       does.
-- [ ] ⌘V of rich text (from a web page or Mail) as Markdown: links, lists,
+- [x] ⌘V of rich text (from a web page or Mail) as Markdown: links, lists,
       emphasis.
 - [ ] ⌥⇧⌘V pastes as plain text.
 - [ ] Right-click in the composer: Cut, Copy, Paste, Select All (and

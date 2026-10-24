@@ -32,6 +32,8 @@ resvg = "0.45.1"
 emojis = "0.9.1"
 # Pictures on the clipboard (iced's clipboard holds text only).
 arboard = { version = "3.7.0", default-features = false, features = ["image-data"] }
+# Rich text pasted into the composer, as Markdown.
+htmd = "0.5.6"
 # Same version as iced's: the text layout of its paragraphs, for selecting.
 iced_graphics = "0.14.0"
 
