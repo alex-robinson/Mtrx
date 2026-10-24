@@ -119,6 +119,8 @@ fn app(screen: Screen, mode: Mode) -> App {
         settings: Settings::default(),
         settings_file: None,
         view_file: None,
+        placement: Placement::default(),
+        placement_file: None,
         resizing: false,
         settings_panel: None,
         screen,
@@ -176,26 +178,77 @@ fn zoom_steps_the_text_size() {
     assert_eq!(app.pixel_scale(), 2.0);
 }
 
-/// The window opens at the same size in logical pixels at any text size.
+/// The window opens at the same size in logical pixels at any text size,
+/// the first time and as it was left.
 #[test]
 fn window_opens_at_one_size() {
     use crate::text_size::TextSize;
 
     let profile = app(Screen::Starting, Mode::Light).profile;
-    for text_size in TextSize::ALL {
-        let environment = Environment {
-            profile: profile.clone(),
-            data_root: snapshot_dir(),
-            secrets: SecretStore::File,
-            settings: Settings {
-                text_size,
-                ..Settings::default()
+    let left = Frame::new(iced::Point::new(40.0, 60.0), Size::new(900.0, 700.0));
+    for (placement, size) in [
+        (Placement::default(), placement::DEFAULT_SIZE),
+        (
+            Placement {
+                frame: Some(left),
+                maximized: false,
             },
-        };
-        let opened = environment.window_size() * text_size.scale();
-        assert!((opened.width - WINDOW.width).abs() < 1e-3, "{text_size}");
-        assert!((opened.height - WINDOW.height).abs() < 1e-3, "{text_size}");
+            left.size(),
+        ),
+    ] {
+        for text_size in TextSize::ALL {
+            let environment = Environment {
+                profile: profile.clone(),
+                data_root: snapshot_dir(),
+                secrets: SecretStore::File,
+                settings: Settings {
+                    text_size,
+                    ..Settings::default()
+                },
+                placement,
+            };
+            let opened = environment.window().size * text_size.scale();
+            assert!((opened.width - size.width).abs() < 1e-3, "{text_size}");
+            assert!((opened.height - size.height).abs() < 1e-3, "{text_size}");
+        }
     }
+}
+
+/// Moved and resized, the window is saved where it is; maximised, its frame
+/// from before is kept to go back to.
+#[test]
+fn window_placement_is_saved() {
+    let dir = TempDir::new().unwrap();
+    let file = dir.path().join("window.json");
+    let mut app = app(Screen::Login(Login::default()), Mode::Light);
+    app.placement_file = Some(file.clone());
+    app.scale = 2.0;
+    app.settings.text_size = crate::text_size::TextSize::Large;
+    let placed = |maximized| Message::WindowPlaced {
+        position: Some(iced::Point::new(1800.0, 200.0)),
+        maximized,
+        fullscreen: false,
+    };
+
+    // Reported in layout units.
+    let _ = app.update(Message::WindowResized(
+        Size::new(1000.0, 700.0) / app.scale_factor(),
+    ));
+    let _ = app.update(placed(false));
+    let left = Frame::new(iced::Point::new(1800.0, 200.0), Size::new(1000.0, 700.0));
+    let saved = Placement::load(&file);
+    assert!(!saved.maximized);
+    let frame = saved.frame.unwrap();
+    assert_eq!(frame.position(), left.position());
+    assert!((frame.width - left.width).abs() < 1e-3 && (frame.height - left.height).abs() < 1e-3);
+
+    let _ = app.update(Message::WindowResized(
+        Size::new(1512.0, 920.0) / app.scale_factor(),
+    ));
+    let _ = app.update(placed(true));
+    let saved = Placement::load(&file);
+    assert!(saved.maximized);
+    assert_eq!(saved.frame, Some(frame));
 }
 
 /// iced drops the app only after its runtime has stopped, when the SDK's
@@ -239,6 +292,43 @@ fn closing_the_window_cancels_a_browser_sign_in() {
     login.browser_started(handle.clone());
     let _ = app.update(Message::CloseWindow(window::Id::unique()));
     assert!(handle.is_aborted());
+}
+
+/// A window left on a display since unplugged opens on the main display,
+/// as the first time; one on a display still attached stays.
+#[test]
+fn window_left_off_screen_opens_on_the_main_display() {
+    use iced_runtime::{Action, task, window::Action as Window};
+
+    let moves = |task: Task<Message>| -> Vec<iced::Point> {
+        let Some(stream) = task::into_stream(task) else {
+            return Vec::new();
+        };
+        iced::futures::executor::block_on(stream.collect::<Vec<_>>())
+            .into_iter()
+            .filter_map(|action| match action {
+                Action::Window(Window::Move(_, position)) => Some(position),
+                _ => None,
+            })
+            .collect()
+    };
+    let laptop = Rectangle::new(iced::Point::new(0.0, 25.0), Size::new(1512.0, 920.0));
+    let monitor = Rectangle::new(iced::Point::new(1512.0, 0.0), Size::new(2560.0, 1415.0));
+    let left = iced::Point::new(1800.0, 200.0);
+    let mut app = app(Screen::Login(Login::default()), Mode::Light);
+    app.placement.frame = Some(Frame::new(left, Size::new(1000.0, 700.0)));
+    let id = window::Id::unique();
+
+    let both = app.update(Message::WindowOpened(
+        id,
+        Some(vec![laptop, monitor]),
+        Some(left),
+    ));
+    assert_eq!(moves(both), []);
+    let unknown = app.update(Message::WindowOpened(id, None, Some(left)));
+    assert_eq!(moves(unknown), []);
+    let unplugged = app.update(Message::WindowOpened(id, Some(vec![laptop]), Some(left)));
+    assert_eq!(moves(unplugged), [iced::Point::new(156.0, 85.0)]);
 }
 
 /// ⌘W closes the window as its close button does, also with the composer

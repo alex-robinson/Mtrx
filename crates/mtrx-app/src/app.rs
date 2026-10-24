@@ -10,7 +10,7 @@ use std::{
 
 use futures_util::{SinkExt, StreamExt};
 use iced::{
-    Element, Length, Size, Subscription, Task, Theme, mouse,
+    Element, Length, Point, Rectangle, Size, Subscription, Task, Theme, mouse,
     theme::Mode,
     widget::{
         button, column, container, image, mouse_area, opaque, row, scrollable::Viewport, stack,
@@ -40,6 +40,7 @@ use crate::{
     math::{self, Math, Rendered},
     media::{self, Previews, Viewer},
     members, mention, message, pdf_viewer,
+    placement::{self, Frame, Placement},
     presence::{self, Activity, Presences},
     room::{self, Look, Older, Room},
     selection::{self, Selection},
@@ -153,6 +154,17 @@ pub enum Message {
     MathRendered(math::Key, Rendered),
     LinkClicked(String),
     WindowResized(Size),
+    /// The window opened at `.2` (its outer position), with these displays
+    /// attached (`None` where the platform does not say).
+    WindowOpened(window::Id, Option<Vec<Rectangle>>, Option<Point>),
+    /// The window was moved or resized.
+    WindowMoved(window::Id),
+    /// Where the window now is, to open there next time.
+    WindowPlaced {
+        position: Option<Point>,
+        maximized: bool,
+        fullscreen: bool,
+    },
     ScaleFactor(f32),
     /// Text size, or the PDF viewer's zoom while it is open.
     Zoom(Zoom),
@@ -233,6 +245,10 @@ pub struct App {
     settings_file: Option<PathBuf>,
     /// Where the last space and room shown are saved; `None` in tests.
     view_file: Option<PathBuf>,
+    /// The window's size and position, to open it there again.
+    placement: Placement,
+    /// Where the placement is saved; `None` in tests.
+    placement_file: Option<PathBuf>,
     /// The room list's edge is being dragged.
     resizing: bool,
     /// The settings panel, while open.
@@ -490,18 +506,17 @@ impl Main {
     }
 }
 
-/// The window's size on opening, in logical pixels.
-const WINDOW: Size = Size::new(1200.0, 800.0);
-
 /// What the app starts with: profile and data directory from the same
-/// environment variables the CLI reads, and the saved settings, read before
-/// the window opens as its size depends on the text size.
+/// environment variables the CLI reads, and the saved settings and window
+/// placement, read before the window opens as its size depends on the text
+/// size.
 #[derive(Clone)]
 pub struct Environment {
     profile: Profile,
     data_root: PathBuf,
     secrets: SecretStore,
     settings: Settings,
+    placement: Placement,
 }
 
 impl Environment {
@@ -518,18 +533,21 @@ impl Environment {
         let profile =
             Profile::new(&name, &data_root, secrets.clone()).map_err(|e| e.to_string())?;
         let settings = Settings::load(&Settings::path(&data_root));
+        let placement = Placement::load(&Placement::path(&profile));
         Ok(Self {
             profile,
             data_root,
             secrets,
             settings,
+            placement,
         })
     }
 
-    /// The window's size on opening, in layout units, which iced scales by
-    /// the text size: [`WINDOW`] in logical pixels at any text size.
-    pub fn window_size(&self) -> Size {
-        WINDOW / self.settings.text_size.scale()
+    /// The window's size, position and whether it is maximised on opening,
+    /// as it was left. Its size is in layout units, which iced scales by the
+    /// text size: the same in logical pixels at any text size.
+    pub fn window(&self) -> window::Settings {
+        self.placement.settings(self.settings.text_size.scale())
     }
 }
 
@@ -540,6 +558,7 @@ impl App {
             data_root,
             secrets,
             settings,
+            placement,
         } = environment;
         let settings_file = Settings::path(&data_root);
         #[cfg(target_os = "macos")]
@@ -551,11 +570,15 @@ impl App {
             settings,
             settings_file: Some(settings_file),
             view_file: Some(LastView::path(&profile)),
+            placement_file: Some(Placement::path(&profile)),
+            window: placement
+                .frame
+                .map_or(placement::DEFAULT_SIZE, |frame| frame.size()),
+            placement,
             resizing: false,
             settings_panel: None,
             screen: Screen::Starting,
             system_mode: Mode::Light,
-            window: WINDOW,
             scale: 1.0,
             math: Math::new(),
             badge: Badge::default(),
@@ -569,7 +592,15 @@ impl App {
             None => Task::none(),
         });
         let mode = iced::system::theme().map(Message::ThemeMode);
-        (app, Task::batch([restore, scale, mode]))
+        // Whether the window opened on a display, see `Message::WindowOpened`.
+        let opened = window::oldest().then(|id| match id {
+            Some(id) => window::run(id, placement::displays).then(move |displays| {
+                window::position(id)
+                    .map(move |position| Message::WindowOpened(id, displays.clone(), position))
+            }),
+            None => Task::none(),
+        });
+        (app, Task::batch([restore, scale, mode, opened]))
     }
 
     /// The theme the app is drawn in.
@@ -1790,6 +1821,48 @@ impl App {
                 self.window = size * self.scale_factor();
                 self.rescaled()
             }
+            Message::WindowOpened(id, Some(displays), Some(position)) => {
+                // Left on a display since unplugged, the window opens on the
+                // main one instead, as the first time.
+                let Some(left) = self.placement.frame else {
+                    return Task::none();
+                };
+                if Frame::new(position, left.size()).reachable(&displays) {
+                    return Task::none();
+                }
+                let Some(frame) = Frame::fallback(&displays) else {
+                    return Task::none();
+                };
+                Task::batch([
+                    window::maximize(id, false),
+                    window::resize(id, frame.size() / self.scale_factor()),
+                    window::move_to(id, frame.position()),
+                ])
+            }
+            Message::WindowOpened(..) => Task::none(),
+            Message::WindowMoved(id) => window::is_maximized(id).then(move |maximized| {
+                window::mode(id).then(move |mode| {
+                    window::position(id).map(move |position| Message::WindowPlaced {
+                        position,
+                        maximized,
+                        fullscreen: mode == window::Mode::Fullscreen,
+                    })
+                })
+            }),
+            Message::WindowPlaced {
+                position: Some(position),
+                maximized,
+                fullscreen,
+            } => {
+                let frame = Frame::new(position, self.window);
+                if self.placement.follow(frame, maximized, fullscreen)
+                    && let Some(file) = &self.placement_file
+                {
+                    self.placement.save(file);
+                }
+                Task::none()
+            }
+            Message::WindowPlaced { position: None, .. } => Task::none(),
             Message::ScaleFactor(scale) => {
                 self.scale = scale;
                 self.rescaled()
@@ -2890,6 +2963,12 @@ impl App {
     pub fn subscription(&self) -> Subscription<Message> {
         let mut subscriptions = vec![
             window::resize_events().map(|(_, size)| Message::WindowResized(size)),
+            window::events().filter_map(|(id, event)| match event {
+                window::Event::Moved(_) | window::Event::Resized(_) => {
+                    Some(Message::WindowMoved(id))
+                }
+                _ => None,
+            }),
             window::close_requests().map(Message::CloseWindow),
             iced::system::theme_changes().map(Message::ThemeMode),
             // Also on the sign-in screen.
