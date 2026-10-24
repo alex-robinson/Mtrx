@@ -568,3 +568,142 @@ async fn up_in_the_empty_composer_edits_our_last_message() {
     assert!(matches!(edit.target, Editing::Sent(_)));
     assert_eq!(edit.text(), "Melt");
 }
+
+/// Whether the widget with `id` is focused, once operated.
+struct Focused(iced::advanced::widget::Id, Option<bool>);
+
+impl iced::advanced::widget::Operation for Focused {
+    fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn iced::advanced::widget::Operation)) {
+        operate(self);
+    }
+
+    fn focusable(
+        &mut self,
+        id: Option<&iced::advanced::widget::Id>,
+        _bounds: iced::Rectangle,
+        state: &mut dyn iced::advanced::widget::operation::Focusable,
+    ) {
+        if id == Some(&self.0) {
+            self.1 = Some(state.is_focused());
+        }
+    }
+}
+
+/// A press captured beside a stack still reaches its layers: a text editor
+/// in one loses the focus, as it does outside a stack (our patch of
+/// `Stack::update`, `vendor/iced_widget`).
+#[test]
+fn a_press_captured_beside_a_stack_reaches_its_layers() {
+    use iced::advanced::widget::operation::focusable;
+
+    let content = text_editor::Content::<iced::Renderer>::with_text("Draft");
+    let mut renderer = iced::futures::executor::block_on(iced::Renderer::new(
+        fonts::INTER,
+        iced::Pixels(style::TEXT_SIZE),
+        None,
+    ))
+    .unwrap();
+    for stacked in [false, true] {
+        let editor = || text_editor(&content).id("field").on_action(|_| ());
+        let field: iced::Element<'_, ()> = if stacked {
+            iced::widget::stack![editor(), iced::widget::space()].into()
+        } else {
+            editor().into()
+        };
+        // Above it, something that captures the press.
+        let above = iced::widget::mouse_area(iced::widget::container("Timeline").height(100));
+        let view: iced::Element<'_, ()> = iced::widget::column![above.on_press(()), field].into();
+        let size = Size::new(300.0, 300.0);
+        let mut ui = UserInterface::build(view, size, Cache::default(), &mut renderer);
+        ui.operate(&renderer, &mut focusable::focus("field".into()));
+        let (_, statuses) = ui.update(
+            &[Event::Mouse(mouse::Event::ButtonPressed(
+                mouse::Button::Left,
+            ))],
+            mouse::Cursor::Available(iced::Point::new(10.0, 10.0)),
+            &mut renderer,
+            &mut clipboard::Null,
+            &mut Vec::new(),
+        );
+        assert_eq!(statuses, [Status::Captured]);
+        let mut focused = Focused("field".into(), None);
+        ui.operate(&renderer, &mut focused);
+        assert_eq!(focused.1, Some(false), "stacked: {stacked}");
+    }
+}
+
+/// The bounds of a container, once operated.
+struct Bounds(iced::advanced::widget::Id, Option<iced::Rectangle>);
+
+impl iced::advanced::widget::Operation for Bounds {
+    fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn iced::advanced::widget::Operation)) {
+        operate(self);
+    }
+
+    fn container(&mut self, id: Option<&iced::advanced::widget::Id>, bounds: iced::Rectangle) {
+        if id == Some(&self.0) {
+            self.1 = Some(bounds);
+        }
+    }
+}
+
+impl Ui {
+    /// The bounds of the container with `id`.
+    fn bounds(&mut self, id: iced::advanced::widget::Id) -> iced::Rectangle {
+        let mut bounds = Bounds(id, None);
+        let mut ui = UserInterface::build(
+            self.app.view(),
+            SIZE,
+            std::mem::take(&mut self.cache),
+            &mut self.renderer,
+        );
+        ui.operate(&self.renderer, &mut bounds);
+        self.cache = ui.into_cache();
+        bounds.1.expect("shown")
+    }
+
+    /// Press at `from`, move to `to` and release, as the app's listeners
+    /// see it.
+    fn drag(&mut self, from: iced::Point, to: iced::Point) {
+        self.cursor = from;
+        self.send(&[
+            Event::Mouse(mouse::Event::CursorMoved { position: from }),
+            Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)),
+        ]);
+        self.cursor = to;
+        self.send(&[Event::Mouse(mouse::Event::CursorMoved { position: to })]);
+        let (_, mut messages) = self.messages(&[Event::Mouse(mouse::Event::ButtonReleased(
+            mouse::Button::Left,
+        ))]);
+        // The app listens for the release while a selection is dragged.
+        messages.push(Message::Select(selection::Message::End));
+        for message in messages {
+            self.update(message);
+        }
+    }
+}
+
+/// Shift with an arrow extends a selection made with the mouse also when
+/// the composer had the focus before (reported with 0.2.0): the press in
+/// the timeline takes it from the composer.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs local Synapse (testserver/run.sh)"]
+async fn shift_arrow_extends_a_selection_made_after_typing() {
+    let (mut ui, _dir) = room_with("shiftsel", &["Calving fronts retreat"]).await;
+    let event = row_of(ui.room(), "Calving fronts retreat");
+    ui.run(iced::widget::operation::focus(room::COMPOSER));
+    assert!(ui.composer_focused());
+    // Across the start of the message's text.
+    let row = ui.bounds(iced::advanced::widget::Id::from(format!("row:{event}")));
+    let (x, y) = (row.x + 60.0, row.y + row.height - 14.0);
+    ui.drag(iced::Point::new(x, y), iced::Point::new(x + 40.0, y));
+    assert!(!ui.composer_focused());
+    let before = ui.room().selection.clone().expect("selected").focus;
+    assert_eq!(
+        ui.press(Named::ArrowRight, Modifiers::SHIFT),
+        Status::Ignored
+    );
+    let after = ui.room().selection.clone().expect("selected").focus;
+    assert_eq!(after.event, before.event);
+    assert_eq!(after.pos.offset, before.pos.offset + 1);
+}

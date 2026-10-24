@@ -54,10 +54,10 @@ per day:
 
 - [x] ⌘K: room search.
 - [x] ⌘+ ⌘− ⌘0: text size.
-- [ ] Shift with an arrow does not extend a selection (reported with
-      0.2.0). `shortcuts` in `app.rs` only acts when the event was
-      ignored; with the composer focused the editor takes Shift+arrows as
-      its own selection. Reproduce, decide, test.
+- [x] Shift with an arrow does not extend a selection (reported with
+      0.2.0). A press in the timeline never reached the composer, so it
+      kept the focus and took Shift+arrows: iced's `Stack` stopped at an
+      event captured beside it. Patched in `vendor/iced_widget`.
 - [x] ⇧⌘← and ⇧⌘→ extend to the start and end of the line, ⇧⌘↑ and ⇧⌘↓
       to the first and last message on screen.
 - [x] Page Up/Down and ⌥↑/⌥↓ scroll the timeline; ⌘↑/⌘↓ go to the oldest

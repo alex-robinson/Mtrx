@@ -246,6 +246,14 @@ where
         let is_over = cursor.is_over(layout.bounds());
         let end = self.children.len() - 1;
 
+        // Mtrx patch: the layers get a shell of their own, so that only a
+        // capture by one of them stops the layers below. The shell passed in
+        // also holds captures by widgets before the stack (beside it), which
+        // kept, say, a text editor in the bottom layer from seeing a press
+        // elsewhere and losing the focus.
+        let mut messages = Vec::new();
+        let mut layers = Shell::new(&mut messages);
+
         for (i, ((child, tree), layout)) in self
             .children
             .iter_mut()
@@ -255,12 +263,18 @@ where
             .enumerate()
         {
             child.as_widget_mut().update(
-                tree, event, layout, cursor, renderer, clipboard, shell,
+                tree,
+                event,
+                layout,
+                cursor,
+                renderer,
+                clipboard,
+                &mut layers,
                 viewport,
             );
 
-            if shell.is_event_captured() {
-                return;
+            if layers.is_event_captured() {
+                break;
             }
 
             if i < end && is_over && !cursor.is_levitating() {
@@ -273,6 +287,8 @@ where
                 }
             }
         }
+
+        shell.merge(layers, std::convert::identity);
     }
 
     fn mouse_interaction(
