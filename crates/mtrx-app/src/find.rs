@@ -35,6 +35,9 @@ pub const CURRENT: &str = "find-current";
 pub enum Message {
     /// ⌘F: open the find bar, or focus it again.
     Open,
+    /// Opening, with what the room's texts cut to fit show, for looking
+    /// for what is selected.
+    Opened(crate::selection::Shown),
     Query(String),
     /// Enter or ⌘G: the next match, an older one.
     Next,

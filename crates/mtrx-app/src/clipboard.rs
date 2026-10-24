@@ -44,6 +44,15 @@ impl Copied {
         self
     }
 
+    /// `next` after this, on the next line (in HTML, its own paragraph).
+    pub fn push_line(&mut self, next: Copied) {
+        if !self.text.is_empty() {
+            self.text.push('\n');
+        }
+        self.text.push_str(&next.text);
+        self.html.push_str(&next.html);
+    }
+
     /// `next` after this, a paragraph apart.
     pub fn push(&mut self, next: Copied) {
         if !self.text.is_empty() {

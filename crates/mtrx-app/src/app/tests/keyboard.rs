@@ -243,17 +243,14 @@ fn shift_and_arrows_move_the_end_of_the_selection() {
 }
 
 /// ⇧⌘← and ⇧⌘→ move the end of the selection to the edges of its line,
-/// ⇧⌘↑ and ⇧⌘↓ to the first and last message on screen.
+/// ⇧⌘↑ and ⇧⌘↓ to the first and last text on screen: here the room's
+/// start and the last message.
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "needs local Synapse (testserver/run.sh)"]
 async fn shift_command_arrows_extend_to_the_edges() {
     let (mut ui, _dir) = room_with("edges", &["Calving fronts", "Basal melt", "Sea ice"]).await;
     let room = ui.room();
-    let (first, middle, last) = (
-        row_of(room, "Calving fronts"),
-        row_of(room, "Basal melt"),
-        row_of(room, "Sea ice"),
-    );
+    let (middle, last) = (row_of(room, "Basal melt"), row_of(room, "Sea ice"));
     let at = |event: &str, offset| Point {
         event: event.to_owned(),
         pos: Pos { unit: 0, offset },
@@ -271,7 +268,7 @@ async fn shift_command_arrows_extend_to_the_edges() {
     ui.press(Named::ArrowLeft, Modifiers::SHIFT | Modifiers::COMMAND);
     assert_eq!(focus(&mut ui), at(&middle, 0));
     ui.press(Named::ArrowUp, Modifiers::SHIFT | Modifiers::COMMAND);
-    assert_eq!(focus(&mut ui), at(&first, 0));
+    assert_eq!(focus(&mut ui), at("start", 0));
     ui.press(Named::ArrowDown, Modifiers::SHIFT | Modifiers::COMMAND);
     assert_eq!(focus(&mut ui), at(&last, "Sea ice".len()));
     // The anchor stays.

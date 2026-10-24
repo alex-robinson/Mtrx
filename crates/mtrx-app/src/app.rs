@@ -1188,8 +1188,14 @@ impl App {
                     return Task::none();
                 };
                 match message {
+                    // What reply previews show first, as they are cut to fit.
                     selection::Message::Copy => {
-                        return room.selected().map_or_else(Task::none, copy);
+                        return room
+                            .read_shown()
+                            .map(|shown| Message::Select(selection::Message::CopyAsShown(shown)));
+                    }
+                    selection::Message::CopyAsShown(shown) => {
+                        return room.selected(&shown).map_or_else(Task::none, copy);
                     }
                     selection::Message::SelectAll => {
                         return room.on_screen().and_then(|(first, last)| {
@@ -1207,8 +1213,8 @@ impl App {
                     selection::Message::ExtendToScreenEdge(up) => {
                         return room.extend_to_screen_edge(up);
                     }
-                    selection::Message::ExtendToRow(event, start) => {
-                        room.extend_to_row(event, start);
+                    selection::Message::ExtendToPart(event, start) => {
+                        room.extend_to_part(event, start);
                         return Task::none();
                     }
                     selection::Message::LineMoved(from, up, offset) => {
@@ -2781,7 +2787,7 @@ impl App {
             }
             Act::CopySelection => {
                 room.menu = None;
-                room.selected().map_or_else(Task::none, copy)
+                Task::done(Message::Select(selection::Message::Copy))
             }
             Act::CopyImage(document) => {
                 room.menu = None;
@@ -2942,11 +2948,22 @@ impl App {
         };
         let mut focus = Task::none();
         match message {
-            find::Message::Open => {
+            // With a selection, what reply previews show first, as it may
+            // be in one.
+            find::Message::Open if room.selection.is_some() => {
+                return room
+                    .read_shown()
+                    .map(|shown| Message::Find(find::Message::Opened(shown)));
+            }
+            find::Message::Open | find::Message::Opened(_) => {
+                let shown = match message {
+                    find::Message::Opened(shown) => shown,
+                    _ => selection::Shown::new(),
+                };
                 // Text selected on one line is looked for, as in Safari;
                 // else what was last.
                 let selected = room
-                    .selected()
+                    .selected(&shown)
                     .map(|copied| copied.text)
                     .filter(|text| !text.contains('\n'));
                 match (&mut room.find, selected) {

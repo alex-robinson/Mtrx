@@ -39,7 +39,14 @@ once the timeline itself became selectable.
 
 ## Selection in the timeline
 
-⌘A selects the messages on screen (partly shown ones too), so it never
+Besides messages' text, sender names and times, reply quotes, day
+dividers, state lines, the start of the room and the lines in place of a
+message (deleted, undecryptable, "sent a …") are selectable, in reading
+order. "Loading…" is not. A click (press and release without moving) on a
+sender's name or time still opens their card, and on a quote goes to the
+original; a drag selects.
+
+⌘A selects the text on screen (partly shown rows too), so it never
 loads or copies the whole history. Drag across words, lines and messages. Double-click selects a word (or a
 formula), triple-click a paragraph, and Shift-click extends, as do
 Shift+← and Shift+→ (with ⌥ by word) and Shift+↑ and Shift+↓ (by line,
@@ -70,15 +77,40 @@ The selection lives in `Room` (`selection.rs`), not in the widgets:
 
 ```text
 Selection { anchor: Point, focus: Point, dragging }
-Point     { event: event id, pos: Pos }
+Point     { event: part key, pos: Pos }
 Pos       { unit, offset }   // byte offset in the unit's text
 ```
 
-The room orders the two points by the messages' places in the timeline,
-and gives each message the part it covers (`Bounds::in_message`). With
-several messages, each sender's run of messages is preceded by
-"Name, HH:MM". The mouse release that ends a drag is caught by a
-subscription, wherever it happens.
+### Rows and parts
+
+`rows.rs` walks the shown entries once into rows (a message, under its
+sender's name or grouped with the one before; a run of state events; a
+day; the start), and each row into parts with text, in reading order:
+
+| Part              | Key               | Units                         |
+|-------------------|-------------------|-------------------------------|
+| sender and time   | `{event}/sender`  | name, time (gap ", ")         |
+| reply quote       | `{event}/reply`   | name (prefix "> "), preview (gap ": ") |
+| message text      | event id          | the message's units           |
+| line              | event id, `{first}/state`, `day/{secs}`, `start` | the line |
+
+The view draws from these rows and parts and the copied text is made
+from them, so the two cannot disagree. The room numbers the parts in
+reading order (`rows::order`) to order the two points, and gives each
+part what it covers (`Bounds::in_message`). Parts of a row are copied a
+line apart, rows a blank line apart. With several messages, each sender's
+run of messages is preceded by "Name, HH:MM", unless their sender line is
+in the selection (it then copies as the same text).
+
+A reply's preview is cut to a few lines with "…", depending on the
+width, and is copied as shown. The room does not know the cut, so ⌘C
+(and the menu's Copy, and ⌘F with a selection) first reads what each
+preview shows from the view, by an operation (`Room::read_shown`), then
+copies (`selection::Message::CopyAsShown`), text and HTML. Shift+arrows step through a
+preview as a whole text, not as cut.
+
+The mouse release that ends a drag is caught by a subscription, wherever
+it happens.
 
 ### Widgets
 
@@ -87,9 +119,11 @@ subscription, wherever it happens.
   (`iced_graphics`, same version as iced). It reports `Press` (with the
   word or paragraph for double and triple clicks) and, while dragging,
   `Drag` when the cursor is beside its lines. A press and release on a
-  link without moving still opens it. It uses the cursor's position, not
-  the event's, because a scrollable only moves the cursor into its
-  content's coordinates.
+  link without moving still opens it, and `on_click` does the same for
+  all its text (a sender's name, a quote). `lines` cuts it to fit a few
+  lines, and `id` reports the text it shows. It uses the cursor's
+  position, not the event's, because a scrollable only moves the cursor
+  into its content's coordinates.
 - `selectable_image.rs`: the same for a typeset math message, over the
   image.
 - `drag_scroll.rs`: wraps the timeline. While dragging past its edge it
@@ -111,28 +145,34 @@ one piece per line, selected whole. `Image::pieces` lists each piece's
 leaf, byte range and rectangle. `message::text_map` says where each leaf is in the units, so
 the image is selected with the same units as native text, and formulas
 copy as `$…$`. The text map also says which link each leaf is in (a
-mention's too), so a piece of a link is clicked as in native text: a
-press and release without moving opens it, and the cursor is a pointing
-hand over it.
+mention's too), so a piece of a link behaves as in native text: a press
+and release without moving opens it, the cursor is a pointing hand over
+it, its address shows in the corner, and right-clicking it opens the
+link's menu.
 
 ## Left to do
 
-- Other text in the timeline is not selectable: sender names, reply
-  previews, notices and state lines. Info cards are: names, IDs,
-  addresses, links, read-only name and topic, and the facts line use
-  `selectable_text`, which keeps its own selection and copies it with ⌘C.
+- Find (⌘F) searches messages' text only, not names, quotes or lines: it
+  searches all loaded entries, the parts are of the shown ones.
+- Info cards keep their own selection: names, IDs, addresses, links,
+  read-only name and topic, and the facts line use `selectable_text`,
+  which copies its selection with ⌘C.
 
 ## Tests
 
 - Unit: units and their copy text (`message.rs`, `selection.rs`), hit
   testing and highlighting over an image (`selectable_image.rs`), edge
   scrolling speed (`drag_scroll.rs`).
-- Simulated mouse: clicking a link in a typeset message, and its cursor
-  (`selectable_image.rs`).
+- Simulated mouse: clicking, hovering and right-clicking a link in a
+  typeset message, and its cursor (`selectable_image.rs`).
 - Simulated mouse: dragging, double and triple clicks, and dragging in a
   scrolled timeline (`message.rs`).
 - Renderer: pieces in reading order and in the right places, code by
   character (`mtrx-format/tests/format.rs`), tabs (`render.rs`); in the
   app, code in a typeset message by character (`selectable_image.rs`).
-- Snapshot: a selection from inside a math message across three senders,
-  with its copied text (`app/tests.rs`).
+- Rows and parts, and the copied text with names put once and quotes as
+  shown (`rows.rs`); a click and a drag on text with an action, and text
+  cut to its lines (`selectable.rs`); a click and a drag on a quote
+  (`actions.rs`).
+- Snapshot: a selection from inside a math message across three senders
+  and a reply's quote, with its copied text (`app/tests.rs`).
