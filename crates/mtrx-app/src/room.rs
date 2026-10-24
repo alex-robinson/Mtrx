@@ -47,6 +47,7 @@ use crate::{
     selectable_image::selectable_image,
     selection::{self, Bounds, Point, Pos, Selection, Step, units_text},
     send_later::{self, SendLater},
+    sidebar,
     style::{
         self, GUTTER_SPACING, HEADER_AVATAR, MESSAGE_PADDING, SENDER_AVATAR, TEXT_MARGIN,
         TIMELINE_PADDING, TOOLBAR_HEIGHT,
@@ -739,6 +740,11 @@ impl Room {
             .on_action(Message::Composer)
             .key_binding(move |press| {
                 let custom = |message| Some(text_editor::Binding::Custom(message));
+                // The window's: going to another room.
+                if sidebar::Go::from_key(&press.key, press.physical_key, press.modifiers).is_some()
+                {
+                    return None;
+                }
                 match press.key {
                     Key::Named(Named::ArrowUp) if completing => {
                         custom(Message::Mention(mention::Message::Up))

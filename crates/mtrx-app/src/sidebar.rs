@@ -3,6 +3,10 @@
 use iced::{
     Alignment, Color, Element, Length, Padding, Rectangle, Task, Theme, Vector,
     advanced::widget::{Id, Operation, operation},
+    keyboard::{
+        Key, Modifiers,
+        key::{self, Named},
+    },
     widget::{
         button, column, container, mouse_area, row, scrollable, space, stack, text, text_input,
     },
@@ -126,6 +130,83 @@ fn listed<'a>(view: &RoomListView<'a>) -> Vec<&'a RoomSummary> {
     } else {
         search(view.rooms, view.selected_space, view.arrange, &filter)
     }
+}
+
+/// The rooms with a row in the room list, in its order: the pinned Notes,
+/// then each section's, or what the search found.
+fn rows<'a>(view: &RoomListView<'a>) -> Vec<&'a RoomSummary> {
+    if !view.filter.trim().is_empty() {
+        return listed(view);
+    }
+    let layout = (view.arrange.categories).layout(view.selected_space.map(|s| s.as_ref()));
+    let notes = match view.notes {
+        Some(Notes::Room(notes)) => Some(notes),
+        _ => None,
+    };
+    let sections = sections(view).into_iter().flat_map(|(section, entries)| {
+        let collapsed = layout.is_collapsed(&section);
+        entries
+            .into_iter()
+            .filter(move |room| view.shows(room, collapsed))
+    });
+    notes.into_iter().chain(sections).collect()
+}
+
+/// Going to another room from the keyboard, in the room list's order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Go {
+    /// ⌥⌘↑, ⌃⇧Tab.
+    Above,
+    /// ⌥⌘↓, ⌃Tab.
+    Below,
+    /// ⌘1 to ⌘9: the first to ninth row, counted from 0.
+    Row(usize),
+}
+
+impl Go {
+    /// Where the key goes. Also while a field has the focus: fields leave
+    /// these keys (see the composer's key binding).
+    pub fn from_key(key: &Key, physical_key: key::Physical, modifiers: Modifiers) -> Option<Self> {
+        let up_or_down = |up| if up { Go::Above } else { Go::Below };
+        match key.as_ref() {
+            Key::Named(arrow @ (Named::ArrowUp | Named::ArrowDown))
+                if modifiers.command() && modifiers.alt() && !modifiers.shift() =>
+            {
+                Some(up_or_down(arrow == Named::ArrowUp))
+            }
+            Key::Named(Named::Tab) if modifiers.control() => Some(up_or_down(modifiers.shift())),
+            // By the key's place, also where digits need Shift (AZERTY).
+            Key::Character(c) if modifiers.command() && !modifiers.alt() => {
+                use key::Code::*;
+                let row = match physical_key {
+                    key::Physical::Code(code) => [
+                        Digit1, Digit2, Digit3, Digit4, Digit5, Digit6, Digit7, Digit8, Digit9,
+                    ]
+                    .iter()
+                    .position(|digit| *digit == code),
+                    key::Physical::Unidentified(_) => None,
+                };
+                let row = row.or_else(|| c.parse::<usize>().ok()?.checked_sub(1))?;
+                (row < 9).then_some(Go::Row(row))
+            }
+            _ => None,
+        }
+    }
+}
+
+/// The room `go` leads to from the open one (from outside the list: the
+/// first or last); none past the ends.
+pub fn go_to<'a>(view: &RoomListView<'a>, go: Go) -> Option<&'a RoomSummary> {
+    let rows = rows(view);
+    let at = (view.open).and_then(|open| rows.iter().position(|room| &room.id == open));
+    let index = match (go, at) {
+        (Go::Row(row), _) => row,
+        (Go::Above, Some(at)) => at.checked_sub(1)?,
+        (Go::Below, Some(at)) => at + 1,
+        (Go::Above, None) => rows.len().checked_sub(1)?,
+        (Go::Below, None) => 0,
+    };
+    rows.get(index).copied()
 }
 
 /// Pictures in the space bar and room list, with their sizes.
@@ -407,8 +488,7 @@ fn arranged<'a>(view: &RoomListView<'a>) -> Vec<Element<'a, Message>> {
         }
         let empty = entries.is_empty();
         for room in entries {
-            // Collapsed sections still show the open room and unread ones.
-            if collapsed && view.open != Some(&room.id) && room.unread_messages == 0 {
+            if !view.shows(room, collapsed) {
                 continue;
             }
             block = block.push(view.room_entry(room));
@@ -771,6 +851,12 @@ impl Later {
 }
 
 impl<'a> RoomListView<'a> {
+    /// Whether `room`, in a section `collapsed` or not, has its row:
+    /// collapsed sections still show the open room and unread ones.
+    fn shows(&self, room: &RoomSummary, collapsed: bool) -> bool {
+        !collapsed || self.open == Some(&room.id) || room.unread_messages > 0
+    }
+
     /// The pinned Notes row: like a room's, but not dragged or tagged, and
     /// greyed until the notes are started, which pressing it does.
     fn notes_entry(&self, notes: Notes<'a>) -> Element<'a, Message> {
@@ -1375,6 +1461,92 @@ mod tests {
             .space_members
             .loaded(space.clone(), 0, HashSet::from([bob]));
         assert_eq!(people(Some(&space), "", &arrange), ["@bob:x"]);
+    }
+
+    #[test]
+    fn keys_go_to_the_rooms_in_the_order_shown() {
+        let mut rooms = rooms();
+        rooms.push(RoomSummary {
+            tag: RoomTag::Favourite,
+            ..room("!fav:x", RoomKind::Room, &[])
+        });
+        rooms.push(room("!notes:x", RoomKind::Direct, &[]));
+        let (avatars, presences) = (Avatars::new(), Presences::default());
+        let mut arrange = Arrange::default();
+        let ids = |view: &RoomListView| -> Vec<String> {
+            rows(view).iter().map(|r| r.id.to_string()).collect()
+        };
+        let id = |id: &str| -> OwnedRoomId { id.try_into().unwrap() };
+
+        // Sections in their order, the pinned Notes first.
+        let mut home = list(&rooms, None, "", &arrange, &avatars, &presences);
+        home.notes = Some(Notes::Room(&rooms[5]));
+        assert_eq!(
+            ids(&home),
+            ["!notes:x", "!fav:x", "!inside:x", "!loose:x", "!bob:x"]
+        );
+        let to = |view: &RoomListView, go| go_to(view, go).map(|r| r.id.to_string());
+        // From outside the list, the first or last.
+        assert_eq!(to(&home, Go::Below).as_deref(), Some("!notes:x"));
+        assert_eq!(to(&home, Go::Above).as_deref(), Some("!bob:x"));
+        let inside = id("!inside:x");
+        home.open = Some(&inside);
+        assert_eq!(to(&home, Go::Above).as_deref(), Some("!fav:x"));
+        assert_eq!(to(&home, Go::Below).as_deref(), Some("!loose:x"));
+        assert_eq!(to(&home, Go::Row(1)).as_deref(), Some("!fav:x"));
+        assert_eq!(to(&home, Go::Row(8)), None);
+        // Not past the ends.
+        let bob = id("!bob:x");
+        home.open = Some(&bob);
+        assert_eq!(to(&home, Go::Below), None);
+
+        // A collapsed section shows only the open room and unread ones. The
+        // Notes not pinned are a direct chat.
+        (arrange.categories.layout_mut(None)).toggle_collapsed(&Section::Rooms);
+        unread_in(&mut rooms, "!loose:x");
+        let mut home = list(&rooms, None, "", &arrange, &avatars, &presences);
+        assert_eq!(ids(&home), ["!fav:x", "!loose:x", "!bob:x", "!notes:x"]);
+        home.open = Some(&inside);
+        assert_eq!(
+            ids(&home),
+            ["!fav:x", "!inside:x", "!loose:x", "!bob:x", "!notes:x"]
+        );
+
+        // While searching, what it found.
+        let found = list(&rooms, None, "o", &arrange, &avatars, &presences);
+        assert_eq!(ids(&found), ["!bob:x", "!loose:x", "!notes:x"]);
+    }
+
+    #[test]
+    fn keys_for_going_to_rooms() {
+        use iced::keyboard::key::{Code, NativeCode, Physical};
+
+        let none = Physical::Unidentified(NativeCode::Unidentified);
+        let go = |key: Key, physical, modifiers| Go::from_key(&key, physical, modifiers);
+        let command_alt = Modifiers::COMMAND | Modifiers::ALT;
+        let arrow = |named| Key::Named(named);
+        assert_eq!(
+            go(arrow(Named::ArrowUp), none, command_alt),
+            Some(Go::Above)
+        );
+        assert_eq!(
+            go(arrow(Named::ArrowDown), none, command_alt),
+            Some(Go::Below)
+        );
+        assert_eq!(go(arrow(Named::ArrowDown), none, Modifiers::ALT), None);
+        let tab = arrow(Named::Tab);
+        assert_eq!(go(tab.clone(), none, Modifiers::CTRL), Some(Go::Below));
+        let back = Modifiers::CTRL | Modifiers::SHIFT;
+        assert_eq!(go(tab.clone(), none, back), Some(Go::Above));
+        assert_eq!(go(tab, none, Modifiers::empty()), None);
+        let digit = |c: &str| Key::Character(c.into());
+        assert_eq!(go(digit("1"), none, Modifiers::COMMAND), Some(Go::Row(0)));
+        assert_eq!(go(digit("9"), none, Modifiers::COMMAND), Some(Go::Row(8)));
+        assert_eq!(go(digit("0"), none, Modifiers::COMMAND), None);
+        assert_eq!(go(digit("1"), none, Modifiers::empty()), None);
+        // On AZERTY ⌘ and the key of 1 gives "&".
+        let one = Physical::Code(Code::Digit1);
+        assert_eq!(go(digit("&"), one, Modifiers::COMMAND), Some(Go::Row(0)));
     }
 
     #[test]

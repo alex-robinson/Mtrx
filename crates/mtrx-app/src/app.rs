@@ -128,6 +128,8 @@ pub enum Message {
     RoomFilter(String),
     /// Open the first room matching the search.
     OpenFirstMatch,
+    /// Open the room above or below in the room list, or one by its row.
+    GoToRoom(sidebar::Go),
     FocusSearch,
     Escape,
     ToggleMembers,
@@ -1560,6 +1562,18 @@ impl App {
                     Some(room) => {
                         let id = room.id.clone();
                         main.filter.clear();
+                        self.update(Message::OpenRoom(id))
+                    }
+                    None => Task::none(),
+                }
+            }
+            Message::GoToRoom(go) => {
+                let Screen::Main(main) = &self.screen else {
+                    return Task::none();
+                };
+                match sidebar::go_to(&main.room_list_view(&self.settings), go) {
+                    Some(room) => {
+                        let id = room.id.clone();
                         self.update(Message::OpenRoom(id))
                     }
                     None => Task::none(),
@@ -3489,6 +3503,14 @@ fn shortcuts(
 ) -> Option<Message> {
     use iced::keyboard::{self, Key, key::Named};
     match event {
+        iced::Event::Keyboard(keyboard::Event::KeyPressed {
+            key,
+            physical_key,
+            modifiers,
+            ..
+        }) if let Some(go) = sidebar::Go::from_key(&key, physical_key, modifiers) => {
+            Some(Message::GoToRoom(go))
+        }
         iced::Event::Keyboard(keyboard::Event::KeyPressed { key, modifiers, .. }) => match key {
             // Unless a text field copies its own selection.
             Key::Character(c)

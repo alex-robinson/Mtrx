@@ -58,6 +58,16 @@ impl Ui {
     /// `events` through the widgets, then to the shortcuts with whether a
     /// widget took them; returns that.
     fn send(&mut self, events: &[Event]) -> Vec<Status> {
+        let (statuses, messages) = self.messages(events);
+        for message in messages {
+            self.update(message);
+        }
+        statuses
+    }
+
+    /// What [`Ui::send`] does without updating the app: whether a widget
+    /// took each event, and the messages.
+    fn messages(&mut self, events: &[Event]) -> (Vec<Status>, Vec<Message>) {
         let mut ui = UserInterface::build(
             self.app.view(),
             SIZE,
@@ -76,10 +86,7 @@ impl Ui {
         for (event, status) in events.iter().zip(&statuses) {
             messages.extend(shortcuts(event.clone(), *status, window::Id::unique()));
         }
-        for message in messages {
-            self.update(message);
-        }
-        statuses
+        (statuses, messages)
     }
 
     /// A key pressed, as [`Ui::send`].
@@ -125,10 +132,11 @@ impl Ui {
     }
 }
 
-/// `key` pressed with `modifiers`, typing its character if it has one.
+/// `key` pressed with `modifiers`, with its character as text if it has one
+/// (macOS gives it also with ⌘).
 fn press(key: Key, modifiers: Modifiers) -> Event {
     let text = match key.as_ref() {
-        Key::Character(c) if !modifiers.command() => Some(c.into()),
+        Key::Character(c) => Some(c.into()),
         _ => None,
     };
     Event::Keyboard(keyboard::Event::KeyPressed {
@@ -379,4 +387,85 @@ async fn keys_scroll_the_timeline() {
 #[track_caller]
 fn assert_near(offset: f32, expected: f32) {
     assert!((offset - expected).abs() < 0.5, "{offset}, not {expected}");
+}
+
+/// The keys going to another room do so also while a field has them.
+#[test]
+fn keys_go_to_rooms_from_fields_too() {
+    use sidebar::Go;
+
+    let cases = [
+        (
+            Key::Named(Named::ArrowUp),
+            Modifiers::COMMAND | Modifiers::ALT,
+            Go::Above,
+        ),
+        (Key::Named(Named::Tab), Modifiers::CTRL, Go::Below),
+        (Key::Character("3".into()), Modifiers::COMMAND, Go::Row(2)),
+    ];
+    for (key, modifiers, go) in cases {
+        for status in [Status::Ignored, Status::Captured] {
+            let message = shortcuts(press(key.clone(), modifiers), status, window::Id::unique());
+            assert_eq!(
+                format!("{message:?}"),
+                format!("{:?}", Some(Message::GoToRoom(go))),
+                "{key:?} with {modifiers:?}"
+            );
+        }
+    }
+}
+
+/// A room in the room list.
+fn summary(id: &OwnedRoomId, name: &str) -> mtrx_core::RoomSummary {
+    mtrx_core::RoomSummary {
+        id: id.clone(),
+        name: name.into(),
+        avatar: None,
+        topic: None,
+        kind: RoomKind::Room,
+        invited: false,
+        encrypted: false,
+        public: false,
+        unread_messages: 0,
+        unread_mentions: 0,
+        unread_notifications: 0,
+        last_activity: None,
+        parents: Vec::new(),
+        tag: RoomTag::None,
+        direct_user: None,
+        alias: None,
+        joined_members: 1,
+    }
+}
+
+/// ⌥⌘↓ and ⌘1 open the room below and the first, also from the composer,
+/// which leaves them: ⌘1 types no 1.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs local Synapse (testserver/run.sh)"]
+async fn keys_go_to_other_rooms_from_the_composer() {
+    let (mut ui, _dir) = room_with("goto", &[]).await;
+    let open = ui.room().id.clone();
+    let other: OwnedRoomId = "!other:localhost".try_into().unwrap();
+    ui.main().rooms.rooms = vec![summary(&other, "other"), summary(&open, "open")];
+    ui.run(iced::widget::operation::focus(room::COMPOSER));
+
+    let keys = [
+        (
+            Key::Named(Named::ArrowUp),
+            Modifiers::COMMAND | Modifiers::ALT,
+        ),
+        (Key::Character("1".into()), Modifiers::COMMAND),
+    ];
+    for (key, modifiers) in keys {
+        let (statuses, messages) = ui.messages(&[press(key.clone(), modifiers)]);
+        assert_eq!(statuses, [Status::Ignored], "{key:?}");
+        // Opening it (its tasks are not run: rooms load their timeline by
+        // a subscription, which this window has not).
+        for message in messages {
+            let _ = ui.app.update(message);
+        }
+        assert_eq!(ui.main().opening.as_ref(), Some(&other), "{key:?}");
+        ui.main().opening = None;
+        assert_eq!(ui.room().composer.text(), "");
+    }
 }
