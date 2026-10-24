@@ -12,7 +12,7 @@ use crate::{
     app,
     ellipsis::ellipsis,
     message,
-    selection::{Pos, units_text},
+    selection::Pos,
     style,
 };
 
@@ -46,7 +46,7 @@ pub fn items(
     if in_selection {
         items.push(("Copy".to_owned(), actions::Message::CopySelection));
     } else if is_text {
-        let all = units_text(&message::text_map(document).units, Pos::default(), Pos::END);
+        let all = message::copied(document, Pos::default(), Pos::END);
         items.push(("Copy".to_owned(), actions::Message::Copy(all)));
     }
     if let Some(media) = &message.media {
@@ -133,8 +133,12 @@ mod tests {
         let items = items(&text, true, false);
         assert_eq!(labels(&items), ["Copy", "Copy image", "Save image…"]);
         assert!(
-            matches!(&items[0].1, actions::Message::Copy(all) if all == r"Flux $q=-k\nabla T$, see data"),
+            matches!(&items[0].1, actions::Message::Copy(all) if all.text == r"Flux $q=-k\nabla T$, see data"),
             "as shown, math as LaTeX"
+        );
+        assert!(
+            matches!(&items[0].1, actions::Message::Copy(all) if all.html == r#"<p>Flux $q=-k\nabla T$, see <a href="https://example.org/a">data</a></p>"#),
+            "and as HTML, with the link"
         );
         // Until the math is typeset, there is no picture.
         assert_eq!(labels(&super::items(&text, false, false)), ["Copy"]);

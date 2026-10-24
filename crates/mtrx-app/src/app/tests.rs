@@ -590,7 +590,7 @@ async fn main_screen_with_math() {
             });
             // From inside typeset math, formulas as LaTeX; each sender's
             // name and time first.
-            let copied = open.selected_text().unwrap();
+            let copied = open.selected().unwrap().text;
             let name = |user: &mtrx_core::OwnedUserId| user.localpart().to_owned();
             assert!(copied.starts_with(&format!("{}, ", name(&alice.user_id()))));
             assert!(copied.contains(

@@ -31,6 +31,7 @@ use crate::{
     avatar::{self, Avatars},
     badge::{self, Badge},
     calls,
+    clipboard::{self, Copied},
     dialog::{self, Dialog},
     emoji,
     hint::{Position, hint},
@@ -1110,9 +1111,7 @@ impl App {
                 };
                 match message {
                     selection::Message::Copy => {
-                        return room
-                            .selected_text()
-                            .map_or_else(Task::none, iced::clipboard::write);
+                        return room.selected().map_or_else(Task::none, copy);
                     }
                     selection::Message::SelectAll => {
                         return room.on_screen().and_then(|(first, last)| {
@@ -2509,14 +2508,13 @@ impl App {
                 room.unsent = None;
                 Task::perform(async move { timeline.discard(&key).await }, done)
             }
-            Act::Copy(text) => {
+            Act::Copy(copied) => {
                 room.menu = None;
-                iced::clipboard::write(text)
+                copy(copied)
             }
             Act::CopySelection => {
                 room.menu = None;
-                room.selected_text()
-                    .map_or_else(Task::none, iced::clipboard::write)
+                room.selected().map_or_else(Task::none, copy)
             }
             Act::CopyImage(document) => {
                 room.menu = None;
@@ -3516,6 +3514,13 @@ fn input(event: iced::Event, _status: iced::event::Status, _window: window::Id) 
         }
         _ => None,
     }
+}
+
+/// Put `copied` on the clipboard; a failure shows in the room.
+fn copy(copied: Copied) -> Task<Message> {
+    Task::perform(clipboard::write(copied), |result| {
+        Message::Act(actions::Message::Done(result))
+    })
 }
 
 /// Read files to attach to the message being written in `room`.

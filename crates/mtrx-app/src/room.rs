@@ -29,6 +29,7 @@ use crate::{
     app::Message,
     avatar::{self, Avatars, Shape},
     calls::{self, RoomCalls},
+    clipboard::Copied,
     context_menu::context_menu,
     drag_scroll::drag_scroll,
     ellipsis::ellipsis,
@@ -45,7 +46,7 @@ use crate::{
     presence::{self, Presences},
     selectable,
     selectable_image::selectable_image,
-    selection::{self, Bounds, Point, Pos, Selection, Step, units_text},
+    selection::{self, Bounds, Point, Pos, Selection, Step},
     send_later::{self, SendLater},
     style::{
         self, GUTTER_SPACING, HEADER_AVATAR, MESSAGE_PADDING, SENDER_AVATAR, TEXT_MARGIN,
@@ -551,9 +552,9 @@ impl Room {
         .map(move |range| range.map(|(first, last)| (ids[first].clone(), ids[last].clone())))
     }
 
-    /// The selected text, as shown; with several messages, each sender's
-    /// name and time before their messages.
-    pub fn selected_text(&self) -> Option<String> {
+    /// The selected text, as shown and as HTML; with several messages, each
+    /// sender's name and time before their messages.
+    pub fn selected(&self) -> Option<Copied> {
         let bounds = self.selection.as_ref()?.ordered(&self.order())?;
         let messages: Vec<_> = (bounds.start.0..=bounds.end.0)
             .filter_map(|i| match self.entries.get(i)? {
@@ -565,23 +566,20 @@ impl Room {
             })
             .collect();
         let several = messages.len() > 1;
-        let mut out = String::new();
+        let mut out = Copied::default();
         let mut sender = None;
         for (event, m, (from, to)) in messages {
-            let text = units_text(&message::text_map(&m.document).units, from, to);
-            if text.is_empty() {
+            let mut part = message::copied(&m.document, from, to);
+            if part.text.is_empty() {
                 continue;
             }
-            if !out.is_empty() {
-                out.push_str("\n\n");
-            }
             if several && sender != Some(&event.sender) {
-                out.push_str(&format!("{}, {}\n", display_name(event), time(event)));
+                part = Copied::byline(&display_name(event), &time(event)).then(part);
                 sender = Some(&event.sender);
             }
-            out.push_str(&text);
+            out.push(part);
         }
-        (!out.is_empty()).then_some(out)
+        (!out.text.is_empty()).then_some(out)
     }
 
     pub fn view<'a>(

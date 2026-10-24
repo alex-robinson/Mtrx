@@ -93,7 +93,7 @@ Paste is a binding we can replace (`Binding::Custom`, then
 these stay outside the widget.
 
 - [x] Copy as text, math as `$…$`.
-- [ ] Copy as HTML as well, so pasting into Mail or a document keeps
+- [x] Copy as HTML as well, so pasting into Mail or a document keeps
       formatting, links and lists.
 - [ ] ⌘V of a picture (a screenshot, say) attaches it, as dropping a file
       does.

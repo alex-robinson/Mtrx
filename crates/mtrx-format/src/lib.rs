@@ -4,10 +4,11 @@
 //!   message bodies, compatible with Element, with mentions as
 //!   `matrix.to` links.
 //! - [`Document`]: received Matrix HTML as a small document model; math keeps
-//!   its LaTeX source.
+//!   its LaTeX source. Copied, all or in part, as HTML for other apps.
 //! - [`Renderer`] (feature `render`): typeset a document, math included, into
 //!   an image with Typst.
 
+mod copy;
 mod document;
 mod markdown;
 #[cfg(feature = "render")]

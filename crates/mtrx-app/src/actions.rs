@@ -14,6 +14,7 @@ use mtrx_format::Document;
 use crate::{
     app,
     avatar::{Avatars, Shape},
+    clipboard::Copied,
     ellipsis::ellipsis,
     emoji, fonts,
     hint::{Position, hint, hint_with},
@@ -81,8 +82,8 @@ pub enum Message {
     Retry(EventKey),
     /// Drop a message that was not sent.
     Discard(EventKey),
-    /// Put text on the clipboard.
-    Copy(String),
+    /// Put a message's text on the clipboard, as text and HTML.
+    Copy(Copied),
     /// Put the text selected in the timeline on the clipboard.
     CopySelection,
     /// Put a message with math on the clipboard as a picture.
