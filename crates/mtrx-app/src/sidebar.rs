@@ -90,6 +90,36 @@ fn sections<'a>(view: &RoomListView<'a>) -> Vec<(Section, Vec<&'a RoomSummary>)>
         .group(listed, &view.grouping)
 }
 
+/// The sections the room list shows, with their rooms: Invites when there
+/// are some, categories always, other sections while they have rooms (or
+/// while a room is dragged, to drop it there).
+fn shown_sections<'a>(view: &RoomListView<'a>) -> Vec<(Section, Vec<&'a RoomSummary>)> {
+    let dragging = view.arrange.dragging().is_some();
+    sections(view)
+        .into_iter()
+        .filter(|(section, entries)| match section {
+            Section::Invites => !entries.is_empty(),
+            Section::Category(_) => true,
+            _ => dragging || !entries.is_empty(),
+        })
+        .collect()
+}
+
+/// The sections shown above and below `section` in `order`, which it
+/// moves past.
+fn neighbours<'a>(
+    order: &'a [Section],
+    section: &Section,
+) -> (Option<&'a Section>, Option<&'a Section>) {
+    let Some(at) = order.iter().position(|s| s == section) else {
+        return (None, None);
+    };
+    (
+        at.checked_sub(1).and_then(|i| order.get(i)),
+        order.get(at + 1),
+    )
+}
+
 /// What the search finds in what `space` (or Home) lists: rooms and chats
 /// whose name contains `filter` (lower case), names starting with it first.
 pub fn search<'a>(
@@ -477,16 +507,12 @@ fn arranged<'a>(view: &RoomListView<'a>) -> Vec<Element<'a, Message>> {
         .layout(view.selected_space.map(|s| s.as_ref()));
     let dragging = arrange.dragging().is_some();
     let space = view.selected_space;
+    let shown = shown_sections(view);
+    let order: Vec<Section> = (shown.iter().map(|(s, _)| s.clone()))
+        .filter(|s| *s != Section::Invites)
+        .collect();
     let mut elements = Vec::new();
-    for (section, entries) in sections(view) {
-        let shown = match section {
-            Section::Invites => !entries.is_empty(),
-            Section::Category(_) => true,
-            _ => dragging || !entries.is_empty(),
-        };
-        if !shown {
-            continue;
-        }
+    for (section, entries) in shown {
         let collapsed = layout.is_collapsed(&section);
         let renaming = arrange
             .naming
@@ -499,7 +525,7 @@ fn arranged<'a>(view: &RoomListView<'a>) -> Vec<Element<'a, Message>> {
         if let Section::Category(id) = &section
             && arrange.category_menu.as_ref() == Some(id)
         {
-            block = block.push(category_menu(layout, space, id));
+            block = block.push(category_menu(layout, space, id, &order));
         }
         let empty = entries.is_empty();
         for room in entries {
@@ -689,15 +715,18 @@ fn room_menu<'a>(
     menu(items)
 }
 
-/// Rename, choose rooms, sort, reorder and delete a category.
+/// Rename, choose rooms, sort, reorder and delete a category, one of the
+/// sections shown in `order`.
 fn category_menu<'a>(
     layout: &Layout,
     in_space: Option<&OwnedRoomId>,
     id: &str,
+    order: &[Section],
 ) -> Element<'a, Message> {
-    let Some(at) = layout.categories.iter().position(|c| c.id == id) else {
+    let Some(category) = layout.category(id) else {
         return space().into();
     };
+    let (above, below) = neighbours(order, &Section::Category(id.to_owned()));
     let id = id.to_owned();
     let item = |label: &str, message| (label.to_owned(), arrange_message(message));
     let mut items = vec![
@@ -711,23 +740,24 @@ fn category_menu<'a>(
             }),
         ),
     ];
-    items.push(match layout.categories[at].sort {
+    items.push(match category.sort {
         Sort::Activity => item("Sort A–Z", arrange::Message::Sort(id.clone(), Sort::Name)),
         Sort::Name => item(
             "Sort by recent activity",
             arrange::Message::Sort(id.clone(), Sort::Activity),
         ),
     });
-    if at > 0 {
+    let section = Section::Category(id.clone());
+    if let Some(above) = above {
         items.push(item(
             "Move up",
-            arrange::Message::MoveCategory(id.clone(), -1),
+            arrange::Message::SwapSections(section.clone(), above.clone()),
         ));
     }
-    if at + 1 < layout.categories.len() {
+    if let Some(below) = below {
         items.push(item(
             "Move down",
-            arrange::Message::MoveCategory(id.clone(), 1),
+            arrange::Message::SwapSections(section, below.clone()),
         ));
     }
     items.push(item("Delete category", arrange::Message::Delete(id)));
@@ -1466,7 +1496,7 @@ mod tests {
         assert!(!unread(&rooms, None, &arrange, &grouping));
 
         arrange.categories.at_home.favourites = true;
-        assert_eq!(home(&arrange)[1], section("Favourites", &["!star:x"]));
+        assert_eq!(home(&arrange)[2], section("Favourites", &["!star:x"]));
         assert!(!unread(&rooms, None, &arrange, &grouping));
 
         arrange.categories.at_home.all_rooms = true;
@@ -1474,8 +1504,8 @@ mod tests {
             home(&arrange),
             [
                 section("Invites", &["!offer:x"]),
-                section("Favourites", &["!star:x"]),
                 section("Direct messages", &["!bob:x"]),
+                section("Favourites", &["!star:x"]),
                 section("Rooms", &["!inside:x", "!loose:x"]),
             ]
         );
@@ -1593,12 +1623,12 @@ mod tests {
 
         // What Home shows: not the space's room.
         let home = list(&rooms, None, "", &arrange, &avatars, &presences);
-        assert_eq!(ids(&home), ["!fav:x", "!bob:x", "!notes:x", "!loose:x"]);
+        assert_eq!(ids(&home), ["!bob:x", "!notes:x", "!fav:x", "!loose:x"]);
         assert_eq!(
-            go_to(&home, Go::Row(1))
+            go_to(&home, Go::Row(2))
                 .map(|r| r.id.to_string())
                 .as_deref(),
-            Some("!bob:x")
+            Some("!fav:x")
         );
         arrange.categories.at_home.all_rooms = true;
 
@@ -1607,7 +1637,7 @@ mod tests {
         home.notes = Some(Notes::Room(&rooms[5]));
         assert_eq!(
             ids(&home),
-            ["!notes:x", "!fav:x", "!bob:x", "!inside:x", "!loose:x"]
+            ["!notes:x", "!bob:x", "!fav:x", "!inside:x", "!loose:x"]
         );
         let to = |view: &RoomListView, go| go_to(view, go).map(|r| r.id.to_string());
         // From outside the list, the first or last.
@@ -1615,9 +1645,9 @@ mod tests {
         assert_eq!(to(&home, Go::Above).as_deref(), Some("!loose:x"));
         let inside = id("!inside:x");
         home.open = Some(&inside);
-        assert_eq!(to(&home, Go::Above).as_deref(), Some("!bob:x"));
+        assert_eq!(to(&home, Go::Above).as_deref(), Some("!fav:x"));
         assert_eq!(to(&home, Go::Below).as_deref(), Some("!loose:x"));
-        assert_eq!(to(&home, Go::Row(1)).as_deref(), Some("!fav:x"));
+        assert_eq!(to(&home, Go::Row(1)).as_deref(), Some("!bob:x"));
         assert_eq!(to(&home, Go::Row(8)), None);
         // Not past the ends.
         let loose = id("!loose:x");
@@ -1629,11 +1659,11 @@ mod tests {
         (arrange.categories.layout_mut(None)).toggle_collapsed(&Section::Rooms);
         unread_in(&mut rooms, "!loose:x");
         let mut home = list(&rooms, None, "", &arrange, &avatars, &presences);
-        assert_eq!(ids(&home), ["!fav:x", "!bob:x", "!notes:x", "!loose:x"]);
+        assert_eq!(ids(&home), ["!bob:x", "!notes:x", "!fav:x", "!loose:x"]);
         home.open = Some(&inside);
         assert_eq!(
             ids(&home),
-            ["!fav:x", "!bob:x", "!notes:x", "!inside:x", "!loose:x"]
+            ["!bob:x", "!notes:x", "!fav:x", "!inside:x", "!loose:x"]
         );
 
         // While searching, what it found.
