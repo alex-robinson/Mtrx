@@ -802,13 +802,9 @@ fn section_header<'a>(
     space: Option<&OwnedRoomId>,
     arrange: &Arrange,
 ) -> Element<'a, Message> {
+    // The grey of the section's name.
     let chevron = icons::chevron(12.0, !collapsed, |theme| {
-        theme
-            .extended_palette()
-            .background
-            .base
-            .text
-            .scale_alpha(0.7)
+        text::secondary(theme).color.unwrap_or(theme.palette().text)
     });
     let title = button(
         row![
