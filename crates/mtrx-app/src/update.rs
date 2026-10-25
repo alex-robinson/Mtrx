@@ -1,6 +1,9 @@
 //! Updates from the app's GitHub releases: a newer version for the chosen
 //! channel, looked for at start and once a day (or from Settings), and the
-//! file of it that fits how this copy was installed.
+//! file of it that fits how this copy was installed, installed in its place
+//! when signed (see [`install`]), else downloaded in the browser.
+
+mod install;
 
 use std::{
     fmt,
@@ -20,6 +23,9 @@ const RELEASES: &str = "https://api.github.com/repos/alex-robinson/Mtrx/releases
 const INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
 /// How often the automatic check is due to be considered.
 pub const TICK: Duration = Duration::from_secs(60 * 60);
+/// The public key the release files are signed with, from `cargo xtask
+/// keygen`; until there is one, updates are downloaded in the browser.
+const PUBLIC_KEY: Option<&str> = None;
 
 /// What the settings keep about updates.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -75,6 +81,18 @@ pub struct Update {
     /// The file for how this copy was installed; none if the release has
     /// no such file or this copy is not updated (built from source).
     pub file: Option<File>,
+    /// How this copy was installed, and so how it is updated.
+    pub install: Install,
+}
+
+impl Update {
+    /// Whether the app installs it itself: its file is signed and this
+    /// copy updates itself.
+    pub fn installable(&self) -> bool {
+        PUBLIC_KEY.is_some()
+            && self.install.updates_itself()
+            && self.file.as_ref().is_some_and(|f| f.signature.is_some())
+    }
 }
 
 /// A file of a release.
@@ -82,6 +100,8 @@ pub struct Update {
 pub struct File {
     pub name: String,
     pub url: String,
+    /// Where its signature is (`cargo xtask sign`), if the release has it.
+    pub signature: Option<String>,
 }
 
 /// A release as GitHub lists it.
@@ -122,12 +142,17 @@ fn newest(
             version,
             page: release.html_url.clone(),
             file: install.file_name().and_then(|name| {
-                let asset = release.assets.iter().find(|a| a.name == name)?;
+                let url = |name: &str| {
+                    let asset = release.assets.iter().find(|a| a.name == name)?;
+                    Some(asset.browser_download_url.clone())
+                };
                 Some(File {
-                    name: asset.name.clone(),
-                    url: asset.browser_download_url.clone(),
+                    name: name.to_owned(),
+                    url: url(name)?,
+                    signature: url(&format!("{name}.sig")),
                 })
             }),
+            install: install.clone(),
         })
 }
 
@@ -213,6 +238,11 @@ impl Install {
         }
     }
 
+    /// Whether the app puts a new version in place of this copy.
+    fn updates_itself(&self) -> bool {
+        matches!(self, Self::MacApp(_))
+    }
+
     /// The name of the release file this copy is updated with.
     fn file_name(&self) -> Option<&'static str> {
         Some(match self {
@@ -233,8 +263,12 @@ pub enum Message {
     /// Look now, from Settings or the app menu.
     Check,
     Checked(Result<Option<Update>, String>),
-    /// Get the update: its file in the browser, or its page.
+    /// Get the update: install it if signed, else its file in the browser,
+    /// or its page.
     Download,
+    /// It is in place (the new version starts once this one has quit), or
+    /// not.
+    Installed(Result<(), String>),
     /// The update's release page, with what changed.
     Notes,
 }
@@ -243,6 +277,8 @@ pub enum Message {
 #[derive(Default)]
 pub struct Updater {
     pub checking: bool,
+    /// Downloading and installing an update.
+    pub installing: bool,
     /// When the last check ended.
     pub checked: Option<Instant>,
     pub available: Option<Update>,
@@ -274,11 +310,28 @@ impl Updater {
                     Err(e) => self.error = Some(e),
                 }
             }
-            Message::Download => {
-                if let Some(update) = &self.available {
+            Message::Download => match (&self.available, PUBLIC_KEY) {
+                (Some(update), Some(key)) if update.installable() && !self.installing => {
+                    self.installing = true;
+                    self.error = None;
+                    return Task::perform(install::install(update.clone(), key), |result| {
+                        app::Message::Update(Message::Installed(result))
+                    });
+                }
+                (Some(update), _) if !self.installing => {
                     let url = update.file.as_ref().map_or(&update.page, |f| &f.url);
                     let _ = open::that_detached(url);
                 }
+                _ => {}
+            },
+            Message::Installed(Ok(())) => {
+                // Quit as the window's close button does: the session ends.
+                return iced::window::oldest()
+                    .and_then(|id| Task::done(app::Message::CloseWindow(id)));
+            }
+            Message::Installed(Err(e)) => {
+                self.installing = false;
+                self.error = Some(e);
             }
             Message::Notes => {
                 if let Some(update) = &self.available {
@@ -333,7 +386,7 @@ mod tests {
         let releases = [
             draft,
             release("v0.5.0-beta.1", true, &[zip]),
-            release("v0.4.1", false, &[zip]),
+            release("v0.4.1", false, &[zip, "Mtrx-macos-arm64.zip.sig"]),
             release("v0.4.0", false, &[]),
             release("v0.3.0", false, &[zip]),
             release("not-a-version", false, &[zip]),
@@ -346,8 +399,10 @@ mod tests {
             Some(File {
                 name: zip.into(),
                 url: format!("https://example.org/v0.4.1/{zip}"),
+                signature: Some(format!("https://example.org/v0.4.1/{zip}.sig")),
             })
         );
+        assert_eq!(stable.install, mac);
         let beta = newest(&releases, &current, Channel::Beta, &mac).unwrap();
         assert_eq!(beta.version.to_string(), "0.5.0-beta.1");
         // A release without this installation's file still shows.

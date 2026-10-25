@@ -5140,7 +5140,9 @@ name = "mtrx-app"
 version = "0.3.0"
 dependencies = [
  "arboard",
+ "base64 0.23.1",
  "chrono",
+ "ed25519-dalek",
  "emojis",
  "futures-util",
  "hayro",

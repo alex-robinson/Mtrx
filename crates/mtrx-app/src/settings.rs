@@ -958,14 +958,31 @@ fn updates<'a>(
         Some(update) => row![
             state(
                 format!("Mtrx {} is available", update.version),
-                Some(format!("You have {current}.")),
+                Some(
+                    updater
+                        .error
+                        .clone()
+                        .unwrap_or(format!("You have {current}."))
+                ),
             ),
             action(
                 "What's new",
                 update::Message::Notes,
                 style::secondary_button
             ),
-            action("Download", update::Message::Download, style::primary_button),
+            if updater.installing {
+                button(text("Installing…").size(13))
+                    .padding([4, 10])
+                    .style(style::primary_button)
+            } else if update.installable() {
+                action(
+                    "Install and restart",
+                    update::Message::Download,
+                    style::primary_button,
+                )
+            } else {
+                action("Download", update::Message::Download, style::primary_button)
+            },
         ],
         None => {
             let line = if updater.checking {

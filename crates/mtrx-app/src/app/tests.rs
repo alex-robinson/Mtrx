@@ -1456,6 +1456,7 @@ async fn send_later_bar() {
         version: semver::Version::new(0, 4, 0),
         page: "https://github.com/alex-robinson/Mtrx/releases/tag/v0.4.0".into(),
         file: None,
+        install: update::Install::Source,
     });
     snapshot(&app, "settings");
 }
