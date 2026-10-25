@@ -152,6 +152,73 @@ fn login_without_keyring() {
     snapshot(&app, "login-no-keyring");
 }
 
+/// A click on a mention shows the person's card, not the direct chat with
+/// them.
+#[test]
+fn clicking_a_mention_shows_the_persons_card() {
+    use iced::{
+        Event, Theme,
+        mouse::{self, Button::Left},
+    };
+    use std::rc::Rc;
+
+    let document = mtrx_format::Document::from_html(
+        r#"Ask <a href="https://matrix.to/#/@nils:server.org">Nils</a>"#,
+    );
+    let own: OwnedUserId = "@ana:server.org".try_into().unwrap();
+    // Links are messages, gestures nothing.
+    let view = message::view(
+        &document,
+        &Theme::Light,
+        &own,
+        message::Links {
+            open: |url| Some(Message::LinkClicked(url)),
+            menu: Rc::new(|_| None),
+        },
+        message::Select {
+            range: None,
+            focus: None,
+            dragging: false,
+            on_gesture: Rc::new(|_| None),
+            found: Vec::new(),
+        },
+        false,
+    );
+    let mut ui = Simulator::with_size(fonts::settings(), Size::new(400.0, 100.0), view);
+    // Pressed and released on "Nils".
+    ui.point_at((45.0, 8.0));
+    let _ = ui.simulate([
+        Event::Mouse(mouse::Event::ButtonPressed(Left)),
+        Event::Mouse(mouse::Event::ButtonReleased(Left)),
+    ]);
+    let clicked: Vec<Message> = ui.into_messages().flatten().collect();
+    assert!(
+        matches!(&clicked[..], [Message::LinkClicked(_)]),
+        "{clicked:?}"
+    );
+
+    let mut app = app(Screen::Login(Login::default()), Mode::Light);
+    let task = app.update(clicked.into_iter().next().unwrap());
+    let sent: Vec<Message> = iced::futures::executor::block_on(
+        iced_runtime::task::into_stream(task)
+            .expect("a message")
+            .filter_map(|action| async move {
+                match action {
+                    iced_runtime::Action::Output(message) => Some(message),
+                    _ => None,
+                }
+            })
+            .collect(),
+    );
+    assert!(
+        matches!(
+            &sent[..],
+            [Message::ShowInfo(info::Target::User(user))] if user.id == "@nils:server.org"
+        ),
+        "{sent:?}"
+    );
+}
+
 /// The zoom keys step the text size, also on the sign-in screen; the
 /// window keeps its size in logical pixels, and images are drawn for the
 /// display's scale times the text size.

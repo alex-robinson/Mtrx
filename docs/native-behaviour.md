@@ -78,7 +78,8 @@ per day:
 - [x] Drop files onto the window to attach them.
 - [x] The link's address shows on hovering it (in a corner, as in a
       browser).
-- [x] Right-click a link: Open, Copy Link.
+- [x] Right-click a link: Open, Copy Link (for a mention, Info: the
+      person's card, as clicking it shows).
 - [x] Right-click a picture: Copy Image, Save Image…, in the timeline
       and in the viewer, sharing math's clipboard code (`message_menu.rs`).
 

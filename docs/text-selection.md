@@ -146,7 +146,8 @@ leaf, byte range and rectangle. `message::text_map` says where each leaf is in t
 the image is selected with the same units as native text, and formulas
 copy as `$…$`. The text map also says which link each leaf is in (a
 mention's too), so a piece of a link behaves as in native text: a press
-and release without moving opens it, the cursor is a pointing hand over
+and release without moving opens it (a mention, the person's card,
+which has the way to the direct chat), the cursor is a pointing hand over
 it, its address shows in the corner, and right-clicking it opens the
 link's menu.
 
