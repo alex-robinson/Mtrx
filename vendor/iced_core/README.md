@@ -15,4 +15,6 @@ section B1). Each is marked "Mtrx patch" in the code:
 - `src/text/editor.rs` (editing, `docs/native-behaviour.md` B2): `Edit`
   has `Undo` and `Redo`; the history is kept by the renderer's editor
   (`iced_graphics`). `Edit::DeleteTo(Motion)` deletes from the cursor to
-  where a motion takes it (⌥⌫: a word).
+  where a motion takes it (⌥⌫: a word). `Motion::ParagraphBackward` and
+  `ParagraphForward` (⌥↑ and ⌥↓, which `Motion::widen` gives for ↑ and ↓)
+  go to the paragraph's start and end, on to the next when already there.

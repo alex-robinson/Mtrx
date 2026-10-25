@@ -333,11 +333,31 @@ impl editor::Editor for Editor {
                             | Motion::End
                             | Motion::DocumentStart
                             | Motion::DocumentEnd => {
+                                perform_motion(
+                                    editor,
+                                    &mut font_system,
+                                    motion,
+                                );
+                            }
+                            // Mtrx patch (editing): to the edge of the
+                            // paragraph where the selection starts (ends),
+                            // as a text view does.
+                            Motion::ParagraphBackward => {
+                                editor.set_cursor(start);
                                 editor.action(
                                     font_system.raw(),
-                                    cosmic_text::Action::Motion(to_motion(
-                                        motion,
-                                    )),
+                                    cosmic_text::Action::Motion(
+                                        cosmic_text::Motion::ParagraphStart,
+                                    ),
+                                );
+                            }
+                            Motion::ParagraphForward => {
+                                editor.set_cursor(end);
+                                editor.action(
+                                    font_system.raw(),
+                                    cosmic_text::Action::Motion(
+                                        cosmic_text::Motion::ParagraphEnd,
+                                    ),
                                 );
                             }
                             // Other motions simply move the cursor to one end of the selection
@@ -347,10 +367,8 @@ impl editor::Editor for Editor {
                             }),
                         }
                     } else {
-                        editor.action(
-                            font_system.raw(),
-                            cosmic_text::Action::Motion(to_motion(motion)),
-                        );
+                        // Mtrx patch (editing).
+                        perform_motion(editor, &mut font_system, motion);
                     }
                 }
 
@@ -364,10 +382,8 @@ impl editor::Editor for Editor {
                         ));
                     }
 
-                    editor.action(
-                        font_system.raw(),
-                        cosmic_text::Action::Motion(to_motion(motion)),
-                    );
+                    // Mtrx patch (editing).
+                    perform_motion(editor, &mut font_system, motion);
 
                     // Deselect if selection matches cursor position
                     if let Some((start, end)) = editor.selection_bounds()
@@ -891,10 +907,7 @@ fn delete_to(
     }
 
     let cursor = editor.cursor();
-    editor.action(
-        font_system.raw(),
-        cosmic_text::Action::Motion(to_motion(motion)),
-    );
+    perform_motion(editor, font_system, motion);
     let to = editor.cursor();
     editor.set_cursor(cursor);
 
@@ -936,20 +949,40 @@ fn visual_lines_offset(line: usize, buffer: &cosmic_text::Buffer) -> i32 {
     visual_lines_offset as i32 * if scroll.line < line { 1 } else { -1 }
 }
 
-fn to_motion(motion: Motion) -> cosmic_text::Motion {
+// Mtrx patch (editing): a motion may take more than one of cosmic-text's.
+fn perform_motion(
+    editor: &mut cosmic_text::Editor<'static>,
+    font_system: &mut text::FontSystem,
+    motion: Motion,
+) {
+    for motion in to_motions(motion) {
+        editor.action(font_system.raw(), cosmic_text::Action::Motion(*motion));
+    }
+}
+
+fn to_motions(motion: Motion) -> &'static [cosmic_text::Motion] {
     match motion {
-        Motion::Left => cosmic_text::Motion::Left,
-        Motion::Right => cosmic_text::Motion::Right,
-        Motion::Up => cosmic_text::Motion::Up,
-        Motion::Down => cosmic_text::Motion::Down,
-        Motion::WordLeft => cosmic_text::Motion::LeftWord,
-        Motion::WordRight => cosmic_text::Motion::RightWord,
-        Motion::Home => cosmic_text::Motion::Home,
-        Motion::End => cosmic_text::Motion::End,
-        Motion::PageUp => cosmic_text::Motion::PageUp,
-        Motion::PageDown => cosmic_text::Motion::PageDown,
-        Motion::DocumentStart => cosmic_text::Motion::BufferStart,
-        Motion::DocumentEnd => cosmic_text::Motion::BufferEnd,
+        Motion::Left => &[cosmic_text::Motion::Left],
+        Motion::Right => &[cosmic_text::Motion::Right],
+        Motion::Up => &[cosmic_text::Motion::Up],
+        Motion::Down => &[cosmic_text::Motion::Down],
+        Motion::WordLeft => &[cosmic_text::Motion::LeftWord],
+        Motion::WordRight => &[cosmic_text::Motion::RightWord],
+        Motion::Home => &[cosmic_text::Motion::Home],
+        Motion::End => &[cosmic_text::Motion::End],
+        Motion::PageUp => &[cosmic_text::Motion::PageUp],
+        Motion::PageDown => &[cosmic_text::Motion::PageDown],
+        Motion::DocumentStart => &[cosmic_text::Motion::BufferStart],
+        Motion::DocumentEnd => &[cosmic_text::Motion::BufferEnd],
+        // Back a character first, so that from a paragraph's start it goes
+        // to the start of the one before, as a text view does.
+        Motion::ParagraphBackward => &[
+            cosmic_text::Motion::Previous,
+            cosmic_text::Motion::ParagraphStart,
+        ],
+        Motion::ParagraphForward => {
+            &[cosmic_text::Motion::Next, cosmic_text::Motion::ParagraphEnd]
+        }
     }
 }
 

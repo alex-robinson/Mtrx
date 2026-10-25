@@ -29,4 +29,5 @@ section B). Each is marked "Mtrx patch" in the code:
   and Ctrl+Y elsewhere) undo and redo (`Binding::Undo`, `Binding::Redo`).
   ⌥⌫ and ⌥⌦ delete a word (Ctrl+Backspace, Ctrl+Delete elsewhere), ⌘⌫
   and ⌘⌦ to the start and end of the line as shown (`Binding::DeleteTo`).
-  ⌘↑ and ⌘↓ go to the start and end of the text (with ⇧, select).
+  ⌘↑ and ⌘↓ go to the start and end of the text (with ⇧, select), ⌥↑
+  and ⌥↓ (Ctrl+↑ and Ctrl+↓ elsewhere) by paragraph.

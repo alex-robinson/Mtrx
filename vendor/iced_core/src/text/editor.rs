@@ -163,6 +163,13 @@ pub enum Motion {
     DocumentStart,
     /// Move to the end of the text.
     DocumentEnd,
+    // Mtrx patch (editing): ⌥↑ and ⌥↓.
+    /// Move to the start of the paragraph, or of the one before when
+    /// already there.
+    ParagraphBackward,
+    /// Move to the end of the paragraph, or of the one after when already
+    /// there.
+    ParagraphForward,
 }
 
 impl Motion {
@@ -173,6 +180,9 @@ impl Motion {
             Self::Right => Self::WordRight,
             Self::Home => Self::DocumentStart,
             Self::End => Self::DocumentEnd,
+            // Mtrx patch (editing): ⌥↑ and ⌥↓ (Ctrl with them elsewhere).
+            Self::Up => Self::ParagraphBackward,
+            Self::Down => Self::ParagraphForward,
             _ => self,
         }
     }
@@ -185,13 +195,15 @@ impl Motion {
             | Self::WordLeft
             | Self::Home
             | Self::PageUp
-            | Self::DocumentStart => Direction::Left,
+            | Self::DocumentStart
+            | Self::ParagraphBackward => Direction::Left,
             Self::Right
             | Self::Down
             | Self::WordRight
             | Self::End
             | Self::PageDown
-            | Self::DocumentEnd => Direction::Right,
+            | Self::DocumentEnd
+            | Self::ParagraphForward => Direction::Right,
         }
     }
 }

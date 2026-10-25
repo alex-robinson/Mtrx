@@ -18,4 +18,7 @@
   own); `Edit::Undo` and `Edit::Redo` replay it and bring the selection
   back. A new editor (a new `Content`) starts a fresh history.
   `Edit::DeleteTo` deletes to where a motion goes, a character if it goes
-  nowhere (⌘⌫ at a line's start joins it to the one before).
+  nowhere (⌘⌫ at a line's start joins it to the one before). A motion may
+  take several of cosmic-text's (`to_motions`): the paragraph motions go
+  back (forward) a character first, so that they go on to the paragraph
+  before (after).

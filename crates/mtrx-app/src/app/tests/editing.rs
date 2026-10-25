@@ -404,3 +404,34 @@ fn command_up_and_down_go_to_the_start_and_end_of_the_draft() {
         Status::Ignored
     );
 }
+
+/// ⌥↑ and ⌥↓ (Ctrl with them elsewhere) go to the start and end of the
+/// paragraph, and on to the one before or after when already there.
+#[test]
+fn option_up_and_down_go_by_paragraph() {
+    let long = "Ice shelves buttress the glaciers that feed them. ".repeat(4);
+    let text = format!("Calving fronts\n{}\nSea ice", long.trim_end());
+    let mut field = Field::new(&text);
+    let at = |field: &mut Field, key, modifiers| {
+        field.named(key, modifiers);
+        let position = field.content.cursor().position;
+        (position.line, position.column)
+    };
+    assert_eq!(at(&mut field, Named::ArrowUp, jump()), (2, 0));
+    // The start of the paragraph, not of the line as shown.
+    assert_eq!(at(&mut field, Named::ArrowUp, jump()), (1, 0));
+    assert_eq!(at(&mut field, Named::ArrowUp, jump()), (0, 0));
+    assert_eq!(at(&mut field, Named::ArrowUp, jump()), (0, 0));
+    assert_eq!(at(&mut field, Named::ArrowDown, jump()), (0, 14));
+    let end = long.trim_end().len();
+    assert_eq!(at(&mut field, Named::ArrowDown, jump()), (1, end));
+    // From inside one, its end.
+    let _ = at(&mut field, Named::ArrowUp, Modifiers::empty());
+    assert_eq!(at(&mut field, Named::ArrowDown, jump()), (1, end));
+    // With ⇧, selecting.
+    let _ = at(&mut field, Named::ArrowUp, jump() | Modifiers::SHIFT);
+    assert_eq!(field.content.selection().as_deref(), Some(long.trim_end()));
+    // A selection goes to the edge of its paragraph.
+    assert_eq!(at(&mut field, Named::ArrowDown, jump()), (1, end));
+    assert_eq!(field.content.selection(), None);
+}

@@ -159,7 +159,9 @@ so that Enter probably sends the half-composed text today.
       (as shown, when it wraps), ⌘⌦ to its end. A step each to undo.
 - [x] ⌘↑ and ⌘↓ go to the start and end of the draft (with ⇧, select).
       The timeline takes them (A2) while no editor is focused.
-- [ ] ⌥↑ and ⌥↓ go to the start and end of the paragraph.
+- [x] ⌥↑ and ⌥↓ go to the start and end of the paragraph, then on to the
+      one before or after (with ⇧, select). The timeline takes them (A2)
+      while no editor is focused.
 - [ ] ⌃K deletes to the end of the line, ⌃Y yanks it back, ⌃T transposes,
       ⌃N and ⌃P move down and up, ⌃O opens a line.
 - [ ] Dragging selected text moves it; dropping text inserts it.
