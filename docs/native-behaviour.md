@@ -48,10 +48,8 @@ per day:
 - [x] Size, position and display remembered (`placement.rs`), and
       maximised; full screen is not, the window opens as it was before. A
       window left on a display since unplugged opens on the main one.
-- [ ] Full screen, and tiling with the system's window layouts. Nothing
-      in the code blocks them; to check by hand: the green button, its
-      tiling layouts and dragging to a screen edge, double-clicking the
-      title bar, quitting in full screen.
+- [x] Full screen, and tiling with the system's window layouts (checked
+      by hand 2026-10-25). One macOS quirk, see E.
 
 ### A2. Keyboard
 
@@ -191,5 +189,9 @@ Not fixable in our code alone.
 - **Dragging out of the window.** winit cannot start a drag, so a picture
   or file cannot be dragged into Finder or another app; it would take a
   native drag session per platform (decided 2026-10-24: not now).
+- **Top and bottom tiles.** A window tiled to the top or bottom half and
+  then resized goes back to its tile when chosen again in Mission Control.
+  Left and right tiles keep the new size. Nothing in our code, iced or
+  winit sets the frame: macOS's tiling (checked 2026-10-25).
 - **Keyboard focus.** Tab and ⇧Tab between controls with a focus ring, and
   Space to press a button: iced's buttons are not focusable.
