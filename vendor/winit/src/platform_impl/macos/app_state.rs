@@ -6,13 +6,16 @@ use std::time::Instant;
 use objc2::rc::Retained;
 use objc2::{declare_class, msg_send_id, mutability, ClassType, DeclaredClass};
 use objc2_app_kit::{
-    NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate, NSRunningApplication,
+    NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate,
+    NSApplicationTerminateReply, NSRunningApplication, NSWindow,
 };
 use objc2_foundation::{MainThreadMarker, NSNotification, NSObject, NSObjectProtocol};
 
 use super::event_handler::EventHandler;
 use super::event_loop::{notify_windows_of_exit, stop_app_immediately, ActiveEventLoop, PanicInfo};
 use super::observer::{EventLoopWaker, RunLoop};
+// Mtrx patch (quit).
+use super::window::WinitWindow;
 use super::{menu, WindowId, DEVICE_ID};
 use crate::event::{DeviceEvent, Event, StartCause, WindowEvent};
 use crate::event_loop::{ActiveEventLoop as RootActiveEventLoop, ControlFlow};
@@ -40,6 +43,10 @@ pub(super) struct AppState {
     start_time: Cell<Option<Instant>>,
     wait_timeout: Cell<Option<Instant>>,
     pending_redraw: RefCell<Vec<WindowId>>,
+    // Mtrx patch (quit).
+    /// Whether `applicationShouldTerminate:` answered `NSTerminateLater`, so that the
+    /// application is quit once the event loop exits.
+    terminating: Cell<bool>,
     // NOTE: This is strongly referenced by our `NSWindowDelegate` and our `NSView` subclass, and
     // as such should be careful to not add fields that, in turn, strongly reference those.
 }
@@ -64,6 +71,12 @@ declare_class!(
         #[method(applicationDidFinishLaunching:)]
         fn app_did_finish_launching(&self, notification: &NSNotification) {
             self.did_finish_launching(notification)
+        }
+
+        // Mtrx patch (quit).
+        #[method(applicationShouldTerminate:)]
+        fn app_should_terminate(&self, _sender: &NSApplication) -> NSApplicationTerminateReply {
+            self.should_terminate()
         }
 
         #[method(applicationWillTerminate:)]
@@ -98,6 +111,8 @@ impl ApplicationDelegate {
             start_time: Cell::new(None),
             wait_timeout: Cell::new(None),
             pending_redraw: RefCell::new(vec![]),
+            // Mtrx patch (quit).
+            terminating: Cell::new(false),
         });
         unsafe { msg_send_id![super(this), init] }
     }
@@ -161,6 +176,32 @@ impl ApplicationDelegate {
             let app = NSApplication::sharedApplication(mtm);
             stop_app_immediately(&app);
         }
+    }
+
+    // Mtrx patch (quit): Quit in the app menu, in the Dock, and logging out ended the event loop
+    // at once, with no chance for the application to save or sign off. Quitting now asks each
+    // window to close, as its close button does, and the application quits once the event loop
+    // exits: the application is expected to close its windows (or exit) on `CloseRequested`.
+    fn should_terminate(&self) -> NSApplicationTerminateReply {
+        trace_scope!("applicationShouldTerminate:");
+        if self.ivars().terminating.get() {
+            return NSApplicationTerminateReply::NSTerminateLater;
+        }
+        let mtm = MainThreadMarker::from(self);
+        let windows: Vec<WindowId> = NSApplication::sharedApplication(mtm)
+            .windows()
+            .iter()
+            .filter(|window| window.is_kind_of::<WinitWindow>())
+            .map(|window| WindowId(window as *const NSWindow as usize))
+            .collect();
+        if windows.is_empty() || !self.is_running() {
+            return NSApplicationTerminateReply::NSTerminateNow;
+        }
+        self.ivars().terminating.set(true);
+        for window_id in windows {
+            self.maybe_queue_window_event(window_id, WindowEvent::CloseRequested);
+        }
+        NSApplicationTerminateReply::NSTerminateLater
     }
 
     fn will_terminate(&self, _notification: &NSNotification) {
@@ -393,6 +434,11 @@ impl ApplicationDelegate {
 
         if self.exiting() {
             let app = NSApplication::sharedApplication(mtm);
+            // Mtrx patch (quit): the quit asked for goes on, through `applicationWillTerminate:`.
+            if self.ivars().terminating.take() {
+                unsafe { app.replyToApplicationShouldTerminate(true) };
+                return;
+            }
             stop_app_immediately(&app);
             notify_windows_of_exit(&app);
         }

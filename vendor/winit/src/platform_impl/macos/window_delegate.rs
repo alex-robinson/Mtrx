@@ -35,7 +35,7 @@ use super::window::WinitWindow;
 use super::{ffi, Fullscreen, MonitorHandle, OsError, WindowId};
 use crate::dpi::{LogicalPosition, LogicalSize, PhysicalPosition, PhysicalSize, Position, Size};
 use crate::error::{ExternalError, NotSupportedError, OsError as RootOsError};
-use crate::event::{InnerSizeWriter, WindowEvent};
+use crate::event::{InnerSizeWriter, StandardAction, WindowEvent};
 use crate::platform::macos::{OptionAsAlt, WindowExtMacOS};
 use crate::window::{
     Cursor, CursorGrabMode, Icon, ImePurpose, ImeSurroundingText, ResizeDirection, Theme,
@@ -1573,6 +1573,12 @@ impl WindowDelegate {
     #[inline]
     pub fn set_ime_surrounding_text(&self, surrounding_text: ImeSurroundingText) {
         self.view().set_ime_surrounding_text(surrounding_text);
+    }
+
+    // Mtrx patch (menu actions).
+    #[inline]
+    pub fn set_enabled_standard_actions(&self, actions: &[StandardAction]) {
+        self.view().set_enabled_standard_actions(actions);
     }
 
     #[inline]

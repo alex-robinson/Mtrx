@@ -1311,6 +1311,30 @@ impl Window {
         let _ = surrounding_text;
     }
 
+    // Mtrx patch (menu actions).
+    /// Sets the [`StandardAction`]s the window can perform now, for the menu items that send
+    /// them: the others are disabled. All are enabled until this is called.
+    ///
+    /// ## Platform-specific
+    ///
+    /// - **macOS:** Answers `validateMenuItem:` for the items whose action messages the view
+    ///   takes. A disabled item still takes its shortcut, which then reaches the window neither
+    ///   as the action nor as a key press: enable an action whenever its key would do something.
+    /// - **Others:** Unsupported.
+    ///
+    /// [`StandardAction`]: crate::event::StandardAction
+    #[inline]
+    pub fn set_enabled_standard_actions(&self, actions: &[crate::event::StandardAction]) {
+        let _span = tracing::debug_span!("winit::Window::set_enabled_standard_actions").entered();
+        #[cfg(macos_platform)]
+        {
+            let actions = actions.to_vec();
+            self.window.maybe_queue_on_main(move |w| w.set_enabled_standard_actions(&actions));
+        }
+        #[cfg(not(macos_platform))]
+        let _ = actions;
+    }
+
     /// Sets the IME purpose for the window using [`ImePurpose`].
     ///
     /// ## Platform-specific

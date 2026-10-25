@@ -230,6 +230,23 @@ pub enum WindowEvent {
     /// - **iOS / Android / Web / Orbital:** Unsupported.
     Ime(Ime),
 
+    // Mtrx patch (menu actions).
+    /// A standard action, such as Undo or Copy, was sent to the window: by a menu item, or by
+    /// its shortcut.
+    ///
+    /// ## Platform-specific
+    ///
+    /// - **macOS:** The action messages of the text system (`undo:`, `copy:`, `selectAll:`, ...)
+    ///   that reach the window's view through the responder chain, as the items of an Edit or
+    ///   View menu send them. The menu takes their shortcuts before the window: with such an
+    ///   item, ⌘C arrives as [`StandardAction::Copy`], not as a [`KeyboardInput`]. Which are
+    ///   enabled is set with [`Window::set_enabled_standard_actions`].
+    /// - **Others:** Never sent.
+    ///
+    /// [`KeyboardInput`]: Self::KeyboardInput
+    /// [`Window::set_enabled_standard_actions`]: crate::window::Window::set_enabled_standard_actions
+    StandardAction(StandardAction),
+
     /// The cursor has moved on the window.
     ///
     /// ## Platform-specific
@@ -826,6 +843,43 @@ pub enum Ime {
     Disabled,
 }
 
+// Mtrx patch (menu actions).
+/// A standard action of the platform's text system and menus, see
+/// [`WindowEvent::StandardAction`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub enum StandardAction {
+    /// Undo the last edit (macOS: `undo:`).
+    Undo,
+    /// Redo the last edit undone (macOS: `redo:`).
+    Redo,
+    /// Cut the selection to the clipboard (macOS: `cut:`).
+    Cut,
+    /// Copy the selection to the clipboard (macOS: `copy:`).
+    Copy,
+    /// Paste the clipboard (macOS: `paste:`).
+    Paste,
+    /// Paste the clipboard as plain text, without its formatting (macOS: `pasteAsPlainText:`).
+    PasteAsPlainText,
+    /// Select all (macOS: `selectAll:`).
+    SelectAll,
+    /// Show the find interface (macOS: `performTextFinderAction:` with
+    /// `NSTextFinderActionShowFindInterface`).
+    Find,
+    /// Go to the next match (macOS: `performTextFinderAction:` with
+    /// `NSTextFinderActionNextMatch`).
+    FindNext,
+    /// Go to the previous match (macOS: `performTextFinderAction:` with
+    /// `NSTextFinderActionPreviousMatch`).
+    FindPrevious,
+    /// Make the text bigger (macOS: `makeTextLarger:`).
+    ZoomIn,
+    /// Make the text smaller (macOS: `makeTextSmaller:`).
+    ZoomOut,
+    /// Make the text its usual size (macOS: `makeTextStandardSize:`).
+    ZoomReset,
+}
+
 /// Describes touch-screen input state.
 #[derive(Debug, Hash, PartialEq, Eq, Clone, Copy)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
@@ -1071,6 +1125,8 @@ mod tests {
                 with_window_event(HoveredFile("x.txt".into()));
                 with_window_event(HoveredFileCancelled);
                 with_window_event(Ime(Enabled));
+                // Mtrx patch (menu actions).
+                with_window_event(StandardAction(event::StandardAction::Copy));
                 with_window_event(CursorMoved { device_id: did, position: (0, 0).into() });
                 with_window_event(ModifiersChanged(event::Modifiers::default()));
                 with_window_event(CursorEntered { device_id: did });

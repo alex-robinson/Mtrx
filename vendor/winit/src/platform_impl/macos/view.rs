@@ -5,9 +5,9 @@ use std::ptr;
 
 use objc2::rc::{Retained, WeakId};
 use objc2::runtime::{AnyObject, Sel};
-use objc2::{declare_class, msg_send_id, mutability, sel, ClassType, DeclaredClass};
+use objc2::{declare_class, msg_send, msg_send_id, mutability, sel, ClassType, DeclaredClass};
 use objc2_app_kit::{
-    NSApplication, NSCursor, NSEvent, NSEventPhase, NSResponder, NSTextInputClient,
+    NSApplication, NSCursor, NSEvent, NSEventPhase, NSMenuItem, NSResponder, NSTextInputClient,
     NSTrackingRectTag, NSView, NSViewFrameDidChangeNotification,
 };
 use objc2_foundation::{
@@ -28,8 +28,8 @@ use super::window::WinitWindow;
 use super::DEVICE_ID;
 use crate::dpi::{LogicalPosition, LogicalSize};
 use crate::event::{
-    DeviceEvent, ElementState, Ime, KeyEvent, Modifiers, MouseButton, MouseScrollDelta, TouchPhase,
-    WindowEvent,
+    DeviceEvent, ElementState, Ime, KeyEvent, Modifiers, MouseButton, MouseScrollDelta,
+    StandardAction, TouchPhase, WindowEvent,
 };
 use crate::keyboard::{Key, KeyCode, KeyLocation, ModifiersState, NamedKey};
 use crate::platform::macos::OptionAsAlt;
@@ -151,6 +151,11 @@ pub struct ViewState {
     surrounding_text: RefCell<Option<ImeSurroundingText>>,
     /// The selection within the marked text, from `setMarkedText`.
     marked_selection: Cell<NSRange>,
+
+    // Mtrx patch (menu actions).
+    /// The standard actions enabled, from `set_enabled_standard_actions`; all until set.
+    enabled_standard_actions: RefCell<Option<Vec<StandardAction>>>,
+
     accepts_first_mouse: bool,
 
     // Weak reference because the window keeps a strong reference to the view
@@ -704,6 +709,76 @@ declare_class!(
             });
         }
 
+        // Mtrx patch (menu actions): the action messages of the items of an Edit and a View
+        // menu, which a text view takes. Their shortcuts are the menu's, so these are how such
+        // keys reach the window.
+        #[method(undo:)]
+        fn undo(&self, sender: Option<&AnyObject>) {
+            self.standard_action(sel!(undo:), sender);
+        }
+
+        #[method(redo:)]
+        fn redo(&self, sender: Option<&AnyObject>) {
+            self.standard_action(sel!(redo:), sender);
+        }
+
+        #[method(cut:)]
+        fn cut(&self, sender: Option<&AnyObject>) {
+            self.standard_action(sel!(cut:), sender);
+        }
+
+        #[method(copy:)]
+        fn copy(&self, sender: Option<&AnyObject>) {
+            self.standard_action(sel!(copy:), sender);
+        }
+
+        #[method(paste:)]
+        fn paste(&self, sender: Option<&AnyObject>) {
+            self.standard_action(sel!(paste:), sender);
+        }
+
+        #[method(pasteAsPlainText:)]
+        fn paste_as_plain_text(&self, sender: Option<&AnyObject>) {
+            self.standard_action(sel!(pasteAsPlainText:), sender);
+        }
+
+        #[method(selectAll:)]
+        fn select_all(&self, sender: Option<&AnyObject>) {
+            self.standard_action(sel!(selectAll:), sender);
+        }
+
+        #[method(performTextFinderAction:)]
+        fn perform_text_finder_action(&self, sender: Option<&AnyObject>) {
+            self.standard_action(sel!(performTextFinderAction:), sender);
+        }
+
+        #[method(makeTextLarger:)]
+        fn make_text_larger(&self, sender: Option<&AnyObject>) {
+            self.standard_action(sel!(makeTextLarger:), sender);
+        }
+
+        #[method(makeTextSmaller:)]
+        fn make_text_smaller(&self, sender: Option<&AnyObject>) {
+            self.standard_action(sel!(makeTextSmaller:), sender);
+        }
+
+        #[method(makeTextStandardSize:)]
+        fn make_text_standard_size(&self, sender: Option<&AnyObject>) {
+            self.standard_action(sel!(makeTextStandardSize:), sender);
+        }
+
+        // Mtrx patch (menu actions): enabled as the application set.
+        #[method(validateMenuItem:)]
+        fn validate_menu_item(&self, item: &NSMenuItem) -> bool {
+            trace_scope!("validateMenuItem:");
+            let (action, tag) = unsafe { (item.action(), item.tag()) };
+            let action = action.and_then(|action| standard_action(action, tag));
+            match (action, &*self.ivars().enabled_standard_actions.borrow()) {
+                (Some(action), Some(enabled)) => enabled.contains(&action),
+                _ => true,
+            }
+        }
+
         // In the past (?), `mouseMoved:` events were not generated when the
         // user hovered over a window from a separate window, and as such the
         // application might not know the location of the mouse in the event.
@@ -948,6 +1023,8 @@ impl WinitView {
             // Mtrx patch (surrounding text).
             surrounding_text: Default::default(),
             marked_selection: Cell::new(NSRange::new(0, 0)),
+            // Mtrx patch (menu actions).
+            enabled_standard_actions: Default::default(),
             accepts_first_mouse,
             _ns_window: WeakId::new(&window.retain()),
             option_as_alt: Cell::new(option_as_alt),
@@ -1045,6 +1122,21 @@ impl WinitView {
     pub(super) fn set_ime_surrounding_text(&self, surrounding_text: ImeSurroundingText) {
         if self.ivars().ime_allowed.get() {
             *self.ivars().surrounding_text.borrow_mut() = Some(surrounding_text);
+        }
+    }
+
+    // Mtrx patch (menu actions).
+    pub(super) fn set_enabled_standard_actions(&self, actions: &[StandardAction]) {
+        *self.ivars().enabled_standard_actions.borrow_mut() = Some(actions.to_vec());
+    }
+
+    // Mtrx patch (menu actions).
+    /// Sends the standard action of the action message `action` from `sender`, a menu item.
+    fn standard_action(&self, action: Sel, sender: Option<&AnyObject>) {
+        trace_scope!("standard action");
+        let tag = sender.map_or(0, |sender| unsafe { msg_send![sender, tag] });
+        if let Some(action) = standard_action(action, tag) {
+            self.queue_event(WindowEvent::StandardAction(action));
         }
     }
 
@@ -1309,4 +1401,31 @@ fn replace_event(event: &NSEvent, option_as_alt: OptionAsAlt) -> Retained<NSEven
     } else {
         event.copy()
     }
+}
+
+// Mtrx patch (menu actions).
+/// The standard action of the action message `action`, sent by a menu item with `tag`.
+fn standard_action(action: Sel, tag: isize) -> Option<StandardAction> {
+    let standard = [
+        (sel!(undo:), StandardAction::Undo),
+        (sel!(redo:), StandardAction::Redo),
+        (sel!(cut:), StandardAction::Cut),
+        (sel!(copy:), StandardAction::Copy),
+        (sel!(paste:), StandardAction::Paste),
+        (sel!(pasteAsPlainText:), StandardAction::PasteAsPlainText),
+        (sel!(selectAll:), StandardAction::SelectAll),
+        (sel!(makeTextLarger:), StandardAction::ZoomIn),
+        (sel!(makeTextSmaller:), StandardAction::ZoomOut),
+        (sel!(makeTextStandardSize:), StandardAction::ZoomReset),
+    ];
+    if action == sel!(performTextFinderAction:) {
+        // `NSTextFinderAction`, in the menu item's tag.
+        return match tag {
+            1 => Some(StandardAction::Find),
+            2 => Some(StandardAction::FindNext),
+            3 => Some(StandardAction::FindPrevious),
+            _ => None,
+        };
+    }
+    standard.into_iter().find(|(selector, _)| *selector == action).map(|(_, action)| action)
 }

@@ -32,3 +32,18 @@ section B1). Each is marked "Mtrx patch" in the code:
   `setMarkedText` with a replacement range send `DeleteSurrounding` for
   what it covers around the selection before the commit or preedit. Other
   platforms ignore it.
+- Menu actions (marked "Mtrx patch (menu actions)", `docs/native-behaviour.md`
+  C): an Edit or View menu takes its shortcuts before the window, so ⌘C
+  never reached it as a key press. `WindowEvent::StandardAction` (in
+  `src/event.rs`) carries the text system's action messages that reach the
+  view (`src/platform_impl/macos/view.rs`): `undo:`, `redo:`, `cut:`,
+  `copy:`, `paste:`, `pasteAsPlainText:`, `selectAll:`,
+  `performTextFinderAction:` (find, next, previous) and `makeTextLarger:`,
+  `makeTextSmaller:`, `makeTextStandardSize:`. `validateMenuItem:` enables
+  their menu items as `Window::set_enabled_standard_actions` says (all until
+  it is called). Other platforms ignore it.
+- Quit (marked "Mtrx patch (quit)", `src/platform_impl/macos/app_state.rs`):
+  Quit in the app menu or the Dock, and logging out, ended the event loop at
+  once. `applicationShouldTerminate:` now sends each window
+  `CloseRequested`, as its close button does, and answers
+  `NSTerminateLater`; once the event loop exits, the quit goes on.
