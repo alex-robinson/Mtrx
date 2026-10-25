@@ -351,6 +351,9 @@ where
             return InputMethod::Disabled;
         }
 
+        // Mtrx patch (surrounding text).
+        let surrounding_text = self.content.surrounding_text();
+
         let bounds = layout.bounds();
         let internal = self.content.0.borrow_mut();
 
@@ -377,6 +380,8 @@ where
             ),
             purpose: input_method::Purpose::Normal,
             preedit: state.preedit.as_ref().map(input_method::Preedit::as_ref),
+            // Mtrx patch (surrounding text).
+            surrounding_text,
         }
     }
 }
@@ -426,6 +431,44 @@ where
     /// Returns the current cursor position of the [`Content`].
     pub fn cursor(&self) -> Cursor {
         self.0.borrow().editor.cursor()
+    }
+
+    // Mtrx patch (surrounding text).
+    /// Returns the text around the cursor for an input method: the lines
+    /// with the cursor and the selection, cut to
+    /// [`SurroundingText::MAX_BYTES`] around them.
+    ///
+    /// [`SurroundingText::MAX_BYTES`]: input_method::SurroundingText::MAX_BYTES
+    pub fn surrounding_text(&self) -> Option<input_method::SurroundingText> {
+        let internal = self.0.borrow();
+        let Cursor {
+            position,
+            selection,
+        } = internal.editor.cursor();
+        let anchor = selection.unwrap_or(position);
+
+        let mut text = String::new();
+        let (mut cursor, mut anchor_at) = (0, 0);
+        let last = position.line.max(anchor.line);
+
+        for index in position.line.min(anchor.line)..=last {
+            let line = internal.editor.line(index)?;
+
+            if index == position.line {
+                cursor = text.len() + position.column;
+            }
+            if index == anchor.line {
+                anchor_at = text.len() + anchor.column;
+            }
+
+            text.push_str(&line.text);
+
+            if index < last {
+                text.push_str(line.ending.as_str());
+            }
+        }
+
+        input_method::SurroundingText::around(&text, cursor, anchor_at)
     }
 
     /// Returns the amount of lines of the [`Content`].
@@ -797,6 +840,12 @@ where
                         shell.publish(on_edit(Action::Edit(Edit::Paste(
                             Arc::new(text),
                         ))));
+                    }
+                    // Mtrx patch (surrounding text).
+                    Ime::DeleteSurrounding { before, after } => {
+                        shell.publish(on_edit(Action::Edit(
+                            Edit::DeleteSurrounding { before, after },
+                        )));
                     }
                 },
                 Update::Binding(binding) => {
@@ -1272,6 +1321,11 @@ enum Ime {
         selection: Option<ops::Range<usize>>,
     },
     Commit(String),
+    // Mtrx patch (surrounding text).
+    DeleteSurrounding {
+        before: usize,
+        after: usize,
+    },
 }
 
 impl<Message> Update<Message> {
@@ -1352,6 +1406,16 @@ impl<Message> Update<Message> {
                     if state.focus.is_some() =>
                 {
                     Some(Update::InputMethod(Ime::Commit(content.clone())))
+                }
+                // Mtrx patch (surrounding text).
+                input_method::Event::DeleteSurrounding {
+                    before_bytes,
+                    after_bytes,
+                } if state.focus.is_some() => {
+                    Some(Update::InputMethod(Ime::DeleteSurrounding {
+                        before: *before_bytes,
+                        after: *after_bytes,
+                    }))
                 }
                 _ => None,
             },

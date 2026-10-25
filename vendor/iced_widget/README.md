@@ -19,3 +19,8 @@ section B). Each is marked "Mtrx patch" in the code:
   while open and types the pick into the field focused before, which
   macOS then dropped. A focused field now keeps its input method, as a
   text view stays the first responder; only the caret stops blinking.
+- `src/text_editor.rs`, `src/text_input.rs` (surrounding text): the
+  fields tell the input method their text around the caret (the editor
+  its lines with the caret and the selection, a field all of it unless
+  secure), and apply its `DeleteSurrounding` before the commit. See
+  `vendor/iced_core/README.md`.

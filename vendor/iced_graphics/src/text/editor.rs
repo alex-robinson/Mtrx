@@ -452,6 +452,10 @@ impl editor::Editor for Editor {
                                 cosmic_text::Action::Delete,
                             );
                         }
+                        // Mtrx patch (surrounding text).
+                        Edit::DeleteSurrounding { before, after } => {
+                            delete_surrounding(editor, before, after);
+                        }
                     }
 
                     let cursor = editor.cursor();
@@ -874,6 +878,139 @@ fn to_motion(motion: Motion) -> cosmic_text::Motion {
         Motion::PageDown => cosmic_text::Motion::PageDown,
         Motion::DocumentStart => cosmic_text::Motion::BufferStart,
         Motion::DocumentEnd => cosmic_text::Motion::BufferEnd,
+    }
+}
+
+// Mtrx patch (surrounding text): an input method's `DeleteSurrounding`.
+/// Deletes `before` and `after` bytes around the selection (or the cursor),
+/// a line ending counting as its bytes, and keeps the selection. A count
+/// ending inside a character takes all of it.
+fn delete_surrounding(
+    editor: &mut cosmic_text::Editor<'static>,
+    before: usize,
+    after: usize,
+) {
+    let cursor = editor.cursor();
+    let (start, end) = editor.selection_bounds().unwrap_or((cursor, cursor));
+
+    let buffer = buffer_from_editor(editor);
+    let from = back_by(buffer, start, before);
+    let to = forward_by(buffer, end, after);
+
+    // After the selection first, so that what precedes it stays put.
+    if to != end {
+        editor.delete_range(end, to);
+    }
+
+    if from == start {
+        return;
+    }
+
+    editor.delete_range(from, start);
+
+    // The cursor and the selection's anchor, at or after `start`, move
+    // back by what was deleted before them.
+    let shift = |at: cosmic_text::Cursor| {
+        if at.line == start.line {
+            cosmic_text::Cursor {
+                line: from.line,
+                index: from.index + at.index.saturating_sub(start.index),
+                ..at
+            }
+        } else {
+            cosmic_text::Cursor {
+                line: at.line - (start.line - from.line),
+                ..at
+            }
+        }
+    };
+
+    let selection = match editor.selection() {
+        cosmic_text::Selection::None => cosmic_text::Selection::None,
+        cosmic_text::Selection::Normal(anchor) => {
+            cosmic_text::Selection::Normal(shift(anchor))
+        }
+        cosmic_text::Selection::Line(anchor) => {
+            cosmic_text::Selection::Line(shift(anchor))
+        }
+        cosmic_text::Selection::Word(anchor) => {
+            cosmic_text::Selection::Word(shift(anchor))
+        }
+    };
+
+    editor.set_cursor(shift(cursor));
+    editor.set_selection(selection);
+}
+
+/// The position `bytes` before `at`, across line endings.
+fn back_by(
+    buffer: &cosmic_text::Buffer,
+    mut at: cosmic_text::Cursor,
+    mut bytes: usize,
+) -> cosmic_text::Cursor {
+    loop {
+        if bytes <= at.index {
+            let text = buffer.lines[at.line].text();
+            at.index -= bytes;
+
+            while !text.is_char_boundary(at.index) {
+                at.index -= 1;
+            }
+
+            return at;
+        }
+
+        bytes -= at.index;
+        at.index = 0;
+
+        if at.line == 0 {
+            return at;
+        }
+
+        let previous = &buffer.lines[at.line - 1];
+        bytes = bytes.saturating_sub(previous.ending().as_str().len());
+        at = cosmic_text::Cursor {
+            line: at.line - 1,
+            index: previous.text().len(),
+            ..at
+        };
+    }
+}
+
+/// The position `bytes` after `at`, across line endings.
+fn forward_by(
+    buffer: &cosmic_text::Buffer,
+    mut at: cosmic_text::Cursor,
+    mut bytes: usize,
+) -> cosmic_text::Cursor {
+    loop {
+        let line = &buffer.lines[at.line];
+        let text = line.text();
+        let rest = text.len() - at.index;
+
+        if bytes <= rest {
+            at.index += bytes;
+
+            while !text.is_char_boundary(at.index) {
+                at.index += 1;
+            }
+
+            return at;
+        }
+
+        bytes -= rest;
+        at.index = text.len();
+
+        if at.line + 1 == buffer.lines.len() {
+            return at;
+        }
+
+        bytes = bytes.saturating_sub(line.ending().as_str().len());
+        at = cosmic_text::Cursor {
+            line: at.line + 1,
+            index: 0,
+            ..at
+        };
     }
 }
 

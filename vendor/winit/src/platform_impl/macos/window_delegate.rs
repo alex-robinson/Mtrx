@@ -38,8 +38,8 @@ use crate::error::{ExternalError, NotSupportedError, OsError as RootOsError};
 use crate::event::{InnerSizeWriter, WindowEvent};
 use crate::platform::macos::{OptionAsAlt, WindowExtMacOS};
 use crate::window::{
-    Cursor, CursorGrabMode, Icon, ImePurpose, ResizeDirection, Theme, UserAttentionType,
-    WindowAttributes, WindowButtons, WindowLevel,
+    Cursor, CursorGrabMode, Icon, ImePurpose, ImeSurroundingText, ResizeDirection, Theme,
+    UserAttentionType, WindowAttributes, WindowButtons, WindowLevel,
 };
 
 #[derive(Clone, Debug)]
@@ -1568,6 +1568,12 @@ impl WindowDelegate {
 
     #[inline]
     pub fn set_ime_purpose(&self, _purpose: ImePurpose) {}
+
+    // Mtrx patch (surrounding text).
+    #[inline]
+    pub fn set_ime_surrounding_text(&self, surrounding_text: ImeSurroundingText) {
+        self.view().set_ime_surrounding_text(surrounding_text);
+    }
 
     #[inline]
     pub fn focus_window(&self) {

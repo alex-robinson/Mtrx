@@ -793,6 +793,30 @@ pub enum Ime {
     /// Right before this event winit will send empty [`Self::Preedit`] event.
     Commit(String),
 
+    // Mtrx patch (surrounding text): from winit 0.31.
+    /// Delete text surrounding the cursor or selection.
+    ///
+    /// This event does not affect either the pre-edit string.
+    /// This means that the application must first remove the pre-edit,
+    /// then execute the deletion, then insert the removed text back.
+    ///
+    /// This event assumes text is stored in UTF-8.
+    ///
+    /// ## Platform-specific
+    ///
+    /// - **macOS:** Sent before the [`Commit`][Self::Commit] or [`Preedit`][Self::Preedit] that
+    ///   replaces a range of the text set with [`Window::set_ime_surrounding_text`], for example
+    ///   the letter held for the accent menu.
+    /// - **Others:** Never sent.
+    ///
+    /// [`Window::set_ime_surrounding_text`]: crate::window::Window::set_ime_surrounding_text
+    DeleteSurrounding {
+        /// Bytes to remove before the selection
+        before_bytes: usize,
+        /// Bytes to remove after the selection
+        after_bytes: usize,
+    },
+
     /// Notifies when the IME was disabled.
     ///
     /// After receiving this event you won't get any more [`Preedit`][Self::Preedit] or
