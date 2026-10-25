@@ -38,6 +38,11 @@ pub trait Editor: Sized + Default {
     /// Moves the cursor to the given position.
     fn move_to(&mut self, cursor: Cursor);
 
+    // Mtrx patch (editing): for text dragged in the editor.
+    /// Returns where a click at the given [`Point`] would put the caret, as
+    /// [`Selection::Caret`] has it.
+    fn caret_at(&self, point: Point) -> Option<Point>;
+
     /// Returns the current boundaries of the [`Editor`].
     fn bounds(&self) -> Size;
 
@@ -144,6 +149,15 @@ pub enum Edit {
     Transpose,
     /// Break the line after the cursor, which stays: ⌃O.
     OpenLine,
+    /// Move the selected text to where a click at the [`Point`] would put
+    /// the caret (unless that is in it), or copy it there; it stays
+    /// selected. Dragging the selection.
+    MoveSelection {
+        /// Where it is dropped.
+        to: Point,
+        /// Whether to copy it, keeping it where it was: ⌥ on macOS.
+        copy: bool,
+    },
 }
 
 /// A cursor movement.

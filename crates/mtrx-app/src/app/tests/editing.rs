@@ -549,3 +549,88 @@ fn control_t_transposes_and_control_o_opens_a_line() {
     assert_eq!(field.content.text(), "Calving\n fronts");
     assert_eq!(field.caret(), (0, 7));
 }
+
+impl Field {
+    /// The middle of the `line`th line, `x` into it (the editor's padding
+    /// is 5, its lines the text size × 1.3).
+    fn on_line(line: usize, x: f32) -> iced::Point {
+        let height = style::TEXT_SIZE * 1.3;
+        iced::Point::new(5.0 + x, 5.0 + height * (line as f32 + 0.5))
+    }
+
+    fn mouse(&mut self, at: iced::Point, event: mouse::Event) {
+        self.cursor = at;
+        let _ = self.send(&[Event::Mouse(event)]);
+    }
+
+    /// The pointer pressed at `from`, moved to `to` with `modifiers`, and
+    /// released there.
+    fn drag(&mut self, from: iced::Point, to: iced::Point, modifiers: Modifiers) {
+        let left = mouse::Button::Left;
+        self.mouse(from, mouse::Event::ButtonPressed(left));
+        self.mouse(to, mouse::Event::CursorMoved { position: to });
+        let _ = self.send(&[Event::Keyboard(keyboard::Event::ModifiersChanged(
+            modifiers,
+        ))]);
+        self.mouse(to, mouse::Event::ButtonReleased(left));
+    }
+
+    /// The first line selected.
+    fn select_first_line(&mut self) {
+        self.named(Named::ArrowUp, Modifiers::COMMAND);
+        self.named(Named::Home, Modifiers::empty());
+        self.named(Named::End, Modifiers::SHIFT);
+    }
+}
+
+/// Selected text dragged moves (with ⌥, copies) to where it is dropped.
+#[test]
+fn dragging_the_selection_moves_it() {
+    let text = "Crème brûlée\nau café";
+    let mut field = Field::new(text);
+    field.select_first_line();
+    assert_eq!(field.content.selection().as_deref(), Some("Crème brûlée"));
+    // To the end of the second line.
+    let (from, to) = (Field::on_line(0, 10.0), Field::on_line(1, 380.0));
+    field.drag(from, to, Modifiers::empty());
+    assert_eq!(field.content.text(), "\nau caféCrème brûlée");
+    assert_eq!(field.content.selection().as_deref(), Some("Crème brûlée"));
+    // A step to undo, which selects it where it was.
+    assert_eq!(field.undo(), text);
+    assert_eq!(field.content.selection().as_deref(), Some("Crème brûlée"));
+
+    // With ⌥ (Ctrl elsewhere), a copy.
+    let copy = if cfg!(target_os = "macos") {
+        Modifiers::ALT
+    } else {
+        Modifiers::CTRL
+    };
+    // (Each press 6 apart from the last, or it is a double click.)
+    field.drag(Field::on_line(0, 25.0), to, copy);
+    assert_eq!(field.content.text(), "Crème brûlée\nau caféCrème brûlée");
+
+    // Dropped onto itself, nothing moves.
+    let mut field = Field::new(text);
+    field.select_first_line();
+    field.drag(
+        Field::on_line(0, 40.0),
+        Field::on_line(0, 60.0),
+        Modifiers::empty(),
+    );
+    assert_eq!(field.content.text(), text);
+    assert_eq!(field.content.selection().as_deref(), Some("Crème brûlée"));
+    // Pressed and released in it: a click, which places the caret.
+    field.drag(from, from, Modifiers::empty());
+    assert_eq!(field.content.text(), text);
+    assert_eq!(field.content.selection(), None);
+    // Pressed beside it: a new selection.
+    field.select_first_line();
+    field.drag(Field::on_line(1, 0.0), to, Modifiers::empty());
+    assert_eq!(field.content.text(), text);
+    assert_eq!(field.content.selection().as_deref(), Some("au café"));
+    // Not focused, the selection is not drawn: a press in it is a click.
+    field.select_first_line();
+    field.named(Named::Escape, Modifiers::empty());
+    field.drag(from, to, Modifiers::empty());
+    assert_eq!(field.content.text(), text);
+}

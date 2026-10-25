@@ -471,6 +471,18 @@ where
         input_method::SurroundingText::around(&text, cursor, anchor_at)
     }
 
+    // Mtrx patch (editing).
+    /// Returns whether the selection, as drawn, contains the [`Point`]
+    /// (relative to the text).
+    fn selection_contains(&self, point: Point) -> bool {
+        match self.0.borrow().editor.selection() {
+            Selection::Range(ranges) => {
+                ranges.iter().any(|range| range.contains(point))
+            }
+            Selection::Caret(_) => false,
+        }
+    }
+
     /// Returns the amount of lines of the [`Content`].
     pub fn line_count(&self) -> usize {
         self.0.borrow().editor.line_count()
@@ -575,6 +587,38 @@ pub struct State<Highlighter: text::Highlighter> {
     highlighter: RefCell<Highlighter>,
     highlighter_settings: Highlighter::Settings,
     highlighter_format_address: usize,
+    // Mtrx patch (editing): the selection being dragged, and the modifiers
+    // (⌥ copies it).
+    drag_text: Option<DragText>,
+    modifiers: keyboard::Modifiers,
+}
+
+/// Mtrx patch (editing): the selection pressed, to be dragged.
+#[derive(Debug, Clone, Copy)]
+struct DragText {
+    /// Where it was pressed.
+    from: Point,
+    /// Where it would be dropped: the pointer, once it moved, while it is
+    /// over the editor.
+    to: Option<Point>,
+    /// Whether the pointer moved from where it was pressed: else releasing
+    /// it is a click.
+    moved: bool,
+}
+
+impl DragText {
+    /// How far the pointer moves before the selection is dragged.
+    const THRESHOLD: f32 = 3.0;
+}
+
+/// Mtrx patch (editing): whether a drop with `modifiers` copies: ⌥ on
+/// macOS, Ctrl elsewhere.
+fn copies(modifiers: keyboard::Modifiers) -> bool {
+    if cfg!(target_os = "macos") {
+        modifiers.alt()
+    } else {
+        modifiers.control()
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -646,6 +690,9 @@ where
             last_click: None,
             drag_click: None,
             partial_scroll: 0.0,
+            // Mtrx patch (editing).
+            drag_text: None,
+            modifiers: keyboard::Modifiers::default(),
             last_theme: RefCell::default(),
             highlighter: RefCell::new(Highlighter::new(
                 &self.highlighter_settings,
@@ -741,6 +788,10 @@ where
         );
 
         match event {
+            // Mtrx patch (editing).
+            Event::Keyboard(keyboard::Event::ModifiersChanged(modifiers)) => {
+                state.modifiers = *modifiers;
+            }
             Event::Window(window::Event::Unfocused) => {
                 if let Some(focus) = &mut state.focus {
                     focus.is_window_focused = false;
@@ -792,18 +843,62 @@ where
                         mouse::click::Kind::Triple => Action::SelectLine,
                     };
 
+                    // Mtrx patch (editing): a press in the selection grabs
+                    // it, to drag it; only while focused, as it is drawn
+                    // only then.
+                    let grabs = state.focus.is_some()
+                        && matches!(click.kind(), mouse::click::Kind::Single)
+                        && self.content.selection_contains(click.position());
+
                     state.focus = Some(Focus::now());
                     state.last_click = Some(click);
-                    state.drag_click = Some(click.kind());
 
-                    shell.publish(on_edit(action));
+                    if grabs {
+                        state.drag_text = Some(DragText {
+                            from: click.position(),
+                            to: None,
+                            moved: false,
+                        });
+                    } else {
+                        state.drag_click = Some(click.kind());
+
+                        shell.publish(on_edit(action));
+                    }
+
                     shell.capture_event();
+                }
+                // Mtrx patch (editing).
+                Update::DragText { at, over } => {
+                    if let Some(drag) = &mut state.drag_text {
+                        drag.moved |=
+                            drag.from.distance(at) > DragText::THRESHOLD;
+                        drag.to = (drag.moved && over).then_some(at);
+
+                        shell.request_redraw();
+                    }
                 }
                 Update::Drag(position) => {
                     shell.publish(on_edit(Action::Drag(position)));
                 }
                 Update::Release => {
                     state.drag_click = None;
+
+                    // Mtrx patch (editing): the selection dropped where the
+                    // pointer is; not moved, a click there.
+                    if let Some(drag) = state.drag_text.take() {
+                        if let Some(to) = drag.to {
+                            shell.publish(on_edit(Action::Edit(
+                                Edit::MoveSelection {
+                                    to,
+                                    copy: copies(state.modifiers),
+                                },
+                            )));
+                        } else if !drag.moved {
+                            shell.publish(on_edit(Action::Click(drag.from)));
+                        }
+
+                        shell.request_redraw();
+                    }
                 }
                 Update::Scroll(lines) => {
                     let bounds = self.content.0.borrow().editor.bounds();
@@ -868,6 +963,8 @@ where
                             Binding::Unfocus => {
                                 state.focus = None;
                                 state.drag_click = None;
+                                // Mtrx patch (editing).
+                                state.drag_text = None;
                             }
                             Binding::Copy => {
                                 if let Some(selection) = content.selection() {
@@ -1130,21 +1227,66 @@ where
                 Selection::Caret(_) => {}
             }
         }
+
+        // Mtrx patch (editing): where the dragged selection would drop.
+        if let Some(DragText { to: Some(to), .. }) = state.drag_text
+            && let Some(caret) = internal.editor.caret_at(to)
+        {
+            let caret = Rectangle::new(
+                caret + translation,
+                Size::new(
+                    1.0,
+                    self.line_height
+                        .to_absolute(
+                            self.text_size
+                                .unwrap_or_else(|| renderer.default_size()),
+                        )
+                        .into(),
+                ),
+            );
+
+            if let Some(caret) = text_bounds.intersection(&caret) {
+                renderer.fill_quad(
+                    renderer::Quad {
+                        bounds: caret,
+                        ..renderer::Quad::default()
+                    },
+                    style.value,
+                );
+            }
+        }
     }
 
     fn mouse_interaction(
         &self,
-        _tree: &widget::Tree,
+        tree: &widget::Tree,
         layout: Layout<'_>,
         cursor: mouse::Cursor,
         _viewport: &Rectangle,
         _renderer: &Renderer,
     ) -> mouse::Interaction {
         let is_disabled = self.on_edit.is_none();
+        // Mtrx patch (editing).
+        let state = tree.state.downcast_ref::<State<Highlighter>>();
+        let over_selection = || {
+            cursor.position_in(layout.bounds()).is_some_and(|position| {
+                self.content.selection_contains(
+                    position - Vector::new(self.padding.left, self.padding.top),
+                )
+            })
+        };
 
         if cursor.is_over(layout.bounds()) {
             if is_disabled {
                 mouse::Interaction::NotAllowed
+            // Mtrx patch (editing): an arrow over the selection, which
+            // drags, as a text view has; a copy sign with ⌥ while dragging.
+            } else if state.drag_text.is_some() && copies(state.modifiers) {
+                mouse::Interaction::Copy
+            } else if state.drag_text.is_some()
+                || (state.focus.is_some() && over_selection())
+            {
+                mouse::Interaction::Idle
             } else {
                 mouse::Interaction::Text
             }
@@ -1371,6 +1513,8 @@ impl<Message> Binding<Message> {
 enum Update<Message> {
     Click(mouse::Click),
     Drag(Point),
+    // Mtrx patch (editing).
+    DragText { at: Point, over: bool },
     Release,
     Scroll(f32),
     InputMethod(Ime),
@@ -1424,6 +1568,20 @@ impl<Message> Update<Message> {
                 }
                 mouse::Event::ButtonReleased(mouse::Button::Left) => {
                     Some(Update::Release)
+                }
+                // Mtrx patch (editing): the selection dragged, also beyond
+                // the editor.
+                mouse::Event::CursorMoved { .. }
+                    if state.drag_text.is_some() =>
+                {
+                    let position = cursor.position()?;
+
+                    Some(Update::DragText {
+                        at: position
+                            - (bounds.position() - Point::ORIGIN)
+                            - Vector::new(padding.left, padding.top),
+                        over: bounds.contains(position),
+                    })
                 }
                 mouse::Event::CursorMoved { .. } => match state.drag_click {
                     Some(mouse::click::Kind::Single) => {

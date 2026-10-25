@@ -198,79 +198,8 @@ impl editor::Editor for Editor {
 
                 Selection::Range(regions)
             }
-            _ => {
-                let line_height = buffer.metrics().line_height;
-
-                let visual_lines_offset =
-                    visual_lines_offset(cursor.line, buffer);
-
-                let line = buffer
-                    .lines
-                    .get(cursor.line)
-                    .expect("Cursor line should be present");
-
-                let layout =
-                    line.layout_opt().expect("Line layout should be cached");
-
-                let mut lines = layout.iter().enumerate();
-
-                let (visual_line, offset) = lines
-                    .find_map(|(i, line)| {
-                        let start = line
-                            .glyphs
-                            .first()
-                            .map(|glyph| glyph.start)
-                            .unwrap_or(0);
-                        let end = line
-                            .glyphs
-                            .last()
-                            .map(|glyph| glyph.end)
-                            .unwrap_or(0);
-
-                        let is_cursor_before_start = start > cursor.index;
-
-                        let is_cursor_before_end = match cursor.affinity {
-                            cosmic_text::Affinity::Before => {
-                                cursor.index <= end
-                            }
-                            cosmic_text::Affinity::After => cursor.index < end,
-                        };
-
-                        if is_cursor_before_start {
-                            // Sometimes, the glyph we are looking for is right
-                            // between lines. This can happen when a line wraps
-                            // on a space.
-                            // In that case, we can assume the cursor is at the
-                            // end of the previous line.
-                            // i is guaranteed to be > 0 because `start` is always
-                            // 0 for the first line, so there is no way for the
-                            // cursor to be before it.
-                            Some((i - 1, layout[i - 1].w))
-                        } else if is_cursor_before_end {
-                            let offset = line
-                                .glyphs
-                                .iter()
-                                .take_while(|glyph| cursor.index > glyph.start)
-                                .map(|glyph| glyph.w)
-                                .sum();
-
-                            Some((i, offset))
-                        } else {
-                            None
-                        }
-                    })
-                    .unwrap_or((
-                        layout.len().saturating_sub(1),
-                        layout.last().map(|line| line.w).unwrap_or(0.0),
-                    ));
-
-                Selection::Caret(Point::new(
-                    offset,
-                    (visual_lines_offset + visual_line as i32) as f32
-                        * line_height
-                        - buffer.scroll().vertical,
-                ))
-            }
+            // Mtrx patch (editing): out of here, for `caret_at` too.
+            _ => Selection::Caret(caret(buffer, cursor)),
         };
 
         *internal.selection.write().expect("Write to cursor cache") =
@@ -532,6 +461,15 @@ impl editor::Editor for Editor {
                     ));
             }
         });
+    }
+
+    // Mtrx patch (editing).
+    fn caret_at(&self, point: Point) -> Option<Point> {
+        let buffer = self.buffer();
+
+        buffer
+            .hit(point.x, point.y)
+            .map(|cursor| caret(buffer, cursor))
     }
 
     fn bounds(&self) -> Size {
@@ -893,6 +831,7 @@ fn perform_edit(
         Edit::Yank => yank(editor),
         Edit::Transpose => transpose(editor),
         Edit::OpenLine => open_line(editor),
+        Edit::MoveSelection { to, copy } => move_selection(editor, to, copy),
     }
 }
 
@@ -975,6 +914,57 @@ fn transpose(editor: &mut cosmic_text::Editor<'static>) {
     editor.set_cursor(moved);
 }
 
+/// Moves the selection to where a click at `to` would put the caret, or
+/// copies it there, unless that is in it; it stays selected.
+fn move_selection(
+    editor: &mut cosmic_text::Editor<'static>,
+    to: Point,
+    copy: bool,
+) {
+    let Some((start, end)) = editor.selection_bounds() else {
+        return;
+    };
+    let Some(mut target) = buffer_from_editor(editor).hit(to.x, to.y) else {
+        return;
+    };
+
+    let at = |cursor: cosmic_text::Cursor| (cursor.line, cursor.index);
+
+    if at(start) <= at(target) && at(target) <= at(end) {
+        return;
+    }
+
+    let Some(text) = editor.copy_selection() else {
+        return;
+    };
+
+    editor.set_selection(cosmic_text::Selection::None);
+
+    if !copy {
+        editor.delete_range(start, end);
+
+        // After the selection, it moves back by it.
+        if at(target) > at(end) {
+            target = if target.line == end.line {
+                cosmic_text::Cursor {
+                    line: start.line,
+                    index: start.index + (target.index - end.index),
+                    ..target
+                }
+            } else {
+                cosmic_text::Cursor {
+                    line: target.line - (end.line - start.line),
+                    ..target
+                }
+            };
+        }
+    }
+
+    let moved = editor.insert_at(target, &text, None);
+    editor.set_cursor(moved);
+    editor.set_selection(cosmic_text::Selection::Normal(target));
+}
+
 /// Breaks the line after the cursor, in place of the selection; the
 /// cursor stays.
 fn open_line(editor: &mut cosmic_text::Editor<'static>) {
@@ -1024,6 +1014,70 @@ fn delete_to(
 
     editor.set_cursor(start);
     editor.delete_range(start, end);
+}
+
+// Mtrx patch (editing): out of `selection`, for `caret_at` too.
+/// Where the caret is drawn for `cursor`.
+fn caret(buffer: &cosmic_text::Buffer, cursor: cosmic_text::Cursor) -> Point {
+    let line_height = buffer.metrics().line_height;
+
+    let visual_lines_offset = visual_lines_offset(cursor.line, buffer);
+
+    let line = buffer
+        .lines
+        .get(cursor.line)
+        .expect("Cursor line should be present");
+
+    let layout = line.layout_opt().expect("Line layout should be cached");
+
+    let mut lines = layout.iter().enumerate();
+
+    let (visual_line, offset) = lines
+        .find_map(|(i, line)| {
+            let start =
+                line.glyphs.first().map(|glyph| glyph.start).unwrap_or(0);
+            let end = line.glyphs.last().map(|glyph| glyph.end).unwrap_or(0);
+
+            let is_cursor_before_start = start > cursor.index;
+
+            let is_cursor_before_end = match cursor.affinity {
+                cosmic_text::Affinity::Before => cursor.index <= end,
+                cosmic_text::Affinity::After => cursor.index < end,
+            };
+
+            if is_cursor_before_start {
+                // Sometimes, the glyph we are looking for is right
+                // between lines. This can happen when a line wraps
+                // on a space.
+                // In that case, we can assume the cursor is at the
+                // end of the previous line.
+                // i is guaranteed to be > 0 because `start` is always
+                // 0 for the first line, so there is no way for the
+                // cursor to be before it.
+                Some((i - 1, layout[i - 1].w))
+            } else if is_cursor_before_end {
+                let offset = line
+                    .glyphs
+                    .iter()
+                    .take_while(|glyph| cursor.index > glyph.start)
+                    .map(|glyph| glyph.w)
+                    .sum();
+
+                Some((i, offset))
+            } else {
+                None
+            }
+        })
+        .unwrap_or((
+            layout.len().saturating_sub(1),
+            layout.last().map(|line| line.w).unwrap_or(0.0),
+        ));
+
+    Point::new(
+        offset,
+        (visual_lines_offset + visual_line as i32) as f32 * line_height
+            - buffer.scroll().vertical,
+    )
 }
 
 fn visual_lines_offset(line: usize, buffer: &cosmic_text::Buffer) -> i32 {

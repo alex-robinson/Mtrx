@@ -20,3 +20,6 @@ section B1). Each is marked "Mtrx patch" in the code:
   go to the paragraph's start and end, on to the next when already there;
   `ParagraphStart` and `ParagraphEnd` (⌃A, ⌃E) stay in it. `Edit::Kill`,
   `Yank`, `Transpose` and `OpenLine` for macOS's ⌃K, ⌃Y, ⌃T and ⌃O.
+  `Edit::MoveSelection` drops the dragged selection at a point (or a copy
+  of it), and `Editor::caret_at` tells where a click at a point puts the
+  caret, to draw it while dragging (`src/renderer/null.rs` too).

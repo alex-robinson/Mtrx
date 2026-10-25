@@ -108,7 +108,8 @@ impl Kind {
             | Edit::Kill
             | Edit::Yank
             | Edit::Transpose
-            | Edit::OpenLine => Self::Alone,
+            | Edit::OpenLine
+            | Edit::MoveSelection { .. } => Self::Alone,
         }
     }
 

@@ -168,7 +168,16 @@ so that Enter probably sends the half-composed text today.
       app, so ⌃Y yanks it into the other editor too. iced's ⌃A, ⌃E, ⌃B, ⌃F
       and ⌃D did nothing (their text, a control character, typed nothing);
       they work now, ⌃A and ⌃E to the paragraph's edges as macOS's.
-- [ ] Dragging selected text moves it; dropping text inserts it.
+- [x] Dragging selected text moves it, with ⌥ copies it.
+- [ ] Dropping text from another app inserts it; dragging it out to one.
+      winit takes only files dropped (`registerForDraggedTypes` with
+      `NSFilenamesPboardType` in `window_delegate.rs`, and its
+      `draggingEntered:`/`performDragOperation:` read file names only). It
+      needs `NSPasteboardTypeString` registered there, a dropped text
+      event with its position (and one while it is dragged over, for the
+      caret) through `iced_winit` to the editor, as `Edit::MoveSelection`
+      but inserting; dragging out needs an `NSDraggingSource`
+      (`beginDraggingSessionWithItems`) from the view.
 
 ## C. Menu bar
 

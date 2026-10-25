@@ -23,3 +23,6 @@
   back (forward) a character first, so that they go on to the paragraph
   before (after). ⌃K's text is kept in one buffer for the app (`KILLED`),
   as macOS has, for ⌃Y in any editor; ⌃T swaps graphemes.
+  `Edit::MoveSelection` and `caret_at`, for dragging the selection: the
+  caret's position for a cursor is out of `selection` (`caret`), unchanged,
+  to serve both.
