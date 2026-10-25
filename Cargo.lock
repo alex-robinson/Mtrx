@@ -10881,7 +10881,10 @@ name = "xtask"
 version = "0.3.0"
 dependencies = [
  "anyhow",
+ "base64 0.23.1",
+ "ed25519-dalek",
  "png 0.17.16",
+ "rand 0.10.3",
  "resvg 0.45.1",
 ]
 

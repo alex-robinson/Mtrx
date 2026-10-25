@@ -10,3 +10,7 @@ publish = false
 anyhow.workspace = true
 png = "0.17.16"
 resvg = "0.45.1"
+# Signing the release files for the app's updates (sign.rs).
+ed25519-dalek = "3.0.0"
+base64.workspace = true
+rand.workspace = true
