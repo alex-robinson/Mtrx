@@ -24,3 +24,20 @@ section B). Each is marked "Mtrx patch" in the code:
   its lines with the caret and the selection, a field all of it unless
   secure), and apply its `DeleteSurrounding` before the commit. See
   `vendor/iced_core/README.md`.
+- `src/text_editor.rs` (editing, `docs/native-behaviour.md` B2): key
+  bindings for the editing iced lacks. ⌘Z and ⇧⌘Z (Ctrl+Z, Ctrl+Shift+Z
+  and Ctrl+Y elsewhere) undo and redo (`Binding::Undo`, `Binding::Redo`).
+  ⌥⌫ and ⌥⌦ delete a word (Ctrl+Backspace, Ctrl+Delete elsewhere), ⌘⌫
+  and ⌘⌦ to the start and end of the line as shown (`Binding::DeleteTo`).
+  ⌘↑ and ⌘↓ go to the start and end of the text (with ⇧, select), ⌥↑
+  and ⌥↓ (Ctrl+↑ and Ctrl+↓ elsewhere) by paragraph.
+- `src/text_editor.rs` (editing): on macOS, the Emacs keys of its text
+  system (`emacs`) instead of `convert_macos_shortcut`, whose keys came
+  with a control character as their text and so bound nothing (only ⌃H
+  worked): ⌃A and ⌃E to the paragraph's edges, ⌃B ⌃F ⌃P ⌃N, ⌃H ⌃D, and
+  ⌃K, ⌃Y, ⌃T, ⌃O. The text input still uses `convert_macos_shortcut`.
+- `src/text_editor.rs` (editing): a press in the selection (while
+  focused) grabs it: a caret shows where it would drop, following the
+  pointer, and releasing moves it there (`Edit::MoveSelection`), or copies
+  it with ⌥ (Ctrl elsewhere); released where pressed, it is a click. The
+  pointer is an arrow over the selection, as in a text view.

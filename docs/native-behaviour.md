@@ -151,13 +151,33 @@ so that Enter probably sends the half-composed text today.
 ### B2. Editing
 
 - [x] Double- and triple-click select a word and a line (iced).
-- [ ] ⌘Z undo, ⇧⌘Z redo; typing grouped into words, as in a text view.
-- [ ] ⌥⌫ and ⌥⌦ delete a word; ⌘⌫ deletes to the start of the line.
-- [ ] ⌘↑ and ⌘↓ go to the start and end of the draft (with ⇧, select).
-- [ ] ⌥↑ and ⌥↓ go to the start and end of the paragraph.
-- [ ] ⌃K deletes to the end of the line, ⌃Y yanks it back, ⌃T transposes,
-      ⌃N and ⌃P move down and up, ⌃O opens a line.
-- [ ] Dragging selected text moves it; dropping text inserts it.
+- [x] ⌘Z undo, ⇧⌘Z redo; typing grouped into words, as in a text view.
+      The history is the editor's (`vendor/iced_graphics`): a new draft
+      (sent, another room) starts a fresh one. A paste, an input method's
+      commit and a completed mention are a step each.
+- [x] ⌥⌫ and ⌥⌦ delete a word; ⌘⌫ deletes to the start of the line
+      (as shown, when it wraps), ⌘⌦ to its end. A step each to undo.
+- [x] ⌘↑ and ⌘↓ go to the start and end of the draft (with ⇧, select).
+      The timeline takes them (A2) while no editor is focused.
+- [x] ⌥↑ and ⌥↓ go to the start and end of the paragraph, then on to the
+      one before or after (with ⇧, select). The timeline takes them (A2)
+      while no editor is focused.
+- [x] ⌃K deletes to the end of the line, ⌃Y yanks it back, ⌃T transposes,
+      ⌃N and ⌃P move down and up, ⌃O opens a line. macOS only. ⌃K goes to
+      the end of the paragraph, as macOS's; its text is kept once for the
+      app, so ⌃Y yanks it into the other editor too. iced's ⌃A, ⌃E, ⌃B, ⌃F
+      and ⌃D did nothing (their text, a control character, typed nothing);
+      they work now, ⌃A and ⌃E to the paragraph's edges as macOS's.
+- [x] Dragging selected text moves it, with ⌥ copies it.
+- [ ] Dropping text from another app inserts it; dragging it out to one.
+      winit takes only files dropped (`registerForDraggedTypes` with
+      `NSFilenamesPboardType` in `window_delegate.rs`, and its
+      `draggingEntered:`/`performDragOperation:` read file names only). It
+      needs `NSPasteboardTypeString` registered there, a dropped text
+      event with its position (and one while it is dragged over, for the
+      caret) through `iced_winit` to the editor, as `Edit::MoveSelection`
+      but inserting; dragging out needs an `NSDraggingSource`
+      (`beginDraggingSessionWithItems`) from the view.
 
 ## C. Menu bar
 

@@ -12,3 +12,14 @@ section B1). Each is marked "Mtrx patch" in the code:
   `ImeSurroundingText` and `Ime::DeleteSurrounding`
   (https://github.com/rust-windowing/winit, `winit-core`), so this goes
   once iced moves to winit 0.31.
+- `src/text/editor.rs` (editing, `docs/native-behaviour.md` B2): `Edit`
+  has `Undo` and `Redo`; the history is kept by the renderer's editor
+  (`iced_graphics`). `Edit::DeleteTo(Motion)` deletes from the cursor to
+  where a motion takes it (⌥⌫: a word). `Motion::ParagraphBackward` and
+  `ParagraphForward` (⌥↑ and ⌥↓, which `Motion::widen` gives for ↑ and ↓)
+  go to the paragraph's start and end, on to the next when already there;
+  `ParagraphStart` and `ParagraphEnd` (⌃A, ⌃E) stay in it. `Edit::Kill`,
+  `Yank`, `Transpose` and `OpenLine` for macOS's ⌃K, ⌃Y, ⌃T and ⌃O.
+  `Edit::MoveSelection` drops the dragged selection at a point (or a copy
+  of it), and `Editor::caret_at` tells where a click at a point puts the
+  caret, to draw it while dragging (`src/renderer/null.rs` too).

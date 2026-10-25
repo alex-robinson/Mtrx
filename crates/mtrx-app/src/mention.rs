@@ -168,12 +168,16 @@ pub fn candidates<'a>(
 }
 
 /// Replace `query`'s partial mention before the cursor with `mention` and
-/// a space.
+/// a space: selected and pasted over, so that it undoes in one step.
 pub fn insert(content: &mut text_editor::Content, query: &Query, mention: &str) {
-    use text_editor::{Action, Edit};
-    for _ in 0..=query.text.chars().count() {
-        content.perform(Action::Edit(Edit::Backspace));
-    }
+    use text_editor::{Action, Cursor, Edit, Position};
+    content.move_to(Cursor {
+        position: content.cursor().position,
+        selection: Some(Position {
+            line: query.line,
+            column: query.start,
+        }),
+    });
     content.perform(Action::Edit(Edit::Paste(Arc::new(format!("{mention} ")))));
 }
 

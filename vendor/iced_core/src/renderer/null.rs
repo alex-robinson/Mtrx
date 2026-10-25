@@ -192,6 +192,11 @@ impl text::Editor for () {
 
     fn move_to(&mut self, _cursor: text::editor::Cursor) {}
 
+    // Mtrx patch (editing).
+    fn caret_at(&self, _point: Point) -> Option<Point> {
+        None
+    }
+
     fn bounds(&self) -> Size {
         Size::ZERO
     }

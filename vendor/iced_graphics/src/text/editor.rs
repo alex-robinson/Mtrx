@@ -1,4 +1,7 @@
 //! Draw and edit text.
+// Mtrx patch (editing).
+mod history;
+
 use crate::core::text::editor::{
     self, Action, Cursor, Direction, Edit, Motion, Position, Selection,
 };
@@ -24,6 +27,8 @@ struct Internal {
     bounds: Size,
     topmost_line_changed: Option<usize>,
     version: text::Version,
+    // Mtrx patch (editing).
+    history: history::History,
 }
 
 impl Editor {
@@ -193,79 +198,8 @@ impl editor::Editor for Editor {
 
                 Selection::Range(regions)
             }
-            _ => {
-                let line_height = buffer.metrics().line_height;
-
-                let visual_lines_offset =
-                    visual_lines_offset(cursor.line, buffer);
-
-                let line = buffer
-                    .lines
-                    .get(cursor.line)
-                    .expect("Cursor line should be present");
-
-                let layout =
-                    line.layout_opt().expect("Line layout should be cached");
-
-                let mut lines = layout.iter().enumerate();
-
-                let (visual_line, offset) = lines
-                    .find_map(|(i, line)| {
-                        let start = line
-                            .glyphs
-                            .first()
-                            .map(|glyph| glyph.start)
-                            .unwrap_or(0);
-                        let end = line
-                            .glyphs
-                            .last()
-                            .map(|glyph| glyph.end)
-                            .unwrap_or(0);
-
-                        let is_cursor_before_start = start > cursor.index;
-
-                        let is_cursor_before_end = match cursor.affinity {
-                            cosmic_text::Affinity::Before => {
-                                cursor.index <= end
-                            }
-                            cosmic_text::Affinity::After => cursor.index < end,
-                        };
-
-                        if is_cursor_before_start {
-                            // Sometimes, the glyph we are looking for is right
-                            // between lines. This can happen when a line wraps
-                            // on a space.
-                            // In that case, we can assume the cursor is at the
-                            // end of the previous line.
-                            // i is guaranteed to be > 0 because `start` is always
-                            // 0 for the first line, so there is no way for the
-                            // cursor to be before it.
-                            Some((i - 1, layout[i - 1].w))
-                        } else if is_cursor_before_end {
-                            let offset = line
-                                .glyphs
-                                .iter()
-                                .take_while(|glyph| cursor.index > glyph.start)
-                                .map(|glyph| glyph.w)
-                                .sum();
-
-                            Some((i, offset))
-                        } else {
-                            None
-                        }
-                    })
-                    .unwrap_or((
-                        layout.len().saturating_sub(1),
-                        layout.last().map(|line| line.w).unwrap_or(0.0),
-                    ));
-
-                Selection::Caret(Point::new(
-                    offset,
-                    (visual_lines_offset + visual_line as i32) as f32
-                        * line_height
-                        - buffer.scroll().vertical,
-                ))
-            }
+            // Mtrx patch (editing): out of here, for `caret_at` too.
+            _ => Selection::Caret(caret(buffer, cursor)),
         };
 
         *internal.selection.write().expect("Write to cursor cache") =
@@ -307,6 +241,12 @@ impl editor::Editor for Editor {
             text::font_system().write().expect("Write font system");
 
         self.with_internal_mut(|internal| {
+            // Mtrx patch (editing): a move, a click or a selection ends the
+            // step of the history being typed.
+            if !matches!(action, Action::Edit(_) | Action::Scroll { .. }) {
+                internal.history.close();
+            }
+
             let editor = &mut internal.editor;
 
             match action {
@@ -322,11 +262,30 @@ impl editor::Editor for Editor {
                             | Motion::End
                             | Motion::DocumentStart
                             | Motion::DocumentEnd => {
-                                editor.action(
-                                    font_system.raw(),
-                                    cosmic_text::Action::Motion(to_motion(
-                                        motion,
-                                    )),
+                                perform_motion(
+                                    editor,
+                                    &mut font_system,
+                                    motion,
+                                );
+                            }
+                            // Mtrx patch (editing): to the edge of the
+                            // paragraph where the selection starts (ends),
+                            // as a text view does.
+                            Motion::ParagraphBackward
+                            | Motion::ParagraphStart => {
+                                editor.set_cursor(start);
+                                perform_motion(
+                                    editor,
+                                    &mut font_system,
+                                    Motion::ParagraphStart,
+                                );
+                            }
+                            Motion::ParagraphForward | Motion::ParagraphEnd => {
+                                editor.set_cursor(end);
+                                perform_motion(
+                                    editor,
+                                    &mut font_system,
+                                    Motion::ParagraphEnd,
                                 );
                             }
                             // Other motions simply move the cursor to one end of the selection
@@ -336,10 +295,8 @@ impl editor::Editor for Editor {
                             }),
                         }
                     } else {
-                        editor.action(
-                            font_system.raw(),
-                            cosmic_text::Action::Motion(to_motion(motion)),
-                        );
+                        // Mtrx patch (editing).
+                        perform_motion(editor, &mut font_system, motion);
                     }
                 }
 
@@ -353,10 +310,8 @@ impl editor::Editor for Editor {
                         ));
                     }
 
-                    editor.action(
-                        font_system.raw(),
-                        cosmic_text::Action::Motion(to_motion(motion)),
-                    );
+                    // Mtrx patch (editing).
+                    perform_motion(editor, &mut font_system, motion);
 
                     // Deselect if selection matches cursor position
                     if let Some((start, end)) = editor.selection_bounds()
@@ -412,51 +367,19 @@ impl editor::Editor for Editor {
                         .unwrap_or_else(|| editor.cursor())
                         .line;
 
-                    match edit {
-                        Edit::Insert(c) => {
-                            editor.action(
-                                font_system.raw(),
-                                cosmic_text::Action::Insert(c),
-                            );
+                    // Mtrx patch (editing): undo and redo replay the
+                    // history, other edits are recorded in it.
+                    let replayed = match edit {
+                        Edit::Undo => internal.history.undo(editor),
+                        Edit::Redo => internal.history.redo(editor),
+                        edit => {
+                            let pending = internal.history.start(&edit, editor);
+                            perform_edit(editor, &mut font_system, edit);
+                            internal.history.record(pending, editor);
+
+                            None
                         }
-                        Edit::Paste(text) => {
-                            editor.insert_string(&text, None);
-                        }
-                        Edit::Indent => {
-                            editor.action(
-                                font_system.raw(),
-                                cosmic_text::Action::Indent,
-                            );
-                        }
-                        Edit::Unindent => {
-                            editor.action(
-                                font_system.raw(),
-                                cosmic_text::Action::Unindent,
-                            );
-                        }
-                        Edit::Enter => {
-                            editor.action(
-                                font_system.raw(),
-                                cosmic_text::Action::Enter,
-                            );
-                        }
-                        Edit::Backspace => {
-                            editor.action(
-                                font_system.raw(),
-                                cosmic_text::Action::Backspace,
-                            );
-                        }
-                        Edit::Delete => {
-                            editor.action(
-                                font_system.raw(),
-                                cosmic_text::Action::Delete,
-                            );
-                        }
-                        // Mtrx patch (surrounding text).
-                        Edit::DeleteSurrounding { before, after } => {
-                            delete_surrounding(editor, before, after);
-                        }
-                    }
+                    };
 
                     let cursor = editor.cursor();
                     let selection_start = editor
@@ -465,7 +388,10 @@ impl editor::Editor for Editor {
                         .unwrap_or(cursor);
 
                     internal.topmost_line_changed = Some(
-                        selection_start.line.min(topmost_line_before_edit),
+                        selection_start
+                            .line
+                            .min(topmost_line_before_edit)
+                            .min(replayed.unwrap_or(usize::MAX)),
                     );
                 }
 
@@ -513,6 +439,9 @@ impl editor::Editor for Editor {
 
     fn move_to(&mut self, cursor: Cursor) {
         self.with_internal_mut(|internal| {
+            // Mtrx patch (editing).
+            internal.history.close();
+
             // TODO: Expose `Affinity`
             internal.editor.set_cursor(cosmic_text::Cursor {
                 line: cursor.position.line,
@@ -532,6 +461,15 @@ impl editor::Editor for Editor {
                     ));
             }
         });
+    }
+
+    // Mtrx patch (editing).
+    fn caret_at(&self, point: Point) -> Option<Point> {
+        let buffer = self.buffer();
+
+        buffer
+            .hit(point.x, point.y)
+            .map(|cursor| caret(buffer, cursor))
     }
 
     fn bounds(&self) -> Size {
@@ -765,6 +703,8 @@ impl Default for Internal {
             bounds: Size::ZERO,
             topmost_line_changed: None,
             version: text::Version::default(),
+            // Mtrx patch (editing).
+            history: history::History::default(),
         }
     }
 }
@@ -849,6 +789,297 @@ fn highlight_line(
     })
 }
 
+// Mtrx patch (editing): an edit, out of `perform` so that the history can
+// record it.
+fn perform_edit(
+    editor: &mut cosmic_text::Editor<'static>,
+    font_system: &mut text::FontSystem,
+    edit: Edit,
+) {
+    match edit {
+        Edit::Insert(c) => {
+            editor.action(font_system.raw(), cosmic_text::Action::Insert(c));
+        }
+        Edit::Paste(text) => {
+            editor.insert_string(&text, None);
+        }
+        Edit::Indent => {
+            editor.action(font_system.raw(), cosmic_text::Action::Indent);
+        }
+        Edit::Unindent => {
+            editor.action(font_system.raw(), cosmic_text::Action::Unindent);
+        }
+        Edit::Enter => {
+            editor.action(font_system.raw(), cosmic_text::Action::Enter);
+        }
+        Edit::Backspace => {
+            editor.action(font_system.raw(), cosmic_text::Action::Backspace);
+        }
+        Edit::Delete => {
+            editor.action(font_system.raw(), cosmic_text::Action::Delete);
+        }
+        // Mtrx patch (surrounding text).
+        Edit::DeleteSurrounding { before, after } => {
+            delete_surrounding(editor, before, after);
+        }
+        // Replayed by the history.
+        Edit::Undo | Edit::Redo => {}
+        Edit::DeleteTo(motion) => {
+            delete_to(editor, font_system, motion);
+        }
+        Edit::Kill => kill(editor, font_system),
+        Edit::Yank => yank(editor),
+        Edit::Transpose => transpose(editor),
+        Edit::OpenLine => open_line(editor),
+        Edit::MoveSelection { to, copy } => move_selection(editor, to, copy),
+    }
+}
+
+// Mtrx patch (editing): ⌃K's text, for ⌃Y; one for the app, as macOS has.
+static KILLED: sync::Mutex<String> = sync::Mutex::new(String::new());
+
+/// Deletes the selection, or to the end of the paragraph (its line ending
+/// when there), and keeps it for [`yank`].
+fn kill(
+    editor: &mut cosmic_text::Editor<'static>,
+    font_system: &mut text::FontSystem,
+) {
+    if editor.selection_bounds().is_none() {
+        let cursor = editor.cursor();
+
+        perform_motion(editor, font_system, Motion::ParagraphEnd);
+
+        if editor.cursor() == cursor {
+            editor.action(
+                font_system.raw(),
+                cosmic_text::Action::Motion(cosmic_text::Motion::Next),
+            );
+        }
+
+        editor.set_selection(cosmic_text::Selection::Normal(cursor));
+    }
+
+    let killed = editor.copy_selection().unwrap_or_default();
+
+    if killed.is_empty() {
+        editor.set_selection(cosmic_text::Selection::None);
+        return;
+    }
+
+    let _ = editor.delete_selection();
+    *KILLED.lock().expect("Lock kill buffer") = killed;
+}
+
+/// Inserts the text last killed, in place of the selection.
+fn yank(editor: &mut cosmic_text::Editor<'static>) {
+    let killed = KILLED.lock().expect("Lock kill buffer").clone();
+
+    if !killed.is_empty() {
+        editor.insert_string(&killed, None);
+    }
+}
+
+/// Swaps the characters (graphemes) around the cursor, or the two before
+/// it at the end of a line, and moves after them.
+fn transpose(editor: &mut cosmic_text::Editor<'static>) {
+    use unicode_segmentation::UnicodeSegmentation;
+
+    if editor.selection_bounds().is_some() {
+        return;
+    }
+
+    let cursor = editor.cursor();
+    let text = buffer_from_editor(editor).lines[cursor.line].text();
+    let graphemes: Vec<_> = text.grapheme_indices(true).collect();
+
+    // The grapheme after the cursor: at the end of the line, the last.
+    let Some(after) = graphemes
+        .iter()
+        .position(|(i, _)| *i >= cursor.index)
+        .or_else(|| graphemes.len().checked_sub(1))
+        .filter(|after| *after > 0)
+    else {
+        return;
+    };
+
+    let (start, before) = graphemes[after - 1];
+    let (at, after) = graphemes[after];
+    let swapped = format!("{after}{before}");
+    let end = at + after.len();
+
+    let at = |index| cosmic_text::Cursor { index, ..cursor };
+
+    editor.delete_range(at(start), at(end));
+    let moved = editor.insert_at(at(start), &swapped, None);
+    editor.set_cursor(moved);
+}
+
+/// Moves the selection to where a click at `to` would put the caret, or
+/// copies it there, unless that is in it; it stays selected.
+fn move_selection(
+    editor: &mut cosmic_text::Editor<'static>,
+    to: Point,
+    copy: bool,
+) {
+    let Some((start, end)) = editor.selection_bounds() else {
+        return;
+    };
+    let Some(mut target) = buffer_from_editor(editor).hit(to.x, to.y) else {
+        return;
+    };
+
+    let at = |cursor: cosmic_text::Cursor| (cursor.line, cursor.index);
+
+    if at(start) <= at(target) && at(target) <= at(end) {
+        return;
+    }
+
+    let Some(text) = editor.copy_selection() else {
+        return;
+    };
+
+    editor.set_selection(cosmic_text::Selection::None);
+
+    if !copy {
+        editor.delete_range(start, end);
+
+        // After the selection, it moves back by it.
+        if at(target) > at(end) {
+            target = if target.line == end.line {
+                cosmic_text::Cursor {
+                    line: start.line,
+                    index: start.index + (target.index - end.index),
+                    ..target
+                }
+            } else {
+                cosmic_text::Cursor {
+                    line: target.line - (end.line - start.line),
+                    ..target
+                }
+            };
+        }
+    }
+
+    let moved = editor.insert_at(target, &text, None);
+    editor.set_cursor(moved);
+    editor.set_selection(cosmic_text::Selection::Normal(target));
+}
+
+/// Breaks the line after the cursor, in place of the selection; the
+/// cursor stays.
+fn open_line(editor: &mut cosmic_text::Editor<'static>) {
+    let _ = editor.delete_selection();
+
+    let cursor = editor.cursor();
+    let _ = editor.insert_at(cursor, "\n", None);
+    editor.set_cursor(cursor);
+}
+
+// Mtrx patch (editing): ⌥⌫, ⌘⌫ and the like.
+/// Deletes the selection, or from the cursor to where `motion` takes it; a
+/// character if it takes it nowhere (a line's edge, where ⌘⌫ joins the
+/// line to the one before, as a text view does).
+fn delete_to(
+    editor: &mut cosmic_text::Editor<'static>,
+    font_system: &mut text::FontSystem,
+    motion: Motion,
+) {
+    if editor.delete_selection() {
+        return;
+    }
+
+    let cursor = editor.cursor();
+    perform_motion(editor, font_system, motion);
+    let to = editor.cursor();
+    editor.set_cursor(cursor);
+
+    let at = |cursor: cosmic_text::Cursor| (cursor.line, cursor.index);
+
+    if at(to) == at(cursor) {
+        editor.action(
+            font_system.raw(),
+            match motion.direction() {
+                Direction::Left => cosmic_text::Action::Backspace,
+                Direction::Right => cosmic_text::Action::Delete,
+            },
+        );
+        return;
+    }
+
+    let (start, end) = if at(to) < at(cursor) {
+        (to, cursor)
+    } else {
+        (cursor, to)
+    };
+
+    editor.set_cursor(start);
+    editor.delete_range(start, end);
+}
+
+// Mtrx patch (editing): out of `selection`, for `caret_at` too.
+/// Where the caret is drawn for `cursor`.
+fn caret(buffer: &cosmic_text::Buffer, cursor: cosmic_text::Cursor) -> Point {
+    let line_height = buffer.metrics().line_height;
+
+    let visual_lines_offset = visual_lines_offset(cursor.line, buffer);
+
+    let line = buffer
+        .lines
+        .get(cursor.line)
+        .expect("Cursor line should be present");
+
+    let layout = line.layout_opt().expect("Line layout should be cached");
+
+    let mut lines = layout.iter().enumerate();
+
+    let (visual_line, offset) = lines
+        .find_map(|(i, line)| {
+            let start =
+                line.glyphs.first().map(|glyph| glyph.start).unwrap_or(0);
+            let end = line.glyphs.last().map(|glyph| glyph.end).unwrap_or(0);
+
+            let is_cursor_before_start = start > cursor.index;
+
+            let is_cursor_before_end = match cursor.affinity {
+                cosmic_text::Affinity::Before => cursor.index <= end,
+                cosmic_text::Affinity::After => cursor.index < end,
+            };
+
+            if is_cursor_before_start {
+                // Sometimes, the glyph we are looking for is right
+                // between lines. This can happen when a line wraps
+                // on a space.
+                // In that case, we can assume the cursor is at the
+                // end of the previous line.
+                // i is guaranteed to be > 0 because `start` is always
+                // 0 for the first line, so there is no way for the
+                // cursor to be before it.
+                Some((i - 1, layout[i - 1].w))
+            } else if is_cursor_before_end {
+                let offset = line
+                    .glyphs
+                    .iter()
+                    .take_while(|glyph| cursor.index > glyph.start)
+                    .map(|glyph| glyph.w)
+                    .sum();
+
+                Some((i, offset))
+            } else {
+                None
+            }
+        })
+        .unwrap_or((
+            layout.len().saturating_sub(1),
+            layout.last().map(|line| line.w).unwrap_or(0.0),
+        ));
+
+    Point::new(
+        offset,
+        (visual_lines_offset + visual_line as i32) as f32 * line_height
+            - buffer.scroll().vertical,
+    )
+}
+
 fn visual_lines_offset(line: usize, buffer: &cosmic_text::Buffer) -> i32 {
     let scroll = buffer.scroll();
 
@@ -864,20 +1095,42 @@ fn visual_lines_offset(line: usize, buffer: &cosmic_text::Buffer) -> i32 {
     visual_lines_offset as i32 * if scroll.line < line { 1 } else { -1 }
 }
 
-fn to_motion(motion: Motion) -> cosmic_text::Motion {
+// Mtrx patch (editing): a motion may take more than one of cosmic-text's.
+fn perform_motion(
+    editor: &mut cosmic_text::Editor<'static>,
+    font_system: &mut text::FontSystem,
+    motion: Motion,
+) {
+    for motion in to_motions(motion) {
+        editor.action(font_system.raw(), cosmic_text::Action::Motion(*motion));
+    }
+}
+
+fn to_motions(motion: Motion) -> &'static [cosmic_text::Motion] {
     match motion {
-        Motion::Left => cosmic_text::Motion::Left,
-        Motion::Right => cosmic_text::Motion::Right,
-        Motion::Up => cosmic_text::Motion::Up,
-        Motion::Down => cosmic_text::Motion::Down,
-        Motion::WordLeft => cosmic_text::Motion::LeftWord,
-        Motion::WordRight => cosmic_text::Motion::RightWord,
-        Motion::Home => cosmic_text::Motion::Home,
-        Motion::End => cosmic_text::Motion::End,
-        Motion::PageUp => cosmic_text::Motion::PageUp,
-        Motion::PageDown => cosmic_text::Motion::PageDown,
-        Motion::DocumentStart => cosmic_text::Motion::BufferStart,
-        Motion::DocumentEnd => cosmic_text::Motion::BufferEnd,
+        Motion::Left => &[cosmic_text::Motion::Left],
+        Motion::Right => &[cosmic_text::Motion::Right],
+        Motion::Up => &[cosmic_text::Motion::Up],
+        Motion::Down => &[cosmic_text::Motion::Down],
+        Motion::WordLeft => &[cosmic_text::Motion::LeftWord],
+        Motion::WordRight => &[cosmic_text::Motion::RightWord],
+        Motion::Home => &[cosmic_text::Motion::Home],
+        Motion::End => &[cosmic_text::Motion::End],
+        Motion::PageUp => &[cosmic_text::Motion::PageUp],
+        Motion::PageDown => &[cosmic_text::Motion::PageDown],
+        Motion::DocumentStart => &[cosmic_text::Motion::BufferStart],
+        Motion::DocumentEnd => &[cosmic_text::Motion::BufferEnd],
+        // Back a character first, so that from a paragraph's start it goes
+        // to the start of the one before, as a text view does.
+        Motion::ParagraphBackward => &[
+            cosmic_text::Motion::Previous,
+            cosmic_text::Motion::ParagraphStart,
+        ],
+        Motion::ParagraphForward => {
+            &[cosmic_text::Motion::Next, cosmic_text::Motion::ParagraphEnd]
+        }
+        Motion::ParagraphStart => &[cosmic_text::Motion::ParagraphStart],
+        Motion::ParagraphEnd => &[cosmic_text::Motion::ParagraphEnd],
     }
 }
 

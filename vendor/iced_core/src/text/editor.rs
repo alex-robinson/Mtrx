@@ -38,6 +38,11 @@ pub trait Editor: Sized + Default {
     /// Moves the cursor to the given position.
     fn move_to(&mut self, cursor: Cursor);
 
+    // Mtrx patch (editing): for text dragged in the editor.
+    /// Returns where a click at the given [`Point`] would put the caret, as
+    /// [`Selection::Caret`] has it.
+    fn caret_at(&self, point: Point) -> Option<Point>;
+
     /// Returns the current boundaries of the [`Editor`].
     fn bounds(&self) -> Size;
 
@@ -125,6 +130,34 @@ pub enum Edit {
         /// The bytes after the selection.
         after: usize,
     },
+    // Mtrx patch (editing): the editor keeps a history of its edits.
+    /// Undo the last step of the history: typing up to a word, a paste, an
+    /// input method's commit; the selection returns as it was before.
+    Undo,
+    /// Redo the last step undone, unless something was edited since.
+    Redo,
+    /// Delete the selection, or from the cursor to where the [`Motion`]
+    /// takes it (a character if it takes it nowhere): ⌥⌫ deletes a word.
+    DeleteTo(Motion),
+    /// Delete the selection, or to the end of the paragraph (its line
+    /// ending, when there), keeping it for [`Edit::Yank`]: ⌃K.
+    Kill,
+    /// Insert the text last deleted by [`Edit::Kill`], in any editor: ⌃Y.
+    Yank,
+    /// Swap the characters around the cursor (at the end of a line, the
+    /// two before it), and move after them: ⌃T.
+    Transpose,
+    /// Break the line after the cursor, which stays: ⌃O.
+    OpenLine,
+    /// Move the selected text to where a click at the [`Point`] would put
+    /// the caret (unless that is in it), or copy it there; it stays
+    /// selected. Dragging the selection.
+    MoveSelection {
+        /// Where it is dropped.
+        to: Point,
+        /// Whether to copy it, keeping it where it was: ⌥ on macOS.
+        copy: bool,
+    },
 }
 
 /// A cursor movement.
@@ -154,6 +187,18 @@ pub enum Motion {
     DocumentStart,
     /// Move to the end of the text.
     DocumentEnd,
+    // Mtrx patch (editing): ⌥↑ and ⌥↓.
+    /// Move to the start of the paragraph, or of the one before when
+    /// already there.
+    ParagraphBackward,
+    /// Move to the end of the paragraph, or of the one after when already
+    /// there.
+    ParagraphForward,
+    // Mtrx patch (editing): ⌃A and ⌃E.
+    /// Move to the start of the paragraph.
+    ParagraphStart,
+    /// Move to the end of the paragraph.
+    ParagraphEnd,
 }
 
 impl Motion {
@@ -164,6 +209,9 @@ impl Motion {
             Self::Right => Self::WordRight,
             Self::Home => Self::DocumentStart,
             Self::End => Self::DocumentEnd,
+            // Mtrx patch (editing): ⌥↑ and ⌥↓ (Ctrl with them elsewhere).
+            Self::Up => Self::ParagraphBackward,
+            Self::Down => Self::ParagraphForward,
             _ => self,
         }
     }
@@ -176,13 +224,17 @@ impl Motion {
             | Self::WordLeft
             | Self::Home
             | Self::PageUp
-            | Self::DocumentStart => Direction::Left,
+            | Self::DocumentStart
+            | Self::ParagraphBackward
+            | Self::ParagraphStart => Direction::Left,
             Self::Right
             | Self::Down
             | Self::WordRight
             | Self::End
             | Self::PageDown
-            | Self::DocumentEnd => Direction::Right,
+            | Self::DocumentEnd
+            | Self::ParagraphForward
+            | Self::ParagraphEnd => Direction::Right,
         }
     }
 }

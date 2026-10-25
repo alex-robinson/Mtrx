@@ -25,6 +25,7 @@ use crate::{
     selection::{Point, Pos, Selection},
 };
 
+mod editing;
 mod keyboard;
 
 const TIMEOUT: Duration = Duration::from_secs(30);
