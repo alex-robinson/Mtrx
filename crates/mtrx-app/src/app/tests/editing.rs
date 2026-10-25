@@ -607,7 +607,14 @@ impl Field {
 
     /// The first line selected.
     fn select_first_line(&mut self) {
-        self.named(Named::ArrowUp, Modifiers::COMMAND);
+        // To the start of the text: ⌘↑ on macOS, Ctrl+Home elsewhere (where
+        // Ctrl+↑ goes by paragraph).
+        let start = if cfg!(target_os = "macos") {
+            Named::ArrowUp
+        } else {
+            Named::Home
+        };
+        self.named(start, Modifiers::COMMAND);
         self.named(Named::Home, Modifiers::empty());
         self.named(Named::End, Modifiers::SHIFT);
     }
