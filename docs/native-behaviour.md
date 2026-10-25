@@ -130,14 +130,13 @@ Enter confirms), which nobody here uses: correct, not urgent. The widget
 forwards every key press to the binding without looking at the preedit,
 so that Enter probably sends the half-composed text today.
 
-- [ ] Dead keys: ⌥E then E gives é. Unchecked.
-- [ ] Press-and-hold accent menu (#30). The menu shows, and the held
-      letter is typed once (keys the input system keeps type nothing,
-      `vendor/winit`). The pick replaces the held letter ("é", not "eé"):
-      the fields report the text around the caret to macOS (winit 0.31's
-      surrounding text, through `vendor/iced_core`, `iced_winit`,
-      `iced_widget`, `winit`). To check by hand, with the mouse and with a
-      digit, in the composer and the room search.
+- [x] Dead keys: ⌥E then E gives é (checked by hand 2026-10-25).
+- [x] Press-and-hold accent menu (#30): the held letter is typed once
+      (keys the input system keeps type nothing) and the pick replaces it,
+      with the mouse or a digit. The fields report the text around the
+      caret to macOS (winit 0.31's surrounding text, through
+      `vendor/iced_core`, `iced_winit`, `iced_widget`, `winit`). Checked by
+      hand in the composer 2026-10-25.
 - [ ] Chinese, Japanese and Korean input: candidates next to the caret,
       and Enter confirms the composition rather than sending.
 - [ ] Dictation (🎤 or Fn Fn). winit reported no caret, so Dictation
