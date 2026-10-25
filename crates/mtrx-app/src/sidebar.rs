@@ -512,13 +512,17 @@ fn arranged<'a>(view: &RoomListView<'a>) -> Vec<Element<'a, Message>> {
         .categories
         .layout(view.selected_space.map(|s| s.as_ref()));
     let dragging = arrange.dragging().is_some();
+    let room_dragged = dragging && arrange.dragged_section().is_none();
     let space = view.selected_space;
     let shown = shown_sections(view);
     let order: Vec<Section> = (shown.iter().map(|(s, _)| s.clone()))
         .filter(|s| *s != Section::Invites)
         .collect();
+    let landing = landing(arrange, &order);
     let mut elements = Vec::new();
     for (section, entries) in shown {
+        let at = order.iter().position(|s| *s == section);
+        elements.push(drop_line(at.is_some() && landing == at));
         let collapsed = layout.is_collapsed(&section);
         let renaming = arrange
             .naming
@@ -549,7 +553,8 @@ fn arranged<'a>(view: &RoomListView<'a>) -> Vec<Element<'a, Message>> {
             );
         }
         elements.push(if dragging && section != Section::Invites {
-            let target = arrange.target.as_ref() == Some(&section);
+            // A room drops into the section, a section takes its place.
+            let target = room_dragged && arrange.target.as_ref() == Some(&section);
             mouse_area(
                 container(block)
                     .width(Length::Fill)
@@ -565,6 +570,7 @@ fn arranged<'a>(view: &RoomListView<'a>) -> Vec<Element<'a, Message>> {
             block.into()
         });
     }
+    elements.push(drop_line(landing == Some(order.len())));
     elements
 }
 
@@ -645,10 +651,10 @@ fn show_menu_panel<'a>(
         };
         let row_message = |entered| match arrange.dragged_section() {
             Some(_) => arrange::Message::Target(section.clone(), entered),
-            None => arrange::Message::SectionRow(section.clone(), entered),
+            None => arrange::Message::SectionHovered(section.clone(), entered),
         };
         let line = mouse_area(
-            row![item, grip(arrange, section)]
+            row![item, container(grip(arrange, section)).padding(4)]
                 .spacing(1)
                 .align_y(Alignment::Center),
         )
@@ -685,8 +691,8 @@ fn show_menu_panel<'a>(
         .into()
 }
 
-/// The grip dragging `section`, showing while its row or heading is under
-/// the cursor or it is dragged.
+/// The grip dragging `section`, showing while its heading or row in the
+/// Show menu is under the cursor, or it is dragged.
 fn grip<'a>(arrange: &Arrange, section: &Section) -> Element<'a, Message> {
     let shown = arrange.section_hovered.as_ref() == Some(section)
         || arrange.dragged_section() == Some(section);
@@ -703,7 +709,7 @@ fn grip<'a>(arrange: &Arrange, section: &Section) -> Element<'a, Message> {
         |_| Color::TRANSPARENT
     };
     let grip = |entered| arrange_message(arrange::Message::Grip(section.clone(), entered));
-    mouse_area(container(icons::grip(14.0, color)).padding([4, 4]))
+    mouse_area(icons::grip(14.0, color))
         .on_enter(grip(true))
         .on_exit(grip(false))
         .interaction(iced::mouse::Interaction::Grab)
@@ -788,8 +794,8 @@ fn section_name<'a>(
     }
 }
 
-/// A section's name, which collapses and expands it; a category's also
-/// has its menu.
+/// A section's name, which collapses and expands it, and its grip; a
+/// category's also has its menu.
 fn section_header<'a>(
     section: &Section,
     collapsed: bool,
@@ -818,7 +824,7 @@ fn section_header<'a>(
     .on_press(arrange_message(arrange::Message::ToggleCollapsed(
         section.clone(),
     )));
-    let mut header = row![title].align_y(Alignment::Center);
+    let mut header = row![title].spacing(2).align_y(Alignment::Center);
     if let Section::Category(id) = section {
         let open = arrange.category_menu.as_ref() == Some(id);
         header = header.push(with_tooltip(
@@ -831,8 +837,15 @@ fn section_header<'a>(
             "Rename, sort, move or delete the category".into(),
         ));
     }
-    container(header)
-        .padding(Padding::new(8.0).top(14).bottom(4))
+    if *section != Section::Invites {
+        header = header.push(grip(arrange, section));
+    }
+    let hovered =
+        |entered| arrange_message(arrange::Message::SectionHovered(section.clone(), entered));
+    // 14 above with the line where a dragged section would land.
+    mouse_area(container(header).padding(Padding::new(8.0).top(12).bottom(4)))
+        .on_enter(hovered(true))
+        .on_exit(hovered(false))
         .into()
 }
 
@@ -856,7 +869,7 @@ fn name_input<'a>(name: &str) -> Element<'a, Message> {
             .padding([4, 8])
             .size(13),
     )
-    .padding(Padding::new(0.0).top(10).bottom(4))
+    .padding(Padding::new(0.0).top(8).bottom(4))
     .into()
 }
 

@@ -2144,6 +2144,36 @@ async fn room_categories() {
         "categories-drag",
     );
 
+    // A heading dragged by its grip, to the place of Favourites.
+    let teaching = Section::Category(
+        session.room_categories().layout(None).categories[1]
+            .id
+            .clone(),
+    );
+    let drag_heading = [
+        arrange::Message::SectionHovered(teaching.clone(), true),
+        arrange::Message::Grip(teaching.clone(), true),
+        arrange::Message::Pressed,
+        arrange::Message::Moved(iced::Point::new(400.0, 410.0)),
+        arrange::Message::Moved(iced::Point::new(400.0, 300.0)),
+        arrange::Message::Target(Section::Favourites, true),
+    ];
+    snapshot(
+        &main_with(&|main| {
+            for message in drag_heading.clone() {
+                send(main, message);
+            }
+        }),
+        "heading-drag",
+    );
+    let mut main = Main::new(session.clone());
+    main.rooms = rooms.clone();
+    for message in drag_heading.into_iter().chain([arrange::Message::Released]) {
+        send(&mut main, message);
+    }
+    let order = main.arrange.categories.layout(None).order();
+    assert_eq!(order[..2], [Section::People, teaching]);
+
     // Dropping moves the room into the category; the menu favourites one.
     let mut main = Main::new(session.clone());
     main.rooms = rooms.clone();

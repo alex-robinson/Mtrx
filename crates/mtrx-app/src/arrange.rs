@@ -35,9 +35,9 @@ pub enum Message {
     Row(OwnedRoomId, bool),
     /// The cursor entered or left a section's grip, which drags it.
     Grip(Section, bool),
-    /// The cursor entered or left a section's row in the Show menu, which
-    /// shows its grip.
-    SectionRow(Section, bool),
+    /// The cursor entered or left a section's heading or its row in the
+    /// Show menu, which show its grip.
+    SectionHovered(Section, bool),
     /// The cursor entered or left the pinned Notes row, which is not dragged.
     NotesRow(bool),
     /// The modifier keys changed, e.g. ⌥ held to show only one section.
@@ -303,8 +303,8 @@ impl Arrange {
             }
             Message::Row(room, entered) => self.hover(Dragged::Room(room), entered),
             Message::Grip(section, entered) => self.hover(Dragged::Section(section), entered),
-            Message::SectionRow(section, true) => self.section_hovered = Some(section),
-            Message::SectionRow(section, false) => {
+            Message::SectionHovered(section, true) => self.section_hovered = Some(section),
+            Message::SectionHovered(section, false) => {
                 if self.section_hovered.as_ref() == Some(&section) {
                     self.section_hovered = None;
                 }
