@@ -77,13 +77,14 @@ pub fn media_items(media: &Media) -> Vec<(String, actions::Message)> {
     items
 }
 
-/// What the menu offers for a link.
+/// What the menu offers for a link: a mention's opens the person's card.
 pub fn link_items(url: &str) -> Vec<(String, actions::Message)> {
+    let open = match message::mentioned_user(url) {
+        Some(_) => "Info",
+        None => "Open",
+    };
     vec![
-        (
-            "Open".to_owned(),
-            actions::Message::OpenLink(url.to_owned()),
-        ),
+        (open.to_owned(), actions::Message::OpenLink(url.to_owned())),
         (
             "Copy link".to_owned(),
             actions::Message::CopyLink(url.to_owned()),
@@ -173,5 +174,8 @@ mod tests {
         assert_eq!(labels(&items), ["Open", "Copy link"]);
         assert!(matches!(&items[0].1, actions::Message::OpenLink(open) if open == url));
         assert!(matches!(&items[1].1, actions::Message::CopyLink(copied) if copied == url));
+        // A mention's shows the person's card.
+        let mention = "https://matrix.to/#/@nils:server.org";
+        assert_eq!(labels(&link_items(mention)), ["Info", "Copy link"]);
     }
 }

@@ -1898,10 +1898,20 @@ impl App {
                 self.math.insert(key, rendered);
                 Task::none()
             }
-            // A mention opens the direct chat with them; other links the
-            // browser.
+            // A mention shows the person's card, with the way to the direct
+            // chat; other links open in the browser.
             Message::LinkClicked(url) => match message::mentioned_user(&url) {
-                Some(user) => self.update(Message::ChatWith(user)),
+                Some(user) => {
+                    let room = match &self.screen {
+                        Screen::Main(main) => main.room.as_ref(),
+                        _ => None,
+                    };
+                    let card = match room {
+                        Some(room) => room.mentioned(user),
+                        None => info::sender(user, None, None),
+                    };
+                    Task::done(Message::ShowInfo(card))
+                }
                 None => {
                     let _ = open::that_detached(url);
                     Task::none()
