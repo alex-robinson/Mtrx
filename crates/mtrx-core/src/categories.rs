@@ -80,10 +80,10 @@ pub enum Section {
     Favourites,
     /// One of the user's categories, by id.
     Category(String),
-    /// Rooms not in a category.
-    Rooms,
     /// Direct chats not in a category.
     People,
+    /// Rooms not in a category.
+    Rooms,
     LowPriority,
 }
 
@@ -241,10 +241,10 @@ impl Layout {
                 .iter()
                 .map(|c| (Section::Category(c.id.clone()), Vec::new())),
         );
-        sections.push((Section::Rooms, Vec::new()));
         if grouping.people {
             sections.push((Section::People, Vec::new()));
         }
+        sections.push((Section::Rooms, Vec::new()));
         if grouping.low_priority {
             sections.push((Section::LowPriority, Vec::new()));
         }
@@ -387,8 +387,8 @@ mod tests {
                 Section::Invites,
                 Section::Favourites,
                 Section::Category(work.clone()),
-                Section::Rooms,
                 Section::People,
+                Section::Rooms,
                 Section::LowPriority,
             ]
         );
