@@ -156,6 +156,11 @@ fn newest(
         })
 }
 
+/// Remove what an earlier update of this copy left behind.
+pub fn clean_up() {
+    install::clean_up(&Install::detect());
+}
+
 /// This version.
 pub fn current() -> Version {
     Version::parse(env!("CARGO_PKG_VERSION")).expect("the package version is semver")
@@ -240,7 +245,7 @@ impl Install {
 
     /// Whether the app puts a new version in place of this copy.
     fn updates_itself(&self) -> bool {
-        matches!(self, Self::MacApp(_))
+        !matches!(self, Self::Deb | Self::Source)
     }
 
     /// The name of the release file this copy is updated with.

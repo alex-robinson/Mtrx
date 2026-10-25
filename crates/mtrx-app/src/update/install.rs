@@ -3,6 +3,7 @@
 //! starts once this one has quit.
 
 use std::{
+    ffi::OsStr,
     path::{Path, PathBuf},
     process::Command,
 };
@@ -61,8 +62,104 @@ fn verify(data: &[u8], signature: &str, public_key: &str) -> Result<(), String> 
 fn put_in_place(install: &Install, file: &File, data: &[u8]) -> Result<(), String> {
     match install {
         Install::MacApp(app) => replace_app(app, file, data),
-        _ => Err("This installation does not update itself.".to_owned()),
+        Install::WindowsSetup => run_setup(file, data),
+        Install::WindowsPortable(exe) => replace_exe(exe, file, data),
+        Install::AppImage(appimage) => replace_appimage(appimage, data),
+        Install::Deb | Install::Source => {
+            Err("This installation does not update itself.".to_owned())
+        }
     }
+}
+
+/// Run the Windows installer silently; it waits for this copy to quit,
+/// installs over it and starts the new version (`/update=yes`).
+fn run_setup(file: &File, data: &[u8]) -> Result<(), String> {
+    let setup = std::env::temp_dir().join(&file.name);
+    std::fs::write(&setup, data).map_err(|e| e.to_string())?;
+    Command::new(&setup)
+        .args([
+            "/VERYSILENT",
+            "/SUPPRESSMSGBOXES",
+            "/NORESTART",
+            "/update=yes",
+        ])
+        .spawn()
+        .map(drop)
+        .map_err(|e| format!("Could not start the installer: {e}"))
+}
+
+/// Unpack `Mtrx.exe` from the Windows zip and put it in place of `exe`,
+/// which Windows lets us rename while it runs; the old one is removed at
+/// the next start ([`clean_up`]).
+fn replace_exe(exe: &Path, file: &File, data: &[u8]) -> Result<(), String> {
+    let staging = std::env::temp_dir().join("mtrx-update");
+    let _ = std::fs::remove_dir_all(&staging);
+    std::fs::create_dir_all(&staging).map_err(|e| e.to_string())?;
+    let zip = staging.join(&file.name);
+    std::fs::write(&zip, data).map_err(|e| e.to_string())?;
+    let unpacked = staging.join("new");
+    let status = Command::new("powershell")
+        .args(["-NoProfile", "-NonInteractive", "-Command"])
+        .arg("Expand-Archive -LiteralPath $env:ZIP -DestinationPath $env:OUT")
+        .env("ZIP", &zip)
+        .env("OUT", &unpacked)
+        .status()
+        .map_err(|e| e.to_string())?;
+    if !status.success() {
+        return Err("Could not unpack the update.".to_owned());
+    }
+    // The zip holds the folder Mtrx with Mtrx.exe.
+    let new = unpacked.join("Mtrx").join("Mtrx.exe");
+    let old = old_exe(exe);
+    let _ = std::fs::remove_file(&old);
+    std::fs::rename(exe, &old).map_err(|e| format!("Could not replace Mtrx: {e}"))?;
+    std::fs::copy(&new, exe).map_err(|e| {
+        let _ = std::fs::rename(&old, exe);
+        format!("Could not replace Mtrx: {e}")
+    })?;
+    let _ = std::fs::remove_dir_all(&staging);
+    start_after_exit(exe, &[])
+}
+
+/// Where the replaced `exe` waits to be removed.
+fn old_exe(exe: &Path) -> PathBuf {
+    exe.with_extension("exe.old")
+}
+
+/// Remove what an update left: the replaced `Mtrx.exe` of the Windows zip.
+pub fn clean_up(install: &Install) {
+    if let Install::WindowsPortable(exe) = install {
+        let _ = std::fs::remove_file(old_exe(exe));
+    }
+}
+
+/// Write the new AppImage next to `appimage` and rename it over it; this
+/// copy keeps running from the old one until it quits.
+fn replace_appimage(appimage: &Path, data: &[u8]) -> Result<(), String> {
+    swap_appimage(appimage, data)?;
+    start_after_exit(appimage, &[])
+}
+
+fn swap_appimage(appimage: &Path, data: &[u8]) -> Result<(), String> {
+    let new = appimage.with_extension("AppImage.new");
+    std::fs::write(&new, data)
+        .and_then(|()| make_executable(&new))
+        .and_then(|()| std::fs::rename(&new, appimage))
+        .map_err(|e| {
+            let _ = std::fs::remove_file(&new);
+            format!("Could not replace Mtrx: {e}")
+        })
+}
+
+#[cfg(unix)]
+fn make_executable(path: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755))
+}
+
+#[cfg(not(unix))]
+fn make_executable(_path: &Path) -> std::io::Result<()> {
+    Ok(())
 }
 
 /// Unpack the zipped `Mtrx.app` next to `app`, swap it in, and start it
@@ -84,7 +181,7 @@ fn replace_app(app: &Path, file: &File, data: &[u8]) -> Result<(), String> {
     let result = unpack_and_swap(app, &staging, file, data);
     let _ = std::fs::remove_dir_all(&staging);
     result?;
-    relaunch_after_exit(app)
+    start_after_exit(Path::new("open"), &[app.as_os_str()])
 }
 
 fn unpack_and_swap(app: &Path, staging: &Path, file: &File, data: &[u8]) -> Result<(), String> {
@@ -132,14 +229,39 @@ fn reveal_in_downloads(file: &File, data: &[u8]) -> Result<(), String> {
     ))
 }
 
-/// Start `app` once this process has ended (it holds the account's stores).
-fn relaunch_after_exit(app: &Path) -> Result<(), String> {
+/// Run `program` with `args` once this process has ended (it holds the
+/// account's stores), to start the new version.
+#[cfg(unix)]
+fn start_after_exit(program: &Path, args: &[&OsStr]) -> Result<(), String> {
     Command::new("/bin/sh")
         .arg("-c")
-        .arg(r#"while kill -0 "$1" 2>/dev/null; do sleep 0.2; done; open "$2""#)
+        .arg(r#"pid=$1; shift; while kill -0 "$pid" 2>/dev/null; do sleep 0.2; done; exec "$@""#)
         .arg("sh")
         .arg(std::process::id().to_string())
-        .arg(app)
+        .arg(program)
+        .args(args)
+        .spawn()
+        .map(drop)
+        .map_err(|e| format!("Could not start the new version: {e}"))
+}
+
+#[cfg(windows)]
+fn start_after_exit(program: &Path, args: &[&OsStr]) -> Result<(), String> {
+    debug_assert!(args.is_empty(), "the program alone on Windows");
+    Command::new("powershell")
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-WindowStyle",
+            "Hidden",
+            "-Command",
+        ])
+        .arg(
+            "Wait-Process -Id $env:MTRX_PID -ErrorAction SilentlyContinue; \
+             Start-Process -FilePath $env:MTRX_EXE",
+        )
+        .env("MTRX_PID", std::process::id().to_string())
+        .env("MTRX_EXE", program)
         .spawn()
         .map(drop)
         .map_err(|e| format!("Could not start the new version: {e}"))
@@ -222,5 +344,20 @@ mod tests {
         unpack_and_swap(&app, &staging, &file, &std::fs::read(&zip).unwrap()).unwrap();
         let version = std::fs::read_to_string(app.join("Contents/version")).unwrap();
         assert_eq!(version, "new");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_new_appimage_takes_the_old_ones_place() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let appimage = dir.path().join("Mtrx-linux-x86_64.AppImage");
+        std::fs::write(&appimage, "old").unwrap();
+        swap_appimage(&appimage, b"new").unwrap();
+        assert_eq!(std::fs::read(&appimage).unwrap(), b"new");
+        let mode = std::fs::metadata(&appimage).unwrap().permissions().mode();
+        assert_eq!(mode & 0o111, 0o111, "executable");
+        assert!(!appimage.with_extension("AppImage.new").exists());
     }
 }

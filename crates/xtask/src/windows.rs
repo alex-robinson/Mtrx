@@ -168,6 +168,14 @@ Name: "{autoprograms}\Mtrx"; Filename: "{app}\Mtrx.exe"; AppUserModelID: "@APP_I
 
 [Run]
 Filename: "{app}\Mtrx.exe"; Description: "{cm:LaunchProgram,Mtrx}"; Flags: nowait postinstall skipifsilent
+; The app's own update runs this silently and starts the new version.
+Filename: "{app}\Mtrx.exe"; Flags: nowait; Check: IsUpdate
+
+[Code]
+function IsUpdate: Boolean;
+begin
+  Result := ExpandConstant('{param:update|no}') = 'yes';
+end;
 "#
     .replace("@GUID@", APP_GUID)
     .replace("@VERSION@", env!("CARGO_PKG_VERSION"))

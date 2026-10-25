@@ -601,6 +601,7 @@ impl App {
         let settings_file = Settings::path(&data_root);
         #[cfg(target_os = "macos")]
         settings.appearance.apply();
+        update::clean_up();
         let app = Self {
             profile: profile.clone(),
             focused: true,
