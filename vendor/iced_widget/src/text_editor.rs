@@ -1320,6 +1320,9 @@ impl<Message> Binding<Message> {
                         match motion {
                             Motion::Left => Motion::Home,
                             Motion::Right => Motion::End,
+                            // Mtrx patch (editing): ⌘↑ and ⌘↓.
+                            Motion::Up => Motion::DocumentStart,
+                            Motion::Down => Motion::DocumentEnd,
                             _ => motion,
                         }
                     } else {

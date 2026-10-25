@@ -157,7 +157,8 @@ so that Enter probably sends the half-composed text today.
       commit and a completed mention are a step each.
 - [x] ⌥⌫ and ⌥⌦ delete a word; ⌘⌫ deletes to the start of the line
       (as shown, when it wraps), ⌘⌦ to its end. A step each to undo.
-- [ ] ⌘↑ and ⌘↓ go to the start and end of the draft (with ⇧, select).
+- [x] ⌘↑ and ⌘↓ go to the start and end of the draft (with ⇧, select).
+      The timeline takes them (A2) while no editor is focused.
 - [ ] ⌥↑ and ⌥↓ go to the start and end of the paragraph.
 - [ ] ⌃K deletes to the end of the line, ⌃Y yanks it back, ⌃T transposes,
       ⌃N and ⌃P move down and up, ⌃O opens a line.

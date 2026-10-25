@@ -2,6 +2,7 @@
 //! B2), done in the vendored `text_editor`: keys as the window gets them,
 //! through an editor with the default bindings.
 
+use iced::event::Status;
 use iced::{
     Event, Theme,
     advanced::{clipboard, input_method, renderer::Headless, widget::operation::focusable},
@@ -44,12 +45,13 @@ impl Field {
         field
     }
 
-    /// `events` through the editor, its actions performed.
-    fn send(&mut self, events: &[Event]) {
+    /// `events` through the editor, its actions performed; whether it took
+    /// each.
+    fn send(&mut self, events: &[Event]) -> Vec<Status> {
         let cursor = mouse::Cursor::Available(self.cursor);
         let mut ui = ui(&self.content, &mut self.cache, &mut self.renderer);
         let mut actions = Vec::new();
-        let _ = ui.update(
+        let (_, statuses) = ui.update(
             events,
             cursor,
             &mut self.renderer,
@@ -60,11 +62,12 @@ impl Field {
         for action in actions {
             self.content.perform(action);
         }
+        statuses
     }
 
     /// `key` pressed with `modifiers`, giving `text` (macOS gives a
     /// letter's also with ⌘, and a control character with ⌃).
-    fn key(&mut self, key: impl Into<Key>, modifiers: Modifiers, text: Option<&str>) {
+    fn key(&mut self, key: impl Into<Key>, modifiers: Modifiers, text: Option<&str>) -> Status {
         let key = key.into();
         self.send(&[Event::Keyboard(keyboard::Event::KeyPressed {
             modified_key: key.clone(),
@@ -76,7 +79,7 @@ impl Field {
             modifiers,
             text: text.map(Into::into),
             repeat: false,
-        })]);
+        })])[0]
     }
 
     /// A shortcut with a letter: ⌘ with it on macOS, Ctrl elsewhere.
@@ -110,8 +113,8 @@ impl Field {
         }
     }
 
-    fn named(&mut self, key: Named, modifiers: Modifiers) {
-        self.key(key, modifiers, None);
+    fn named(&mut self, key: Named, modifiers: Modifiers) -> Status {
+        self.key(key, modifiers, None)
     }
 
     fn undo(&mut self) -> String {
@@ -125,7 +128,7 @@ impl Field {
     }
 
     fn input_method(&mut self, event: input_method::Event) {
-        self.send(&[Event::InputMethod(event)]);
+        let _ = self.send(&[Event::InputMethod(event)]);
     }
 }
 
@@ -366,4 +369,38 @@ fn command_backspace_deletes_to_the_start_of_the_line() {
     field.named(Named::Home, Modifiers::empty());
     field.named(Named::Delete, Modifiers::COMMAND);
     assert_eq!(field.content.text(), "");
+}
+
+/// ⌘↑ and ⌘↓ go to the start and end of the draft, with ⇧ selecting; the
+/// editor takes them only while focused, and the timeline scrolls with
+/// them otherwise (A2).
+#[cfg(target_os = "macos")]
+#[test]
+fn command_up_and_down_go_to_the_start_and_end_of_the_draft() {
+    let mut field = Field::new("Calving\nfronts\nretreat");
+    field.named(Named::ArrowUp, Modifiers::COMMAND);
+    field.type_text("x");
+    assert_eq!(field.content.text(), "xCalving\nfronts\nretreat");
+    field.named(Named::ArrowDown, Modifiers::COMMAND);
+    field.type_text("y");
+    let all = "xCalving\nfronts\nretreaty";
+    assert_eq!(field.content.text(), all);
+    field.named(Named::ArrowUp, Modifiers::COMMAND | Modifiers::SHIFT);
+    assert_eq!(field.content.selection().as_deref(), Some(all));
+    field.named(Named::ArrowLeft, Modifiers::empty());
+    field.named(Named::ArrowDown, Modifiers::COMMAND | Modifiers::SHIFT);
+    assert_eq!(field.content.selection().as_deref(), Some(all));
+
+    assert_eq!(
+        field.named(Named::ArrowUp, Modifiers::COMMAND),
+        Status::Captured
+    );
+    assert_eq!(
+        field.named(Named::Escape, Modifiers::empty()),
+        Status::Ignored
+    );
+    assert_eq!(
+        field.named(Named::ArrowUp, Modifiers::COMMAND),
+        Status::Ignored
+    );
 }
