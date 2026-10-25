@@ -217,13 +217,14 @@ impl Layout {
         order
     }
 
-    /// Swap the places of two sections, e.g. of one and the section shown
-    /// above it; sections not shown between them stay where they are.
-    pub fn swap_sections(&mut self, a: &Section, b: &Section) {
+    /// Move `section` to the place of `to`, which moves one place towards
+    /// where `section` was, as do the sections between them.
+    pub fn move_section(&mut self, section: &Section, to: &Section) {
         let mut order = self.order();
-        let place = |section| order.iter().position(|s| s == section);
-        if let (Some(a), Some(b)) = (place(a), place(b)) {
-            order.swap(a, b);
+        let place = |s| order.iter().position(|o| o == s);
+        if let (Some(from), Some(to)) = (place(section), place(to)) {
+            let section = order.remove(from);
+            order.insert(to, section);
             self.order = order;
         }
     }
@@ -482,7 +483,7 @@ mod tests {
             Some(b.clone())
         );
         layout.toggle_collapsed(&Section::Category(b.clone()));
-        layout.swap_sections(&Section::Category(b.clone()), &Section::People);
+        layout.move_section(&Section::Category(b.clone()), &Section::People);
         layout.remove_category(&b);
         assert!(layout.category_of(&room).is_none());
         assert!(layout.collapsed.is_empty());
@@ -504,11 +505,11 @@ mod tests {
             ]
         );
 
-        // Rooms up past A, with Favourites not shown: Favourites stays.
-        layout.swap_sections(&Section::Rooms, &a);
+        // Rooms to A's place, with Favourites not shown: Favourites stays.
+        layout.move_section(&Section::Rooms, &a);
         // New categories go last; Invites and unknown sections are ignored.
         let b = Section::Category(layout.add_category("B"));
-        layout.swap_sections(&Section::Invites, &b);
+        layout.move_section(&Section::Invites, &b);
         layout.order.push(Section::Category("gone".into()));
         let order = [
             Section::People,
@@ -518,6 +519,14 @@ mod tests {
             Section::LowPriority,
             b.clone(),
         ];
+        assert_eq!(layout.order(), order);
+        // Down past several: those between move up.
+        layout.move_section(&Section::People, &a);
+        assert_eq!(
+            layout.order(),
+            [&order[1..4], &order[..1], &order[4..]].concat()
+        );
+        layout.move_section(&Section::People, &Section::Favourites);
         assert_eq!(layout.order(), order);
 
         let no_favourites = Grouping {

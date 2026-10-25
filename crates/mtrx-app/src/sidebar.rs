@@ -666,7 +666,7 @@ fn show_menu_panel<'a>(
                 .padding([4, 5])
                 .style(style::list_item(false))
                 .on_press_maybe(other.map(|other| {
-                    arrange_message(arrange::Message::SwapSections(
+                    arrange_message(arrange::Message::MoveSection(
                         section.clone(),
                         other.clone(),
                     ))
@@ -933,13 +933,13 @@ fn category_menu<'a>(
     if let Some(above) = above {
         items.push(item(
             "Move up",
-            arrange::Message::SwapSections(section.clone(), above.clone()),
+            arrange::Message::MoveSection(section.clone(), above.clone()),
         ));
     }
     if let Some(below) = below {
         items.push(item(
             "Move down",
-            arrange::Message::SwapSections(section, below.clone()),
+            arrange::Message::MoveSection(section, below.clone()),
         ));
     }
     items.push(item("Delete category", arrange::Message::Delete(id)));

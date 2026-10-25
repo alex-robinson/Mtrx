@@ -2268,13 +2268,13 @@ async fn show_menu() {
         );
     }
     send(&mut main, arrange::Message::ShowMenu(true));
-    // Rooms moved up past Papers, from the menu.
+    // Rooms moved to the place of Papers, above it.
     let papers = main.arrange.categories.layout(Some(&space)).categories[1]
         .id
         .clone();
     send(
         &mut main,
-        arrange::Message::SwapSections(Section::Rooms, Section::Category(papers.clone())),
+        arrange::Message::MoveSection(Section::Rooms, Section::Category(papers.clone())),
     );
     let order = main.arrange.categories.layout(Some(&space)).order();
     assert_eq!(order[3..5], [Section::Rooms, Section::Category(papers)]);

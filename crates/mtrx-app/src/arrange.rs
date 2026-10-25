@@ -59,8 +59,8 @@ pub enum Message {
     Name(String),
     SaveName,
     Delete(String),
-    /// Swap two sections' places.
-    SwapSections(Section, Section),
+    /// Move a section to the place of another.
+    MoveSection(Section, Section),
     Sort(String, Sort),
     /// Which rooms of spaces Home lists too, from the settings.
     AtHome(AtHome),
@@ -410,9 +410,9 @@ impl Arrange {
                     c.layout_mut(space.as_deref()).remove_category(&id)
                 });
             }
-            Message::SwapSections(a, b) => {
+            Message::MoveSection(section, to) => {
                 return self.change(context.session, move |c| {
-                    c.layout_mut(space.as_deref()).swap_sections(&a, &b)
+                    c.layout_mut(space.as_deref()).move_section(&section, &to)
                 });
             }
             Message::Sort(id, sort) => {
