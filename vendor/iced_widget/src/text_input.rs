@@ -396,13 +396,11 @@ where
         layout: Layout<'_>,
         value: &Value,
     ) -> InputMethod<&'b str> {
-        let Some(Focus {
-            is_window_focused: true,
-            ..
-        }) = &state.is_focused
-        else {
+        // Mtrx patch: by the field's focus, not the window's, as in
+        // `TextEditor`.
+        if state.is_focused.is_none() {
             return InputMethod::Disabled;
-        };
+        }
 
         let secure_value = self.is_secure.then(|| value.secure());
         let value = secure_value.as_ref().unwrap_or(value);
@@ -1336,24 +1334,25 @@ where
 
                 if let Some(focus) = &mut state.is_focused
                     && focus.is_window_focused
-                {
-                    if matches!(
+                    && matches!(
                         state.cursor.state(&self.value),
                         cursor::State::Index(_)
-                    ) {
-                        focus.now = *now;
+                    )
+                {
+                    focus.now = *now;
 
-                        let millis_until_redraw = CURSOR_BLINK_INTERVAL_MILLIS
-                            - (*now - focus.updated_at).as_millis()
-                                % CURSOR_BLINK_INTERVAL_MILLIS;
+                    let millis_until_redraw = CURSOR_BLINK_INTERVAL_MILLIS
+                        - (*now - focus.updated_at).as_millis()
+                            % CURSOR_BLINK_INTERVAL_MILLIS;
 
-                        shell.request_redraw_at(
-                            *now + Duration::from_millis(
-                                millis_until_redraw as u64,
-                            ),
-                        );
-                    }
+                    shell.request_redraw_at(
+                        *now + Duration::from_millis(millis_until_redraw as u64),
+                    );
+                }
 
+                // Mtrx patch: also while the window is not key (see
+                // `input_method`).
+                if state.is_focused.is_some() {
                     shell.request_input_method(&self.input_method(
                         state,
                         layout,

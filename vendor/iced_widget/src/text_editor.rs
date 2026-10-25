@@ -342,13 +342,14 @@ where
         renderer: &Renderer,
         layout: Layout<'_>,
     ) -> InputMethod<&'b str> {
-        let Some(Focus {
-            is_window_focused: true,
-            ..
-        }) = &state.focus
-        else {
+        // Mtrx patch: by the editor's focus, not the window's. The system's
+        // Emoji & Symbols takes the key window while it is open and types the
+        // pick into the field focused before; the input method off then
+        // dropped it. A text view stays the first responder in a window that
+        // is not key, too.
+        if state.focus.is_none() {
             return InputMethod::Disabled;
-        };
+        }
 
         let bounds = layout.bounds();
         let internal = self.content.0.borrow_mut();

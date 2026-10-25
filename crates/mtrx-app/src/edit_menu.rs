@@ -146,4 +146,64 @@ mod tests {
             "{sent:?}"
         );
     }
+
+    /// Emoji & Symbols takes the key window while open and types the pick
+    /// into the field focused before: the field keeps its input method.
+    #[test]
+    fn a_focused_field_takes_input_while_its_window_is_not_key() {
+        use iced::{
+            Point, Theme,
+            advanced::{InputMethod, renderer::Headless},
+            window,
+        };
+        use iced_runtime::user_interface::{Cache, State, UserInterface};
+
+        let content = Content::<iced::Renderer>::with_text("Melt");
+        let view = |input: bool| -> Element<'_, ()> {
+            if input {
+                iced::widget::text_input("", "Melt").on_input(|_| ()).into()
+            } else {
+                iced::widget::text_editor(&content).on_action(|_| ()).into()
+            }
+        };
+        let mut renderer = iced::futures::executor::block_on(iced::Renderer::new(
+            crate::fonts::INTER,
+            iced::Pixels(crate::style::TEXT_SIZE),
+            None,
+        ))
+        .unwrap();
+        for input in [false, true] {
+            let mut ui = UserInterface::<_, Theme, _>::build(
+                view(input),
+                Size::new(300.0, 100.0),
+                Cache::default(),
+                &mut renderer,
+            );
+            let mut enabled = |events: &[Event]| {
+                let (state, _) = ui.update(
+                    events,
+                    mouse::Cursor::Available(Point::new(10.0, 10.0)),
+                    &mut renderer,
+                    &mut iced::advanced::clipboard::Null,
+                    &mut Vec::new(),
+                );
+                match state {
+                    State::Updated { input_method, .. } => {
+                        matches!(input_method, InputMethod::Enabled { .. })
+                    }
+                    State::Outdated => panic!("outdated"),
+                }
+            };
+            let redraw =
+                || Event::Window(window::Event::RedrawRequested(iced::time::Instant::now()));
+            let click = Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left));
+            assert!(!enabled(&[redraw()]), "input {input}: not focused");
+            let _ = enabled(&[click]);
+            assert!(enabled(&[redraw()]), "input {input}: focused");
+            assert!(
+                enabled(&[Event::Window(window::Event::Unfocused), redraw()]),
+                "input {input}: focused, window not key"
+            );
+        }
+    }
 }

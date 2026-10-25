@@ -14,3 +14,8 @@ section B). Each is marked "Mtrx patch" in the code:
 - `src/text_editor.rs`, `src/text_input.rs`: macOS gives a key's text also
   with ⌘, so ⌘K typed "k" in the composer and ⌘1 "1" in the room search.
   The text of a shortcut (`is_shortcut`) is no longer typed.
+- `src/text_editor.rs`, `src/text_input.rs`: the input method was asked
+  only while the window was key. Emoji & Symbols takes the key window
+  while open and types the pick into the field focused before, which
+  macOS then dropped. A focused field now keeps its input method, as a
+  text view stays the first responder; only the caret stops blinking.
