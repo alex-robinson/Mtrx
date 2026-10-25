@@ -1458,8 +1458,8 @@ mod tests {
             home(&arrange),
             [
                 section("Invites", &["!offer:x"]),
-                section("Rooms with no space", &["!loose:x"]),
                 section("Direct messages", &["!bob:x"]),
+                section("Rooms with no space", &["!loose:x"]),
             ]
         );
         // The space's unread room does not light Home.
@@ -1475,8 +1475,8 @@ mod tests {
             [
                 section("Invites", &["!offer:x"]),
                 section("Favourites", &["!star:x"]),
-                section("Rooms", &["!inside:x", "!loose:x"]),
                 section("Direct messages", &["!bob:x"]),
+                section("Rooms", &["!inside:x", "!loose:x"]),
             ]
         );
         assert!(unread(&rooms, None, &arrange, &grouping));
@@ -1593,12 +1593,12 @@ mod tests {
 
         // What Home shows: not the space's room.
         let home = list(&rooms, None, "", &arrange, &avatars, &presences);
-        assert_eq!(ids(&home), ["!fav:x", "!loose:x", "!bob:x", "!notes:x"]);
+        assert_eq!(ids(&home), ["!fav:x", "!bob:x", "!notes:x", "!loose:x"]);
         assert_eq!(
             go_to(&home, Go::Row(1))
                 .map(|r| r.id.to_string())
                 .as_deref(),
-            Some("!loose:x")
+            Some("!bob:x")
         );
         arrange.categories.at_home.all_rooms = true;
 
@@ -1607,21 +1607,21 @@ mod tests {
         home.notes = Some(Notes::Room(&rooms[5]));
         assert_eq!(
             ids(&home),
-            ["!notes:x", "!fav:x", "!inside:x", "!loose:x", "!bob:x"]
+            ["!notes:x", "!fav:x", "!bob:x", "!inside:x", "!loose:x"]
         );
         let to = |view: &RoomListView, go| go_to(view, go).map(|r| r.id.to_string());
         // From outside the list, the first or last.
         assert_eq!(to(&home, Go::Below).as_deref(), Some("!notes:x"));
-        assert_eq!(to(&home, Go::Above).as_deref(), Some("!bob:x"));
+        assert_eq!(to(&home, Go::Above).as_deref(), Some("!loose:x"));
         let inside = id("!inside:x");
         home.open = Some(&inside);
-        assert_eq!(to(&home, Go::Above).as_deref(), Some("!fav:x"));
+        assert_eq!(to(&home, Go::Above).as_deref(), Some("!bob:x"));
         assert_eq!(to(&home, Go::Below).as_deref(), Some("!loose:x"));
         assert_eq!(to(&home, Go::Row(1)).as_deref(), Some("!fav:x"));
         assert_eq!(to(&home, Go::Row(8)), None);
         // Not past the ends.
-        let bob = id("!bob:x");
-        home.open = Some(&bob);
+        let loose = id("!loose:x");
+        home.open = Some(&loose);
         assert_eq!(to(&home, Go::Below), None);
 
         // A collapsed section shows only the open room and unread ones. The
@@ -1629,11 +1629,11 @@ mod tests {
         (arrange.categories.layout_mut(None)).toggle_collapsed(&Section::Rooms);
         unread_in(&mut rooms, "!loose:x");
         let mut home = list(&rooms, None, "", &arrange, &avatars, &presences);
-        assert_eq!(ids(&home), ["!fav:x", "!loose:x", "!bob:x", "!notes:x"]);
+        assert_eq!(ids(&home), ["!fav:x", "!bob:x", "!notes:x", "!loose:x"]);
         home.open = Some(&inside);
         assert_eq!(
             ids(&home),
-            ["!fav:x", "!inside:x", "!loose:x", "!bob:x", "!notes:x"]
+            ["!fav:x", "!bob:x", "!notes:x", "!inside:x", "!loose:x"]
         );
 
         // While searching, what it found.
