@@ -22,6 +22,8 @@ use super::event::{
     code_to_key, code_to_location, create_key_event, event_mods, lalt_pressed, ralt_pressed,
     scancode_to_physicalkey, KeyEventExtra,
 };
+// Mtrx patch (surrounding text).
+use super::surrounding::Document;
 use super::window::WinitWindow;
 use super::DEVICE_ID;
 use crate::dpi::{LogicalPosition, LogicalSize};
@@ -31,6 +33,8 @@ use crate::event::{
 };
 use crate::keyboard::{Key, KeyCode, KeyLocation, ModifiersState, NamedKey};
 use crate::platform::macos::OptionAsAlt;
+// Mtrx patch (surrounding text).
+use crate::window::ImeSurroundingText;
 
 #[derive(Debug)]
 struct CursorState {
@@ -141,6 +145,12 @@ pub struct ViewState {
     key_interpreted: Cell<bool>,
 
     marked_text: RefCell<Retained<NSMutableAttributedString>>,
+
+    // Mtrx patch (surrounding text).
+    /// The text around the caret, from `set_ime_surrounding_text`, while IME is allowed.
+    surrounding_text: RefCell<Option<ImeSurroundingText>>,
+    /// The selection within the marked text, from `setMarkedText`.
+    marked_selection: Cell<NSRange>,
     accepts_first_mouse: bool,
 
     // Weak reference because the window keeps a strong reference to the view
@@ -260,6 +270,12 @@ declare_class!(
         fn marked_range(&self) -> NSRange {
             trace_scope!("markedRange");
             let length = self.ivars().marked_text.borrow().length();
+            // Mtrx patch (surrounding text): where it is in the text.
+            if length > 0 {
+                if let Some(start) = self.with_document(|document| document.middle_start()) {
+                    return NSRange::new(start, length);
+                }
+            }
             if length > 0 {
                 NSRange::new(0, length)
             } else {
@@ -271,6 +287,18 @@ declare_class!(
         #[method(selectedRange)]
         fn selected_range(&self) -> NSRange {
             trace_scope!("selectedRange");
+            // Mtrx patch (surrounding text): the selection in the text, or in the marked text.
+            let marked = self.ivars().marked_text.borrow().length() > 0;
+            let selection = self.ivars().marked_selection.get();
+            if let Some(range) = self.with_document(|document| {
+                if marked {
+                    NSRange::new(document.middle_start() + selection.location, selection.length)
+                } else {
+                    NSRange::new(document.middle_start(), document.middle_len())
+                }
+            }) {
+                return range;
+            }
             // Mtrx patch (winit #4748/#4749): a caret for dictation.
             if self.ivars().ime_allowed.get() {
                 // Report a caret at the end of the marked text. Dictation refuses to start
@@ -313,13 +341,26 @@ declare_class!(
                 )
             };
 
+            // Mtrx patch (surrounding text): in the text with the marked text it replaces.
+            let deletion = self.deletion(_replacement_range);
+
             // Update marked text.
             *self.ivars().marked_text.borrow_mut() = marked_text;
+            // Mtrx patch (surrounding text).
+            self.ivars().marked_selection.set(selected_range);
 
             // Notify IME is active if application still doesn't know it.
             if self.ivars().ime_state.get() == ImeState::Disabled {
                 *self.ivars().input_source.borrow_mut() = self.current_input_source();
                 self.queue_event(WindowEvent::Ime(Ime::Enabled));
+            }
+
+            // Mtrx patch (surrounding text).
+            if let Some((before_bytes, after_bytes)) = deletion {
+                self.queue_event(WindowEvent::Ime(Ime::DeleteSurrounding {
+                    before_bytes,
+                    after_bytes,
+                }));
             }
 
             if unsafe { self.hasMarkedText() } {
@@ -384,12 +425,25 @@ declare_class!(
             _actual_range: *mut NSRange,
         ) -> Option<Retained<NSAttributedString>> {
             trace_scope!("attributedSubstringForProposedRange:actualRange:");
-            None
+            // Mtrx patch (surrounding text): from the text around the caret.
+            self.with_document(|document| document.substring(_range.location, _range.length))
+                .map(|(text, start, length)| {
+                    if !_actual_range.is_null() {
+                        // SAFETY: AppKit passes a valid pointer, or null.
+                        unsafe { *_actual_range = NSRange::new(start, length) };
+                    }
+                    NSAttributedString::from_nsstring(&NSString::from_str(&text))
+                })
         }
 
         #[method(characterIndexForPoint:)]
         fn character_index_for_point(&self, _point: NSPoint) -> NSUInteger {
             trace_scope!("characterIndexForPoint:");
+            // Mtrx patch (surrounding text): no layout to tell, but the index no longer means
+            // the start of the text.
+            if self.ivars().surrounding_text.borrow().is_some() {
+                return NSNotFound as NSUInteger;
+            }
             0
         }
 
@@ -428,10 +482,23 @@ declare_class!(
             };
 
             let is_control = string.chars().next().is_some_and(|c| c.is_control());
+            // Mtrx patch (surrounding text): the text around the caret it replaces, e.g. the
+            // letter held for the accent menu.
+            let deletion = self.deletion(_replacement_range);
+            let delete = |view: &Self| {
+                if let Some((before_bytes, after_bytes)) = deletion {
+                    view.queue_event(WindowEvent::Ime(Ime::DeleteSurrounding {
+                        before_bytes,
+                        after_bytes,
+                    }));
+                }
+            };
 
             // Commit only if we have marked text.
             if unsafe { self.hasMarkedText() } && self.is_ime_enabled() && !is_control {
                 self.queue_event(WindowEvent::Ime(Ime::Preedit(String::new(), None)));
+                // Mtrx patch (surrounding text).
+                delete(self);
                 self.queue_event(WindowEvent::Ime(Ime::Commit(string)));
                 // Mtrx patch (winit #4748/#4749): to the end of this function.
                 if self.ivars().in_key_down.get() {
@@ -442,19 +509,27 @@ declare_class!(
                     *self.ivars().marked_text.borrow_mut() = NSMutableAttributedString::new();
                     self.ivars().ime_state.set(ImeState::Ground);
                 }
-            } else if !self.ivars().in_key_down.get()
+            } else if (!self.ivars().in_key_down.get() || deletion.is_some())
                 && self.ivars().ime_allowed.get()
                 && !string.is_empty()
                 && !is_control
             {
                 // Text sent outside of a key press, e.g. from the emoji picker or dictation.
                 // No `KeyboardInput` event will carry it, so commit it directly.
+                // Mtrx patch (surrounding text): likewise text replacing some around the caret
+                // in a key press, which its `KeyboardInput` would not.
                 if self.ivars().ime_state.get() == ImeState::Disabled {
                     *self.ivars().input_source.borrow_mut() = self.current_input_source();
                     self.ivars().ime_state.set(ImeState::Ground);
                     self.queue_event(WindowEvent::Ime(Ime::Enabled));
                 }
+                // Mtrx patch (surrounding text).
+                delete(self);
                 self.queue_event(WindowEvent::Ime(Ime::Commit(string)));
+                if self.ivars().in_key_down.get() {
+                    // `keyDown:` swallows the key, whose text this replaces.
+                    self.ivars().ime_state.set(ImeState::Committed);
+                }
             }
         }
 
@@ -870,6 +945,9 @@ impl WinitView {
             key_interpreted: Default::default(),
             forward_key_to_app: Default::default(),
             marked_text: Default::default(),
+            // Mtrx patch (surrounding text).
+            surrounding_text: Default::default(),
+            marked_selection: Cell::new(NSRange::new(0, 0)),
             accepts_first_mouse,
             _ns_window: WeakId::new(&window.retain()),
             option_as_alt: Cell::new(option_as_alt),
@@ -954,11 +1032,37 @@ impl WinitView {
 
         // Clear markedText
         *self.ivars().marked_text.borrow_mut() = NSMutableAttributedString::new();
+        // Mtrx patch (surrounding text): forgotten with the IME, as its capabilities in 0.31.
+        *self.ivars().surrounding_text.borrow_mut() = None;
 
         if self.ivars().ime_state.get() != ImeState::Disabled {
             self.ivars().ime_state.set(ImeState::Disabled);
             self.queue_event(WindowEvent::Ime(Ime::Disabled));
         }
+    }
+
+    // Mtrx patch (surrounding text).
+    pub(super) fn set_ime_surrounding_text(&self, surrounding_text: ImeSurroundingText) {
+        if self.ivars().ime_allowed.get() {
+            *self.ivars().surrounding_text.borrow_mut() = Some(surrounding_text);
+        }
+    }
+
+    // Mtrx patch (surrounding text).
+    /// `f` of the text as AppKit sees it, if the application told it.
+    fn with_document<R>(&self, f: impl FnOnce(&Document<'_>) -> R) -> Option<R> {
+        let surrounding_text = self.ivars().surrounding_text.borrow();
+        let marked_text = self.ivars().marked_text.borrow().string().to_string();
+        Some(f(&Document::new(surrounding_text.as_ref()?, &marked_text)))
+    }
+
+    // Mtrx patch (surrounding text).
+    /// The bytes to delete around the selection to replace `range`, if any.
+    fn deletion(&self, range: NSRange) -> Option<(usize, usize)> {
+        if range.location == NSNotFound as NSUInteger {
+            return None;
+        }
+        self.with_document(|document| document.deletion(range.location, range.length)).flatten()
     }
 
     pub(super) fn set_ime_cursor_area(&self, position: NSPoint, size: NSSize) {

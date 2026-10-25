@@ -133,8 +133,11 @@ so that Enter probably sends the half-composed text today.
 - [ ] Dead keys: ⌥E then E gives é. Unchecked.
 - [ ] Press-and-hold accent menu (#30). The menu shows, and the held
       letter is typed once (keys the input system keeps type nothing,
-      `vendor/winit`). Left: the pick replaces the held letter ("é", not
-      "eé"), which needs the text around the caret reported to macOS.
+      `vendor/winit`). The pick replaces the held letter ("é", not "eé"):
+      the fields report the text around the caret to macOS (winit 0.31's
+      surrounding text, through `vendor/iced_core`, `iced_winit`,
+      `iced_widget`, `winit`). To check by hand, with the mouse and with a
+      digit, in the composer and the room search.
 - [ ] Chinese, Japanese and Korean input: candidates next to the caret,
       and Enter confirms the composition rather than sending.
 - [ ] Dictation (🎤 or Fn Fn). winit reported no caret, so Dictation

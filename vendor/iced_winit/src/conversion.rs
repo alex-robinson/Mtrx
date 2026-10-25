@@ -324,6 +324,14 @@ pub fn window_event(
                 size.map(|(start, end)| start..end),
             ),
             Ime::Commit(content) => input_method::Event::Commit(content),
+            // Mtrx patch (surrounding text).
+            Ime::DeleteSurrounding {
+                before_bytes,
+                after_bytes,
+            } => input_method::Event::DeleteSurrounding {
+                before_bytes,
+                after_bytes,
+            },
             Ime::Disabled => input_method::Event::Closed,
         })),
         WindowEvent::Focused(focused) => Some(Event::Window(if focused {

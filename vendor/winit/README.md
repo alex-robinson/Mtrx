@@ -18,3 +18,17 @@ section B1). Each is marked "Mtrx patch" in the code:
   on with their text, so the letter was typed again and again, and the
   digit too. Such a key now goes out without text. Upstream: iced #3266
   (https://github.com/iced-rs/iced/issues/3266); winit master is the same.
+- Surrounding text (marked "Mtrx patch (surrounding text)"): AppKit
+  replaces the letter held for the accent menu with the accent picked, by
+  a range in the text it is told about; winit told it none (#30). From
+  winit 0.31 (`winit-core`): `ImeSurroundingText` and
+  `Ime::DeleteSurrounding`, unchanged; 0.31 sets the text through
+  `ImeRequest`, here a setter like 0.30's other IME ones,
+  `Window::set_ime_surrounding_text`, forgotten with `set_ime_allowed(false)`
+  as 0.31 forgets capabilities. For AppKit (0.31 has it for Wayland only),
+  `src/platform_impl/macos/view.rs` and `surrounding.rs`: `selectedRange`,
+  `markedRange` and `attributedSubstringForProposedRange` answer from that
+  text, with the marked text in place of the selection; `insertText` and
+  `setMarkedText` with a replacement range send `DeleteSurrounding` for
+  what it covers around the selection before the commit or preedit. Other
+  platforms ignore it.

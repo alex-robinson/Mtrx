@@ -82,6 +82,8 @@ where
                 redraw_at: None,
                 preedit: None,
                 ime_state: None,
+                // Mtrx patch (surrounding text).
+                ime_surrounding_text: None,
             },
         );
 
@@ -173,6 +175,8 @@ where
     pub redraw_at: Option<Instant>,
     preedit: Option<Preedit<P::Renderer>>,
     ime_state: Option<(Rectangle, input_method::Purpose)>,
+    // Mtrx patch (surrounding text): the last told to winit.
+    ime_surrounding_text: Option<input_method::SurroundingText>,
 }
 
 impl<P, C> Window<P, C>
@@ -219,9 +223,11 @@ where
                 purpose,
                 preedit,
                 // Mtrx patch (surrounding text).
-                ..
+                surrounding_text,
             } => {
                 self.enable_ime(cursor, purpose);
+                // Mtrx patch (surrounding text).
+                self.update_surrounding_text(surrounding_text);
 
                 if let Some(preedit) = preedit {
                     if preedit.content.is_empty() {
@@ -296,10 +302,48 @@ where
         }
     }
 
+    // Mtrx patch (surrounding text): winit 0.31's
+    // `ImeRequestData::with_surrounding_text`, through our winit's setter.
+    fn update_surrounding_text(
+        &mut self,
+        surrounding_text: Option<input_method::SurroundingText>,
+    ) {
+        if surrounding_text == self.ime_surrounding_text {
+            return;
+        }
+
+        match &surrounding_text {
+            Some(surrounding_text) => {
+                match winit::window::ImeSurroundingText::new(
+                    surrounding_text.text.clone(),
+                    surrounding_text.cursor,
+                    surrounding_text.anchor,
+                ) {
+                    Ok(surrounding_text) => {
+                        self.raw.set_ime_surrounding_text(surrounding_text);
+                    }
+                    Err(error) => {
+                        log::warn!("Surrounding text not taken: {error}");
+                    }
+                }
+            }
+            None => {
+                // As in winit 0.31, the input method forgets it only when
+                // disabled.
+                self.raw.set_ime_allowed(false);
+                self.raw.set_ime_allowed(true);
+            }
+        }
+
+        self.ime_surrounding_text = surrounding_text;
+    }
+
     fn disable_ime(&mut self) {
         if self.ime_state.is_some() {
             self.raw.set_ime_allowed(false);
             self.ime_state = None;
+            // Mtrx patch (surrounding text).
+            self.ime_surrounding_text = None;
         }
 
         self.preedit = None;

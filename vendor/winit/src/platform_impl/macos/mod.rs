@@ -11,6 +11,8 @@ mod ffi;
 mod menu;
 mod monitor;
 mod observer;
+// Mtrx patch (surrounding text).
+mod surrounding;
 mod view;
 mod window;
 mod window_delegate;
