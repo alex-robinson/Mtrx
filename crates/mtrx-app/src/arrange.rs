@@ -160,15 +160,17 @@ impl Arrange {
     }
 
     /// What `space` lists, or Home for `None`, in the order of `rooms`: the
-    /// room list's rooms and what lights the space bar's dot. A space whose
-    /// members are not loaded yet lists no direct chats.
+    /// room list's rooms, what its search finds and what lights the space
+    /// bar's dot. A space whose members are not loaded yet lists no direct
+    /// chats; Home lists the rooms of spaces as [`mtrx_core::AtHome`] says.
     pub fn listed<'a>(
         &self,
         rooms: &'a [RoomSummary],
         space: Option<&OwnedRoomId>,
+        grouping: &Grouping,
     ) -> Vec<&'a RoomSummary> {
         match space {
-            None => home_rooms(rooms),
+            None => home_rooms(rooms, &self.categories, grouping),
             Some(space) => space_rooms(
                 rooms,
                 space,

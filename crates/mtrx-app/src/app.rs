@@ -1619,6 +1619,7 @@ impl App {
                     &main.rooms.rooms,
                     main.space.as_ref(),
                     &main.arrange,
+                    &self.settings.room_list,
                     &main.filter,
                 ) {
                     Some(room) => {
@@ -3405,7 +3406,7 @@ impl App {
                     )
                 } else if let Some(dialog) = &main.dialog {
                     (
-                        dialog.view(&main.rooms.rooms, &main.arrange),
+                        dialog.view(&main.rooms.rooms, &main.arrange, &self.settings.room_list),
                         Message::Dialog(dialog::Message::Cancel),
                     )
                 } else if let Some(card) = &main.info {
@@ -3442,8 +3443,13 @@ impl App {
     fn main_view<'a>(&'a self, main: &'a Main) -> Element<'a, Message> {
         let theme = self.theme();
         let rooms = &main.rooms.rooms;
-        let space_bar =
-            sidebar::space_bar(rooms, main.space.as_ref(), &main.arrange, &main.avatars);
+        let space_bar = sidebar::space_bar(
+            rooms,
+            main.space.as_ref(),
+            &main.arrange,
+            &self.settings.room_list,
+            &main.avatars,
+        );
         let room_list = sidebar::room_list(main.room_list_view(&self.settings));
 
         // Banners come and go inside a column that is always there, so the

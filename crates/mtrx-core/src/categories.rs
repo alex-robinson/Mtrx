@@ -1,6 +1,6 @@
 //! How the room list is arranged: the user's own categories per space (and
 //! Home), plus built-in sections for favourites, direct chats and low
-//! priority rooms.
+//! priority rooms, and which rooms Home lists.
 //!
 //! Categories are personal. They are stored as account data
 //! ([`crate::account_data`]), so they sync to the user's devices but nobody
@@ -24,6 +24,20 @@ pub struct RoomCategories {
     pub home: Layout,
     #[serde(default)]
     pub spaces: BTreeMap<OwnedRoomId, Layout>,
+    #[serde(default)]
+    pub at_home: AtHome,
+}
+
+/// Which rooms of spaces Home lists too. It always lists direct chats,
+/// invites, rooms in no space and those put into its categories
+/// ([`crate::home_rooms`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AtHome {
+    /// Every room, as if there were no spaces.
+    pub all_rooms: bool,
+    /// Favourites, in the Favourites section (when the room list has it).
+    pub favourites: bool,
 }
 
 /// The arrangement of one space's room list (or Home's).
@@ -442,6 +456,7 @@ mod tests {
         let id = categories
             .layout_mut(Some(&owned_room_id!("!space:x")))
             .add_category("Projects");
+        categories.at_home.favourites = true;
         categories.home.collapsed.push(Section::People);
         categories
             .home
@@ -454,6 +469,10 @@ mod tests {
         assert_eq!(
             json["home"]["collapsed"],
             serde_json::json!(["people", { "category": id }])
+        );
+        assert_eq!(
+            json["at_home"],
+            serde_json::json!({ "all_rooms": false, "favourites": true })
         );
         let back: RoomCategoriesEventContent = serde_json::from_value(json).unwrap();
         assert_eq!(back.categories, categories);

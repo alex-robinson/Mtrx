@@ -12,8 +12,8 @@ use iced::{
     },
 };
 use mtrx_core::{
-    Contact, NewRoom, OwnedRoomId, OwnedUserId, Permissions, RoomCategories, RoomSummary, UserId,
-    UserSummary,
+    Contact, Grouping, NewRoom, OwnedRoomId, OwnedUserId, Permissions, RoomCategories, RoomSummary,
+    UserId, UserSummary,
 };
 
 use crate::{
@@ -487,11 +487,13 @@ impl Dialog {
     }
 
     /// `rooms` are the joined rooms, for adding existing ones to a space or
-    /// putting them into a category (`arrange`).
+    /// putting them into a category (`arrange`; of those the room list lists,
+    /// by `grouping`).
     pub fn view<'a>(
         &'a self,
         rooms: &'a [RoomSummary],
         arrange: &'a Arrange,
+        grouping: &Grouping,
     ) -> Element<'a, app::Message> {
         let (title, submit) = match &self.kind {
             Kind::NewRoom {
@@ -550,7 +552,7 @@ impl Dialog {
             Kind::AddExisting { space, .. } => body.push(self.rooms_view(space, rooms)),
             Kind::Category { space, .. } => body
                 .push(self.field("Name", &self.name, Message::Name))
-                .push(self.category_rooms_view(space.as_ref(), rooms, arrange)),
+                .push(self.category_rooms_view(space.as_ref(), rooms, arrange, grouping)),
             Kind::Leave { .. } => body.push(
                 text("You can only come back if the room is public or someone invites you.")
                     .size(13),
@@ -707,17 +709,23 @@ impl Dialog {
         space: Option<&OwnedRoomId>,
         rooms: &'a [RoomSummary],
         arrange: &'a Arrange,
+        grouping: &Grouping,
     ) -> Element<'a, app::Message> {
         let layout = arrange.categories.layout(space.map(|s| s.as_ref()));
         let editing = match &self.kind {
             Kind::Category { category, .. } => category.as_deref(),
             _ => None,
         };
-        let found: Vec<_> =
-            sidebar::search(rooms, space, arrange, &self.query.trim().to_lowercase())
-                .into_iter()
-                .filter(|r| !r.invited)
-                .collect();
+        let found: Vec<_> = sidebar::search(
+            rooms,
+            space,
+            arrange,
+            grouping,
+            &self.query.trim().to_lowercase(),
+        )
+        .into_iter()
+        .filter(|r| !r.invited)
+        .collect();
         let unticked: Vec<OwnedRoomId> = (found.iter())
             .filter(|r| !self.rooms.contains(&r.id))
             .map(|r| r.id.clone())
