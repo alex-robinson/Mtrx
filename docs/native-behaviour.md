@@ -105,10 +105,10 @@ these stay outside the widget.
 - [x] ⌘V of rich text (from a web page or Mail) as Markdown: links, lists,
       emphasis.
 - [x] ⌥⇧⌘V pastes as plain text.
-- [ ] Right-click in the composer: Cut, Copy, Paste, Select All (and
-      Emoji & Symbols). Built (`edit_menu.rs`); to check by hand that an
-      emoji picked in Emoji & Symbols is typed into the field. winit
-      dropped it; patched in `vendor/winit` (winit #4748/#4749).
+- [x] Right-click in the composer: Cut, Copy, Paste, Select All (and
+      Emoji & Symbols), `edit_menu.rs`. The pick needed the winit
+      #4748/#4749 backport and a field that keeps its input method while
+      the Character Viewer is key (checked by hand 2026-10-25).
 
 ## B. The composer: inside `text_editor`
 
@@ -131,17 +131,18 @@ forwards every key press to the binding without looking at the preedit,
 so that Enter probably sends the half-composed text today.
 
 - [ ] Dead keys: ⌥E then E gives é. Unchecked.
-- [ ] Press-and-hold accent menu (#30). winit and the NSView, not the
-      widget; may need upstream winit.
+- [ ] Press-and-hold accent menu (#30). The menu shows, and the held
+      letter is typed once (keys the input system keeps type nothing,
+      `vendor/winit`). Left: the pick replaces the held letter ("é", not
+      "eé"), which needs the text around the caret reported to macOS.
 - [ ] Chinese, Japanese and Korean input: candidates next to the caret,
       and Enter confirms the composition rather than sending.
 - [ ] Dictation (🎤 or Fn Fn). winit reported no caret, so Dictation
       would not start; patched in `vendor/winit` (winit #4748/#4749). To
       check by hand, from the app bundle (`cargo xtask bundle`): without
       a bundle identifier Dictation stalls.
-- [ ] ⌃⌘Space opens Emoji & Symbols and inserts the pick. winit dropped
-      text inserted outside a key press; patched in `vendor/winit` (winit
-      #4748/#4749). To check by hand.
+- [x] ⌃⌘Space opens Emoji & Symbols and inserts the pick (winit
+      #4748/#4749 backport; checked by hand 2026-10-25).
 
 ### B2. Editing
 
