@@ -2,7 +2,7 @@
 //! `cargo test -p mtrx-app -- --ignored`, images land in `target/ui-snapshots/`.
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     path::PathBuf,
     sync::Arc,
     time::{Duration, SystemTime},
@@ -2165,6 +2165,124 @@ async fn room_categories() {
     let seminar = main.rooms.rooms.iter().find(|r| r.id == ids["seminar"]);
     assert_eq!(seminar.map(|r| r.tag), Some(RoomTag::Favourite));
     assert!(main.arrange.drag.is_none());
+}
+
+/// A space's menu of which sections are expanded: open, and after hiding
+/// all (the unread room stays).
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs local Synapse (testserver/run.sh)"]
+async fn show_menu() {
+    let dir = TempDir::new().unwrap();
+    let (_, alice) = user("shower", &dir).await;
+    let (_, bob) = user("colleague", &dir).await;
+    let space = alice
+        .create_room(NewRoom {
+            name: Some("Glaciology Lab".into()),
+            space: true,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let mut ids = HashMap::new();
+    for name in ["ice-sheets", "seminars", "bm-ensemble", "coffee"] {
+        let id = alice
+            .create_room(NewRoom {
+                name: Some(name.into()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        alice.add_to_space(&space, &id).await.unwrap();
+        ids.insert(name, id);
+    }
+    let dm = alice.direct_chat(&bob.user_id()).await.unwrap();
+    accept_invite(&bob, &dm).await;
+    alice
+        .set_room_tag(&ids["ice-sheets"], RoomTag::Favourite)
+        .await
+        .unwrap();
+    alice
+        .set_room_tag(&ids["coffee"], RoomTag::LowPriority)
+        .await
+        .unwrap();
+    alice
+        .change_room_categories(|c| {
+            let layout = c.layout_mut(Some(&space));
+            let melt = layout.add_category("Antarctic basal melt sensitivity experiments");
+            layout.place(&ids["bm-ensemble"], Some(&melt));
+            layout.add_category("Papers");
+            layout.set_collapsed(&Section::LowPriority, true);
+        })
+        .await
+        .unwrap();
+    let list = alice.room_list().await.unwrap();
+    let mut rooms = tokio::time::timeout(TIMEOUT, async {
+        let mut updates = std::pin::pin!(list.updates());
+        while let Some(state) = updates.next().await {
+            let tag = |name| {
+                state
+                    .rooms
+                    .iter()
+                    .find(|r| r.id == ids[name])
+                    .map(|r| r.tag)
+            };
+            if state.loaded
+                && state.rooms.len() == 6
+                && state.rooms.iter().any(|r| r.direct_user.is_some())
+                && tag("ice-sheets") == Some(RoomTag::Favourite)
+                && tag("coffee") == Some(RoomTag::LowPriority)
+            {
+                return state;
+            }
+        }
+        unreachable!()
+    })
+    .await
+    .unwrap();
+    if let Some(seminars) = rooms.rooms.iter_mut().find(|r| r.id == ids["seminars"]) {
+        seminars.unread_messages = 2;
+    }
+    let session = Arc::new(alice);
+
+    let mut main = Main::new(session.clone());
+    main.rooms = rooms;
+    main.verified = Some(true);
+    main.space = Some(space.clone());
+    let send = |main: &mut Main, message| {
+        let _ = main.arrange.update(
+            message,
+            arrange::Context {
+                session: &session,
+                space: Some(&space),
+                rooms: &mut main.rooms.rooms,
+                grouping: mtrx_core::Grouping::default(),
+            },
+        );
+    };
+    // The space's members, as if loaded, for the direct chat with Bob.
+    for (due, count) in main.arrange.space_members.due(&main.rooms.rooms) {
+        let members = HashSet::from([bob.user_id()]);
+        send(
+            &mut main,
+            arrange::Message::SpaceMembers(due, count, Ok(members)),
+        );
+    }
+    send(&mut main, arrange::Message::ShowMenu(true));
+    let mut app = app(Screen::Main(Box::new(main)), Mode::Light);
+    snapshot(&app, "show-menu");
+
+    let Screen::Main(main) = &mut app.screen else {
+        unreachable!()
+    };
+    let sections = main.arrange.categories.layout(Some(&space)).order();
+    send(
+        main,
+        arrange::Message::Collapse(sections.iter().map(|s| (s.clone(), true)).collect()),
+    );
+    send(main, arrange::Message::ShowMenu(false));
+    let layout = main.arrange.categories.layout(Some(&space));
+    assert!(sections.iter().all(|s| layout.is_collapsed(s)));
+    snapshot(&app, "show-menu-hidden");
 }
 
 /// Screenshots for the website (`site/images/`): a lab's room with math, a

@@ -8,7 +8,8 @@ use iced::{
         key::{self, Named},
     },
     widget::{
-        button, column, container, mouse_area, row, scrollable, space, stack, text, text_input,
+        button, checkbox, column, container, mouse_area, row, rule, scrollable, space, stack, text,
+        text_input,
     },
 };
 use mtrx_core::{
@@ -25,6 +26,7 @@ use crate::{
     fonts,
     hint::{Position, hint, shortcut},
     icons, info,
+    popover::{Edge, Side, popover},
     presence::{self, Presences},
     style::{self, ROOM_AVATAR, ROOM_ROW, SPACE_AVATAR, SPACE_BAR_WIDTH},
     tint::Tint,
@@ -461,6 +463,9 @@ pub fn room_list<'a>(view: RoomListView<'a>) -> Element<'a, Message> {
     );
     let filter = filter.trim().to_lowercase();
     if filter.is_empty() {
+        if let Some(space) = selected_space {
+            list = list.push(show_menu(&view, space));
+        }
         if let Some(notes) = view.notes {
             list = list.push(view.notes_entry(notes));
         }
@@ -561,6 +566,109 @@ fn arranged<'a>(view: &RoomListView<'a>) -> Vec<Element<'a, Message>> {
     }
     elements
 }
+
+/// "Show 4 of 6": the button opening the menu of which of a space's
+/// sections are expanded, the others shown collapsed.
+fn show_menu<'a>(view: &RoomListView<'a>, space: &OwnedRoomId) -> Element<'a, Message> {
+    let arrange = view.arrange;
+    let layout = arrange.categories.layout(Some(space));
+    let sections: Vec<Section> = (shown_sections(view).into_iter())
+        .map(|(section, _)| section)
+        .filter(|s| *s != Section::Invites)
+        .collect();
+    let expanded = sections.iter().filter(|s| !layout.is_collapsed(s)).count();
+    let open = arrange.show_menu;
+    // While open, a click on it closes the menu as any outside click.
+    let toggle = button(
+        row![
+            text(format!("Show {expanded} of {}", sections.len())).size(12),
+            icons::chevron(10.0, true, |theme| {
+                theme
+                    .extended_palette()
+                    .background
+                    .base
+                    .text
+                    .scale_alpha(0.7)
+            }),
+        ]
+        .spacing(4)
+        .align_y(Alignment::Center),
+    )
+    .padding([2, 8])
+    .style(style::secondary_button)
+    .on_press_maybe((!open).then(|| arrange_message(arrange::Message::ShowMenu(true))));
+    let menu = open.then(|| show_menu_panel(arrange, Some(space), layout, sections));
+    container(
+        popover(toggle, menu, Side::Below, Edge::Left)
+            .on_dismiss(arrange_message(arrange::Message::ShowMenu(false))),
+    )
+    .padding(Padding::new(0.0).top(2).bottom(4))
+    .into()
+}
+
+/// A space's sections, ticked while expanded, then showing or hiding them
+/// all.
+fn show_menu_panel<'a>(
+    arrange: &Arrange,
+    space: Option<&OwnedRoomId>,
+    layout: &Layout,
+    sections: Vec<Section>,
+) -> Element<'a, Message> {
+    let mut menu = column![].spacing(1);
+    for section in &sections {
+        let ticked = !layout.is_collapsed(section);
+        let toggle = arrange_message(arrange::Message::ToggleCollapsed(section.clone()));
+        let name = section_name(arrange, space, section).to_owned();
+        let line = row![
+            checkbox(ticked).on_toggle({
+                let toggle = toggle.clone();
+                move |_| toggle.clone()
+            }),
+            ellipsis(name.clone()).size(13).width(Length::Fill),
+        ]
+        .spacing(8)
+        .align_y(Alignment::Center);
+        let item = button(line)
+            .width(Length::Fill)
+            .padding([4, 8])
+            .style(style::list_item(false))
+            .on_press(toggle);
+        // The user's names may be cut short.
+        menu = menu.push(match section {
+            Section::Category(_) => hint(item, name, Position::Right),
+            _ => item.into(),
+        });
+    }
+    let all = |collapsed| {
+        let sections = (sections.iter())
+            .map(|section| (section.clone(), collapsed))
+            .collect();
+        arrange_message(arrange::Message::Collapse(sections))
+    };
+    let footer = |label| {
+        button(text(label).size(13).width(Length::Fill).center())
+            .width(Length::Fill)
+            .padding([4, 8])
+            .style(style::list_item(false))
+    };
+    menu = menu
+        .push(container(rule::horizontal(1).style(style::separator)).padding([4, 0]))
+        .push(
+            row![
+                footer("Show all").on_press(all(false)),
+                footer("Hide all").on_press(all(true))
+            ]
+            .spacing(4),
+        );
+    container(menu)
+        .width(SHOW_MENU_WIDTH)
+        .padding(4)
+        .style(style::toolbar)
+        .into()
+}
+
+/// The width of the menu of which sections are expanded.
+const SHOW_MENU_WIDTH: f32 = 250.0;
 
 fn arrange_message(message: arrange::Message) -> Message {
     Message::Arrange(message)

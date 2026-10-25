@@ -41,6 +41,10 @@ pub enum Message {
     /// While dragging, the cursor entered (`true`) or left a section.
     Target(Section, bool),
     ToggleCollapsed(Section),
+    /// Collapse (`true`) or expand these sections at once.
+    Collapse(Vec<(Section, bool)>),
+    /// Open or close the menu of which sections a space shows expanded.
+    ShowMenu(bool),
     RoomMenu(Option<OwnedRoomId>),
     CategoryMenu(Option<String>),
     MoveTo(OwnedRoomId, Section),
@@ -139,6 +143,7 @@ pub struct Arrange {
     pub target: Option<Section>,
     pub room_menu: Option<OwnedRoomId>,
     pub category_menu: Option<String>,
+    pub show_menu: bool,
     pub naming: Option<Naming>,
 }
 
@@ -238,11 +243,13 @@ impl Arrange {
         let open = self.drag.is_some()
             || self.room_menu.is_some()
             || self.category_menu.is_some()
+            || self.show_menu
             || self.naming.is_some();
         self.drag = None;
         self.target = None;
         self.room_menu = None;
         self.category_menu = None;
+        self.show_menu = false;
         self.naming = None;
         open
     }
@@ -280,6 +287,7 @@ impl Arrange {
                         drag.active = true;
                         self.room_menu = None;
                         self.category_menu = None;
+                        self.show_menu = false;
                     }
                 }
             }
@@ -301,6 +309,19 @@ impl Arrange {
                 return self.change(context.session, move |c| {
                     c.layout_mut(space.as_deref()).toggle_collapsed(&section)
                 });
+            }
+            Message::Collapse(sections) => {
+                return self.change(context.session, move |c| {
+                    let layout = c.layout_mut(space.as_deref());
+                    for (section, collapsed) in &sections {
+                        layout.set_collapsed(section, *collapsed);
+                    }
+                });
+            }
+            Message::ShowMenu(open) => {
+                self.show_menu = open;
+                self.room_menu = None;
+                self.category_menu = None;
             }
             Message::RoomMenu(room) => {
                 self.room_menu = room;
