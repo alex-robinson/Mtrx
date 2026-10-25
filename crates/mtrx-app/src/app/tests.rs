@@ -133,6 +133,7 @@ fn app(screen: Screen, mode: Mode) -> App {
         scale: 2.0,
         math: Math::new(),
         badge: Badge::default(),
+        updater: Updater::default(),
     }
 }
 
@@ -1450,6 +1451,12 @@ async fn send_later_bar() {
         settings::Message::AccessLoaded(room.clone(), Some(Permissions::Moderators), Some(true)),
     );
     app.settings_panel = Some(panel);
+    // A newer version, also the dot on the gear behind the panel.
+    app.updater.available = Some(update::Update {
+        version: semver::Version::new(0, 4, 0),
+        page: "https://github.com/alex-robinson/Mtrx/releases/tag/v0.4.0".into(),
+        file: None,
+    });
     snapshot(&app, "settings");
 }
 

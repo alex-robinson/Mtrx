@@ -259,6 +259,18 @@ pub fn unread_dot(theme: &Theme) -> container::Style {
     }
 }
 
+/// On the settings gear: a new version of the app. In the accent colour,
+/// apart from the black dots of unread spaces.
+pub fn update_dot(theme: &Theme) -> container::Style {
+    container::Style {
+        background: Some(Background::Color(
+            theme.extended_palette().primary.base.color,
+        )),
+        border: Border::default().rounded(4),
+        ..Default::default()
+    }
+}
+
 /// An unread count: red for mentions, else a grey darker (in dark mode
 /// lighter) than the room list and its selected row.
 pub fn badge(theme: &Theme, highlight: bool) -> container::Style {

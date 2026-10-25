@@ -279,12 +279,14 @@ pub fn direct_users<'a>(view: &RoomListView<'a>, own: &UserId) -> Vec<&'a OwnedU
         .collect()
 }
 
+/// `update`: a newer version not yet seen in Settings, a dot on the gear.
 pub fn space_bar<'a>(
     rooms: &[RoomSummary],
     selected: Option<&OwnedRoomId>,
     arrange: &Arrange,
     grouping: &Grouping,
     avatars: &Avatars,
+    update: bool,
 ) -> Element<'a, Message> {
     let entry = |icon: Element<'a, Message>, title: String, target: Option<OwnedRoomId>, unread| {
         let is_selected = selected == target.as_ref();
@@ -333,20 +335,33 @@ pub fn space_bar<'a>(
     .style(style::list_item(false))
     .on_press(Message::OpenDialog(Kind::NewSpace));
     bar = bar.push(container(with_tooltip(new_space, "New space".into())).center_x(Length::Fill));
-    let settings = button(icons::gear(20.0, |theme| {
+    let mut gear = stack![icons::gear(20.0, |theme| {
         theme
             .extended_palette()
             .background
             .base
             .text
             .scale_alpha(0.7)
-    }))
-    .padding(8)
-    .style(style::list_item(false))
-    .on_press(Message::ShowSettings(true));
+    })];
+    if update {
+        let dot = container(space())
+            .width(8)
+            .height(8)
+            .style(style::update_dot);
+        gear = gear.push(container(dot).align_right(20.0));
+    }
+    let settings = button(gear)
+        .padding(8)
+        .style(style::list_item(false))
+        .on_press(Message::ShowSettings(true));
+    let tip = if update {
+        "Settings: a new version of Mtrx is available"
+    } else {
+        "Settings"
+    };
     container(column![
         scrollable(bar.spacing(4).width(Length::Fill).padding([8, 0])).height(Length::Fill),
-        container(with_tooltip(settings, "Settings".into()))
+        container(with_tooltip(settings, tip.into()))
             .center_x(Length::Fill)
             .padding([8, 0]),
     ])
