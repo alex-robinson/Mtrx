@@ -342,22 +342,21 @@ impl editor::Editor for Editor {
                             // Mtrx patch (editing): to the edge of the
                             // paragraph where the selection starts (ends),
                             // as a text view does.
-                            Motion::ParagraphBackward => {
+                            Motion::ParagraphBackward
+                            | Motion::ParagraphStart => {
                                 editor.set_cursor(start);
-                                editor.action(
-                                    font_system.raw(),
-                                    cosmic_text::Action::Motion(
-                                        cosmic_text::Motion::ParagraphStart,
-                                    ),
+                                perform_motion(
+                                    editor,
+                                    &mut font_system,
+                                    Motion::ParagraphStart,
                                 );
                             }
-                            Motion::ParagraphForward => {
+                            Motion::ParagraphForward | Motion::ParagraphEnd => {
                                 editor.set_cursor(end);
-                                editor.action(
-                                    font_system.raw(),
-                                    cosmic_text::Action::Motion(
-                                        cosmic_text::Motion::ParagraphEnd,
-                                    ),
+                                perform_motion(
+                                    editor,
+                                    &mut font_system,
+                                    Motion::ParagraphEnd,
                                 );
                             }
                             // Other motions simply move the cursor to one end of the selection
@@ -890,7 +889,100 @@ fn perform_edit(
         Edit::DeleteTo(motion) => {
             delete_to(editor, font_system, motion);
         }
+        Edit::Kill => kill(editor, font_system),
+        Edit::Yank => yank(editor),
+        Edit::Transpose => transpose(editor),
+        Edit::OpenLine => open_line(editor),
     }
+}
+
+// Mtrx patch (editing): ⌃K's text, for ⌃Y; one for the app, as macOS has.
+static KILLED: sync::Mutex<String> = sync::Mutex::new(String::new());
+
+/// Deletes the selection, or to the end of the paragraph (its line ending
+/// when there), and keeps it for [`yank`].
+fn kill(
+    editor: &mut cosmic_text::Editor<'static>,
+    font_system: &mut text::FontSystem,
+) {
+    if editor.selection_bounds().is_none() {
+        let cursor = editor.cursor();
+
+        perform_motion(editor, font_system, Motion::ParagraphEnd);
+
+        if editor.cursor() == cursor {
+            editor.action(
+                font_system.raw(),
+                cosmic_text::Action::Motion(cosmic_text::Motion::Next),
+            );
+        }
+
+        editor.set_selection(cosmic_text::Selection::Normal(cursor));
+    }
+
+    let killed = editor.copy_selection().unwrap_or_default();
+
+    if killed.is_empty() {
+        editor.set_selection(cosmic_text::Selection::None);
+        return;
+    }
+
+    let _ = editor.delete_selection();
+    *KILLED.lock().expect("Lock kill buffer") = killed;
+}
+
+/// Inserts the text last killed, in place of the selection.
+fn yank(editor: &mut cosmic_text::Editor<'static>) {
+    let killed = KILLED.lock().expect("Lock kill buffer").clone();
+
+    if !killed.is_empty() {
+        editor.insert_string(&killed, None);
+    }
+}
+
+/// Swaps the characters (graphemes) around the cursor, or the two before
+/// it at the end of a line, and moves after them.
+fn transpose(editor: &mut cosmic_text::Editor<'static>) {
+    use unicode_segmentation::UnicodeSegmentation;
+
+    if editor.selection_bounds().is_some() {
+        return;
+    }
+
+    let cursor = editor.cursor();
+    let text = buffer_from_editor(editor).lines[cursor.line].text();
+    let graphemes: Vec<_> = text.grapheme_indices(true).collect();
+
+    // The grapheme after the cursor: at the end of the line, the last.
+    let Some(after) = graphemes
+        .iter()
+        .position(|(i, _)| *i >= cursor.index)
+        .or_else(|| graphemes.len().checked_sub(1))
+        .filter(|after| *after > 0)
+    else {
+        return;
+    };
+
+    let (start, before) = graphemes[after - 1];
+    let (at, after) = graphemes[after];
+    let swapped = format!("{after}{before}");
+    let end = at + after.len();
+
+    let at = |index| cosmic_text::Cursor { index, ..cursor };
+
+    editor.delete_range(at(start), at(end));
+    let moved = editor.insert_at(at(start), &swapped, None);
+    editor.set_cursor(moved);
+}
+
+/// Breaks the line after the cursor, in place of the selection; the
+/// cursor stays.
+fn open_line(editor: &mut cosmic_text::Editor<'static>) {
+    let _ = editor.delete_selection();
+
+    let cursor = editor.cursor();
+    let _ = editor.insert_at(cursor, "\n", None);
+    editor.set_cursor(cursor);
 }
 
 // Mtrx patch (editing): ⌥⌫, ⌘⌫ and the like.
@@ -983,6 +1075,8 @@ fn to_motions(motion: Motion) -> &'static [cosmic_text::Motion] {
         Motion::ParagraphForward => {
             &[cosmic_text::Motion::Next, cosmic_text::Motion::ParagraphEnd]
         }
+        Motion::ParagraphStart => &[cosmic_text::Motion::ParagraphStart],
+        Motion::ParagraphEnd => &[cosmic_text::Motion::ParagraphEnd],
     }
 }
 

@@ -104,7 +104,11 @@ impl Kind {
             | Edit::Unindent
             | Edit::Undo
             | Edit::Redo
-            | Edit::DeleteTo(_) => Self::Alone,
+            | Edit::DeleteTo(_)
+            | Edit::Kill
+            | Edit::Yank
+            | Edit::Transpose
+            | Edit::OpenLine => Self::Alone,
         }
     }
 

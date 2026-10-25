@@ -31,3 +31,8 @@ section B). Each is marked "Mtrx patch" in the code:
   and ⌘⌦ to the start and end of the line as shown (`Binding::DeleteTo`).
   ⌘↑ and ⌘↓ go to the start and end of the text (with ⇧, select), ⌥↑
   and ⌥↓ (Ctrl+↑ and Ctrl+↓ elsewhere) by paragraph.
+- `src/text_editor.rs` (editing): on macOS, the Emacs keys of its text
+  system (`emacs`) instead of `convert_macos_shortcut`, whose keys came
+  with a control character as their text and so bound nothing (only ⌃H
+  worked): ⌃A and ⌃E to the paragraph's edges, ⌃B ⌃F ⌃P ⌃N, ⌃H ⌃D, and
+  ⌃K, ⌃Y, ⌃T, ⌃O. The text input still uses `convert_macos_shortcut`.

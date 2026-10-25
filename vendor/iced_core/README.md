@@ -17,4 +17,6 @@ section B1). Each is marked "Mtrx patch" in the code:
   (`iced_graphics`). `Edit::DeleteTo(Motion)` deletes from the cursor to
   where a motion takes it (⌥⌫: a word). `Motion::ParagraphBackward` and
   `ParagraphForward` (⌥↑ and ⌥↓, which `Motion::widen` gives for ↑ and ↓)
-  go to the paragraph's start and end, on to the next when already there.
+  go to the paragraph's start and end, on to the next when already there;
+  `ParagraphStart` and `ParagraphEnd` (⌃A, ⌃E) stay in it. `Edit::Kill`,
+  `Yank`, `Transpose` and `OpenLine` for macOS's ⌃K, ⌃Y, ⌃T and ⌃O.

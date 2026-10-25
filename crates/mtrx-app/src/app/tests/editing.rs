@@ -435,3 +435,117 @@ fn option_up_and_down_go_by_paragraph() {
     assert_eq!(at(&mut field, Named::ArrowDown, jump()), (1, end));
     assert_eq!(field.content.selection(), None);
 }
+
+#[cfg(target_os = "macos")]
+impl Field {
+    /// ⌃ with `letter`, which gives a control character as its text.
+    fn control(&mut self, letter: char) {
+        let text = char::from(letter as u8 - b'a' + 1).to_string();
+        self.key(
+            Key::Character(letter.to_string().into()),
+            Modifiers::CTRL,
+            Some(&text),
+        );
+    }
+
+    /// The caret moved to `column` of `line`.
+    fn caret_at(&mut self, line: usize, column: usize) {
+        use iced::widget::text_editor::{Cursor, Position};
+        self.content.move_to(Cursor {
+            position: Position { line, column },
+            selection: None,
+        });
+    }
+
+    fn caret(&self) -> (usize, usize) {
+        let position = self.content.cursor().position;
+        (position.line, position.column)
+    }
+}
+
+/// iced's ⌃A, ⌃E, ⌃B, ⌃F and ⌃D bound nothing (their text is a control
+/// character); ⌃H did.
+#[cfg(target_os = "macos")]
+#[test]
+fn control_keys_move_and_delete() {
+    let long = "Ice shelves buttress the glaciers that feed them. ".repeat(4);
+    let text = format!("Calving fronts\n{}", long.trim_end());
+    let mut field = Field::new(&text);
+    // The paragraph's edges, not the line's as shown.
+    field.control('a');
+    assert_eq!(field.caret(), (1, 0));
+    field.control('e');
+    assert_eq!(field.caret(), (1, long.trim_end().len()));
+    field.caret_at(0, 7);
+    field.control('f');
+    assert_eq!(field.caret(), (0, 8));
+    field.control('b');
+    field.control('b');
+    assert_eq!(field.caret(), (0, 6));
+    field.control('n');
+    assert_eq!(field.caret().0, 1);
+    field.control('p');
+    assert_eq!(field.caret().0, 0);
+
+    let mut field = Field::new("Calving fronts");
+    field.caret_at(0, 7);
+    field.control('h');
+    field.control('d');
+    assert_eq!(field.content.text(), "Calvinfronts");
+}
+
+/// ⌃K kills to the end of the paragraph, ⌃Y yanks it back, in any editor.
+#[cfg(target_os = "macos")]
+#[test]
+fn control_k_kills_and_control_y_yanks() {
+    let mut field = Field::new("Calving fronts\nBasal melt");
+    field.caret_at(0, 7);
+    field.control('k');
+    assert_eq!(field.content.text(), "Calving\nBasal melt");
+    let mut other = Field::new("Retreating ");
+    other.control('y');
+    assert_eq!(other.content.text(), "Retreating  fronts");
+    // At the end of a line, its line ending; a step to undo.
+    field.control('k');
+    assert_eq!(field.content.text(), "CalvingBasal melt");
+    assert_eq!(field.undo(), "Calving\nBasal melt");
+    field.named(Named::ArrowDown, Modifiers::COMMAND);
+    field.control('y');
+    assert_eq!(field.content.text(), "Calving\nBasal melt\n");
+    // A selection.
+    let mut field = Field::new("Crème brûlée");
+    field.named(Named::ArrowLeft, Modifiers::SHIFT | Modifiers::ALT);
+    field.control('k');
+    assert_eq!(field.content.text(), "Crème ");
+    field.named(Named::Home, Modifiers::empty());
+    field.control('y');
+    assert_eq!(field.content.text(), "brûléeCrème ");
+}
+
+/// ⌃T swaps the characters around the caret (the two before it at a
+/// line's end), ⌃O breaks the line after it.
+#[cfg(target_os = "macos")]
+#[test]
+fn control_t_transposes_and_control_o_opens_a_line() {
+    let mut field = Field::new("brûlé");
+    field.control('t');
+    assert_eq!(field.content.text(), "brûél");
+    field.caret_at(0, "br".len());
+    field.control('t');
+    assert_eq!(field.content.text(), "bûrél");
+    assert_eq!(field.caret(), (0, "bûr".len()));
+    // A letter and its combining accent move together.
+    let mut field = Field::new("xe\u{301}");
+    field.control('t');
+    assert_eq!(field.content.text(), "e\u{301}x");
+    // Nothing before the caret.
+    field.caret_at(0, 0);
+    field.control('t');
+    assert_eq!(field.content.text(), "e\u{301}x");
+
+    let mut field = Field::new("Calving fronts");
+    field.caret_at(0, 7);
+    field.control('o');
+    assert_eq!(field.content.text(), "Calving\n fronts");
+    assert_eq!(field.caret(), (0, 7));
+}

@@ -162,8 +162,12 @@ so that Enter probably sends the half-composed text today.
 - [x] ⌥↑ and ⌥↓ go to the start and end of the paragraph, then on to the
       one before or after (with ⇧, select). The timeline takes them (A2)
       while no editor is focused.
-- [ ] ⌃K deletes to the end of the line, ⌃Y yanks it back, ⌃T transposes,
-      ⌃N and ⌃P move down and up, ⌃O opens a line.
+- [x] ⌃K deletes to the end of the line, ⌃Y yanks it back, ⌃T transposes,
+      ⌃N and ⌃P move down and up, ⌃O opens a line. macOS only. ⌃K goes to
+      the end of the paragraph, as macOS's; its text is kept once for the
+      app, so ⌃Y yanks it into the other editor too. iced's ⌃A, ⌃E, ⌃B, ⌃F
+      and ⌃D did nothing (their text, a control character, typed nothing);
+      they work now, ⌃A and ⌃E to the paragraph's edges as macOS's.
 - [ ] Dragging selected text moves it; dropping text inserts it.
 
 ## C. Menu bar

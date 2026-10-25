@@ -134,6 +134,16 @@ pub enum Edit {
     /// Delete the selection, or from the cursor to where the [`Motion`]
     /// takes it (a character if it takes it nowhere): ⌥⌫ deletes a word.
     DeleteTo(Motion),
+    /// Delete the selection, or to the end of the paragraph (its line
+    /// ending, when there), keeping it for [`Edit::Yank`]: ⌃K.
+    Kill,
+    /// Insert the text last deleted by [`Edit::Kill`], in any editor: ⌃Y.
+    Yank,
+    /// Swap the characters around the cursor (at the end of a line, the
+    /// two before it), and move after them: ⌃T.
+    Transpose,
+    /// Break the line after the cursor, which stays: ⌃O.
+    OpenLine,
 }
 
 /// A cursor movement.
@@ -170,6 +180,11 @@ pub enum Motion {
     /// Move to the end of the paragraph, or of the one after when already
     /// there.
     ParagraphForward,
+    // Mtrx patch (editing): ⌃A and ⌃E.
+    /// Move to the start of the paragraph.
+    ParagraphStart,
+    /// Move to the end of the paragraph.
+    ParagraphEnd,
 }
 
 impl Motion {
@@ -196,14 +211,16 @@ impl Motion {
             | Self::Home
             | Self::PageUp
             | Self::DocumentStart
-            | Self::ParagraphBackward => Direction::Left,
+            | Self::ParagraphBackward
+            | Self::ParagraphStart => Direction::Left,
             Self::Right
             | Self::Down
             | Self::WordRight
             | Self::End
             | Self::PageDown
             | Self::DocumentEnd
-            | Self::ParagraphForward => Direction::Right,
+            | Self::ParagraphForward
+            | Self::ParagraphEnd => Direction::Right,
         }
     }
 }

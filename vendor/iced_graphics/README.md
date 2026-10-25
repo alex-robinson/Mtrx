@@ -21,4 +21,5 @@
   nowhere (⌘⌫ at a line's start joins it to the one before). A motion may
   take several of cosmic-text's (`to_motions`): the paragraph motions go
   back (forward) a character first, so that they go on to the paragraph
-  before (after).
+  before (after). ⌃K's text is kept in one buffer for the app (`KILLED`),
+  as macOS has, for ⌃Y in any editor; ⌃T swaps graphemes.

@@ -933,6 +933,14 @@ where
                             Binding::DeleteTo(motion) => {
                                 publish(Action::Edit(Edit::DeleteTo(motion)));
                             }
+                            Binding::Kill => publish(Action::Edit(Edit::Kill)),
+                            Binding::Yank => publish(Action::Edit(Edit::Yank)),
+                            Binding::Transpose => {
+                                publish(Action::Edit(Edit::Transpose));
+                            }
+                            Binding::OpenLine => {
+                                publish(Action::Edit(Edit::OpenLine));
+                            }
                             Binding::Sequence(sequence) => {
                                 for binding in sequence {
                                     apply_binding(
@@ -1210,6 +1218,14 @@ pub enum Binding<Message> {
     Redo,
     /// Delete the selection, or to where a [`Motion`] goes.
     DeleteTo(Motion),
+    /// Delete to the end of the paragraph, keeping it to yank: ⌃K.
+    Kill,
+    /// Insert the text last killed: ⌃Y.
+    Yank,
+    /// Swap the characters around the cursor: ⌃T.
+    Transpose,
+    /// Break the line after the cursor: ⌃O.
+    OpenLine,
     /// A sequence of bindings to execute.
     Sequence(Vec<Self>),
     /// Produce the given message.
@@ -1278,9 +1294,13 @@ impl<Message> Binding<Message> {
             return Some(binding);
         }
 
+        // Mtrx patch (editing): instead of `convert_macos_shortcut`, whose
+        // keys came with a control character as their text, which typed
+        // nothing and so bound nothing (only ⌃H worked).
         #[cfg(target_os = "macos")]
-        let modified_key =
-            convert_macos_shortcut(&key, modifiers).unwrap_or(modified_key);
+        if let Some(binding) = emacs(&key, physical_key, modifiers) {
+            return Some(binding);
+        }
 
         match modified_key.as_ref() {
             keyboard::Key::Named(key::Named::Enter) => Some(Self::Enter),
@@ -1628,6 +1648,35 @@ pub(crate) fn is_shortcut(modifiers: keyboard::Modifiers) -> bool {
     } else {
         modifiers.control() && !modifiers.alt()
     }
+}
+
+/// Mtrx patch (editing): the Emacs keys of macOS's text system, as its
+/// standard key bindings have them.
+#[cfg(target_os = "macos")]
+fn emacs<Message>(
+    key: &keyboard::Key,
+    physical_key: key::Physical,
+    modifiers: keyboard::Modifiers,
+) -> Option<Binding<Message>> {
+    if modifiers != keyboard::Modifiers::CTRL {
+        return None;
+    }
+
+    Some(match key.to_latin(physical_key)? {
+        'a' => Binding::Move(Motion::ParagraphStart),
+        'e' => Binding::Move(Motion::ParagraphEnd),
+        'b' => Binding::Move(Motion::Left),
+        'f' => Binding::Move(Motion::Right),
+        'p' => Binding::Move(Motion::Up),
+        'n' => Binding::Move(Motion::Down),
+        'h' => Binding::Backspace,
+        'd' => Binding::Delete,
+        'k' => Binding::Kill,
+        'y' => Binding::Yank,
+        't' => Binding::Transpose,
+        'o' => Binding::OpenLine,
+        _ => return None,
+    })
 }
 
 #[cfg(target_os = "macos")]
