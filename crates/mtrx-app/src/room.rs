@@ -291,6 +291,12 @@ impl Room {
         }));
     }
 
+    /// The card of `user`, mentioned here: see [`mentioned`].
+    pub fn mentioned(&self, user: OwnedUserId) -> info::Target {
+        let members = self.member_list.as_ref().and_then(|m| m.as_deref().ok());
+        mentioned(user, members, &self.entries)
+    }
+
     /// Complete the mention being written with `mention`.
     pub fn complete(&mut self, mention: &str) {
         if let Some(completion) = self.completion.take() {
@@ -1798,6 +1804,27 @@ fn sender_line<'a>(
     .into()
 }
 
+/// The card of `user`, mentioned in `entries`: their name and picture
+/// among `members` if loaded, else the name the newest mention shows.
+fn mentioned(
+    user: OwnedUserId,
+    members: Option<&[Member]>,
+    entries: &[TimelineEntry],
+) -> info::Target {
+    let member = members.and_then(|members| members.iter().find(|m| m.id == user));
+    let name = member.and_then(|m| m.name.clone()).or_else(|| {
+        entries.iter().rev().find_map(|entry| match entry {
+            TimelineEntry::Event(Event {
+                content: EventContent::Message(m),
+                ..
+            }) => m.document.mention_name(user.as_str()).map(str::to_owned),
+            _ => None,
+        })
+    });
+    let avatar = member.and_then(|m| m.avatar.clone());
+    info::sender(user, name, avatar)
+}
+
 /// Opens the sender's info card.
 fn sender_info(event: &Event) -> Message {
     Message::ShowInfo(info::sender(
@@ -2017,6 +2044,44 @@ mod tests {
         assert_eq!(offset(300.0), Some(2000.0 - 300.0 - (200.0 - 140.0)));
         // Partly below.
         assert!(offset(890.0).is_some());
+    }
+
+    /// A mentioned person's card has their name and picture as a member,
+    /// else the name the newest mention of them shows.
+    #[test]
+    fn a_mentioned_persons_card_has_what_the_room_knows() {
+        let nils: OwnedUserId = "@nils:x".try_into().unwrap();
+        let mention = |id: &str, name: &str| {
+            let mut event = Event::test_message(id, "@ana:x".try_into().unwrap(), name);
+            if let EventContent::Message(m) = &mut event.content {
+                m.document = mtrx_format::Document::from_html(&format!(
+                    r#"Ask <a href="https://matrix.to/#/@nils:x">{name}</a>"#
+                ));
+            }
+            TimelineEntry::Event(event)
+        };
+        let entries = [mention("$a", "Nils"), mention("$b", "Nils W")];
+        let member = Member {
+            id: nils.clone(),
+            name: Some("Nils Wolf".into()),
+            avatar: Some("mxc://x/nils".into()),
+            role: mtrx_core::Role::Member,
+            invited: false,
+        };
+        let card = |members: Option<&[Member]>, entries: &[TimelineEntry]| match mentioned(
+            nils.clone(),
+            members,
+            entries,
+        ) {
+            info::Target::User(user) => (user.name, user.avatar.map(|a| a.to_string())),
+            info::Target::Room(_) => panic!("a room's card"),
+        };
+        assert_eq!(
+            card(Some(&[member]), &entries),
+            (Some("Nils Wolf".into()), Some("mxc://x/nils".into()))
+        );
+        assert_eq!(card(None, &entries), (Some("Nils W".into()), None));
+        assert_eq!(card(Some(&[]), &[]), (None, None));
     }
 
     fn own_message(id: &str, send_state: SendState) -> TimelineEntry {
