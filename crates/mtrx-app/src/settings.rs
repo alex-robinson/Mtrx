@@ -15,7 +15,8 @@ use iced::{
     },
 };
 use mtrx_core::{
-    CallService, GoogleClient, Grouping, OwnedRoomId, Permissions, RoomListColours, ServiceKind,
+    AtHome, CallService, GoogleClient, Grouping, OwnedRoomId, Permissions, RoomListColours,
+    ServiceKind,
 };
 use serde::{Deserialize, Serialize};
 
@@ -131,6 +132,8 @@ pub enum Message {
     DesktopNotifications(bool),
     IconBadge(bool),
     RoomList(Grouping),
+    /// Which rooms of spaces Home lists too.
+    AtHome(AtHome),
     RoomPictures(bool),
     PinnedNotes(bool),
     SharePresence(bool),
@@ -185,6 +188,8 @@ pub enum Action {
     GoogleSignOut,
     /// Set the room list's colour in a space, or at home, in the account.
     Colour(Option<OwnedRoomId>, Tint),
+    /// Set which rooms of spaces Home lists too, in the account.
+    AtHome(AtHome),
 }
 
 /// State of the open settings panel.
@@ -399,6 +404,7 @@ impl Panel {
                 settings.room_list = grouping;
                 return Action::Save;
             }
+            Message::AtHome(at_home) => return Action::AtHome(at_home),
             Message::RoomPictures(on) => {
                 settings.room_pictures = on;
                 return Action::Save;
@@ -524,12 +530,14 @@ impl Panel {
     }
 
     /// `spaces`: the top-level spaces, for their room list colours;
+    /// `at_home`: which rooms of spaces Home lists, from the account;
     /// `presence_shared`: the server shares presence (as far as known).
     pub fn view<'a>(
         &'a self,
         settings: &'a Settings,
         spaces: Vec<(OwnedRoomId, String)>,
         colours: &RoomListColours,
+        at_home: AtHome,
         presence_shared: bool,
     ) -> Element<'a, app::Message> {
         let mut panel = column![
@@ -606,6 +614,7 @@ impl Panel {
             ),
             heading("Room list"),
             room_list_options(settings.room_list),
+            home_options(at_home, settings.room_list),
             option(
                 "Room pictures",
                 "Rooms show their picture or initial, instead of # for public \
@@ -999,6 +1008,46 @@ fn room_list_options<'a>(grouping: Grouping) -> Element<'a, app::Message> {
     .into()
 }
 
+/// Which rooms of spaces Home lists too. Favourites only matter while Home
+/// leaves out the rest and the room list has its Favourites section.
+fn home_options<'a>(at_home: AtHome, grouping: Grouping) -> Element<'a, app::Message> {
+    let favourites = if at_home.all_rooms {
+        "Home already shows every room."
+    } else if !grouping.favourites {
+        "Needs the Favourites section."
+    } else {
+        "Favourites from your spaces also show at Home, in Favourites."
+    };
+    let can_favourite = !at_home.all_rooms && grouping.favourites;
+    column![
+        option(
+            "Show all rooms at Home",
+            "Also the rooms of your spaces; otherwise Home has your chats, \
+             invites and rooms in no space. Synced to your other devices.",
+            toggler(at_home.all_rooms)
+                .on_toggle(move |all_rooms| message(Message::AtHome(AtHome {
+                    all_rooms,
+                    ..at_home
+                })))
+                .into(),
+        ),
+        option(
+            "Show favourites at Home",
+            favourites,
+            toggler(at_home.favourites)
+                .on_toggle_maybe(can_favourite.then_some(move |favourites| {
+                    message(Message::AtHome(AtHome {
+                        favourites,
+                        ..at_home
+                    }))
+                }))
+                .into(),
+        ),
+    ]
+    .spacing(14)
+    .into()
+}
+
 fn option<'a>(
     label: &'a str,
     description: impl text::IntoFragment<'a>,
@@ -1109,6 +1158,19 @@ mod tests {
         let action = Panel::default().update(&mut settings, Message::SharePresence(false));
         assert!(matches!(action, Action::SharePresence));
         assert!(!settings.share_presence);
+    }
+
+    #[test]
+    fn what_home_lists_goes_to_the_account() {
+        let mut settings = Settings::default();
+        let at_home = AtHome {
+            all_rooms: true,
+            favourites: false,
+        };
+        let action = Panel::default().update(&mut settings, Message::AtHome(at_home));
+        assert!(matches!(action, Action::AtHome(sent) if sent == at_home));
+        // Not in the settings file.
+        assert_eq!(settings, Settings::default());
     }
 
     #[test]

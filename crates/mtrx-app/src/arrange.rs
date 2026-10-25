@@ -9,8 +9,8 @@ use std::{
 
 use iced::{Point, Subscription, Task, event, mouse};
 use mtrx_core::{
-    Grouping, OwnedRoomId, OwnedUserId, RoomCategories, RoomSummary, RoomTag, Section, Session,
-    Sort, SpaceMembers, home_rooms, space_rooms,
+    AtHome, Grouping, OwnedRoomId, OwnedUserId, RoomCategories, RoomSummary, RoomTag, Section,
+    Session, Sort, SpaceMembers, home_rooms, space_rooms,
 };
 
 use tracing::warn;
@@ -55,6 +55,8 @@ pub enum Message {
     Delete(String),
     MoveCategory(String, isize),
     Sort(String, Sort),
+    /// Which rooms of spaces Home lists too, from the settings.
+    AtHome(AtHome),
     TagSaved(OwnedRoomId, Result<(), String>),
     Saved(Result<(), String>),
 }
@@ -160,15 +162,17 @@ impl Arrange {
     }
 
     /// What `space` lists, or Home for `None`, in the order of `rooms`: the
-    /// room list's rooms and what lights the space bar's dot. A space whose
-    /// members are not loaded yet lists no direct chats.
+    /// room list's rooms, what its search finds and what lights the space
+    /// bar's dot. A space whose members are not loaded yet lists no direct
+    /// chats; Home lists the rooms of spaces as [`AtHome`] says.
     pub fn listed<'a>(
         &self,
         rooms: &'a [RoomSummary],
         space: Option<&OwnedRoomId>,
+        grouping: &Grouping,
     ) -> Vec<&'a RoomSummary> {
         match space {
-            None => home_rooms(rooms),
+            None => home_rooms(rooms, &self.categories, grouping),
             Some(space) => space_rooms(
                 rooms,
                 space,
@@ -392,6 +396,9 @@ impl Arrange {
                         category.sort = sort;
                     }
                 });
+            }
+            Message::AtHome(at_home) => {
+                return self.change(context.session, move |c| c.at_home = at_home);
             }
             Message::TagSaved(room, Ok(())) => {
                 if let Some(pending) = self.pending_tags.get_mut(&room) {

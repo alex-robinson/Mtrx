@@ -5,7 +5,7 @@ use std::collections::{HashMap, HashSet};
 
 use matrix_sdk::ruma::{OwnedRoomId, OwnedUserId, RoomId};
 
-use crate::{Layout, RoomCategories, RoomKind, RoomSummary};
+use crate::{Grouping, Layout, RoomCategories, RoomKind, RoomSummary, RoomTag};
 
 /// Joined spaces in no joined space, in the order of `rooms` (the list's,
 /// most recently active first). Nested spaces show through these.
@@ -45,10 +45,30 @@ fn listed(room: &RoomSummary) -> bool {
     room.kind != RoomKind::Space || room.invited
 }
 
-/// What Home lists, in the order of `rooms`: every room and direct chat, and
-/// invites to spaces.
-pub fn home_rooms(rooms: &[RoomSummary]) -> Vec<&RoomSummary> {
-    rooms.iter().filter(|r| listed(r)).collect()
+/// What Home lists, in the order of `rooms`: direct chats, invites (to
+/// spaces too), rooms in no space and rooms the user put into Home's
+/// categories; and, as [`RoomCategories::at_home`] says, every room or the
+/// favourites in spaces (those only when the room list has its Favourites
+/// section, by `grouping`). A room is in a space when a joined space lists it
+/// as a child ([`RoomSummary::parents`]).
+pub fn home_rooms<'a>(
+    rooms: &'a [RoomSummary],
+    categories: &RoomCategories,
+    grouping: &Grouping,
+) -> Vec<&'a RoomSummary> {
+    let at_home = categories.at_home;
+    rooms
+        .iter()
+        .filter(|r| listed(r))
+        .filter(|r| {
+            at_home.all_rooms
+                || r.invited
+                || r.kind == RoomKind::Direct
+                || r.parents.is_empty()
+                || categories.home.category_of(&r.id).is_some()
+                || (at_home.favourites && grouping.favourites && r.tag == RoomTag::Favourite)
+        })
+        .collect()
 }
 
 /// What a space lists, in the order of `rooms`: everything below it
@@ -267,14 +287,51 @@ mod tests {
     }
 
     #[test]
-    fn home_lists_rooms_chats_and_invites_but_no_joined_spaces() {
-        let rooms = list();
-        let home: Vec<_> = home_rooms(&rooms).iter().map(|r| r.id.as_str()).collect();
+    fn home_lists_chats_invites_and_rooms_in_no_space() {
+        let mut rooms = list();
+        rooms.push(RoomSummary {
+            tag: RoomTag::Favourite,
+            ..room("!star:x", RoomKind::Room, &["!other:x"])
+        });
+        let mut categories = RoomCategories::default();
+        let home = |categories: &RoomCategories, grouping: &Grouping| -> Vec<String> {
+            home_rooms(&rooms, categories, grouping)
+                .iter()
+                .map(|r| r.id.to_string())
+                .collect()
+        };
+        let grouping = Grouping::default();
+        // No joined spaces; the nested invite is an invite.
         assert_eq!(
-            home,
+            home(&categories, &grouping),
+            [
+                "!bob:x", "!offer:x", "!loose:x", "!carol:x", "!guild:x", "!club:x"
+            ]
+        );
+        // Rooms of spaces put into Home's categories.
+        let mine = categories.home.add_category("Mine");
+        categories
+            .home
+            .place(&owned_room_id!("!lab:x"), Some(&mine));
+        assert_eq!(home(&categories, &grouping)[1], "!lab:x");
+        categories.home.remove_category(&mine);
+
+        // Favourites of spaces, in the Favourites section.
+        categories.at_home.favourites = true;
+        assert_eq!(home(&categories, &grouping).last().unwrap(), "!star:x");
+        let no_favourites = Grouping {
+            favourites: false,
+            ..grouping
+        };
+        assert!(!home(&categories, &no_favourites).contains(&"!star:x".to_owned()));
+
+        // Everything.
+        categories.at_home.all_rooms = true;
+        assert_eq!(
+            home(&categories, &grouping),
             [
                 "!bob:x", "!lab:x", "!offer:x", "!loose:x", "!deep:x", "!carol:x", "!guild:x",
-                "!club:x", "!both:x"
+                "!club:x", "!both:x", "!star:x"
             ]
         );
     }

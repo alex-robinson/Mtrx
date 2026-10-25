@@ -59,9 +59,14 @@ pub fn ancestors(rooms: &[RoomSummary], room: &OwnedRoomId) -> Vec<OwnedRoomId> 
 
 /// Whether anything `space` lists (Home for `None`) is unread: its dot in
 /// the space bar.
-fn unread(rooms: &[RoomSummary], space: Option<&OwnedRoomId>, arrange: &Arrange) -> bool {
+fn unread(
+    rooms: &[RoomSummary],
+    space: Option<&OwnedRoomId>,
+    arrange: &Arrange,
+    grouping: &Grouping,
+) -> bool {
     arrange
-        .listed(rooms, space)
+        .listed(rooms, space, grouping)
         .iter()
         .any(|r| r.unread_messages > 0)
 }
@@ -76,7 +81,7 @@ fn sections<'a>(view: &RoomListView<'a>) -> Vec<(Section, Vec<&'a RoomSummary>)>
     };
     let listed = view
         .arrange
-        .listed(view.rooms, space)
+        .listed(view.rooms, space, &view.grouping)
         .into_iter()
         .filter(|r| Some(&r.id) != pinned);
     view.arrange
@@ -85,16 +90,17 @@ fn sections<'a>(view: &RoomListView<'a>) -> Vec<(Section, Vec<&'a RoomSummary>)>
         .group(listed, &view.grouping)
 }
 
-/// What the search finds in `space`, or everywhere at Home: rooms and chats
+/// What the search finds in what `space` (or Home) lists: rooms and chats
 /// whose name contains `filter` (lower case), names starting with it first.
 pub fn search<'a>(
     rooms: &'a [RoomSummary],
     space: Option<&OwnedRoomId>,
     arrange: &Arrange,
+    grouping: &Grouping,
     filter: &str,
 ) -> Vec<&'a RoomSummary> {
     let mut found: Vec<_> = arrange
-        .listed(rooms, space)
+        .listed(rooms, space, grouping)
         .into_iter()
         .filter(|r| r.kind != RoomKind::Space)
         .filter_map(|r| {
@@ -111,11 +117,18 @@ pub fn first_match<'a>(
     rooms: &'a [RoomSummary],
     space: Option<&OwnedRoomId>,
     arrange: &Arrange,
+    grouping: &Grouping,
     filter: &str,
 ) -> Option<&'a RoomSummary> {
-    search(rooms, space, arrange, &filter.trim().to_lowercase())
-        .into_iter()
-        .next()
+    search(
+        rooms,
+        space,
+        arrange,
+        grouping,
+        &filter.trim().to_lowercase(),
+    )
+    .into_iter()
+    .next()
 }
 
 /// The rooms the room list shows (in collapsed sections too), or those
@@ -128,7 +141,8 @@ fn listed<'a>(view: &RoomListView<'a>) -> Vec<&'a RoomSummary> {
             .flat_map(|(_, entries)| entries)
             .collect()
     } else {
-        search(view.rooms, view.selected_space, view.arrange, &filter)
+        let (space, arrange) = (view.selected_space, view.arrange);
+        search(view.rooms, space, arrange, &view.grouping, &filter)
     }
 }
 
@@ -236,6 +250,7 @@ pub fn space_bar<'a>(
     rooms: &[RoomSummary],
     selected: Option<&OwnedRoomId>,
     arrange: &Arrange,
+    grouping: &Grouping,
     avatars: &Avatars,
 ) -> Element<'a, Message> {
     let entry = |icon: Element<'a, Message>, title: String, target: Option<OwnedRoomId>, unread| {
@@ -259,7 +274,7 @@ pub fn space_bar<'a>(
         home_icon(),
         "Home".into(),
         None,
-        unread(rooms, None, arrange)
+        unread(rooms, None, arrange, grouping)
     )];
     for space in top_level_spaces(rooms) {
         let icon = avatars.view(
@@ -273,7 +288,7 @@ pub fn space_bar<'a>(
             icon,
             space.name.clone(),
             Some(space.id.clone()),
-            unread(rooms, Some(&space.id), arrange),
+            unread(rooms, Some(&space.id), arrange, grouping),
         ));
     }
     let new_space = button(
@@ -421,12 +436,12 @@ pub fn room_list<'a>(view: RoomListView<'a>) -> Element<'a, Message> {
         }
         list = list.extend(arranged(&view));
     } else {
-        let found = search(rooms, selected_space, view.arrange, &filter);
+        let found = search(rooms, selected_space, view.arrange, &view.grouping, &filter);
         if found.is_empty() {
             let none = if selected_space.is_some() {
                 "No rooms or chats in this space match."
             } else {
-                "No rooms or chats match."
+                "No rooms or chats at Home match."
             };
             list = list.push(container(text(none).size(12).style(text::secondary)).padding([8, 8]));
         } else {
@@ -479,7 +494,7 @@ fn arranged<'a>(view: &RoomListView<'a>) -> Vec<Element<'a, Message>> {
             .filter(|n| matches!(&section, Section::Category(id) if n.category == *id));
         let mut block = column![match renaming {
             Some(naming) => name_input(&naming.name),
-            None => section_header(layout, &section, collapsed, arrange),
+            None => section_header(&section, collapsed, space, arrange),
         }];
         if let Section::Category(id) = &section
             && arrange.category_menu.as_ref() == Some(id)
@@ -525,11 +540,20 @@ fn arrange_message(message: arrange::Message) -> Message {
     Message::Arrange(message)
 }
 
-fn section_name<'a>(layout: &'a Layout, section: &Section) -> &'a str {
+/// A section's name in the room list of `space` (Home for `None`). Home's
+/// rooms not in a category are those in no space, unless it lists all.
+fn section_name<'a>(
+    arrange: &'a Arrange,
+    space: Option<&OwnedRoomId>,
+    section: &Section,
+) -> &'a str {
+    let categories = &arrange.categories;
     match section {
         Section::Invites => "Invites",
         Section::Favourites => "Favourites",
-        Section::Category(id) => layout.category(id).map_or("", |c| c.name.as_str()),
+        Section::Category(id) => (categories.layout(space.map(|s| s.as_ref())).category(id))
+            .map_or("", |c| c.name.as_str()),
+        Section::Rooms if space.is_none() && !categories.at_home.all_rooms => "Rooms with no space",
         Section::Rooms => "Rooms",
         Section::People => "Direct messages",
         Section::LowPriority => "Low priority",
@@ -539,16 +563,16 @@ fn section_name<'a>(layout: &'a Layout, section: &Section) -> &'a str {
 /// A section's name, which collapses and expands it; a category's also
 /// has its menu.
 fn section_header<'a>(
-    layout: &Layout,
     section: &Section,
     collapsed: bool,
+    space: Option<&OwnedRoomId>,
     arrange: &Arrange,
 ) -> Element<'a, Message> {
     let chevron = if collapsed { "▸" } else { "▾" };
     let title = button(
         row![
             text(chevron).size(10).style(text::secondary),
-            section_title(section_name(layout, section)),
+            section_title(section_name(arrange, space, section)),
         ]
         .spacing(6)
         .align_y(Alignment::Center),
@@ -1352,36 +1376,115 @@ mod tests {
         unread_in(&mut rooms, "!bob:x");
         let mut arrange = Arrange::default();
         // Before its members are known the space lists no direct chats.
-        assert!(!unread(&rooms, Some(&space()), &arrange));
+        assert!(!unread(
+            &rooms,
+            Some(&space()),
+            &arrange,
+            &Grouping::default()
+        ));
         // Loaded for every top-level space, selected or not.
         assert_eq!(arrange.space_members.due(&rooms), [(space(), 0)]);
         let bob: OwnedUserId = "@bob:x".try_into().unwrap();
         arrange
             .space_members
             .loaded(space(), 0, HashSet::from([bob]));
-        assert!(unread(&rooms, Some(&space()), &arrange));
-        assert!(unread(&rooms, None, &arrange));
+        assert!(unread(
+            &rooms,
+            Some(&space()),
+            &arrange,
+            &Grouping::default()
+        ));
+        assert!(unread(&rooms, None, &arrange, &Grouping::default()));
     }
 
     #[test]
-    fn search_finds_what_the_space_lists_and_everything_at_home() {
+    fn search_finds_what_the_space_or_home_lists() {
         let rooms = rooms();
-        let arrange = Arrange::default();
-        let found = |space: Option<&OwnedRoomId>| -> Vec<&str> {
-            search(&rooms, space, &arrange, "")
+        let mut arrange = Arrange::default();
+        let grouping = Grouping::default();
+        let found = |space: Option<&OwnedRoomId>, arrange: &Arrange| -> Vec<String> {
+            search(&rooms, space, arrange, &grouping, "")
                 .iter()
-                .map(|r| r.id.as_str())
+                .map(|r| r.id.to_string())
                 .collect()
         };
-        assert_eq!(found(Some(&space())), ["!inside:x"]);
-        assert_eq!(found(None), ["!bob:x", "!inside:x", "!loose:x"]);
+        let first = |space: Option<&OwnedRoomId>, arrange: &Arrange, filter| {
+            first_match(&rooms, space, arrange, &grouping, filter).map(|r| r.id.to_string())
+        };
+        assert_eq!(found(Some(&space()), &arrange), ["!inside:x"]);
+        assert_eq!(first(Some(&space()), &arrange, " LOO"), None);
+        // Home leaves out the space's room.
+        assert_eq!(found(None, &arrange), ["!bob:x", "!loose:x"]);
+        assert_eq!(first(None, &arrange, " LOO").as_deref(), Some("!loose:x"));
+        assert_eq!(first(None, &arrange, "ins"), None);
+        // Unless it lists all rooms.
+        arrange.categories.at_home.all_rooms = true;
+        assert_eq!(found(None, &arrange), ["!bob:x", "!inside:x", "!loose:x"]);
+        assert_eq!(first(None, &arrange, "ins").as_deref(), Some("!inside:x"));
+    }
+
+    #[test]
+    fn home_lists_chats_invites_and_rooms_in_no_space_unless_set() {
+        let mut rooms = rooms();
+        rooms.push(RoomSummary {
+            tag: RoomTag::Favourite,
+            ..room("!star:x", RoomKind::Room, &["!space:x"])
+        });
+        rooms.push(RoomSummary {
+            invited: true,
+            ..room("!offer:x", RoomKind::Room, &["!space:x"])
+        });
+        unread_in(&mut rooms, "!inside:x");
+        let (avatars, presences) = (Avatars::new(), Presences::default());
+        let mut arrange = Arrange::default();
+        let grouping = Grouping::default();
+        // The rooms of each non-empty section, with its name.
+        let home = |arrange: &Arrange| -> Vec<(String, Vec<String>)> {
+            let view = list(&rooms, None, "", arrange, &avatars, &presences);
+            sections(&view)
+                .into_iter()
+                .filter(|(_, entries)| !entries.is_empty())
+                .map(|(section, entries)| {
+                    let name = section_name(arrange, None, &section).to_owned();
+                    (name, entries.iter().map(|r| r.id.to_string()).collect())
+                })
+                .collect()
+        };
+        let section = |name: &str, ids: &[&str]| -> (String, Vec<String>) {
+            (name.into(), ids.iter().map(|id| id.to_string()).collect())
+        };
+
         assert_eq!(
-            first_match(&rooms, Some(&space()), &arrange, " LOO").map(|r| r.id.as_str()),
-            None
+            home(&arrange),
+            [
+                section("Invites", &["!offer:x"]),
+                section("Rooms with no space", &["!loose:x"]),
+                section("Direct messages", &["!bob:x"]),
+            ]
         );
+        // The space's unread room does not light Home.
+        assert!(!unread(&rooms, None, &arrange, &grouping));
+
+        arrange.categories.at_home.favourites = true;
+        assert_eq!(home(&arrange)[1], section("Favourites", &["!star:x"]));
+        assert!(!unread(&rooms, None, &arrange, &grouping));
+
+        arrange.categories.at_home.all_rooms = true;
         assert_eq!(
-            first_match(&rooms, None, &arrange, " LOO").map(|r| r.id.as_str()),
-            Some("!loose:x")
+            home(&arrange),
+            [
+                section("Invites", &["!offer:x"]),
+                section("Favourites", &["!star:x"]),
+                section("Rooms", &["!inside:x", "!loose:x"]),
+                section("Direct messages", &["!bob:x"]),
+            ]
+        );
+        assert!(unread(&rooms, None, &arrange, &grouping));
+        // A space's rooms are always just "Rooms".
+        arrange.categories.at_home.all_rooms = false;
+        assert_eq!(
+            section_name(&arrange, Some(&space()), &Section::Rooms),
+            "Rooms"
         );
     }
 
@@ -1390,12 +1493,22 @@ mod tests {
         let mut rooms = rooms();
         unread_in(&mut rooms, "!loose:x");
         let mut arrange = Arrange::default();
-        assert!(!unread(&rooms, Some(&space()), &arrange));
+        assert!(!unread(
+            &rooms,
+            Some(&space()),
+            &arrange,
+            &Grouping::default()
+        ));
         let layout = arrange.categories.layout_mut(Some(&space()));
         let category = layout.add_category("Mine");
         let loose: OwnedRoomId = "!loose:x".try_into().unwrap();
         layout.place(&loose, Some(&category));
-        assert!(unread(&rooms, Some(&space()), &arrange));
+        assert!(unread(
+            &rooms,
+            Some(&space()),
+            &arrange,
+            &Grouping::default()
+        ));
     }
 
     /// The room list in `space` (Home for `None`), searching `filter`.
@@ -1477,6 +1590,17 @@ mod tests {
             rows(view).iter().map(|r| r.id.to_string()).collect()
         };
         let id = |id: &str| -> OwnedRoomId { id.try_into().unwrap() };
+
+        // What Home shows: not the space's room.
+        let home = list(&rooms, None, "", &arrange, &avatars, &presences);
+        assert_eq!(ids(&home), ["!fav:x", "!loose:x", "!bob:x", "!notes:x"]);
+        assert_eq!(
+            go_to(&home, Go::Row(1))
+                .map(|r| r.id.to_string())
+                .as_deref(),
+            Some("!loose:x")
+        );
+        arrange.categories.at_home.all_rooms = true;
 
         // Sections in their order, the pinned Notes first.
         let mut home = list(&rooms, None, "", &arrange, &avatars, &presences);
