@@ -2452,6 +2452,9 @@ impl App {
                     },
                 )
             }
+            settings::Action::AtHome(at_home) => {
+                self.update(Message::Arrange(arrange::Message::AtHome(at_home)))
+            }
             settings::Action::GoogleSignOut => {
                 let google = self.google.clone();
                 Task::perform(async move { google.sign_out().await }, |result| {
@@ -3400,6 +3403,7 @@ impl App {
                             &self.settings,
                             spaces,
                             &main.colours,
+                            main.arrange.categories.at_home,
                             !main.presences.unavailable(),
                         ),
                         Message::ShowSettings(false),
