@@ -10,3 +10,11 @@ section B1). Each is marked "Mtrx patch" in the code:
   so Dictation would not start; it now reports one at the end of the
   marked text. A commit outside a key press no longer swallows the next
   key. Drop this copy once a 0.30 release has it.
+- `src/platform_impl/macos/view.rs`: keys the input system consumes.
+  While the press-and-hold accent menu is up, AppKit keeps the repeats of
+  the held letter, and a digit choosing an accent, for itself:
+  `interpretKeyEvents` answers them with none of `insertText`,
+  `setMarkedText`, `unmarkText` or `doCommandBySelector`. winit sent them
+  on with their text, so the letter was typed again and again, and the
+  digit too. Such a key now goes out without text. Upstream: iced #3266
+  (https://github.com/iced-rs/iced/issues/3266); winit master is the same.

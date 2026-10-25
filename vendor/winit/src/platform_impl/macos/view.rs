@@ -135,6 +135,11 @@ pub struct ViewState {
     /// True while `keyDown:` runs `interpretKeyEvents`.
     in_key_down: Cell<bool>,
 
+    // Mtrx patch: keys the input system consumes.
+    /// True once `interpretKeyEvents` answered the key being pressed: with
+    /// `insertText`, `setMarkedText`, `unmarkText` or `doCommandBySelector`.
+    key_interpreted: Cell<bool>,
+
     marked_text: RefCell<Retained<NSMutableAttributedString>>,
     accepts_first_mouse: bool,
 
@@ -286,6 +291,8 @@ declare_class!(
         ) {
             // TODO: Use _replacement_range, requires changing the event to report surrounding text.
             trace_scope!("setMarkedText:selectedRange:replacementRange:");
+            // Mtrx patch: keys the input system consumes.
+            self.ivars().key_interpreted.set(true);
 
             // SAFETY: This method is guaranteed to get either a `NSString` or a `NSAttributedString`.
             let (marked_text, string) = if string.is_kind_of::<NSAttributedString>() {
@@ -348,6 +355,8 @@ declare_class!(
         #[method(unmarkText)]
         fn unmark_text(&self) {
             trace_scope!("unmarkText");
+            // Mtrx patch: keys the input system consumes.
+            self.ivars().key_interpreted.set(true);
             *self.ivars().marked_text.borrow_mut() = NSMutableAttributedString::new();
 
             let input_context = self.inputContext().expect("input context");
@@ -404,6 +413,8 @@ declare_class!(
         fn insert_text(&self, string: &NSObject, _replacement_range: NSRange) {
             // TODO: Use _replacement_range, requires changing the event to report surrounding text.
             trace_scope!("insertText:replacementRange:");
+            // Mtrx patch: keys the input system consumes.
+            self.ivars().key_interpreted.set(true);
 
             // SAFETY: This method is guaranteed to get either a `NSString` or a `NSAttributedString`.
             let string = if string.is_kind_of::<NSAttributedString>() {
@@ -452,6 +463,8 @@ declare_class!(
         #[method(doCommandBySelector:)]
         fn do_command_by_selector(&self, _command: Sel) {
             trace_scope!("doCommandBySelector:");
+            // Mtrx patch: keys the input system consumes.
+            self.ivars().key_interpreted.set(true);
             // We shouldn't forward any character from just committed text, since we'll end up sending
             // it twice with some IMEs like Korean one. We'll also always send `Enter` in that case,
             // which is not desired given it was used to confirm IME input.
@@ -495,12 +508,20 @@ declare_class!(
             // we must send the `KeyboardInput` event during IME if it triggered
             // `doCommandBySelector`. (doCommandBySelector means that the keyboard input
             // is not handled by IME and should be handled by the application)
+            // Mtrx patch: keys the input system consumes.
+            let mut consumed = false;
             if self.ivars().ime_allowed.get() {
                 let events_for_nsview = NSArray::from_slice(&[&*event]);
                 // Mtrx patch (winit #4748/#4749).
                 self.ivars().in_key_down.set(true);
+                // Mtrx patch: keys the input system consumes.
+                self.ivars().key_interpreted.set(false);
                 unsafe { self.interpretKeyEvents(&events_for_nsview) };
                 self.ivars().in_key_down.set(false);
+                // Mtrx patch: no answer at all means the input system kept the key for
+                // itself: the repeats of a held letter while its accent menu is up, a digit
+                // choosing an accent from it. Its text, if any, comes by `insertText` later.
+                consumed = !self.ivars().key_interpreted.get();
 
                 // If the text was committed we must treat the next keyboard event as IME related.
                 if self.ivars().ime_state.get() == ImeState::Committed {
@@ -523,7 +544,13 @@ declare_class!(
             };
 
             if !had_ime_input || self.ivars().forward_key_to_app.get() {
-                let key_event = create_key_event(&event, true, unsafe { event.isARepeat() });
+                let mut key_event = create_key_event(&event, true, unsafe { event.isARepeat() });
+                // Mtrx patch: a consumed key still goes out, for shortcuts and the keys held,
+                // but types nothing.
+                if consumed {
+                    key_event.text = None;
+                    key_event.platform_specific.text_with_all_modifiers = None;
+                }
                 self.queue_event(WindowEvent::KeyboardInput {
                     device_id: DEVICE_ID,
                     event: key_event,
@@ -839,6 +866,8 @@ impl WinitView {
             ime_allowed: Default::default(),
             // Mtrx patch (winit #4748/#4749).
             in_key_down: Default::default(),
+            // Mtrx patch: keys the input system consumes.
+            key_interpreted: Default::default(),
             forward_key_to_app: Default::default(),
             marked_text: Default::default(),
             accepts_first_mouse,
