@@ -108,7 +108,8 @@ these stay outside the widget.
 - [x] ⌥⇧⌘V pastes as plain text.
 - [ ] Right-click in the composer: Cut, Copy, Paste, Select All (and
       Emoji & Symbols). Built (`edit_menu.rs`); to check by hand that an
-      emoji picked in Emoji & Symbols is typed into the field.
+      emoji picked in Emoji & Symbols is typed into the field. winit
+      dropped it; patched in `vendor/winit` (winit #4748/#4749).
 
 ## B. The composer: inside `text_editor`
 
@@ -135,8 +136,13 @@ so that Enter probably sends the half-composed text today.
       widget; may need upstream winit.
 - [ ] Chinese, Japanese and Korean input: candidates next to the caret,
       and Enter confirms the composition rather than sending.
-- [ ] Dictation (🎤 or Fn Fn). Unchecked.
-- [ ] ⌃⌘Space opens Emoji & Symbols and inserts the pick. Unchecked.
+- [ ] Dictation (🎤 or Fn Fn). winit reported no caret, so Dictation
+      would not start; patched in `vendor/winit` (winit #4748/#4749). To
+      check by hand, from the app bundle (`cargo xtask bundle`): without
+      a bundle identifier Dictation stalls.
+- [ ] ⌃⌘Space opens Emoji & Symbols and inserts the pick. winit dropped
+      text inserted outside a key press; patched in `vendor/winit` (winit
+      #4748/#4749). To check by hand.
 
 ### B2. Editing
 

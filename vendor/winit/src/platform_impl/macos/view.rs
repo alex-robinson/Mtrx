@@ -131,6 +131,10 @@ pub struct ViewState {
     /// to the application, even during IME
     forward_key_to_app: Cell<bool>,
 
+    // Mtrx patch (winit #4748/#4749): text inserted outside a key press.
+    /// True while `keyDown:` runs `interpretKeyEvents`.
+    in_key_down: Cell<bool>,
+
     marked_text: RefCell<Retained<NSMutableAttributedString>>,
     accepts_first_mouse: bool,
 
@@ -262,8 +266,15 @@ declare_class!(
         #[method(selectedRange)]
         fn selected_range(&self) -> NSRange {
             trace_scope!("selectedRange");
-            // Documented to return `{NSNotFound, 0}` if there is no selection.
-            NSRange::new(NSNotFound as NSUInteger, 0)
+            // Mtrx patch (winit #4748/#4749): a caret for dictation.
+            if self.ivars().ime_allowed.get() {
+                // Report a caret at the end of the marked text. Dictation refuses to start
+                // without a valid insertion point.
+                NSRange::new(self.ivars().marked_text.borrow().length(), 0)
+            } else {
+                // Documented to return `{NSNotFound, 0}` if there is no selection.
+                NSRange::new(NSNotFound as NSUInteger, 0)
+            }
         }
 
         #[method(setMarkedText:selectedRange:replacementRange:)]
@@ -411,7 +422,28 @@ declare_class!(
             if unsafe { self.hasMarkedText() } && self.is_ime_enabled() && !is_control {
                 self.queue_event(WindowEvent::Ime(Ime::Preedit(String::new(), None)));
                 self.queue_event(WindowEvent::Ime(Ime::Commit(string)));
-                self.ivars().ime_state.set(ImeState::Committed);
+                // Mtrx patch (winit #4748/#4749): to the end of this function.
+                if self.ivars().in_key_down.get() {
+                    // `keyDown:` clears the marked text and swallows the key that committed it.
+                    self.ivars().ime_state.set(ImeState::Committed);
+                } else {
+                    // Committed outside a key press, e.g. by dictation. No key to swallow.
+                    *self.ivars().marked_text.borrow_mut() = NSMutableAttributedString::new();
+                    self.ivars().ime_state.set(ImeState::Ground);
+                }
+            } else if !self.ivars().in_key_down.get()
+                && self.ivars().ime_allowed.get()
+                && !string.is_empty()
+                && !is_control
+            {
+                // Text sent outside of a key press, e.g. from the emoji picker or dictation.
+                // No `KeyboardInput` event will carry it, so commit it directly.
+                if self.ivars().ime_state.get() == ImeState::Disabled {
+                    *self.ivars().input_source.borrow_mut() = self.current_input_source();
+                    self.ivars().ime_state.set(ImeState::Ground);
+                    self.queue_event(WindowEvent::Ime(Ime::Enabled));
+                }
+                self.queue_event(WindowEvent::Ime(Ime::Commit(string)));
             }
         }
 
@@ -465,7 +497,10 @@ declare_class!(
             // is not handled by IME and should be handled by the application)
             if self.ivars().ime_allowed.get() {
                 let events_for_nsview = NSArray::from_slice(&[&*event]);
+                // Mtrx patch (winit #4748/#4749).
+                self.ivars().in_key_down.set(true);
                 unsafe { self.interpretKeyEvents(&events_for_nsview) };
+                self.ivars().in_key_down.set(false);
 
                 // If the text was committed we must treat the next keyboard event as IME related.
                 if self.ivars().ime_state.get() == ImeState::Committed {
@@ -802,6 +837,8 @@ impl WinitView {
             ime_state: Default::default(),
             input_source: Default::default(),
             ime_allowed: Default::default(),
+            // Mtrx patch (winit #4748/#4749).
+            in_key_down: Default::default(),
             forward_key_to_app: Default::default(),
             marked_text: Default::default(),
             accepts_first_mouse,
