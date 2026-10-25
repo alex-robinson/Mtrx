@@ -35,6 +35,9 @@ pub enum Message {
     Row(OwnedRoomId, bool),
     /// The cursor entered or left a section's grip, which drags it.
     Grip(Section, bool),
+    /// The cursor entered or left a section's row in the Show menu, which
+    /// shows its grip.
+    SectionRow(Section, bool),
     /// The cursor entered or left the pinned Notes row, which is not dragged.
     NotesRow(bool),
     /// The modifier keys changed, e.g. ⌥ held to show only one section.
@@ -151,6 +154,8 @@ pub struct Arrange {
     pub space_members: SpaceMembers,
     /// The room row or section grip under the cursor.
     pub hovered: Option<Dragged>,
+    /// The section whose grip shows.
+    pub section_hovered: Option<Section>,
     pub notes_hovered: bool,
     pub drag: Option<Drag>,
     /// The section a drag would drop into.
@@ -180,6 +185,14 @@ impl Arrange {
 
     pub fn dragging(&self) -> Option<&Drag> {
         self.drag.as_ref().filter(|d| d.active)
+    }
+
+    /// The section being dragged.
+    pub fn dragged_section(&self) -> Option<&Section> {
+        match &self.dragging()?.item {
+            Dragged::Section(section) => Some(section),
+            Dragged::Room(_) => None,
+        }
     }
 
     /// The cursor entered (`true`) or left what drags `item`.
@@ -290,6 +303,12 @@ impl Arrange {
             }
             Message::Row(room, entered) => self.hover(Dragged::Room(room), entered),
             Message::Grip(section, entered) => self.hover(Dragged::Section(section), entered),
+            Message::SectionRow(section, true) => self.section_hovered = Some(section),
+            Message::SectionRow(section, false) => {
+                if self.section_hovered.as_ref() == Some(&section) {
+                    self.section_hovered = None;
+                }
+            }
             Message::NotesRow(hovered) => self.notes_hovered = hovered,
             Message::Modifiers(modifiers) => self.modifiers = modifiers,
             Message::Pressed => {

@@ -658,6 +658,16 @@ pub fn drop_target(theme: &Theme, active: bool) -> container::Style {
     }
 }
 
+/// Where a dragged section would land, between two others: a line while
+/// `active`, else nothing.
+pub fn drop_line(theme: &Theme, active: bool) -> container::Style {
+    container::Style {
+        background: active.then(|| Background::Color(theme.extended_palette().primary.base.color)),
+        border: Border::default().rounded(1),
+        ..Default::default()
+    }
+}
+
 /// A day of the calendar or an entry of a time wheel; filled when picked,
 /// faint when not available.
 pub fn wheel_item(theme: &Theme, status: button::Status, selected: bool) -> button::Style {

@@ -607,8 +607,8 @@ fn show_menu<'a>(view: &RoomListView<'a>, space: &OwnedRoomId) -> Element<'a, Me
     .into()
 }
 
-/// A space's sections, ticked while expanded and moved up or down, then
-/// showing or hiding them all.
+/// A space's sections, ticked while expanded and dragged by their grips to
+/// other places, then showing or hiding them all.
 fn show_menu_panel<'a>(
     arrange: &Arrange,
     space: Option<&OwnedRoomId>,
@@ -618,8 +618,9 @@ fn show_menu_panel<'a>(
     let collapse = |collapsed: &dyn Fn(&Section) -> bool| {
         arrange_message(collapse_sections(&sections, collapsed))
     };
-    let mut menu = column![].spacing(1);
-    for section in &sections {
+    let landing = landing(arrange, &sections);
+    let mut menu = column![];
+    for (at, section) in sections.iter().enumerate() {
         let ticked = !layout.is_collapsed(section);
         let toggle = arrange_message(tick(arrange.modifiers, &sections, section));
         let name = section_name(arrange, space, section).to_owned();
@@ -642,43 +643,20 @@ fn show_menu_panel<'a>(
             Section::Category(_) => hint(item, name, Position::Right),
             _ => item.into(),
         };
-        let (above, below) = neighbours(&sections, section);
-        let swap = |up, other: Option<&Section>| {
-            let color: fn(&Theme) -> Color = match other {
-                Some(_) => |theme| {
-                    theme
-                        .extended_palette()
-                        .background
-                        .base
-                        .text
-                        .scale_alpha(0.7)
-                },
-                // Faint at the top and bottom.
-                None => |theme| {
-                    theme
-                        .extended_palette()
-                        .background
-                        .base
-                        .text
-                        .scale_alpha(0.2)
-                },
-            };
-            button(icons::arrow(12.0, up, color))
-                .padding([4, 5])
-                .style(style::list_item(false))
-                .on_press_maybe(other.map(|other| {
-                    arrange_message(arrange::Message::MoveSection(
-                        section.clone(),
-                        other.clone(),
-                    ))
-                }))
+        let row_message = |entered| match arrange.dragged_section() {
+            Some(_) => arrange::Message::Target(section.clone(), entered),
+            None => arrange::Message::SectionRow(section.clone(), entered),
         };
-        menu = menu.push(
-            row![item, swap(true, above), swap(false, below)]
+        let line = mouse_area(
+            row![item, grip(arrange, section)]
                 .spacing(1)
                 .align_y(Alignment::Center),
-        );
+        )
+        .on_enter(arrange_message(row_message(true)))
+        .on_exit(arrange_message(row_message(false)));
+        menu = menu.push(drop_line(landing == Some(at))).push(line);
     }
+    menu = menu.push(drop_line(landing == Some(sections.len())));
     let footer = |label| {
         button(text(label).size(13).width(Length::Fill).center())
             .width(Length::Fill)
@@ -704,6 +682,54 @@ fn show_menu_panel<'a>(
         .width(SHOW_MENU_WIDTH)
         .padding(4)
         .style(style::toolbar)
+        .into()
+}
+
+/// The grip dragging `section`, showing while its row or heading is under
+/// the cursor or it is dragged.
+fn grip<'a>(arrange: &Arrange, section: &Section) -> Element<'a, Message> {
+    let shown = arrange.section_hovered.as_ref() == Some(section)
+        || arrange.dragged_section() == Some(section);
+    let color: fn(&Theme) -> Color = if shown {
+        |theme| {
+            theme
+                .extended_palette()
+                .background
+                .base
+                .text
+                .scale_alpha(0.6)
+        }
+    } else {
+        |_| Color::TRANSPARENT
+    };
+    let grip = |entered| arrange_message(arrange::Message::Grip(section.clone(), entered));
+    mouse_area(container(icons::grip(14.0, color)).padding([4, 4]))
+        .on_enter(grip(true))
+        .on_exit(grip(false))
+        .interaction(iced::mouse::Interaction::Grab)
+        .into()
+}
+
+/// Where the section being dragged would land among `order`: the gap
+/// before the section counted from 0 (the gap after the last for its
+/// length); none while it is over its own place.
+fn landing(arrange: &Arrange, order: &[Section]) -> Option<usize> {
+    let place = |section| order.iter().position(|s| s == section);
+    let from = place(arrange.dragged_section()?)?;
+    let to = place(arrange.target.as_ref()?)?;
+    match to.cmp(&from) {
+        std::cmp::Ordering::Less => Some(to),
+        std::cmp::Ordering::Equal => None,
+        std::cmp::Ordering::Greater => Some(to + 1),
+    }
+}
+
+/// The gap between two sections, a line where a dragged one would land.
+fn drop_line<'a>(active: bool) -> Element<'a, Message> {
+    container(space())
+        .width(Length::Fill)
+        .height(2)
+        .style(move |theme| style::drop_line(theme, active))
         .into()
 }
 
