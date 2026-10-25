@@ -606,8 +606,8 @@ fn show_menu<'a>(view: &RoomListView<'a>, space: &OwnedRoomId) -> Element<'a, Me
     .into()
 }
 
-/// A space's sections, ticked while expanded, then showing or hiding them
-/// all.
+/// A space's sections, ticked while expanded and moved up or down, then
+/// showing or hiding them all.
 fn show_menu_panel<'a>(
     arrange: &Arrange,
     space: Option<&OwnedRoomId>,
@@ -634,10 +634,46 @@ fn show_menu_panel<'a>(
             .style(style::list_item(false))
             .on_press(toggle);
         // The user's names may be cut short.
-        menu = menu.push(match section {
+        let item = match section {
             Section::Category(_) => hint(item, name, Position::Right),
             _ => item.into(),
-        });
+        };
+        let (above, below) = neighbours(&sections, section);
+        let swap = |up, other: Option<&Section>| {
+            let color: fn(&Theme) -> Color = match other {
+                Some(_) => |theme| {
+                    theme
+                        .extended_palette()
+                        .background
+                        .base
+                        .text
+                        .scale_alpha(0.7)
+                },
+                // Faint at the top and bottom.
+                None => |theme| {
+                    theme
+                        .extended_palette()
+                        .background
+                        .base
+                        .text
+                        .scale_alpha(0.2)
+                },
+            };
+            button(icons::arrow(12.0, up, color))
+                .padding([4, 5])
+                .style(style::list_item(false))
+                .on_press_maybe(other.map(|other| {
+                    arrange_message(arrange::Message::SwapSections(
+                        section.clone(),
+                        other.clone(),
+                    ))
+                }))
+        };
+        menu = menu.push(
+            row![item, swap(true, above), swap(false, below)]
+                .spacing(1)
+                .align_y(Alignment::Center),
+        );
     }
     let all = |collapsed| {
         let sections = (sections.iter())
@@ -668,7 +704,7 @@ fn show_menu_panel<'a>(
 }
 
 /// The width of the menu of which sections are expanded.
-const SHOW_MENU_WIDTH: f32 = 250.0;
+const SHOW_MENU_WIDTH: f32 = 280.0;
 
 fn arrange_message(message: arrange::Message) -> Message {
     Message::Arrange(message)
