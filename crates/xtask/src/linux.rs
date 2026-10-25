@@ -23,7 +23,7 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// Icon sizes for the hicolor theme.
 const ICON_SIZES: [u32; 8] = [16, 24, 32, 48, 64, 128, 256, 512];
 const MAINTAINER: &str = "Alexander Robinson <alexander.robinson@awi.de>";
-const HOMEPAGE: &str = "https://github.com/alex-robinson/Mtrx";
+const HOMEPAGE: &str = "https://github.com/mathesislab/Mtrx";
 
 /// Build the release binaries, then the AppImage and the `.deb`.
 pub fn bundle(root: &Path) -> Result<()> {

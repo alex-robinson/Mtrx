@@ -30,7 +30,7 @@ use objc2_app_kit::{
 };
 use objc2_foundation::{NSObject, NSString};
 
-const WEBSITE: &str = "https://alex-robinson.github.io/Mtrx/";
+const WEBSITE: &str = "https://mathesislab.github.io/Mtrx/";
 
 /// A standard action of the window's view, by the action message an item
 /// sends: `NSTextFinderAction` in its tag for find.

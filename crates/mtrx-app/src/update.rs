@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 use crate::app;
 
 /// The releases, newest first; drafts only for the repository's owners.
-const RELEASES: &str = "https://api.github.com/repos/alex-robinson/Mtrx/releases";
+const RELEASES: &str = "https://api.github.com/repos/mathesislab/Mtrx/releases";
 /// How often the automatic check looks for a newer version.
 const INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
 /// How often the automatic check is due to be considered.
@@ -372,7 +372,7 @@ mod tests {
             tag_name: tag.into(),
             draft: false,
             prerelease,
-            html_url: format!("https://github.com/alex-robinson/Mtrx/releases/tag/{tag}"),
+            html_url: format!("https://github.com/mathesislab/Mtrx/releases/tag/{tag}"),
             assets: assets
                 .iter()
                 .map(|name| Asset {

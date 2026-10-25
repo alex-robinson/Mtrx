@@ -1454,7 +1454,7 @@ async fn send_later_bar() {
     // A newer version, also the dot on the gear behind the panel.
     app.updater.available = Some(update::Update {
         version: semver::Version::new(0, 4, 0),
-        page: "https://github.com/alex-robinson/Mtrx/releases/tag/v0.4.0".into(),
+        page: "https://github.com/mathesislab/Mtrx/releases/tag/v0.4.0".into(),
         file: None,
         install: update::Install::Source,
     });
