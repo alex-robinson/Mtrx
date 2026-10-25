@@ -23,3 +23,9 @@ section B1). Each is marked "Mtrx patch" in the code:
   `Edit::MoveSelection` drops the dragged selection at a point (or a copy
   of it), and `Editor::caret_at` tells where a click at a point puts the
   caret, to draw it while dragging (`src/renderer/null.rs` too).
+- `src/event.rs` (menu actions, marked "Mtrx patch (menu actions)",
+  `docs/native-behaviour.md` C): `Event::StandardAction`, our winit's
+  `StandardAction` (Undo, Copy, Find, Zoom In, ...): on macOS the Edit and
+  View menus take their shortcuts before the window, so these come instead
+  of the key presses. `StandardAction::key_press` is the key press each
+  stands for (⌘Z for Undo), which widgets and apps handle it as.

@@ -2,6 +2,7 @@
 //!
 //! [`winit`]: https://github.com/rust-windowing/winit
 //! [`iced_runtime`]: https://github.com/iced-rs/iced/tree/0.14/runtime
+use crate::core::event;
 use crate::core::input_method;
 use crate::core::keyboard;
 use crate::core::mouse;
@@ -334,6 +335,10 @@ pub fn window_event(
             },
             Ime::Disabled => input_method::Event::Closed,
         })),
+        // Mtrx patch (menu actions).
+        WindowEvent::StandardAction(action) => {
+            Some(Event::StandardAction(self::standard_action(action)))
+        }
         WindowEvent::Focused(focused) => Some(Event::Window(if focused {
             window::Event::Focused
         } else {
@@ -1265,6 +1270,56 @@ pub fn ime_purpose(
         input_method::Purpose::Normal => winit::window::ImePurpose::Normal,
         input_method::Purpose::Secure => winit::window::ImePurpose::Password,
         input_method::Purpose::Terminal => winit::window::ImePurpose::Terminal,
+    }
+}
+
+// Mtrx patch (menu actions).
+/// Converts a `winit` standard action into its iced counterpart.
+pub fn standard_action(
+    action: winit::event::StandardAction,
+) -> event::StandardAction {
+    use event::StandardAction as Iced;
+    use winit::event::StandardAction as Winit;
+
+    match action {
+        Winit::Undo => Iced::Undo,
+        Winit::Redo => Iced::Redo,
+        Winit::Cut => Iced::Cut,
+        Winit::Copy => Iced::Copy,
+        Winit::Paste => Iced::Paste,
+        Winit::PasteAsPlainText => Iced::PasteAsPlainText,
+        Winit::SelectAll => Iced::SelectAll,
+        Winit::Find => Iced::Find,
+        Winit::FindNext => Iced::FindNext,
+        Winit::FindPrevious => Iced::FindPrevious,
+        Winit::ZoomIn => Iced::ZoomIn,
+        Winit::ZoomOut => Iced::ZoomOut,
+        Winit::ZoomReset => Iced::ZoomReset,
+    }
+}
+
+// Mtrx patch (menu actions).
+/// Converts an iced standard action into its `winit` counterpart.
+pub fn winit_standard_action(
+    action: event::StandardAction,
+) -> winit::event::StandardAction {
+    use event::StandardAction as Iced;
+    use winit::event::StandardAction as Winit;
+
+    match action {
+        Iced::Undo => Winit::Undo,
+        Iced::Redo => Winit::Redo,
+        Iced::Cut => Winit::Cut,
+        Iced::Copy => Winit::Copy,
+        Iced::Paste => Winit::Paste,
+        Iced::PasteAsPlainText => Winit::PasteAsPlainText,
+        Iced::SelectAll => Winit::SelectAll,
+        Iced::Find => Winit::Find,
+        Iced::FindNext => Winit::FindNext,
+        Iced::FindPrevious => Winit::FindPrevious,
+        Iced::ZoomIn => Winit::ZoomIn,
+        Iced::ZoomOut => Winit::ZoomOut,
+        Iced::ZoomReset => Winit::ZoomReset,
     }
 }
 
