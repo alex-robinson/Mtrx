@@ -9,7 +9,8 @@ use iced::{
     keyboard::{self, Key, Modifiers, key::Named},
     widget::text_editor::{Action, Binding, Content, Edit, Motion},
 };
-use iced_runtime::user_interface::{Cache, UserInterface};
+use iced_core::event::StandardAction::{self, Cut, Paste, Redo, SelectAll, Undo};
+use iced_runtime::user_interface::{Cache, State, UserInterface};
 
 use super::*;
 
@@ -129,6 +130,35 @@ impl Field {
 
     fn input_method(&mut self, event: input_method::Event) {
         let _ = self.send(&[Event::InputMethod(event)]);
+    }
+
+    /// A standard action of the menus, which comes instead of its key on
+    /// macOS.
+    fn act(&mut self, action: StandardAction) -> Status {
+        self.send(&[Event::StandardAction(action)])[0]
+    }
+
+    /// Whether the editor's input method enables each of `actions`, for
+    /// their menu items.
+    fn enables(&mut self, actions: &[StandardAction]) -> Vec<bool> {
+        let mut ui = ui(&self.content, &mut self.cache, &mut self.renderer);
+        let (state, _) = ui.update(
+            &[Event::Window(window::Event::RedrawRequested(
+                iced::time::Instant::now(),
+            ))],
+            mouse::Cursor::Available(self.cursor),
+            &mut self.renderer,
+            &mut clipboard::Null,
+            &mut Vec::new(),
+        );
+        self.cache = ui.into_cache();
+        let State::Updated { input_method, .. } = state else {
+            panic!("outdated");
+        };
+        actions
+            .iter()
+            .map(|action| input_method.enables(*action))
+            .collect()
     }
 }
 
@@ -633,4 +663,51 @@ fn dragging_the_selection_moves_it() {
     field.named(Named::Escape, Modifiers::empty());
     field.drag(from, to, Modifiers::empty());
     assert_eq!(field.content.text(), text);
+}
+
+/// The Edit menu's Undo, Redo, Select All and Cut (macOS's menu takes ⌘Z,
+/// ⇧⌘Z, ⌘A and ⌘X before the window) do what the keys do.
+#[test]
+fn the_menus_actions_edit_as_their_keys() {
+    let (mut keys, mut menu) = (Field::new(""), Field::new(""));
+    keys.type_text("Crème brûlée");
+    menu.type_text("Crème brûlée");
+    let steps = [
+        ("z", false, Undo, "Crème "),
+        ("z", false, Undo, ""),
+        ("z", true, Redo, "Crème "),
+        ("a", false, SelectAll, "Crème "),
+        ("x", false, Cut, ""),
+        ("z", false, Undo, "Crème "),
+    ];
+    for (letter, shift, action, text) in steps {
+        keys.command(letter, shift);
+        assert_eq!(menu.act(action), Status::Captured, "{action:?}");
+        assert_eq!(menu.content.text(), text, "{action:?}");
+        assert_eq!(menu.content.text(), keys.content.text(), "{action:?}");
+        assert_eq!(
+            menu.content.selection(),
+            keys.content.selection(),
+            "{action:?}"
+        );
+    }
+}
+
+/// The editor enables Undo and Redo with something to undo and redo, Cut
+/// with a selection; Copy and Paste always (Copy with no selection copies
+/// the timeline's).
+#[test]
+fn the_editor_enables_undo_redo_and_cut_as_it_can() {
+    use iced_core::event::StandardAction::Copy;
+
+    let actions = [Undo, Redo, Cut, Copy, Paste];
+    let mut field = Field::new("");
+    assert_eq!(field.enables(&actions), [false, false, false, true, true]);
+    field.type_text("Melt");
+    assert_eq!(field.enables(&actions), [true, false, false, true, true]);
+    field.act(Undo);
+    assert_eq!(field.enables(&actions), [false, true, false, true, true]);
+    field.act(Redo);
+    field.act(SelectAll);
+    assert_eq!(field.enables(&actions), [true, false, true, true, true]);
 }

@@ -27,6 +27,7 @@ use crate::{
 
 mod editing;
 mod keyboard;
+mod menu;
 
 const TIMEOUT: Duration = Duration::from_secs(30);
 

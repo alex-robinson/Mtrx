@@ -610,6 +610,14 @@ impl App {
             None => Task::none(),
         });
         let mode = iced::system::theme().map(Message::ThemeMode);
+        // Once the app has launched, over winit's own.
+        #[cfg(target_os = "macos")]
+        let menu_bar = window::oldest().then(|id| match id {
+            Some(id) => window::run(id, |_| crate::menu_bar::install()).discard(),
+            None => Task::none(),
+        });
+        #[cfg(not(target_os = "macos"))]
+        let menu_bar = Task::none();
         // Whether the window opened on a display, see `Message::WindowOpened`.
         let opened = window::oldest().then(|id| match id {
             Some(id) => window::run(id, placement::displays).then(move |displays| {
@@ -618,7 +626,7 @@ impl App {
             }),
             None => Task::none(),
         });
-        (app, Task::batch([restore, scale, mode, opened]))
+        (app, Task::batch([restore, scale, mode, opened, menu_bar]))
     }
 
     /// The theme the app is drawn in.
@@ -3283,6 +3291,10 @@ impl App {
             // Also on the sign-in screen.
             iced::event::listen_with(window_keys),
         ];
+        // Settings… in the app menu.
+        #[cfg(target_os = "macos")]
+        subscriptions
+            .push(crate::menu_bar::settings_chosen().map(|()| Message::ShowSettings(true)));
         if let Screen::Main(main) = &self.screen {
             subscriptions.push(
                 Subscription::run_with(Shared(main.session.clone()), |s| s.0.scheduled_updates())
@@ -3846,7 +3858,7 @@ fn window_keys(
     window: window::Id,
 ) -> Option<Message> {
     use iced::keyboard::{self, Key};
-    match event {
+    match as_key(event) {
         iced::Event::Keyboard(keyboard::Event::KeyPressed { key, modifiers, .. }) => match key {
             Key::Character(c) if c == "w" && modifiers.command() => {
                 Some(Message::CloseWindow(window))
@@ -3866,7 +3878,7 @@ fn shortcuts(
     _window: window::Id,
 ) -> Option<Message> {
     use iced::keyboard::{self, Key, key::Named};
-    match event {
+    match as_key(event) {
         iced::Event::Keyboard(keyboard::Event::KeyPressed {
             key,
             physical_key,
@@ -3939,6 +3951,16 @@ fn shortcuts(
     }
 }
 
+/// A standard action of the menus as the key press it stands for (macOS's
+/// menu takes the key, see `menu_bar`): ⌘C for Copy, ⌘F for Find, ⌘= for
+/// Bigger. Other events as they are.
+fn as_key(event: iced::Event) -> iced::Event {
+    match event {
+        iced::Event::StandardAction(action) => iced::Event::Keyboard(action.key_press()),
+        event => event,
+    }
+}
+
 /// An arrow key no field took. ⌥↑ and ⌥↓ scroll the timeline a page, ⌘↑
 /// and ⌘↓ to the oldest and newest message. With Shift it moves the end of
 /// the timeline's selection: by a character (⌥: a word) or a line, and with
@@ -3980,6 +4002,7 @@ fn input(event: iced::Event, _status: iced::event::Status, _window: window::Id) 
     use iced::keyboard;
     match event {
         iced::Event::Keyboard(keyboard::Event::KeyPressed { .. })
+        | iced::Event::StandardAction(_)
         | iced::Event::Mouse(mouse::Event::ButtonPressed(_) | mouse::Event::WheelScrolled { .. }) => {
             Some(Message::Presence(presence::Message::Input))
         }

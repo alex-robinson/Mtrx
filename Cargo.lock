@@ -5146,6 +5146,7 @@ dependencies = [
  "hayro",
  "htmd",
  "iced",
+ "iced_core",
  "iced_graphics",
  "iced_runtime",
  "iced_test",

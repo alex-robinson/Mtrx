@@ -34,6 +34,8 @@ mod math;
 mod media;
 mod members;
 mod mention;
+#[cfg(target_os = "macos")]
+mod menu_bar;
 mod message;
 mod message_menu;
 mod pdf;
