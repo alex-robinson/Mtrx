@@ -602,6 +602,55 @@ impl<M> canvas::Program<M> for Arrow {
     }
 }
 
+/// A chevron pointing down (`open`) or right: a section expanded or
+/// collapsed.
+pub fn chevron<'a, M: 'a>(size: f32, open: bool, color: fn(&Theme) -> Color) -> Element<'a, M> {
+    canvas::Canvas::new(Chevron { open, color })
+        .width(size)
+        .height(size)
+        .into()
+}
+
+struct Chevron {
+    open: bool,
+    color: fn(&Theme) -> Color,
+}
+
+impl<M> canvas::Program<M> for Chevron {
+    type State = ();
+
+    fn draw(
+        &self,
+        _state: &(),
+        renderer: &Renderer,
+        theme: &Theme,
+        bounds: Rectangle,
+        _cursor: mouse::Cursor,
+    ) -> Vec<Geometry> {
+        let mut frame = Frame::new(renderer, bounds.size());
+        let s = bounds.width;
+        let stroke = Stroke::default()
+            .with_color((self.color)(theme))
+            .with_width((s / 7.0).max(1.0))
+            .with_line_cap(canvas::LineCap::Round)
+            .with_line_join(canvas::LineJoin::Round);
+        // Drawn pointing down, turned for right.
+        let p = |x: f32, y: f32| {
+            let (x, y) = if self.open { (x, y) } else { (y, 1.0 - x) };
+            iced::Point::new(x * s, y * s)
+        };
+        frame.stroke(
+            &Path::new(|path| {
+                path.move_to(p(0.2, 0.35));
+                path.line_to(p(0.5, 0.65));
+                path.line_to(p(0.8, 0.35));
+            }),
+            stroke,
+        );
+        vec![frame.into_geometry()]
+    }
+}
+
 /// An arrow down into a tray: download, save.
 pub fn download<'a, M: 'a>(size: f32, color: fn(&Theme) -> Color) -> Element<'a, M> {
     canvas::Canvas::new(Download { color })

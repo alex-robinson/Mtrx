@@ -594,13 +594,20 @@ fn section_header<'a>(
     space: Option<&OwnedRoomId>,
     arrange: &Arrange,
 ) -> Element<'a, Message> {
-    let chevron = if collapsed { "▸" } else { "▾" };
+    let chevron = icons::chevron(12.0, !collapsed, |theme| {
+        theme
+            .extended_palette()
+            .background
+            .base
+            .text
+            .scale_alpha(0.7)
+    });
     let title = button(
         row![
-            text(chevron).size(10).style(text::secondary),
-            section_title(section_name(arrange, space, section)),
+            chevron,
+            section_title(section_name(arrange, space, section))
         ]
-        .spacing(6)
+        .spacing(5)
         .align_y(Alignment::Center),
     )
     .padding(0)
