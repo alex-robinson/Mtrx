@@ -12,16 +12,20 @@ mod arrange;
 mod avatar;
 mod badge;
 mod calls;
+mod clipboard;
 mod context_menu;
 mod dialog;
 mod drag_scroll;
+mod edit_menu;
 mod ellipsis;
 mod emoji;
+mod find;
 mod fonts;
 mod hint;
 mod icons;
 mod info;
 mod last_view;
+mod link_status;
 #[cfg(target_os = "linux")]
 mod linux;
 mod login;
@@ -34,9 +38,11 @@ mod message;
 mod message_menu;
 mod pdf;
 mod pdf_viewer;
+mod placement;
 mod popover;
 mod presence;
 mod room;
+mod rows;
 mod selectable;
 mod selectable_image;
 mod selection;
@@ -63,7 +69,7 @@ fn main() -> iced::Result {
     logo::notifications_from_bundle();
 
     let environment = app::Environment::load().expect("valid MTRX_PROFILE and data directory");
-    let size = environment.window_size();
+    let window = environment.window();
     iced::application(
         move || app::App::boot(environment.clone()),
         app::App::update,
@@ -75,14 +81,14 @@ fn main() -> iced::Result {
     .scale_factor(app::App::scale_factor)
     .settings(fonts::settings())
     .window(iced::window::Settings {
-        size,
         icon: logo::window_icon(),
         // The app sets its presence offline and ends its session first, see
         // `app::Message::CloseWindow`.
         exit_on_close_request: false,
         #[cfg(target_os = "linux")]
         platform_specific: linux::window_settings(),
-        ..Default::default()
+        // Size, position and maximised as the window was left.
+        ..window
     })
     .run()
 }

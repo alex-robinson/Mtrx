@@ -62,3 +62,5 @@ codegen-units = 1
 [patch.crates-io]
 mitex = { path = "vendor/mitex" }
 iced_graphics = { path = "vendor/iced_graphics" }
+iced_widget = { path = "vendor/iced_widget" }
+winit = { path = "vendor/winit" }

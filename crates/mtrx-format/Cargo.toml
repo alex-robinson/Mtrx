@@ -6,7 +6,7 @@ edition.workspace = true
 license.workspace = true
 
 [features]
-render = ["dep:idna_adapter", "dep:mitex", "dep:mitex-spec-gen", "dep:fxhash", "dep:memmap2", "dep:typst", "dep:typst-layout", "dep:typst-render", "dep:typst-assets", "dep:thiserror"]
+render = ["dep:idna_adapter", "dep:mitex", "dep:mitex-spec-gen", "dep:fxhash", "dep:memmap2", "dep:typst", "dep:typst-layout", "dep:typst-render", "dep:typst-assets", "dep:thiserror", "dep:unicode-segmentation"]
 
 [dependencies]
 pulldown-cmark = { version = "0.13.4", default-features = false, features = ["html"] }
@@ -22,6 +22,7 @@ typst-layout = { version = "0.15.1", optional = true }
 typst-render = { version = "0.15.1", optional = true }
 typst-assets = { version = "0.15.1", features = ["fonts"], optional = true }
 thiserror = { workspace = true, optional = true }
+unicode-segmentation = { version = "1.13.3", optional = true }
 # Typst turns on zerovec's `serde` feature, which makes ruma-common fail to
 # compile (trait-solver overflow). idna_adapter 1.1 uses the unicode-rs backend
 # instead of ICU, which keeps zerovec out of ruma-common's dependency graph.

@@ -68,6 +68,22 @@ pub fn selection(theme: &Theme) -> Color {
         .scale_alpha(0.55)
 }
 
+/// Behind text found (⌘F), and the current match: stronger and outlined.
+pub fn found(theme: &Theme, current: bool) -> (Color, Border) {
+    let palette = theme.extended_palette().warning;
+    if current {
+        (
+            palette.base.color.scale_alpha(0.6),
+            Border::default()
+                .rounded(2)
+                .width(1.5)
+                .color(palette.strong.color),
+        )
+    } else {
+        (palette.base.color.scale_alpha(0.3), Border::default())
+    }
+}
+
 pub fn muted(theme: &Theme) -> Color {
     theme.extended_palette().background.strong.color
 }
@@ -121,6 +137,21 @@ pub fn hint(theme: &Theme) -> container::Style {
         background: Some(Background::Color(palette.background.weak.color)),
         text_color: Some(palette.background.weak.text),
         border: Border::default().rounded(6),
+        ..Default::default()
+    }
+}
+
+/// The address of a hovered link, in the window's bottom left corner: as
+/// hover help, rounded only at its inner corner.
+pub fn link_status(theme: &Theme) -> container::Style {
+    let palette = theme.extended_palette();
+    container::Style {
+        background: Some(Background::Color(palette.background.weak.color)),
+        text_color: Some(palette.background.weak.text),
+        border: Border::default()
+            .rounded(iced::border::top_right(4))
+            .width(1)
+            .color(palette.background.strong.color),
         ..Default::default()
     }
 }

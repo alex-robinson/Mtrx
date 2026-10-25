@@ -37,7 +37,7 @@ mod timeline;
 pub mod test_support;
 
 pub use calls::{CallService, ServiceKind, recognize_call_link};
-pub use categories::{Category, Grouping, Layout, RoomCategories, RoomTag, Section, Sort};
+pub use categories::{AtHome, Category, Grouping, Layout, RoomCategories, RoomTag, Section, Sort};
 pub use connection::Connection;
 pub use encryption::{
     DeviceInfo, EncryptionState, RecoveryStatus, RecoveryStep, Verification, VerificationEmoji,

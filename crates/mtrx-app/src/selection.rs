@@ -1,8 +1,8 @@
 //! Selecting text in the timeline, across messages: where a selection
-//! starts and ends, which part of each message it covers, and the text it
-//! copies. Messages are split into units (paragraphs, headings, code
-//! blocks), each drawn by a [`crate::selectable`] widget. See
-//! `docs/text-selection.md`.
+//! starts and ends, which part of each message (or other part of the
+//! timeline's text, see [`crate::rows`]) it covers, and the text it copies.
+//! Messages are split into units (paragraphs, headings, code blocks), each
+//! drawn by a [`crate::selectable`] widget. See `docs/text-selection.md`.
 
 use std::collections::HashMap;
 
@@ -27,10 +27,15 @@ impl Pos {
 /// A place in the timeline.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Point {
-    /// [`mtrx_core::Event::id`] of the message.
+    /// The part of the timeline's text ([`crate::rows::Part::key`]): for a
+    /// message's text, [`mtrx_core::Event::id`] of the message.
     pub event: String,
     pub pos: Pos,
 }
+
+/// What texts cut to fit show (a reply's preview), by
+/// [`crate::rows::Part::key`]; those not there show all their text.
+pub type Shown = HashMap<String, String>;
 
 /// What a selectable unit reports.
 #[derive(Clone, Debug)]
@@ -56,14 +61,25 @@ pub enum Message {
     End,
     /// ⌘C: put the selected text on the clipboard.
     Copy,
+    /// What the texts cut to fit show, read for copying.
+    CopyAsShown(Shown),
     /// ⌘A: select the messages on screen, from the first to the last.
     SelectAll,
     /// Shift with ← or →: move the end of the selection.
     Extend(Step),
     /// Shift with ↑ (`true`) or ↓: move the end of the selection a line.
     ExtendLine(bool),
-    /// The end of the selection moved a line from this point to an offset
-    /// in its unit, or past it (`None`).
+    /// ⇧⌘← or ⇧⌘→ (`true`): move the end of the selection to the start or
+    /// end of its line.
+    ExtendToLineEdge(bool),
+    /// ⇧⌘↑ (`true`) or ⇧⌘↓: move the end of the selection to the start of
+    /// the first part on screen, or the end of the last.
+    ExtendToScreenEdge(bool),
+    /// The end of the selection moved to the start (`true`) or end of the
+    /// part with this key.
+    ExtendToPart(String, bool),
+    /// The end of the selection moved from this point to an offset in its
+    /// unit, or a line up (`true`) or down past it (`None`).
     LineMoved(Point, bool, Option<usize>),
     All(String, String),
     Clear,
@@ -141,9 +157,13 @@ impl Selection {
             }
             // Handled by the room, which has the text and the view.
             Message::Copy
+            | Message::CopyAsShown(_)
             | Message::SelectAll
             | Message::Extend(_)
             | Message::ExtendLine(_)
+            | Message::ExtendToLineEdge(_)
+            | Message::ExtendToScreenEdge(_)
+            | Message::ExtendToPart(..)
             | Message::LineMoved(..) => {}
         }
     }
@@ -216,6 +236,14 @@ pub struct Unit {
     pub prefix: String,
     /// Put between the previous unit and this one.
     pub gap: &'static str,
+}
+
+/// After the last character of `units`.
+pub fn end_of(units: &[Unit]) -> Pos {
+    units.last().map_or_else(Pos::default, |last| Pos {
+        unit: units.len() - 1,
+        offset: last.text.len(),
+    })
 }
 
 /// The text of `units` between `from` and `to`.

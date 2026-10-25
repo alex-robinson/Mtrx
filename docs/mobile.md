@@ -942,8 +942,10 @@ Show `lastActivity` as the time. Invites to direct chats are there
   mark them as invites. They are answered on the desktop (no join call yet).
 - Everything is in the order of `rooms`, most recently active first.
 
-Differences from the desktop, by design: its first entry is Home, with all
-rooms, where the apps have "Other rooms"; and it splits a space's rooms into
+Differences from the desktop, by design: its first entry is Home, with
+direct chats, invites and rooms in no space (and, as the user's synced
+`at_home` settings say, the favourites of spaces or every room), where the
+apps have "Other rooms"; and it splits a space's rooms into
 sections (invites, favourites, the user's categories, rooms, people, low
 priority), where the apps show one list in the order of `rooms`.
 

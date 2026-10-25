@@ -143,6 +143,30 @@ impl Document {
         out
     }
 
+    /// The name the first mention of `user_id` shows, if there is one.
+    pub fn mention_name(&self, user_id: &str) -> Option<&str> {
+        fn inlines<'a>(list: &'a [Inline], user_id: &str) -> Option<&'a str> {
+            list.iter().find_map(|inline| match inline {
+                Inline::Mention { user_id: id, name } if id == user_id => Some(name.as_str()),
+                Inline::Styled { content, .. } | Inline::Link { content, .. } => {
+                    inlines(content, user_id)
+                }
+                _ => None,
+            })
+        }
+        fn blocks<'a>(list: &'a [Block], user_id: &str) -> Option<&'a str> {
+            list.iter().find_map(|block| match block {
+                Block::Paragraph(content) | Block::Heading { content, .. } => {
+                    inlines(content, user_id)
+                }
+                Block::Quote(inner) => blocks(inner, user_id),
+                Block::List { items, .. } => items.iter().find_map(|item| blocks(item, user_id)),
+                Block::CodeBlock { .. } | Block::Math(_) | Block::Rule => None,
+            })
+        }
+        blocks(&self.blocks, user_id)
+    }
+
     pub fn has_math(&self) -> bool {
         !self.formulas().is_empty()
     }

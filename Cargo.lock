@@ -3187,13 +3187,34 @@ dependencies = [
 ]
 
 [[package]]
+name = "htmd"
+version = "0.5.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "efd66117e0b1eac329399e316f30b9530afcb7cfbd0df59a007023b6673a6c37"
+dependencies = [
+ "html5ever 0.38.0",
+ "markup5ever_rcdom",
+ "phf",
+]
+
+[[package]]
+name = "html5ever"
+version = "0.38.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1054432bae2f14e0061e33d23402fbaa67a921d319d56adc6bcf887ddad1cbc2"
+dependencies = [
+ "log",
+ "markup5ever 0.38.0",
+]
+
+[[package]]
 name = "html5ever"
 version = "0.39.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "46a1761807faccc9a19e86944bbf40610014066306f96edcdedc2fb714bcb7b8"
 dependencies = [
  "log",
- "markup5ever",
+ "markup5ever 0.39.0",
 ]
 
 [[package]]
@@ -3536,8 +3557,6 @@ dependencies = [
 [[package]]
 name = "iced_widget"
 version = "0.14.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b1596afa0d3109c2618e8bc12bae6c11d3064df8f95c42dfce570397dbe957ab"
 dependencies = [
  "iced_renderer",
  "log",
@@ -4554,6 +4573,17 @@ checksum = "3e2e65a1a2e43cfcb47a895c4c8b10d1f4a61097f9f254f183aee60cad9c651d"
 
 [[package]]
 name = "markup5ever"
+version = "0.38.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8983d30f2915feeaaab2d6babdd6bc7e9ed1a00b66b5e6d74df19aa9c0e91862"
+dependencies = [
+ "log",
+ "tendril",
+ "web_atoms",
+]
+
+[[package]]
+name = "markup5ever"
 version = "0.39.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7122d987ec5f704ee56f6e5b41a7d93722e9aae27ae07cafa4036c4d3f9757de"
@@ -4561,6 +4591,18 @@ dependencies = [
  "log",
  "tendril",
  "web_atoms",
+]
+
+[[package]]
+name = "markup5ever_rcdom"
+version = "0.38.0+unofficial"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "333171ccdf66e915257740d44e38ea5b1b19ce7b45d33cc35cb6f118fbd981ff"
+dependencies = [
+ "html5ever 0.38.0",
+ "markup5ever 0.38.0",
+ "tendril",
+ "xml5ever",
 ]
 
 [[package]]
@@ -5106,6 +5148,7 @@ dependencies = [
  "emojis",
  "futures-util",
  "hayro",
+ "htmd",
  "iced",
  "iced_graphics",
  "iced_runtime",
@@ -5126,6 +5169,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "unicode-normalization",
  "unicode-segmentation",
  "windows 0.62.2",
  "winresource",
@@ -5221,6 +5265,7 @@ dependencies = [
  "typst-assets",
  "typst-layout",
  "typst-render",
+ "unicode-segmentation",
 ]
 
 [[package]]
@@ -7292,7 +7337,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9e27e35e6c36fa1abc4def766e474a0f2f709e87f1602d57ec34d41b09253da4"
 dependencies = [
  "as_variant",
- "html5ever",
+ "html5ever 0.39.0",
  "ruma-common",
  "tracing",
  "wildmatch",
@@ -8173,6 +8218,7 @@ dependencies = [
  "parking_lot",
  "phf_shared",
  "precomputed-hash",
+ "serde",
 ]
 
 [[package]]
@@ -10638,8 +10684,6 @@ checksum = "589f6da84c646204747d1270a2a5661ea66ed1cced2631d546fdfb155959f9ec"
 [[package]]
 name = "winit"
 version = "0.30.13"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a6755fa58a9f8350bd1e472d4c3fcc25f824ec358933bba33306d0b63df5978d"
 dependencies = [
  "ahash 0.8.12",
  "android-activity",
@@ -10816,6 +10860,16 @@ name = "xml-rs"
 version = "0.8.29"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e450f9b2ed1dff33c94c12589a87338689467b9c4f5d8a5710bd09a847d2c8a7"
+
+[[package]]
+name = "xml5ever"
+version = "0.38.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d3dc9559429edf0cd3f327cc0afd9d6b36fa8cec6d93107b7fbe64f806b5f2d9"
+dependencies = [
+ "log",
+ "markup5ever 0.38.0",
+]
 
 [[package]]
 name = "xmlwriter"

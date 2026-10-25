@@ -17,6 +17,7 @@ use typst::{
     utils::LazyHash,
 };
 use typst_layout::PagedDocument;
+use unicode_segmentation::UnicodeSegmentation;
 
 use crate::{Block, Document, Inline, Style};
 
@@ -80,7 +81,7 @@ pub struct Image {
 pub struct Piece {
     pub leaf: usize,
     /// Its bytes in the leaf's text; `None` where the leaf is only selected
-    /// whole (math and code), drawn as one piece per line.
+    /// whole (math), drawn as one piece per line.
     pub range: Option<Range<usize>>,
     /// Left, top, width and height, in image pixels.
     pub rect: [f32; 4],
@@ -165,7 +166,8 @@ impl Renderer {
             .collect();
         let (mut image, top) = trim_rows(rgba, width, (style.scale * 2.0) as usize);
         let mut pieces = Vec::new();
-        collect_pieces(&page.frame, Point::zero(), &leaves, &mut None, &mut pieces);
+        let mut at = At::default();
+        collect_pieces(&page.frame, Point::zero(), &leaves, &mut at, &mut pieces);
         let scale = f64::from(style.scale);
         image.pieces = pieces
             .into_iter()
@@ -187,33 +189,120 @@ impl Renderer {
 /// A piece in points: leaf, its range, and its rectangle.
 type RawPiece = (usize, Option<Range<usize>>, [f64; 4]);
 
-/// The pieces of text in `frame` (placed at `at`), between the markers that
-/// [`marked`] put around each leaf. `leaves` says which are selected whole;
-/// `current` is the leaf whose text is being laid out.
+/// How the glyphs of a leaf are placed in its text.
+enum Leaf {
+    /// Each glyph has its byte offset in the text.
+    Text,
+    /// Math, laid out from generated Typst: only selected whole.
+    Whole,
+    /// Code: each glyph has its byte offset in its line as `raw` lays it out.
+    Code(Vec<CodeLine>),
+}
+
+/// Spaces per tab in code, set for `raw` so that [`CodeLine`] agrees.
+const TAB_SIZE: usize = 2;
+
+/// A line of code: where it starts in the code, and its tabs (each one's
+/// offset in the line and the spaces `raw` turned it into).
+#[derive(Debug, PartialEq)]
+struct CodeLine {
+    start: usize,
+    tabs: Vec<(usize, usize)>,
+}
+
+impl CodeLine {
+    /// The lines of `code`, split as `raw` does, with its tabs: to the next
+    /// multiple of [`TAB_SIZE`] columns.
+    fn split(code: &str) -> Vec<Self> {
+        typst::syntax::split_newlines(code)
+            .into_iter()
+            .map(|line| {
+                let mut column = 0;
+                let mut tabs = Vec::new();
+                for (i, grapheme) in line.grapheme_indices(true) {
+                    let width = if grapheme == "\t" {
+                        let spaces = TAB_SIZE - column % TAB_SIZE;
+                        tabs.push((i, spaces));
+                        spaces
+                    } else {
+                        1
+                    };
+                    column += width;
+                }
+                Self {
+                    start: line.as_ptr().addr() - code.as_ptr().addr(),
+                    tabs,
+                }
+            })
+            .collect()
+    }
+
+    /// The bytes of the code shown by bytes `laid` of the line as laid out:
+    /// all of a tab for any of its spaces.
+    fn written(&self, laid: Range<usize>) -> Range<usize> {
+        // How much longer the line is laid out than written, so far.
+        let mut longer = 0;
+        for &(tab, spaces) in &self.tabs {
+            let at = tab + longer;
+            if laid.start < at {
+                break;
+            }
+            if laid.start < at + spaces {
+                return self.start + tab..self.start + tab + 1;
+            }
+            longer += spaces - 1;
+        }
+        self.start + laid.start - longer..self.start + laid.end - longer
+    }
+}
+
+/// Where the layout is in the message's text: the leaf being laid out, and
+/// in code, the line (from 0).
+#[derive(Default)]
+struct At {
+    leaf: Option<usize>,
+    line: usize,
+}
+
+/// The pieces of text in `frame` (placed at `origin`), between the markers
+/// that [`marked`] put around each leaf and at the start of each line of
+/// code. `leaves` says how each leaf's glyphs are placed in it.
 fn collect_pieces(
     frame: &Frame,
-    at: Point,
-    leaves: &[bool],
-    current: &mut Option<usize>,
+    origin: Point,
+    leaves: &[Leaf],
+    at: &mut At,
     out: &mut Vec<RawPiece>,
 ) {
     for (pos, item) in frame.items() {
-        let pos = at + *pos;
+        let pos = origin + *pos;
         match item {
             FrameItem::Group(group) => {
                 let shift = Point::new(group.transform.tx, group.transform.ty);
-                collect_pieces(&group.frame, pos + shift, leaves, current, out);
+                collect_pieces(&group.frame, pos + shift, leaves, at, out);
             }
             FrameItem::Tag(Tag::Start(content, _)) => {
-                if let Some(marker) = content.to_packed::<MetadataElem>()
-                    && let Value::Int(n) = marker.value
-                    && let Ok(n) = usize::try_from(n)
-                {
-                    *current = (n % 2 == 0).then_some(n / 2);
+                let Some(marker) = content.to_packed::<MetadataElem>() else {
+                    continue;
+                };
+                match &marker.value {
+                    Value::Int(n) => {
+                        if let Ok(n) = usize::try_from(*n) {
+                            at.leaf = (n % 2 == 0).then_some(n / 2);
+                        }
+                    }
+                    Value::Dict(marker) => {
+                        if let Ok(Value::Int(n)) = marker.get("line")
+                            && let Ok(line) = usize::try_from(n - 1)
+                        {
+                            at.line = line;
+                        }
+                    }
+                    _ => {}
                 }
             }
             FrameItem::Text(text) => {
-                let Some(leaf) = *current else {
+                let Some(leaf) = at.leaf else {
                     continue;
                 };
                 let metrics = text.font.metrics();
@@ -225,13 +314,29 @@ fn collect_pieces(
                     let left = (x + glyph.x_offset.at(text.size)).to_pt();
                     let width = glyph.x_advance.at(text.size).to_pt();
                     x += glyph.x_advance.at(text.size);
-                    if leaves.get(leaf).copied().unwrap_or(true) {
-                        let rect = [left, top, width, height];
-                        whole = Some(whole.map_or(rect, |whole| union(&whole, &rect)));
-                    } else {
-                        let start = usize::from(glyph.span.1);
-                        let range = start..start + glyph.range().len();
-                        out.push((leaf, Some(range), [left, top, width, height]));
+                    let rect = [left, top, width, height];
+                    let start = usize::from(glyph.span.1);
+                    let laid = start..start + glyph.range().len();
+                    match leaves.get(leaf) {
+                        Some(Leaf::Text) => out.push((leaf, Some(laid), rect)),
+                        Some(Leaf::Code(lines)) => {
+                            let Some(line) = lines.get(at.line) else {
+                                continue;
+                            };
+                            let range = line.written(laid);
+                            // The spaces of a tab make one piece.
+                            match out.last_mut() {
+                                Some((last, Some(previous), last_rect))
+                                    if *last == leaf && *previous == range =>
+                                {
+                                    *last_rect = union(last_rect, &rect);
+                                }
+                                _ => out.push((leaf, Some(range), rect)),
+                            }
+                        }
+                        Some(Leaf::Whole) | None => {
+                            whole = Some(whole.map_or(rect, |whole| union(&whole, &rect)));
+                        }
                     }
                 }
                 // Runs of the same whole leaf on one line (a formula's
@@ -369,11 +474,11 @@ fn not_found(id: FileId) -> FileError {
 
 /// The whole message as a Typst program. All user text enters as string
 /// literals, so it can never be interpreted as Typst markup or code.
-/// `leaves` gets, for each text leaf, whether it is selected only whole.
+/// `leaves` gets, for each text leaf, how its glyphs are placed in it.
 fn typst_source(
     document: &Document,
     style: &RenderStyle,
-    leaves: &mut Vec<bool>,
+    leaves: &mut Vec<Leaf>,
 ) -> Result<String, RenderError> {
     let mut body = String::new();
     blocks(&document.blocks, &mut body, leaves)?;
@@ -387,6 +492,9 @@ fn typst_source(
 #set text(font: ({font}, {math}), size: {size}pt, fill: {text})
 #set par(spacing: 1em, leading: 0.75em)
 #show raw: set text(font: {mono}, size: 0.9em)
+#set raw(tab-size: {tab})
+// Marks where each line of code starts, for selecting it.
+#show raw.line: it => metadata((line: it.number)) + it
 #show link: set text(fill: {link})
 #let muted = {muted}
 #let mention = {link}
@@ -405,27 +513,28 @@ fn typst_source(
         muted = color(style.muted_color),
         max_width = style.max_width,
         overflow = OVERFLOW_EM,
+        tab = TAB_SIZE,
     );
     Ok(out)
 }
 
 /// Puts invisible markers around text leaf number `leaves.len()`, so its
-/// glyphs can be found in the layout; `atomic` if only selected whole.
+/// glyphs can be found in the layout.
 fn marked(
     out: &mut String,
-    leaves: &mut Vec<bool>,
-    atomic: bool,
+    leaves: &mut Vec<Leaf>,
+    kind: Leaf,
     content: impl FnOnce(&mut String) -> Result<(), RenderError>,
 ) -> Result<(), RenderError> {
     let leaf = leaves.len();
-    leaves.push(atomic);
+    leaves.push(kind);
     let _ = write!(out, "metadata({});", 2 * leaf);
     content(out)?;
     let _ = write!(out, ";metadata({})", 2 * leaf + 1);
     Ok(())
 }
 
-fn blocks(list: &[Block], out: &mut String, leaves: &mut Vec<bool>) -> Result<(), RenderError> {
+fn blocks(list: &[Block], out: &mut String, leaves: &mut Vec<Leaf>) -> Result<(), RenderError> {
     out.push('{');
     for (i, block) in list.iter().enumerate() {
         if i > 0 {
@@ -460,16 +569,19 @@ fn blocks(list: &[Block], out: &mut String, leaves: &mut Vec<bool>) -> Result<()
                 }
                 out.push(')');
             }
-            Block::CodeBlock { language, code } => marked(out, leaves, true, |out| {
-                out.push_str("block(fill: muted.transparentize(70%), inset: 0.4em, radius: 3pt, raw(block: true, ");
-                if let Some(language) = language {
-                    let _ = write!(out, "lang: {}, ", string(language));
-                }
-                out.push_str(&string(code.trim_end_matches('\n')));
-                out.push_str("))");
-                Ok(())
-            })?,
-            Block::Math(tex) => marked(out, leaves, true, |out| math(tex, true, out))?,
+            Block::CodeBlock { language, code } => {
+                let code = code.trim_end_matches('\n');
+                marked(out, leaves, Leaf::Code(CodeLine::split(code)), |out| {
+                    out.push_str("block(fill: muted.transparentize(70%), inset: 0.4em, radius: 3pt, raw(block: true, ");
+                    if let Some(language) = language {
+                        let _ = write!(out, "lang: {}, ", string(language));
+                    }
+                    out.push_str(&string(code));
+                    out.push_str("))");
+                    Ok(())
+                })?
+            }
+            Block::Math(tex) => marked(out, leaves, Leaf::Whole, |out| math(tex, true, out))?,
             Block::Rule => out.push_str("line(length: 100%, stroke: 0.5pt + muted)"),
         }
         out.push(';');
@@ -482,12 +594,12 @@ fn blocks(list: &[Block], out: &mut String, leaves: &mut Vec<bool>) -> Result<()
 fn inlines(
     content: &[Inline],
     out: &mut String,
-    leaves: &mut Vec<bool>,
+    leaves: &mut Vec<Leaf>,
 ) -> Result<(), RenderError> {
     out.push('{');
     for inline in content {
         match inline {
-            Inline::Text(text) => marked(out, leaves, false, |out| {
+            Inline::Text(text) => marked(out, leaves, Leaf::Text, |out| {
                 out.push_str(&string(text));
                 Ok(())
             })?,
@@ -504,7 +616,7 @@ fn inlines(
                 inlines(content, out, leaves)?;
                 out.push_str(if *style == Style::Spoiler { "))" } else { ")" });
             }
-            Inline::Code(code) => marked(out, leaves, true, |out| {
+            Inline::Code(code) => marked(out, leaves, Leaf::Code(CodeLine::split(code)), |out| {
                 let _ = write!(out, "raw({})", string(code));
                 Ok(())
             })?,
@@ -513,9 +625,9 @@ fn inlines(
                 inlines(content, out, leaves)?;
                 out.push(')');
             }
-            Inline::Math(tex) => marked(out, leaves, true, |out| math(tex, false, out))?,
+            Inline::Math(tex) => marked(out, leaves, Leaf::Whole, |out| math(tex, false, out))?,
             // In the link colour.
-            Inline::Mention { name, .. } => marked(out, leaves, false, |out| {
+            Inline::Mention { name, .. } => marked(out, leaves, Leaf::Text, |out| {
                 let _ = write!(out, "text(fill: mention, {})", string(name));
                 Ok(())
             })?,
@@ -615,4 +727,25 @@ fn string(text: &str) -> String {
 
 fn color([r, g, b, a]: [u8; 4]) -> String {
     format!("rgb({r}, {g}, {b}, {a})")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn code_lines_map_spaces_of_tabs_to_the_tab() {
+        let lines = CodeLine::split("ab\n\tc\r\nx\td");
+        let starts: Vec<_> = lines.iter().map(|l| l.start).collect();
+        assert_eq!(starts, [0, 3, 7]);
+        // A tab at the start is two spaces, after one column one.
+        assert_eq!(lines[1].tabs, [(0, 2)]);
+        assert_eq!(lines[2].tabs, [(1, 1)]);
+        // Each space of a tab is the tab; what follows is shifted back.
+        assert_eq!(lines[1].written(0..1), 3..4);
+        assert_eq!(lines[1].written(1..2), 3..4);
+        assert_eq!(lines[1].written(2..3), 4..5);
+        assert_eq!(lines[2].written(0..1), 7..8);
+        assert_eq!(lines[2].written(2..3), 9..10);
+    }
 }

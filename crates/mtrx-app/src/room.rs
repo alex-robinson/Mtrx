@@ -7,7 +7,6 @@ use std::{
     time::{Duration, SystemTime},
 };
 
-use chrono::{DateTime, Local};
 use iced::{
     Alignment, Element, Length, Padding, Rectangle, Task, Theme, Vector,
     advanced::widget::{Id, Operation, operation},
@@ -15,13 +14,13 @@ use iced::{
     mouse,
     widget::{
         button, column, container, image, mouse_area, row, rule, scrollable, scrollable::Viewport,
-        space, stack, text, text_editor,
+        space, span, stack, text, text_editor,
     },
 };
 use mtrx_core::{
-    CallService, Event, EventContent, Media, Member, MembershipChange, MessageKind, MxcUri,
-    OwnedEventId, OwnedRoomId, OwnedUserId, RoomKind, RoomSummary, RoomTimeline, ScheduledMessage,
-    SendState, TimelineEntry, UserId,
+    CallService, Event, EventContent, EventKey, Media, Member, MembershipChange, MessageKind,
+    MxcUri, OwnedEventId, OwnedRoomId, OwnedUserId, RoomKind, RoomSummary, RoomTimeline,
+    ScheduledMessage, SendState, TimelineEntry, UserId,
 };
 
 use crate::{
@@ -29,10 +28,14 @@ use crate::{
     app::Message,
     avatar::{self, Avatars, Shape},
     calls::{self, RoomCalls},
+    clipboard::{self, Copied, Field},
     context_menu::context_menu,
     drag_scroll::drag_scroll,
+    edit_menu,
     ellipsis::ellipsis,
-    emoji, fonts,
+    emoji,
+    find::{self, Find},
+    fonts,
     hint::{Position, hint},
     icons, info,
     math::{self, Math, Rendered},
@@ -43,10 +46,12 @@ use crate::{
     message_menu::{self, MenuAt},
     popover::{Edge, Side, popover},
     presence::{self, Presences},
-    selectable,
+    rows::{self, Part, Row, display_name, time},
+    selectable::{self, selectable},
     selectable_image::selectable_image,
-    selection::{self, Bounds, Point, Pos, Selection, Step, units_text},
+    selection::{self, Bounds, Point, Pos, Selection, Shown, Step},
     send_later::{self, SendLater},
+    sidebar,
     style::{
         self, GUTTER_SPACING, HEADER_AVATAR, MESSAGE_PADDING, SENDER_AVATAR, TEXT_MARGIN,
         TIMELINE_PADDING, TOOLBAR_HEIGHT,
@@ -70,8 +75,6 @@ const COMPOSER_INSET: f32 = emoji::FIELD_INSET + 29.0;
 /// The timeline's scrollable.
 pub const TIMELINE: &str = "timeline";
 
-/// Consecutive messages of one sender within this gap share a header.
-const GROUP_GAP: Duration = Duration::from_secs(5 * 60);
 /// How long our message is being sent before its clock shows, so a fast
 /// send never flashes one.
 pub const SENDING_CLOCK: Duration = Duration::from_millis(300);
@@ -106,10 +109,14 @@ pub struct Room {
     sending: Sending,
     /// Text selected in the timeline.
     pub selection: Option<Selection>,
+    /// The find bar (⌘F), while open.
+    pub find: Option<Find>,
     /// All emoji in the reaction picker, while shown.
     pub emoji: Option<emoji::Panel>,
     /// The composer's emoji panel, while shown.
     pub composer_emoji: Option<emoji::Panel>,
+    /// The composer's menu is open.
+    pub composer_menu: bool,
     /// The timeline row whose deletion awaits confirmation.
     pub confirm_delete: Option<String>,
     /// Names of others typing.
@@ -164,8 +171,10 @@ impl Room {
             unsent: None,
             sending: Sending::already(&entries),
             selection: None,
+            find: None,
             emoji: None,
             composer_emoji: None,
+            composer_menu: false,
             confirm_delete: None,
             typing: Vec::new(),
             member_list: None,
@@ -282,6 +291,12 @@ impl Room {
         }));
     }
 
+    /// The card of `user`, mentioned here: see [`mentioned`].
+    pub fn mentioned(&self, user: OwnedUserId) -> info::Target {
+        let members = self.member_list.as_ref().and_then(|m| m.as_deref().ok());
+        mentioned(user, members, &self.entries)
+    }
+
     /// Complete the mention being written with `mention`.
     pub fn complete(&mut self, mention: &str) {
         if let Some(completion) = self.completion.take() {
@@ -304,6 +319,33 @@ impl Room {
         self.unsent = None;
         self.confirm_delete = None;
         self.error = None;
+        self.find_again();
+    }
+
+    /// Search the entries again for the find bar's text, as they changed.
+    pub fn find_again(&mut self) {
+        if let Some(find) = &mut self.find {
+            find.search(&self.entries);
+        }
+    }
+
+    /// Render the message with the current match of the find bar, and
+    /// scroll to the match.
+    pub fn show_found(&mut self) -> Task<Message> {
+        let Some(event) = self
+            .find
+            .as_ref()
+            .and_then(Find::current)
+            .map(|m| m.event.clone())
+        else {
+            return Task::none();
+        };
+        if let Some(index) = (self.entries.iter())
+            .position(|e| matches!(e, TimelineEntry::Event(e) if e.id == event))
+        {
+            self.shown = self.shown.max(self.entries.len() - index);
+        }
+        scroll_to_found(&event)
     }
 
     /// Follow which of our messages are being sent, once the entries
@@ -345,6 +387,11 @@ impl Room {
         self.shown += WINDOW_STEP;
     }
 
+    /// Render every loaded entry, to go to the oldest.
+    pub fn show_all(&mut self) {
+        self.shown = self.shown.max(self.entries.len());
+    }
+
     /// Render the message `event` if it is loaded; its [`Event::id`].
     pub fn reveal(&mut self, event: &OwnedEventId) -> Option<String> {
         let index = self.entries.iter().position(
@@ -355,6 +402,23 @@ impl Room {
             TimelineEntry::Event(e) => Some(e.id.clone()),
             _ => None,
         }
+    }
+
+    /// Our newest message that we may edit, rendered to be edited in place:
+    /// its [`Event::id`], key and text.
+    pub fn newest_editable(&mut self) -> Option<(String, EventKey, String)> {
+        let (event_id, key, text) = self.entries.iter().rev().find_map(|entry| match entry {
+            TimelineEntry::Event(event) if event.editable => match &event.content {
+                EventContent::Message(m) => {
+                    Some((event.event_id.clone(), event.key.clone(), m.body.clone()))
+                }
+                _ => None,
+            },
+            _ => None,
+        })?;
+        // Not while it is being sent.
+        let row = self.reveal(&event_id?)?;
+        Some((row, key, text))
     }
 
     fn visible(&self) -> &[TimelineEntry] {
@@ -430,58 +494,92 @@ impl Room {
         })
     }
 
-    /// Move the end of the selection by `step`, on into the message before
-    /// or after.
+    /// Move the end of the selection by `step`, on into the part of the
+    /// timeline's text before or after.
     pub fn extend(&mut self, step: Step) {
-        fn units(entry: &TimelineEntry) -> Option<(&str, Vec<selection::Unit>)> {
-            match entry {
-                TimelineEntry::Event(event) => match &event.content {
-                    EventContent::Message(m) => {
-                        Some((event.id.as_str(), message::text_map(&m.document).units))
-                    }
-                    _ => None,
-                },
-                _ => None,
-            }
+        let focus = (self.selection.as_ref()).and_then(|s| self.stepped(&s.focus, step));
+        if let Some(selection) = &mut self.selection
+            && let Some(focus) = focus
+        {
+            selection.focus = focus;
         }
-        let Some(selection) = self.selection.as_mut() else {
-            return;
-        };
-        let Some(at) = (self.entries.iter())
-            .position(|e| matches!(e, TimelineEntry::Event(e) if e.id == selection.focus.event))
-        else {
-            return;
-        };
-        let Some((_, here)) = units(&self.entries[at]) else {
-            return;
-        };
-        selection.focus = match selection::step(&here, selection.focus.pos, step) {
-            Some(pos) => Point {
+    }
+
+    /// `focus` moved by `step`, on into the part before or after; `None`
+    /// past the first or last. A reply's preview is stepped through as a
+    /// whole, not as cut to fit.
+    fn stepped(&self, focus: &Point, step: Step) -> Option<Point> {
+        let rows = rows::rows(self.visible());
+        let parts = rows::parts(&rows);
+        let parts = rows::in_order(&parts);
+        let units = |part: &Part<'_>| part.units(&Shown::default());
+        let at = parts.iter().position(|(_, part)| part.key == focus.event)?;
+        if let Some(pos) = selection::step(&units(parts[at].1), focus.pos, step) {
+            return Some(Point {
                 pos,
-                ..selection.focus.clone()
-            },
-            None => {
-                let next = if step.forward() {
-                    self.entries[at + 1..].iter().find_map(units)
-                } else {
-                    self.entries[..at].iter().rev().find_map(units)
-                };
-                let Some((event, units)) = next else {
-                    return;
-                };
-                let pos = match units.last() {
-                    Some(last) if !step.forward() => Pos {
-                        unit: units.len() - 1,
-                        offset: last.text.len(),
-                    },
-                    _ => Pos::default(),
-                };
-                Point {
-                    event: event.to_owned(),
-                    pos,
-                }
-            }
+                ..focus.clone()
+            });
+        }
+        let next = if step.forward() {
+            at + 1
+        } else {
+            at.checked_sub(1)?
         };
+        let (_, next) = parts.get(next)?;
+        let pos = if step.forward() {
+            Pos::default()
+        } else {
+            selection::end_of(&units(next))
+        };
+        Some(Point {
+            event: next.key.clone(),
+            pos,
+        })
+    }
+
+    /// Move the end of the selection to the start or end (`forward`) of its
+    /// line, by the layout of the text holding it.
+    pub fn extend_to_line_edge(&self, forward: bool) -> Task<Message> {
+        let Some(focus) = self.selection.as_ref().map(|s| s.focus.clone()) else {
+            return Task::none();
+        };
+        selectable::line_edge(focus.pos.offset, forward).and_then(move |offset| {
+            Task::done(Message::Select(selection::Message::LineMoved(
+                focus.clone(),
+                !forward,
+                Some(offset),
+            )))
+        })
+    }
+
+    /// Move the end of the selection to the start of the first part on
+    /// screen (`up`), or the end of the last.
+    pub fn extend_to_screen_edge(&self, up: bool) -> Task<Message> {
+        if self.selection.is_none() {
+            return Task::none();
+        }
+        self.on_screen().and_then(move |(first, last)| {
+            let part = if up { first } else { last };
+            Task::done(Message::Select(selection::Message::ExtendToPart(part, up)))
+        })
+    }
+
+    /// Move the end of the selection to the start (`start`) or end of the
+    /// part `key`.
+    pub fn extend_to_part(&mut self, key: String, start: bool) {
+        let rows = rows::rows(self.visible());
+        let parts = rows::parts(&rows);
+        let Some(part) = parts.iter().flatten().find(|part| part.key == key) else {
+            return;
+        };
+        let pos = if start {
+            Pos::default()
+        } else {
+            selection::end_of(&part.units(&Shown::default()))
+        };
+        if let Some(selection) = &mut self.selection {
+            selection.focus = Point { event: key, pos };
+        }
     }
 
     /// Move the end of the selection a line up or down, by the layout of
@@ -516,72 +614,52 @@ impl Room {
         }
     }
 
-    /// Each message's index in the timeline, for ordering a selection.
-    fn order(&self) -> HashMap<&str, usize> {
-        self.entries
-            .iter()
-            .enumerate()
-            .filter_map(|(i, entry)| match entry {
-                TimelineEntry::Event(event) => Some((event.id.as_str(), i)),
-                _ => None,
-            })
-            .collect()
-    }
-
-    /// The first and last message on screen (partly, or wholly), for ⌘A.
+    /// The first part of the first row with text on screen (partly, or
+    /// wholly) and the last part of the last, for ⌘A.
     pub fn on_screen(&self) -> Task<Option<(String, String)>> {
-        let ids: Vec<String> = self
-            .visible()
+        let rows = rows::rows(self.visible());
+        // Each row with text: its container, and its first and last part.
+        let (ids, ends): (Vec<Id>, Vec<(String, String)>) = rows
             .iter()
-            .filter_map(|entry| match entry {
-                TimelineEntry::Event(event)
-                    if matches!(event.content, EventContent::Message(_)) =>
-                {
-                    Some(event.id.clone())
-                }
-                _ => None,
+            .filter_map(|row| {
+                let parts = row.parts();
+                let ends = (parts.first()?.key.clone(), parts.last()?.key.clone());
+                Some((row_container(row, &parts)?, ends))
             })
-            .collect();
-        let rows = ids.iter().map(|id| row_id(id)).collect();
+            .unzip();
         iced::advanced::widget::operate(FindRows {
-            rows,
+            rows: ids,
             view: None,
             found: Vec::new(),
         })
-        .map(move |range| range.map(|(first, last)| (ids[first].clone(), ids[last].clone())))
+        .map(move |range| range.map(|(first, last)| (ends[first].0.clone(), ends[last].1.clone())))
     }
 
-    /// The selected text, as shown; with several messages, each sender's
-    /// name and time before their messages.
-    pub fn selected_text(&self) -> Option<String> {
-        let bounds = self.selection.as_ref()?.ordered(&self.order())?;
-        let messages: Vec<_> = (bounds.start.0..=bounds.end.0)
-            .filter_map(|i| match self.entries.get(i)? {
-                TimelineEntry::Event(event) => match &event.content {
-                    EventContent::Message(m) => Some((event, m, bounds.in_message(i)?)),
-                    _ => None,
-                },
-                _ => None,
-            })
+    /// The selected text, as shown and as HTML (`shown` says what reply
+    /// previews show, see [`Room::read_shown`]); with several messages,
+    /// each sender's name and time before their messages unless it is
+    /// selected.
+    pub fn selected(&self, shown: &Shown) -> Option<Copied> {
+        let selection = self.selection.as_ref()?;
+        let rows = rows::rows(self.visible());
+        let parts = rows::parts(&rows);
+        let bounds = selection.ordered(&rows::order(&parts))?;
+        rows::copied(&rows, &parts, bounds, shown)
+    }
+
+    /// What the reply previews on screen show, cut to fit, read from the
+    /// view for copying them as shown.
+    pub fn read_shown(&self) -> Task<Shown> {
+        let ids = rows::rows(self.visible())
+            .iter()
+            .flat_map(Row::parts)
+            .filter(|part| matches!(part.text, rows::Text::Reply(_)))
+            .map(|part| (rows::shown_id(&part.key), part.key))
             .collect();
-        let several = messages.len() > 1;
-        let mut out = String::new();
-        let mut sender = None;
-        for (event, m, (from, to)) in messages {
-            let text = units_text(&message::text_map(&m.document).units, from, to);
-            if text.is_empty() {
-                continue;
-            }
-            if !out.is_empty() {
-                out.push_str("\n\n");
-            }
-            if several && sender != Some(&event.sender) {
-                out.push_str(&format!("{}, {}\n", display_name(event), time(event)));
-                sender = Some(&event.sender);
-            }
-            out.push_str(&text);
-        }
-        (!out.is_empty()).then_some(out)
+        iced::advanced::widget::operate(ReadShown {
+            ids,
+            shown: Shown::new(),
+        })
     }
 
     pub fn view<'a>(
@@ -591,7 +669,9 @@ impl Room {
         scheduled: &send_later::Pending<'a>,
     ) -> Element<'a, Message> {
         let header = self.header(summary, look);
-        let order = self.selection.as_ref().map(|_| self.order());
+        let rows = rows::rows(self.visible());
+        let parts = rows::parts(&rows);
+        let order = self.selection.as_ref().map(|_| rows::order(&parts));
         let selected = self
             .selection
             .as_ref()
@@ -609,13 +689,14 @@ impl Room {
             hovered: self.hovered.as_deref(),
             marked: self.marked.as_deref(),
             picker: self.picker.as_ref().map(|(id, at)| (id.as_str(), *at)),
-            menu: self.menu.as_ref().map(|(id, at)| (id.as_str(), *at)),
+            menu: self.menu.as_ref().map(|(id, at)| (id.as_str(), at)),
             readers: self.readers.as_deref(),
             reactors: (self.reactors.as_ref()).map(|(id, key)| (id.as_str(), key.as_str())),
             unsent: self.unsent.as_deref(),
             newest_own: self.newest_own(),
             sending: &self.sending,
             selected,
+            found: self.find.as_ref(),
             focus: self.selection.as_ref().map(|s| &s.focus),
             dragging: self.selection.as_ref().is_some_and(|s| s.dragging),
             emoji: self.emoji.as_ref(),
@@ -631,45 +712,13 @@ impl Room {
         } else if !(self.at_start() && all_shown) && (self.paginating || !all_shown) {
             timeline = timeline.push(notice("Loading…"));
         }
-        let mut previous: Option<&Event> = None;
-        // Consecutive state events (joins, settings) collapse into one line.
-        let mut state: Vec<&Event> = Vec::new();
-        for entry in self.visible() {
-            if let TimelineEntry::Event(event) = entry
-                && event.is_state()
-            {
-                state.push(event);
-                continue;
-            }
-            if !state.is_empty() {
-                timeline = timeline.push(state_line(&std::mem::take(&mut state)));
-                previous = None;
-            }
-            match entry {
-                TimelineEntry::Event(event) => {
-                    let grouped = previous.is_some_and(|p| {
-                        p.sender == event.sender
-                            && event
-                                .timestamp
-                                .duration_since(p.timestamp)
-                                .unwrap_or_default()
-                                < GROUP_GAP
-                    });
-                    timeline = timeline.push(event_view(event, !grouped, &context));
-                    previous = matches!(event.content, EventContent::Message(_)).then_some(event);
-                }
-                TimelineEntry::DayDivider(day) => {
-                    timeline = timeline.push(day_divider(*day));
-                    previous = None;
-                }
-                TimelineEntry::Start => {
-                    timeline = timeline.push(notice("This is the start of the room."));
-                }
-                TimelineEntry::ReadMarker => {}
-            }
-        }
-        if !state.is_empty() {
-            timeline = timeline.push(state_line(&state));
+        for (row, parts) in rows.iter().zip(&parts) {
+            let view = match row {
+                Row::Event { event, .. } => event_view(event, parts, &context),
+                Row::Day(_) => day_divider(parts, &context),
+                Row::State(_) | Row::Start => line(parts, &context),
+            };
+            timeline = timeline.push(view);
         }
         // Pegged to the bottom also when shorter than the view: new messages
         // push older ones up, and loaded history appears above.
@@ -692,6 +741,7 @@ impl Room {
         let candidates = self.candidates(look.own_user);
         let completing = !candidates.is_empty();
         let selected = self.composer.selection().is_some();
+        let empty = self.composer.text().is_empty();
         let composer = text_editor(&self.composer)
             .id(COMPOSER)
             .highlight_with::<mention::Highlighter>(self.mentions.clone(), mention::format)
@@ -700,6 +750,16 @@ impl Room {
             .on_action(Message::Composer)
             .key_binding(move |press| {
                 let custom = |message| Some(text_editor::Binding::Custom(message));
+                // The window's: going to another room.
+                if sidebar::Go::from_key(&press.key, press.physical_key, press.modifiers).is_some()
+                {
+                    return None;
+                }
+                // Pictures, files and rich text too, which iced's clipboard
+                // lacks.
+                if let Some(how) = clipboard::paste(&press) {
+                    return custom(Message::Paste(Field::Composer, how));
+                }
                 match press.key {
                     Key::Named(Named::ArrowUp) if completing => {
                         custom(Message::Mention(mention::Message::Up))
@@ -716,6 +776,14 @@ impl Room {
                     Key::Named(Named::Escape) if cancellable => {
                         custom(Message::Act(actions::Message::CancelCompose))
                     }
+                    // Bindings are asked also while not focused.
+                    Key::Named(Named::ArrowUp)
+                        if empty
+                            && press.modifiers.is_empty()
+                            && matches!(press.status, text_editor::Status::Focused { .. }) =>
+                    {
+                        custom(Message::Act(actions::Message::EditLast))
+                    }
                     _ => selection::editor_key(press, selected),
                 }
             })
@@ -729,6 +797,8 @@ impl Room {
                     }),
             )
             .max_height(200);
+        let composer =
+            edit_menu::with_menu(Field::Composer, composer, self.composer_menu, selected);
         let attach = hint(
             button(icons::paperclip(19.0, |theme| {
                 theme
@@ -847,7 +917,13 @@ impl Room {
         .spacing(6)
         .padding([8.0, TIMELINE_PADDING + MESSAGE_PADDING]);
 
-        let main = column![timeline, bottom].width(Length::Fill);
+        // Always there, so the timeline and composer keep their state.
+        let mut find_bar = column![];
+        if let Some(find) = &self.find {
+            find_bar = find_bar.push(find.view(Message::Find));
+            find_bar = find_bar.push(rule::horizontal(1));
+        }
+        let main = column![find_bar, timeline, bottom].width(Length::Fill);
         // The member list comes after, so it does not move the composer.
         let mut body = row![main];
         if look.show_members {
@@ -996,7 +1072,7 @@ struct Context<'a, 'b> {
     hovered: Option<&'b str>,
     marked: Option<&'b str>,
     picker: Option<(&'b str, PickerAt)>,
-    menu: Option<(&'b str, MenuAt)>,
+    menu: Option<(&'b str, &'b MenuAt)>,
     /// The row whose readers are listed.
     readers: Option<&'b str>,
     /// The row and reaction key whose people are listed.
@@ -1009,6 +1085,8 @@ struct Context<'a, 'b> {
     sending: &'b Sending,
     /// The selection, with each message's index in the timeline.
     selected: Option<(Bounds, &'b HashMap<&'b str, usize>)>,
+    /// The find bar, to highlight its matches.
+    found: Option<&'b Find>,
     /// Where the selection ends.
     focus: Option<&'b Point>,
     dragging: bool,
@@ -1020,9 +1098,27 @@ struct Context<'a, 'b> {
     editing: Option<&'a InlineEdit>,
 }
 
+impl<'a> Context<'a, '_> {
+    /// How the text of part `key` ([`rows::Part::key`]) is selected.
+    fn select(&self, key: &str) -> message::Select<'a, Message> {
+        let id = key.to_owned();
+        message::Select {
+            range: (self.selected).and_then(|(bounds, order)| bounds.in_message(*order.get(key)?)),
+            focus: (self.focus)
+                .filter(|focus| focus.event == key)
+                .map(|focus| focus.pos),
+            dragging: self.dragging,
+            on_gesture: Rc::new(move |gesture| {
+                Message::Select(selection::Message::Gesture(id.clone(), gesture))
+            }),
+            found: (self.found).map_or_else(Vec::new, |find| find.in_message(key)),
+        }
+    }
+}
+
 fn event_view<'a>(
     event: &'a Event,
-    with_header: bool,
+    texts: &[Part<'a>],
     context: &Context<'a, '_>,
 ) -> Element<'a, Message> {
     let Context {
@@ -1031,6 +1127,10 @@ fn event_view<'a>(
         params,
         ..
     } = *context;
+    let header = texts
+        .iter()
+        .find(|part| matches!(part.text, rows::Text::Sender(_)));
+    let with_header = header.is_some();
     // Where this message's reaction window is open, if it is.
     let picking = context
         .picker
@@ -1045,19 +1145,13 @@ fn event_view<'a>(
     let mut math_shown = false;
     // Shown as text, which carries the mark of an edit.
     let mut as_text = false;
-    let select = || {
+    let select = || context.select(&event.id);
+    let links = || {
         let id = event.id.clone();
-        message::Select {
-            range: context
-                .selected
-                .and_then(|(bounds, order)| bounds.in_message(*order.get(event.id.as_str())?)),
-            focus: context
-                .focus
-                .filter(|focus| focus.event == event.id)
-                .map(|focus| focus.pos),
-            dragging: context.dragging,
-            on_gesture: Rc::new(move |gesture| {
-                Message::Select(selection::Message::Gesture(id.clone(), gesture))
+        message::Links {
+            open: Message::LinkClicked,
+            menu: Rc::new(move |url| {
+                act(actions::Message::OpenMenu(id.clone(), MenuAt::Link(url)))
             }),
         }
     };
@@ -1074,12 +1168,16 @@ fn event_view<'a>(
                         }) => {
                             math_shown = true;
                             let select = select();
+                            let links = links();
                             selectable_image(
                                 image(handle.clone()).width(*width).height(*height),
                                 text.clone(),
                             )
                             .selected(select.range)
+                            .found(select.found)
                             .dragging(select.dragging)
+                            .on_link(links.open)
+                            .on_link_menu(links.menu)
                             .on_gesture(select.on_gesture)
                             .into()
                         }
@@ -1089,7 +1187,7 @@ fn event_view<'a>(
                                 &m.document,
                                 theme,
                                 context.own_user,
-                                Message::LinkClicked,
+                                links(),
                                 select(),
                                 m.edited,
                             )
@@ -1102,7 +1200,7 @@ fn event_view<'a>(
                         &m.document,
                         theme,
                         context.own_user,
-                        Message::LinkClicked,
+                        links(),
                         select(),
                         m.edited,
                     )
@@ -1120,8 +1218,17 @@ fn event_view<'a>(
                 },
             };
             let mut parts = column![].spacing(4);
-            if let Some(reply) = &m.in_reply_to {
-                parts = parts.push(actions::quote(reply));
+            let reply = texts.iter().find_map(|part| match part.text {
+                rows::Text::Reply(reply) => Some((part, reply)),
+                _ => None,
+            });
+            if let Some((part, reply)) = reply {
+                parts = parts.push(actions::quote(
+                    reply,
+                    &part.units(&Shown::default()),
+                    context.select(&part.key),
+                    rows::shown_id(&part.key),
+                ));
             }
             parts = parts.push(content);
             if let Some(cards) = calls::cards(&m.document.links(), context.call_services) {
@@ -1147,19 +1254,14 @@ fn event_view<'a>(
             }
             parts.into()
         }
-        EventContent::UnableToDecrypt => text("Unable to decrypt this message (waiting for keys)")
-            .size(13)
-            .style(text::secondary)
-            .into(),
-        EventContent::Redacted => text("Message deleted")
-            .size(13)
-            .style(text::secondary)
-            .into(),
-        EventContent::Other { description } => text(format!("sent a {description}"))
-            .size(13)
-            .style(text::secondary)
-            .into(),
-        // Rendered as summaries by `state_line`.
+        // A line in its place, its only part besides the header.
+        EventContent::UnableToDecrypt | EventContent::Redacted | EventContent::Other { .. } => {
+            match texts.iter().find(|part| part.key == event.id) {
+                Some(part) => muted(part, 13.0, context).into(),
+                None => space().into(),
+            }
+        }
+        // Rendered as summaries in a row of their own (`rows::Row::State`).
         EventContent::Membership { .. }
         | EventContent::DisplayNameChange { .. }
         | EventContent::CallLink { .. }
@@ -1170,12 +1272,8 @@ fn event_view<'a>(
         .spacing(2)
         .width(Length::Fill)
         .padding(Padding::ZERO.right(TEXT_MARGIN));
-    if with_header {
-        item = item.push(
-            mouse_area(sender_line(event, context.colored_names))
-                .interaction(mouse::Interaction::Pointer)
-                .on_press(sender_info(event)),
-        );
+    if let Some(header) = header {
+        item = item.push(sender_line(event, header, context));
     }
     let edit = context
         .editing
@@ -1196,10 +1294,12 @@ fn event_view<'a>(
     let menu_items = message
         .map(|m| message_menu::items(m, math_shown, in_selection))
         .filter(|items| !items.is_empty());
-    let menu_view = |at| {
-        (menu_at == Some(at))
-            .then(|| menu_items.clone().map(message_menu::view))
-            .flatten()
+    let menu_view = |at| match menu_at {
+        Some(MenuAt::Link(url)) if at == MenuAt::Cursor => {
+            Some(message_menu::view(message_menu::link_items(url)))
+        }
+        Some(open) if *open == at => menu_items.clone().map(message_menu::view),
+        _ => None,
     };
     if context.confirm_delete == Some(event.id.as_str()) {
         item = item.push(actions::confirm_delete(event));
@@ -1271,7 +1371,7 @@ fn event_view<'a>(
         Some(m)
             if (hovered
                 || picking == Some(PickerAt::Toolbar)
-                || menu_at == Some(MenuAt::Toolbar))
+                || menu_at == Some(&MenuAt::Toolbar))
                 && event.event_id.is_some()
                 && edit.is_none() =>
         {
@@ -1401,6 +1501,74 @@ pub fn scroll_to_row(id: &str) -> Task<Message> {
     })
 }
 
+/// Where the keys scroll the timeline.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Scroll {
+    /// Page Up, ⌥↑.
+    PageUp,
+    /// Page Down, ⌥↓.
+    PageDown,
+    /// ⌘↑: the top, once all loaded entries are shown ([`Room::show_all`]).
+    Oldest,
+    /// ⌘↓: the bottom, following new messages from there.
+    Newest,
+}
+
+/// The share of the view a page scrolls, so a little of it stays in view.
+const PAGE: f32 = 0.9;
+
+/// Scroll the timeline.
+pub fn scroll(scroll: Scroll) -> Task<Message> {
+    iced::advanced::widget::operate(ScrollTimeline(scroll)).discard()
+}
+
+struct ScrollTimeline(Scroll);
+
+impl Operation for ScrollTimeline {
+    fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn Operation)) {
+        operate(self);
+    }
+
+    fn scrollable(
+        &mut self,
+        id: Option<&Id>,
+        bounds: Rectangle,
+        content_bounds: Rectangle,
+        _translation: Vector,
+        state: &mut dyn operation::Scrollable,
+    ) {
+        if id != Some(&Id::new(TIMELINE)) {
+            return;
+        }
+        // Anchored at the bottom: offsets count upwards from there.
+        let page = bounds.height * PAGE;
+        match self.0 {
+            Scroll::PageUp | Scroll::PageDown => {
+                let y = if self.0 == Scroll::PageUp {
+                    page
+                } else {
+                    -page
+                };
+                state.scroll_by(
+                    scrollable::AbsoluteOffset { x: 0.0, y },
+                    bounds,
+                    content_bounds,
+                );
+            }
+            // Where the top is now: as older entries load above, the view
+            // stays rather than going on to the top.
+            Scroll::Oldest => state.scroll_to(scrollable::AbsoluteOffset {
+                x: None,
+                y: Some((content_bounds.height - bounds.height).max(0.0)),
+            }),
+            Scroll::Newest => state.snap_to(scrollable::RelativeOffset {
+                x: None,
+                y: Some(0.0),
+            }),
+        }
+    }
+}
+
 /// The offset of the timeline (from the bottom, where it is anchored)
 /// with a row in the middle.
 struct FindRow {
@@ -1435,11 +1603,115 @@ impl Operation<Option<f32>> for FindRow {
     }
 
     fn finish(&self) -> operation::Outcome<Option<f32>> {
-        operation::Outcome::Some(self.view.zip(self.found).map(|((view, content), row)| {
-            // From the top, then from the bottom.
-            let top = row.y - view.y - (view.height - row.height).max(0.0) / 2.0;
-            ((content - view.height).max(0.0) - top.max(0.0)).max(0.0)
-        }))
+        operation::Outcome::Some(
+            (self.view.zip(self.found)).map(|((view, content), row)| centred(view, content, row)),
+        )
+    }
+}
+
+/// The offset of a timeline (`view`, with `content` high) from the bottom,
+/// where it is anchored, with `target` in the middle.
+fn centred(view: Rectangle, content: f32, target: Rectangle) -> f32 {
+    // From the top, then from the bottom.
+    let top = target.y - view.y - (view.height - target.height).max(0.0) / 2.0;
+    ((content - view.height).max(0.0) - top.max(0.0)).max(0.0)
+}
+
+/// Scroll the timeline to the current match of the find bar, in message
+/// `event`, unless it is in view: to the middle, as browsers do.
+fn scroll_to_found(event: &str) -> Task<Message> {
+    iced::advanced::widget::operate(FindFound {
+        row: row_id(event),
+        view: None,
+        found: None,
+        row_found: None,
+    })
+    .then(|offset| match offset {
+        Some(y) => iced::widget::operation::scroll_to(
+            TIMELINE,
+            scrollable::AbsoluteOffset {
+                x: None,
+                y: Some(y),
+            },
+        ),
+        None => Task::none(),
+    })
+}
+
+/// Where the timeline should be scrolled to show the current match, if it
+/// is not in view.
+struct FindFound {
+    /// The row of its message, for when its text does not report it (e.g.
+    /// while being edited).
+    row: Id,
+    /// The timeline's bounds, content height and how far it is scrolled.
+    view: Option<(Rectangle, f32, Vector)>,
+    found: Option<Rectangle>,
+    row_found: Option<Rectangle>,
+}
+
+impl Operation<Option<f32>> for FindFound {
+    fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn Operation<Option<f32>>)) {
+        operate(self);
+    }
+
+    fn scrollable(
+        &mut self,
+        id: Option<&Id>,
+        bounds: Rectangle,
+        content_bounds: Rectangle,
+        translation: Vector,
+        _state: &mut dyn operation::Scrollable,
+    ) {
+        if id == Some(&Id::new(TIMELINE)) {
+            self.view = Some((bounds, content_bounds.height, translation));
+        }
+    }
+
+    fn container(&mut self, id: Option<&Id>, bounds: Rectangle) {
+        if id == Some(&self.row) {
+            self.row_found = Some(bounds);
+        }
+    }
+
+    fn custom(&mut self, id: Option<&Id>, bounds: Rectangle, _state: &mut dyn std::any::Any) {
+        if id == Some(&Id::new(find::CURRENT)) {
+            self.found = Some(bounds);
+        }
+    }
+
+    fn finish(&self) -> operation::Outcome<Option<f32>> {
+        let target = self.found.or(self.row_found);
+        operation::Outcome::Some(self.view.zip(target).and_then(
+            |((view, content, scrolled), target)| {
+                let top = view.y + scrolled.y;
+                let shown = target.y >= top && target.y + target.height <= top + view.height;
+                (!shown).then(|| centred(view, content, target))
+            },
+        ))
+    }
+}
+
+/// What reply previews show, cut to fit: each one's id
+/// ([`rows::shown_id`]) and part, and the text found.
+struct ReadShown {
+    ids: Vec<(Id, String)>,
+    shown: Shown,
+}
+
+impl Operation<Shown> for ReadShown {
+    fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn Operation<Shown>)) {
+        operate(self);
+    }
+
+    fn text(&mut self, id: Option<&Id>, _bounds: Rectangle, text: &str) {
+        if let Some((_, key)) = id.and_then(|id| self.ids.iter().find(|(shown, _)| shown == id)) {
+            self.shown.insert(key.clone(), text.to_owned());
+        }
+    }
+
+    fn finish(&self) -> operation::Outcome<Shown> {
+        operation::Outcome::Some(self.shown.clone())
     }
 }
 
@@ -1499,20 +1771,58 @@ fn on_screen(
     Some((shown.clone().min()?, shown.max()?))
 }
 
-/// Sender name, in their colour if `colored`, and time above the first
-/// message of a group.
-fn sender_line<'a>(event: &Event, colored: bool) -> Element<'a, Message> {
-    let mut name = text(display_name(event)).font(fonts::SEMIBOLD);
-    if colored {
-        let sender = event.sender.clone();
-        name = name.style(move |theme| text::Style {
-            color: Some(avatar::name_color(sender.as_str(), theme)),
-        });
+/// The sender's name, in their colour if names are coloured, and the time
+/// above the first message of a group (`part`); a click on either opens
+/// the sender's card.
+fn sender_line<'a>(
+    event: &Event,
+    part: &Part<'_>,
+    context: &Context<'a, '_>,
+) -> Element<'a, Message> {
+    let units = part.units(&Shown::default());
+    let select = context.select(&part.key);
+    let open = sender_info(event);
+    let mut name = span(units[0].text.clone()).font(fonts::SEMIBOLD);
+    if context.colored_names {
+        name = name.color(avatar::name_color(event.sender.as_str(), context.theme));
     }
-    row![name, text(time(event)).size(11).style(text::secondary)]
-        .spacing(8)
-        .align_y(Alignment::End)
-        .into()
+    let time = span(units[1].text.clone());
+    row![
+        select
+            .apply(selectable(vec![name], 0), 0, units[0].text.len())
+            .on_click(open.clone()),
+        select
+            .apply(
+                selectable(vec![time], 1).size(11).style(text::secondary),
+                1,
+                units[1].text.len(),
+            )
+            .on_click(open),
+    ]
+    .spacing(8)
+    .align_y(Alignment::End)
+    .into()
+}
+
+/// The card of `user`, mentioned in `entries`: their name and picture
+/// among `members` if loaded, else the name the newest mention shows.
+fn mentioned(
+    user: OwnedUserId,
+    members: Option<&[Member]>,
+    entries: &[TimelineEntry],
+) -> info::Target {
+    let member = members.and_then(|members| members.iter().find(|m| m.id == user));
+    let name = member.and_then(|m| m.name.clone()).or_else(|| {
+        entries.iter().rev().find_map(|entry| match entry {
+            TimelineEntry::Event(Event {
+                content: EventContent::Message(m),
+                ..
+            }) => m.document.mention_name(user.as_str()).map(str::to_owned),
+            _ => None,
+        })
+    });
+    let avatar = member.and_then(|m| m.avatar.clone());
+    info::sender(user, name, avatar)
 }
 
 /// Opens the sender's info card.
@@ -1524,12 +1834,6 @@ fn sender_info(event: &Event) -> Message {
     ))
 }
 
-fn time(event: &Event) -> String {
-    DateTime::<Local>::from(event.timestamp)
-        .format("%H:%M")
-        .to_string()
-}
-
 /// A muted line in the text column, e.g. "Loading…".
 fn notice<'a>(content: impl text::IntoFragment<'a>) -> Element<'a, Message> {
     container(text(content).size(12).style(text::secondary))
@@ -1537,20 +1841,54 @@ fn notice<'a>(content: impl text::IntoFragment<'a>) -> Element<'a, Message> {
         .into()
 }
 
+/// The text of a part of one line (see [`rows::Text::Line`]), muted.
+fn muted<'a>(
+    part: &Part<'_>,
+    size: f32,
+    context: &Context<'a, '_>,
+) -> selectable::Selectable<'a, Message> {
+    let line = part.units(&Shown::default()).remove(0).text;
+    let len = line.len();
+    let unit = selectable(vec![span(line)], 0)
+        .size(size)
+        .style(text::secondary);
+    context.select(&part.key).apply(unit, 0, len)
+}
+
+/// A row of one muted line in the text column, e.g. for state events.
+fn line<'a>(parts: &[Part<'_>], context: &Context<'a, '_>) -> Element<'a, Message> {
+    let Some(part) = parts.first() else {
+        return space().into();
+    };
+    container(muted(part, 12.0, context))
+        .padding(Padding::new(4.0).left(TEXT_INDENT))
+        .id(row_id(&part.key))
+        .into()
+}
+
 /// The date between two days' messages, centred on a line.
-fn day_divider<'a>(day: SystemTime) -> Element<'a, Message> {
-    let day: DateTime<Local> = day.into();
-    row![
+fn day_divider<'a>(parts: &[Part<'_>], context: &Context<'a, '_>) -> Element<'a, Message> {
+    let Some(part) = parts.first() else {
+        return space().into();
+    };
+    let divider = row![
         rule::horizontal(1).style(style::separator),
-        text(day.format("%A, %e %B %Y").to_string())
-            .size(12)
-            .style(text::secondary),
+        muted(part, 12.0, context),
         rule::horizontal(1).style(style::separator),
     ]
     .spacing(12)
     .align_y(Alignment::Center)
-    .padding([10.0, MESSAGE_PADDING])
-    .into()
+    .padding([10.0, MESSAGE_PADDING]);
+    container(divider).id(row_id(&part.key)).into()
+}
+
+/// The container of `row`, with `parts`, found by [`Room::on_screen`]: a
+/// message's by its event, other rows' by their part.
+fn row_container(row: &Row<'_>, parts: &[Part<'_>]) -> Option<Id> {
+    match row {
+        Row::Event { event, .. } => Some(row_id(&event.id)),
+        _ => parts.first().map(|part| row_id(&part.key)),
+    }
 }
 
 /// The first non-empty line of a message, for previews.
@@ -1561,20 +1899,9 @@ fn first_line(body: &str) -> String {
         .to_owned()
 }
 
-fn display_name(event: &Event) -> String {
-    event
-        .sender_name
-        .clone()
-        .unwrap_or_else(|| event.sender.localpart().to_owned())
-}
-
-fn state_line<'a>(events: &[&Event]) -> Element<'a, Message> {
-    notice(state_summary(events))
-}
-
 /// One line for a run of state events, e.g. "alice created and configured
 /// the room · alice invited bob · bob joined".
-fn state_summary(events: &[&Event]) -> String {
+pub fn state_summary(events: &[&Event]) -> String {
     let creators: Vec<_> = events
         .iter()
         .filter(|e| matches!(&e.content, EventContent::OtherState { event_type } if event_type == "m.room.create"))
@@ -1693,6 +2020,68 @@ mod tests {
         // Partly shown rows count.
         assert_eq!(on_screen(view, 450.0, &rows), Some((4, 7)));
         assert_eq!(on_screen(view, 5000.0, &rows), None);
+    }
+
+    #[test]
+    fn scrolls_to_a_match_out_of_view() {
+        // A timeline at y 100, 300 high, scrolled 500 down, 2000 of content.
+        let view = Rectangle::new(Point::new(0.0, 100.0), Size::new(800.0, 300.0));
+        let offset = |y| {
+            let find = FindFound {
+                row: row_id("$a"),
+                view: Some((view, 2000.0, Vector::new(0.0, 500.0))),
+                found: Some(Rectangle::new(Point::new(40.0, y), Size::new(30.0, 20.0))),
+                row_found: None,
+            };
+            match find.finish() {
+                operation::Outcome::Some(offset) => offset,
+                _ => unreachable!(),
+            }
+        };
+        // In view: stays.
+        assert_eq!(offset(700.0), None);
+        // Above: in the middle, counted from the bottom.
+        assert_eq!(offset(300.0), Some(2000.0 - 300.0 - (200.0 - 140.0)));
+        // Partly below.
+        assert!(offset(890.0).is_some());
+    }
+
+    /// A mentioned person's card has their name and picture as a member,
+    /// else the name the newest mention of them shows.
+    #[test]
+    fn a_mentioned_persons_card_has_what_the_room_knows() {
+        let nils: OwnedUserId = "@nils:x".try_into().unwrap();
+        let mention = |id: &str, name: &str| {
+            let mut event = Event::test_message(id, "@ana:x".try_into().unwrap(), name);
+            if let EventContent::Message(m) = &mut event.content {
+                m.document = mtrx_format::Document::from_html(&format!(
+                    r#"Ask <a href="https://matrix.to/#/@nils:x">{name}</a>"#
+                ));
+            }
+            TimelineEntry::Event(event)
+        };
+        let entries = [mention("$a", "Nils"), mention("$b", "Nils W")];
+        let member = Member {
+            id: nils.clone(),
+            name: Some("Nils Wolf".into()),
+            avatar: Some("mxc://x/nils".into()),
+            role: mtrx_core::Role::Member,
+            invited: false,
+        };
+        let card = |members: Option<&[Member]>, entries: &[TimelineEntry]| match mentioned(
+            nils.clone(),
+            members,
+            entries,
+        ) {
+            info::Target::User(user) => (user.name, user.avatar.map(|a| a.to_string())),
+            info::Target::Room(_) => panic!("a room's card"),
+        };
+        assert_eq!(
+            card(Some(&[member]), &entries),
+            (Some("Nils Wolf".into()), Some("mxc://x/nils".into()))
+        );
+        assert_eq!(card(None, &entries), (Some("Nils W".into()), None));
+        assert_eq!(card(Some(&[]), &[]), (None, None));
     }
 
     fn own_message(id: &str, send_state: SendState) -> TimelineEntry {
