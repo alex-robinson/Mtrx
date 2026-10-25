@@ -21,9 +21,9 @@ per day:
   and no history, so these need a vendored `iced_widget` (as
   `vendor/iced_graphics` already is). One fork, one project, carrying
   every item in B.
-- **C. Menu bar.** Needs `muda`; on macOS the menu's key equivalents are
-  matched before winit sees the key, so every Edit shortcut must be routed
-  back into the focused field. After B, not before.
+- **C. Menu bar.** On macOS the menu's key equivalents are matched before
+  winit sees the key, so every Edit shortcut must be routed back into the
+  focused field. After B, not before.
 - **D. Text rendering.** Screenshot tests; fixes where they fail.
 - **E. Limits.** Not fixable in our code; listed so they are not
   rediscovered.
@@ -41,10 +41,17 @@ per day:
 
 ### A1. Window
 
-- [x] ⌘W closes the window and so quits, as the close button does: there
-      is only ever one window (decided 2026-10-24). `main.rs` already sets
-      `exit_on_close_request: false`; `Message::CloseWindow` goes offline
-      and closes.
+- [x] Closing the window: decided 2026-10-25 from user feedback, by
+      platform (`app::closing`). On macOS the close button, ⌘W and Window ▸
+      Close hide the window, as a Mac app's: the app goes on, synced (Dock
+      badge, notifications, presence), and clicking its Dock icon, a
+      notification or its entry in the Window menu brings it back (a
+      window in full screen leaves it first). Quit (⌘Q, the Dock, logging
+      out) goes offline and ends the session through `Message::CloseWindow`.
+      Windows and Linux keep one window whose closing quits (Ctrl+W too),
+      through `Message::CloseWindow` (decided 2026-10-24). Hidden in our
+      winit (`with_hides_on_close`), so the window and iced's state stay.
+      To check by hand on macOS.
 - [x] Size, position and display remembered (`placement.rs`), and
       maximised; full screen is not, the window opens as it was before. A
       window left on a display since unplugged opens on the main one.
@@ -143,10 +150,11 @@ so that Enter probably sends the half-composed text today.
       would not start; patched in `vendor/winit` (winit #4748/#4749). To
       check by hand, from the app bundle (`cargo xtask bundle`): without
       a bundle identifier Dictation stalls.
-- [ ] ⌃⌘Space opens Emoji & Symbols and inserts the pick. The pick is
+- [x] ⌃⌘Space opens Emoji & Symbols and inserts the pick. The pick is
       inserted (winit #4748/#4749 backport), but ⌃⌘Space itself is the key
       equivalent of the Edit menu's Emoji & Symbols, which macOS adds to an
-      Edit menu: comes with C.
+      Edit menu: the Edit menu is there now (C). Checked by hand
+      2026-10-25.
 
 ### B2. Editing
 
@@ -181,20 +189,39 @@ so that Enter probably sends the half-composed text today.
 
 ## C. Menu bar
 
-The app has no menu bar of its own (winit's default app menu only), so no
-Edit menu: none of its items, and no place to find shortcuts. `muda` adds
-native menus to a winit window. Its accelerators take the key before the
-window does, so each one becomes a menu event routed to whatever is
-focused; do it once B's bindings exist to route to.
+The app had no menu bar of its own (winit's default app menu only), so no
+Edit menu: none of its items, and no place to find shortcuts. A menu takes
+the shortcuts of its items before the window, so ⌘C or ⌘Z never reach the
+focused field as key presses.
 
-- [ ] App menu: About, Settings… (⌘,), Hide, Quit. Quit (⌘Q) goes
-      through `Message::CloseWindow`, as closing does: winit's own Quit
-      exits without going offline or ending the session.
-- [ ] Edit: Undo, Redo, Cut, Copy, Paste, Select All, Find (⌘F); macOS
-      adds Emoji & Symbols, Start Dictation and AutoFill.
-- [ ] View: Bigger, Smaller, Actual Size (⌘+ ⌘− ⌘0, already keys).
-- [ ] Window: Minimize (⌘M), Zoom, Close (⌘W), Enter Full Screen (⌃⌘F).
-- [ ] Help: the website.
+Decided (2026-10-25): macOS only (Windows and Linux keep none), with
+AppKit's menus (`menu_bar.rs`, objc2), not `muda`. The Edit and View items
+send the text system's action messages (`copy:`, `undo:`,
+`makeTextLarger:`, ...) to the window's view, which our winit passes on as
+standard actions (`Event::StandardAction`, through our `iced_winit` and
+`iced_core`): the focused editor or text input does what the key does (the
+editor through its key binding, so ⌘V still pastes pictures), else the
+app's shortcuts take them as the keys (the timeline's selection, find, the
+text size). The fields tell what they can undo, redo and cut along with
+their input method, and the items are enabled by it. A disabled item still
+takes its shortcut, which then reaches nothing (checked 2026-10-25), so an
+item is disabled only where its key does nothing. Quit goes through
+closing, also from the Dock and when logging out (`applicationShouldTerminate:`
+in our winit). See the READMEs in `vendor/`.
+
+Done, with tests of the actions doing what the keys do, and checked by
+hand on macOS 2026-10-25:
+
+- [x] App menu: About, Settings… (⌘,), Hide, Hide Others, Show All, Quit.
+      Quit (⌘Q) goes through `Message::CloseWindow`, as closing does:
+      winit's own Quit exited without going offline or ending the session.
+- [x] Edit: Undo, Redo, Cut, Copy, Paste, Paste as Plain Text (⌥⇧⌘V),
+      Select All, Find (⌘F, ⌘G, ⇧⌘G); macOS adds Emoji & Symbols, Start
+      Dictation and AutoFill.
+- [x] View: Bigger, Smaller, Actual Size (⌘+ ⌘− ⌘0, already keys), Enter
+      Full Screen (⌃⌘F).
+- [x] Window: Minimize (⌘M), Zoom, Close (⌘W), Bring All to Front.
+- [x] Help: the website.
 
 ## D. Text rendering
 

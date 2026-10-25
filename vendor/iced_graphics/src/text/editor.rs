@@ -463,6 +463,15 @@ impl editor::Editor for Editor {
         });
     }
 
+    // Mtrx patch (menu actions).
+    fn can_undo(&self) -> bool {
+        self.internal().history.can_undo()
+    }
+
+    fn can_redo(&self) -> bool {
+        self.internal().history.can_redo()
+    }
+
     // Mtrx patch (editing).
     fn caret_at(&self, point: Point) -> Option<Point> {
         let buffer = self.buffer();

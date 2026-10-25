@@ -152,7 +152,8 @@ pub enum Message {
     /// A desktop notification about the room was clicked.
     NotificationClicked(OwnedRoomId),
     WindowFocused(bool),
-    /// The window's close button (or ⌘W, Alt+F4, ...) was pressed.
+    /// Quit (⌘Q, in the Dock, logging out) on macOS; elsewhere the window's
+    /// close button (or Ctrl+W, Alt+F4, ...) was pressed. See [`closing`].
     CloseWindow(window::Id),
     /// Others' presence, and ours.
     Presence(presence::Message),
@@ -569,6 +570,20 @@ impl Environment {
     }
 }
 
+/// The window's settings for closing it (`docs/native-behaviour.md`, A1). On
+/// macOS closing it hides it, as a Mac app's main window, and the app goes
+/// on (synced, notifying); clicking its Dock icon shows it again (our
+/// winit). Quitting, and elsewhere closing, requests to close it: the app
+/// goes offline and ends its session first, see [`Message::CloseWindow`].
+pub fn closing(mut window: window::Settings) -> window::Settings {
+    window.exit_on_close_request = false;
+    #[cfg(target_os = "macos")]
+    {
+        window.platform_specific.hides_on_close = true;
+    }
+    window
+}
+
 impl App {
     pub fn boot(environment: Environment) -> (Self, Task<Message>) {
         let Environment {
@@ -610,6 +625,14 @@ impl App {
             None => Task::none(),
         });
         let mode = iced::system::theme().map(Message::ThemeMode);
+        // Once the app has launched, over winit's own.
+        #[cfg(target_os = "macos")]
+        let menu_bar = window::oldest().then(|id| match id {
+            Some(id) => window::run(id, |_| crate::menu_bar::install()).discard(),
+            None => Task::none(),
+        });
+        #[cfg(not(target_os = "macos"))]
+        let menu_bar = Task::none();
         // Whether the window opened on a display, see `Message::WindowOpened`.
         let opened = window::oldest().then(|id| match id {
             Some(id) => window::run(id, placement::displays).then(move |displays| {
@@ -618,7 +641,7 @@ impl App {
             }),
             None => Task::none(),
         });
-        (app, Task::batch([restore, scale, mode, opened]))
+        (app, Task::batch([restore, scale, mode, opened, menu_bar]))
     }
 
     /// The theme the app is drawn in.
@@ -1785,8 +1808,16 @@ impl App {
                 })
             }
             Message::NotificationClicked(room) => {
+                // Shown again if closing hid it (macOS).
                 let raise = window::oldest().then(|id| match id {
-                    Some(id) => window::gain_focus(id),
+                    Some(id) => window::mode(id).then(move |mode| {
+                        if mode == window::Mode::Hidden {
+                            window::set_mode(id, window::Mode::Windowed)
+                                .chain(window::gain_focus(id))
+                        } else {
+                            window::gain_focus(id)
+                        }
+                    }),
                     None => Task::none(),
                 });
                 Task::batch([raise, self.update(Message::OpenRoom(room))])
@@ -1950,8 +1981,12 @@ impl App {
                 ])
             }
             Message::WindowOpened(..) => Task::none(),
-            Message::WindowMoved(id) => window::is_maximized(id).then(move |maximized| {
-                window::mode(id).then(move |mode| {
+            // Not while closing hid it (macOS): where it is not shown.
+            Message::WindowMoved(id) => window::mode(id).then(move |mode| {
+                if mode == window::Mode::Hidden {
+                    return Task::none();
+                }
+                window::is_maximized(id).then(move |maximized| {
                     window::position(id).map(move |position| Message::WindowPlaced {
                         position,
                         maximized,
@@ -3283,6 +3318,10 @@ impl App {
             // Also on the sign-in screen.
             iced::event::listen_with(window_keys),
         ];
+        // Settings… in the app menu.
+        #[cfg(target_os = "macos")]
+        subscriptions
+            .push(crate::menu_bar::settings_chosen().map(|()| Message::ShowSettings(true)));
         if let Screen::Main(main) = &self.screen {
             subscriptions.push(
                 Subscription::run_with(Shared(main.session.clone()), |s| s.0.scheduled_updates())
@@ -3838,21 +3877,24 @@ async fn run_request(
     result.map_err(|e: mtrx_core::Error| e.to_string())
 }
 
-/// Keys on every screen, whatever is focused: ⌘+ ⌘− ⌘0 zoom, and ⌘W closes
-/// the window as its close button does (Ctrl on Windows and Linux).
+/// Keys on every screen, whatever is focused: ⌘+ ⌘− ⌘0 zoom (Ctrl on Windows
+/// and Linux), and Ctrl+W closes the window as its close button does. On
+/// macOS ⌘W is the Window menu's Close, which hides it (see [`closing`]).
+#[cfg_attr(target_os = "macos", allow(unused_variables))]
 fn window_keys(
     event: iced::Event,
     _status: iced::event::Status,
     window: window::Id,
 ) -> Option<Message> {
-    use iced::keyboard::{self, Key};
-    match event {
-        iced::Event::Keyboard(keyboard::Event::KeyPressed { key, modifiers, .. }) => match key {
-            Key::Character(c) if c == "w" && modifiers.command() => {
-                Some(Message::CloseWindow(window))
+    use iced::keyboard;
+    match as_key(event) {
+        iced::Event::Keyboard(keyboard::Event::KeyPressed { key, modifiers, .. }) => {
+            #[cfg(not(target_os = "macos"))]
+            if key.as_ref() == keyboard::Key::Character("w") && modifiers.command() {
+                return Some(Message::CloseWindow(window));
             }
-            _ => Zoom::from_key(&key, modifiers).map(Message::Zoom),
-        },
+            Zoom::from_key(&key, modifiers).map(Message::Zoom)
+        }
         _ => None,
     }
 }
@@ -3866,7 +3908,7 @@ fn shortcuts(
     _window: window::Id,
 ) -> Option<Message> {
     use iced::keyboard::{self, Key, key::Named};
-    match event {
+    match as_key(event) {
         iced::Event::Keyboard(keyboard::Event::KeyPressed {
             key,
             physical_key,
@@ -3939,6 +3981,16 @@ fn shortcuts(
     }
 }
 
+/// A standard action of the menus as the key press it stands for (macOS's
+/// menu takes the key, see `menu_bar`): ⌘C for Copy, ⌘F for Find, ⌘= for
+/// Bigger. Other events as they are.
+fn as_key(event: iced::Event) -> iced::Event {
+    match event {
+        iced::Event::StandardAction(action) => iced::Event::Keyboard(action.key_press()),
+        event => event,
+    }
+}
+
 /// An arrow key no field took. ⌥↑ and ⌥↓ scroll the timeline a page, ⌘↑
 /// and ⌘↓ to the oldest and newest message. With Shift it moves the end of
 /// the timeline's selection: by a character (⌥: a word) or a line, and with
@@ -3980,6 +4032,7 @@ fn input(event: iced::Event, _status: iced::event::Status, _window: window::Id) 
     use iced::keyboard;
     match event {
         iced::Event::Keyboard(keyboard::Event::KeyPressed { .. })
+        | iced::Event::StandardAction(_)
         | iced::Event::Mouse(mouse::Event::ButtonPressed(_) | mouse::Event::WheelScrolled { .. }) => {
             Some(Message::Presence(presence::Message::Input))
         }

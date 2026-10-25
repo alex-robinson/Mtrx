@@ -393,6 +393,24 @@ mod tests {
         }
     }
 
+    /// The Edit menu's Paste and Paste as Plain Text (macOS's menu takes
+    /// ⌘V and ⌥⇧⌘V) paste through us, as the keys do.
+    #[test]
+    fn the_menus_paste_pastes_through_us() {
+        use iced_core::event::StandardAction;
+
+        let action = |action| vec![Event::StandardAction(action)];
+        assert_eq!(
+            editor_sends(true, action(StandardAction::Paste)),
+            [Pressed::Paste(Paste::Rich)]
+        );
+        assert_eq!(
+            editor_sends(true, action(StandardAction::PasteAsPlainText)),
+            [Pressed::Paste(Paste::Plain)]
+        );
+        assert!(editor_sends(false, action(StandardAction::Paste)).is_empty());
+    }
+
     fn picture() -> ImageData<'static> {
         ImageData {
             width: 2,

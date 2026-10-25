@@ -34,6 +34,8 @@ mod math;
 mod media;
 mod members;
 mod mention;
+#[cfg(target_os = "macos")]
+mod menu_bar;
 mod message;
 mod message_menu;
 mod pdf;
@@ -80,15 +82,12 @@ fn main() -> iced::Result {
     .theme(app::App::window_theme)
     .scale_factor(app::App::scale_factor)
     .settings(fonts::settings())
-    .window(iced::window::Settings {
+    .window(app::closing(iced::window::Settings {
         icon: logo::window_icon(),
-        // The app sets its presence offline and ends its session first, see
-        // `app::Message::CloseWindow`.
-        exit_on_close_request: false,
         #[cfg(target_os = "linux")]
         platform_specific: linux::window_settings(),
         // Size, position and maximised as the window was left.
         ..window
-    })
+    }))
     .run()
 }

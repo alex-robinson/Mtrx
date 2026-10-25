@@ -263,6 +263,17 @@ impl History {
         };
     }
 
+    // Mtrx patch (menu actions).
+    /// Whether there is a step to undo.
+    pub fn can_undo(&self) -> bool {
+        !self.undo.is_empty()
+    }
+
+    /// Whether there is a step to redo.
+    pub fn can_redo(&self) -> bool {
+        !self.redo.is_empty()
+    }
+
     /// Ends the last step: the caret moved, or the selection changed.
     pub fn close(&mut self) {
         self.open = None;
