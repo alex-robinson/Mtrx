@@ -24,8 +24,9 @@ const INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
 /// How often the automatic check is due to be considered.
 pub const TICK: Duration = Duration::from_secs(60 * 60);
 /// The public key the release files are signed with, from `cargo xtask
-/// keygen`; until there is one, updates are downloaded in the browser.
-const PUBLIC_KEY: Option<&str> = None;
+/// keygen` (its private key is the repository's `MTRX_UPDATE_KEY` secret);
+/// without one, updates are downloaded in the browser.
+const PUBLIC_KEY: Option<&str> = Some("2gUYA2p7RiE3nEVdI0NHJ9s4pxBeI4IPRHuZ7IcITLA=");
 
 /// What the settings keep about updates.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
