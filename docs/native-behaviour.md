@@ -144,8 +144,10 @@ so that Enter probably sends the half-composed text today.
       would not start; patched in `vendor/winit` (winit #4748/#4749). To
       check by hand, from the app bundle (`cargo xtask bundle`): without
       a bundle identifier Dictation stalls.
-- [x] ⌃⌘Space opens Emoji & Symbols and inserts the pick (winit
-      #4748/#4749 backport; checked by hand 2026-10-25).
+- [ ] ⌃⌘Space opens Emoji & Symbols and inserts the pick. The pick is
+      inserted (winit #4748/#4749 backport), but ⌃⌘Space itself is the key
+      equivalent of the Edit menu's Emoji & Symbols, which macOS adds to an
+      Edit menu: comes with C.
 
 ### B2. Editing
 
