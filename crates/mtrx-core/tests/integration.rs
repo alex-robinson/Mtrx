@@ -1811,3 +1811,36 @@ async fn presence_between_users() -> Result<()> {
     }
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs local Synapse (testserver/run.sh)"]
+async fn someone_elses_public_room_is_public() -> Result<()> {
+    let (_, bob) = new_user("host").await?;
+    let (alice_name, alice) = new_user("guest").await?;
+    let room = bob
+        .session
+        .create_room(NewRoom {
+            name: Some("open to all".into()),
+            ..Default::default()
+        })
+        .await?;
+    bob.session.set_room_access(&room, Access::Public).await?;
+    let public = async |what: &str, device: &Device| -> Result<()> {
+        let list = device.session.room_list().await?;
+        wait_for(what, list.updates(), |state| {
+            state.rooms.iter().any(|r| r.id == room && r.public)
+        })
+        .await?;
+        Ok(())
+    };
+    public("public for its creator", &bob).await?;
+    alice
+        .session
+        .join(<&mtrx_core::RoomOrAliasId>::from(&*room))
+        .await?;
+    public("public once joined", &alice).await?;
+    // And on a device that first sees it already joined.
+    let other = login(&alice_name).await?;
+    public("public on another device", &other).await?;
+    Ok(())
+}
