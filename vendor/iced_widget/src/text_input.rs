@@ -402,6 +402,23 @@ where
             return InputMethod::Disabled;
         }
 
+        // Mtrx patch (surrounding text): not of a secure field.
+        let surrounding_text = if self.is_secure {
+            None
+        } else {
+            let bytes = |index| value.until(index).to_string().len();
+            let (cursor, anchor) = match state.cursor.state(value) {
+                cursor::State::Index(index) => (index, index),
+                cursor::State::Selection { start, end } => (end, start),
+            };
+
+            input_method::SurroundingText::around(
+                &value.to_string(),
+                bytes(cursor),
+                bytes(anchor),
+            )
+        };
+
         let secure_value = self.is_secure.then(|| value.secure());
         let value = secure_value.as_ref().unwrap_or(value);
 
@@ -436,6 +453,8 @@ where
                 input_method::Purpose::Normal
             },
             preedit: state.preedit.as_ref().map(input_method::Preedit::as_ref),
+            // Mtrx patch (surrounding text).
+            surrounding_text,
         }
     }
 
@@ -1311,6 +1330,31 @@ where
                         update_cache(state, &self.value);
                     }
                 }
+                // Mtrx patch (surrounding text).
+                input_method::Event::DeleteSurrounding {
+                    before_bytes,
+                    after_bytes,
+                } => {
+                    let state = state::<Renderer>(tree);
+
+                    if let Some(focus) = &mut state.is_focused {
+                        let Some(on_input) = &self.on_input else {
+                            return;
+                        };
+
+                        let mut editor =
+                            Editor::new(&mut self.value, &mut state.cursor);
+                        editor.delete_surrounding(*before_bytes, *after_bytes);
+
+                        focus.updated_at = Instant::now();
+
+                        let message = (on_input)(editor.contents());
+                        shell.publish(message);
+                        shell.capture_event();
+
+                        update_cache(state, &self.value);
+                    }
+                }
             },
             Event::Window(window::Event::Unfocused) => {
                 let state = state::<Renderer>(tree);
@@ -1346,7 +1390,9 @@ where
                             % CURSOR_BLINK_INTERVAL_MILLIS;
 
                     shell.request_redraw_at(
-                        *now + Duration::from_millis(millis_until_redraw as u64),
+                        *now + Duration::from_millis(
+                            millis_until_redraw as u64,
+                        ),
                     );
                 }
 

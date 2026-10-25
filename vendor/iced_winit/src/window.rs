@@ -218,6 +218,8 @@ where
                 cursor,
                 purpose,
                 preedit,
+                // Mtrx patch (surrounding text).
+                ..
             } => {
                 self.enable_ime(cursor, purpose);
 

@@ -22,7 +22,66 @@ pub enum InputMethod<T = String> {
         /// be tricky, you can instead provide the current pre-edit here and the
         /// runtime will display it as an overlay (i.e. "Over-the-spot IME").
         preedit: Option<Preedit<T>>,
+        // Mtrx patch (surrounding text): see [`SurroundingText`].
+        /// The text around the cursor, if the widget can tell, so the input
+        /// method can replace what was typed before the cursor.
+        surrounding_text: Option<SurroundingText>,
     },
+}
+
+// Mtrx patch (surrounding text): winit 0.31's `ImeSurroundingText`, which
+// iced does not have yet. macOS replaces a letter held for its accents
+// with the accent picked, by a range in the text it is told about.
+/// The text around the cursor of an [`InputMethod`]: an excerpt of the
+/// widget's text, without the preedit.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct SurroundingText {
+    /// The excerpt, shorter than [`Self::MAX_BYTES`].
+    pub text: String,
+    /// The position of the cursor, in bytes from the start of `text`.
+    pub cursor: usize,
+    /// The other end of the selection, in bytes; the cursor if none.
+    pub anchor: usize,
+}
+
+impl SurroundingText {
+    /// The longest excerpt: winit takes fewer than 4000 bytes.
+    pub const MAX_BYTES: usize = 3999;
+
+    /// The excerpt of `text` around the selection from `anchor` to
+    /// `cursor` (byte offsets on character boundaries), cut to
+    /// [`Self::MAX_BYTES`] around the selection; `None` if the selection
+    /// alone is longer.
+    pub fn around(text: &str, cursor: usize, anchor: usize) -> Option<Self> {
+        debug_assert!(text.is_char_boundary(cursor));
+        debug_assert!(text.is_char_boundary(anchor));
+
+        let (low, high) = (cursor.min(anchor), cursor.max(anchor));
+        if high - low > Self::MAX_BYTES {
+            return None;
+        }
+
+        // As much on either side of the selection.
+        let spare = Self::MAX_BYTES - (high - low);
+        let mut start = low.saturating_sub(spare / 2);
+        let mut end = (start + Self::MAX_BYTES).min(text.len());
+        start = start.min(end.saturating_sub(Self::MAX_BYTES));
+
+        // Inwards to whole characters; never past the selection, whose
+        // ends are on character boundaries.
+        while !text.is_char_boundary(start) {
+            start += 1;
+        }
+        while !text.is_char_boundary(end) {
+            end -= 1;
+        }
+
+        Some(Self {
+            text: text[start..end].to_owned(),
+            cursor: cursor - start,
+            anchor: anchor - start,
+        })
+    }
 }
 
 /// The pre-edit of an [`InputMethod`].
@@ -93,12 +152,14 @@ impl InputMethod {
     ///     cursor: Rectangle::new(Point::ORIGIN, Size::UNIT),
     ///     purpose: Purpose::Normal,
     ///     preedit: Some(Preedit { content: "1".to_owned(), selection: None, text_size: None }),
+    ///     surrounding_text: None,
     /// };
     ///
     /// let open_2 = InputMethod::Enabled {
     ///     cursor: Rectangle::new(Point::ORIGIN, Size::UNIT),
     ///     purpose: Purpose::Secure,
     ///     preedit: Some(Preedit { content: "2".to_owned(), selection: None, text_size: None }),
+    ///     surrounding_text: None,
     /// };
     ///
     /// let mut ime = InputMethod::Disabled;
@@ -135,10 +196,12 @@ impl<T> InputMethod<T> {
                 cursor,
                 purpose,
                 preedit,
+                surrounding_text,
             } => InputMethod::Enabled {
                 cursor: *cursor,
                 purpose: *purpose,
                 preedit: preedit.as_ref().map(Preedit::to_owned),
+                surrounding_text: surrounding_text.clone(),
             },
         }
     }
@@ -177,6 +240,20 @@ pub enum Event {
     ///
     /// Right before this event, an empty [`Self::Preedit`] event will be issued.
     Commit(String),
+
+    // Mtrx patch (surrounding text): winit 0.31's `Ime::DeleteSurrounding`.
+    /// Notifies when the text around the cursor or selection should be
+    /// deleted, before a [`Commit`][Self::Commit] or
+    /// [`Preedit`][Self::Preedit] that replaces it.
+    ///
+    /// Counted in bytes of the [`SurroundingText`], outwards from the
+    /// selection, which stays (the commit replaces it).
+    DeleteSurrounding {
+        /// The bytes to delete before the selection.
+        before_bytes: usize,
+        /// The bytes to delete after the selection.
+        after_bytes: usize,
+    },
 
     /// Notifies when the IME was disabled.
     ///

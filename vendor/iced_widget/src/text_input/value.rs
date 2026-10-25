@@ -106,6 +106,34 @@ impl Value {
             .splice(index..index, value.graphemes.drain(..));
     }
 
+    // Mtrx patch (surrounding text).
+    /// Returns the grapheme index `bytes` before the given `index`, taking
+    /// all of the grapheme the count ends in.
+    pub fn back_by_bytes(&self, mut index: usize, mut bytes: usize) -> usize {
+        while bytes > 0 && index > 0 {
+            index -= 1;
+            bytes = bytes.saturating_sub(self.graphemes[index].len());
+        }
+
+        index
+    }
+
+    // Mtrx patch (surrounding text).
+    /// Returns the grapheme index `bytes` after the given `index`, taking all
+    /// of the grapheme the count ends in.
+    pub fn forward_by_bytes(
+        &self,
+        mut index: usize,
+        mut bytes: usize,
+    ) -> usize {
+        while bytes > 0 && index < self.len() {
+            bytes = bytes.saturating_sub(self.graphemes[index].len());
+            index += 1;
+        }
+
+        index
+    }
+
     /// Removes the grapheme at the given `index`.
     pub fn remove(&mut self, index: usize) {
         let _ = self.graphemes.remove(index);

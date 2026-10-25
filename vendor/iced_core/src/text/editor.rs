@@ -115,6 +115,16 @@ pub enum Edit {
     Backspace,
     /// Delete the next character.
     Delete,
+    // Mtrx patch (surrounding text): for an input method's
+    // `DeleteSurrounding`.
+    /// Delete the given bytes before and after the selection (or the
+    /// cursor), keeping the selection; a line ending counts as its bytes.
+    DeleteSurrounding {
+        /// The bytes before the selection.
+        before: usize,
+        /// The bytes after the selection.
+        after: usize,
+    },
 }
 
 /// A cursor movement.

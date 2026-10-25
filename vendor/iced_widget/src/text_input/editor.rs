@@ -1,4 +1,4 @@
-use crate::text_input::{Cursor, Value};
+use crate::text_input::{Cursor, Value, cursor};
 
 pub struct Editor<'a> {
     value: &'a mut Value,
@@ -49,6 +49,35 @@ impl<'a> Editor<'a> {
                     self.cursor.move_left(self.value);
                     self.value.remove(start - 1);
                 }
+            }
+        }
+    }
+
+    // Mtrx patch (surrounding text): an input method's
+    // `DeleteSurrounding`.
+    /// Deletes `before` and `after` bytes around the selection (or the
+    /// cursor), keeping the selection. A count ending inside a grapheme
+    /// takes all of it.
+    pub fn delete_surrounding(&mut self, before: usize, after: usize) {
+        let state = self.cursor.state(self.value);
+        let (start, end) =
+            self.cursor.selection(self.value).unwrap_or_else(|| {
+                (self.cursor.end(self.value), self.cursor.end(self.value))
+            });
+
+        let from = self.value.back_by_bytes(start, before);
+        let to = self.value.forward_by_bytes(end, after);
+
+        // After the selection first, so that what precedes it stays put.
+        self.value.remove_many(end, to);
+        self.value.remove_many(from, start);
+
+        let shift = start - from;
+
+        match state {
+            cursor::State::Index(index) => self.cursor.move_to(index - shift),
+            cursor::State::Selection { start, end } => {
+                self.cursor.select_range(start - shift, end - shift);
             }
         }
     }
