@@ -125,7 +125,9 @@ pub enum Message {
     ShowSettings(bool),
     Settings(settings::Message),
     Update(update::Message),
-    /// Open the settings and look for updates.
+    /// Open the settings and look for updates: Check for Updates… in the
+    /// app menu, which only macOS has.
+    #[cfg(target_os = "macos")]
     CheckForUpdates,
     AddMenu(bool),
     OpenDialog(dialog::Kind),
@@ -1283,6 +1285,7 @@ impl App {
             }
             Message::ShowSettings(true) => self.open_settings(),
             Message::Settings(message) => self.settings_update(message),
+            #[cfg(target_os = "macos")]
             Message::CheckForUpdates => {
                 let check = (self.updater).update(update::Message::Check, &self.settings.updates);
                 Task::batch([self.open_settings(), check])
