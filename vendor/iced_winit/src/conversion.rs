@@ -134,7 +134,9 @@ pub fn window_attributes(
             )
             .with_fullsize_content_view(
                 settings.platform_specific.fullsize_content_view,
-            );
+            )
+            // Mtrx patch (hide on close).
+            .with_hides_on_close(settings.platform_specific.hides_on_close);
     }
 
     #[cfg(target_os = "linux")]

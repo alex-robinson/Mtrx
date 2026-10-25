@@ -304,9 +304,27 @@ pub trait WindowAttributesExtMacOS {
     fn with_option_as_alt(self, option_as_alt: OptionAsAlt) -> Self;
     /// See [`WindowExtMacOS::set_borderless_game`] for details on what this means if set.
     fn with_borderless_game(self, borderless_game: bool) -> Self;
+    // Mtrx patch (hide on close).
+    /// Closing the window (its close button, or `performClose:` as a Close menu item sends it)
+    /// hides it instead of sending [`WindowEvent::CloseRequested`], as a Mac app's main window
+    /// does: the application goes on running. Clicking the app's Dock icon
+    /// (`applicationShouldHandleReopen:hasVisibleWindows:`) or [`Window::set_visible`] shows it
+    /// again; it stays listed in the Window menu. A window in full screen leaves it first.
+    /// Quitting still sends `CloseRequested`.
+    ///
+    /// [`WindowEvent::CloseRequested`]: crate::event::WindowEvent::CloseRequested
+    /// [`Window::set_visible`]: crate::window::Window::set_visible
+    fn with_hides_on_close(self, hides_on_close: bool) -> Self;
 }
 
 impl WindowAttributesExtMacOS for WindowAttributes {
+    // Mtrx patch (hide on close).
+    #[inline]
+    fn with_hides_on_close(mut self, hides_on_close: bool) -> Self {
+        self.platform_specific.hides_on_close = hides_on_close;
+        self
+    }
+
     #[inline]
     fn with_movable_by_window_background(mut self, movable_by_window_background: bool) -> Self {
         self.platform_specific.movable_by_window_background = movable_by_window_background;

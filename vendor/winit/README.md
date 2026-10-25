@@ -47,3 +47,11 @@ section B1). Each is marked "Mtrx patch" in the code:
   once. `applicationShouldTerminate:` now sends each window
   `CloseRequested`, as its close button does, and answers
   `NSTerminateLater`; once the event loop exits, the quit goes on.
+- Hide on close (marked "Mtrx patch (hide on close)"): a Mac app's main
+  window hides when closed, and the app goes on.
+  `WindowAttributesExtMacOS::with_hides_on_close` (`src/platform/macos.rs`):
+  `windowShouldClose:` then hides the window (out of full screen first)
+  instead of sending `CloseRequested`, and keeps it in the Window menu
+  (`src/platform_impl/macos/window_delegate.rs`).
+  `applicationShouldHandleReopen:hasVisibleWindows:` (`app_state.rs`), the
+  Dock icon clicked, shows it again, as does `Window::set_visible`.

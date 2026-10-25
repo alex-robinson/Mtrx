@@ -13,3 +13,5 @@ code:
   (our `iced_core`), and back. `src/window.rs`: the actions the focused
   widget's input method enables (`InputMethod::enables`) to our winit's
   `Window::set_enabled_standard_actions`, for the menu items.
+- `src/conversion.rs` (hide on close): the macOS window setting
+  `hides_on_close` (our `iced_core`) to our winit's `with_hides_on_close`.

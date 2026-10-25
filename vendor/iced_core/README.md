@@ -36,3 +36,6 @@ section B1). Each is marked "Mtrx patch" in the code:
   enable: with no field focused, those an app may take for itself (Copy,
   Select All, Find, the text size). `Editor::can_undo` and `can_redo`
   (`src/renderer/null.rs` too).
+- `src/window/settings/macos.rs` (hide on close, marked "Mtrx patch (hide
+  on close)", `docs/native-behaviour.md` A1): `hides_on_close`, our
+  winit's: closing the window hides it, as a Mac app's main window.

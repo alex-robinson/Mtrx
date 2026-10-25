@@ -16,6 +16,8 @@ use super::event_loop::{notify_windows_of_exit, stop_app_immediately, ActiveEven
 use super::observer::{EventLoopWaker, RunLoop};
 // Mtrx patch (quit).
 use super::window::WinitWindow;
+// Mtrx patch (hide on close).
+use super::window_delegate::WindowDelegate;
 use super::{menu, WindowId, DEVICE_ID};
 use crate::event::{DeviceEvent, Event, StartCause, WindowEvent};
 use crate::event_loop::{ActiveEventLoop as RootActiveEventLoop, ControlFlow};
@@ -77,6 +79,12 @@ declare_class!(
         #[method(applicationShouldTerminate:)]
         fn app_should_terminate(&self, _sender: &NSApplication) -> NSApplicationTerminateReply {
             self.should_terminate()
+        }
+
+        // Mtrx patch (hide on close).
+        #[method(applicationShouldHandleReopen:hasVisibleWindows:)]
+        fn app_should_handle_reopen(&self, _sender: &NSApplication, has_visible_windows: bool) -> bool {
+            self.should_handle_reopen(has_visible_windows)
         }
 
         #[method(applicationWillTerminate:)]
@@ -202,6 +210,22 @@ impl ApplicationDelegate {
             self.maybe_queue_window_event(window_id, WindowEvent::CloseRequested);
         }
         NSApplicationTerminateReply::NSTerminateLater
+    }
+
+    // Mtrx patch (hide on close): the app's Dock icon clicked, or the app opened again, with no
+    // window showing: the windows that closing hid come back. AppKit then does the rest, such as
+    // bringing back a minimized one.
+    fn should_handle_reopen(&self, has_visible_windows: bool) -> bool {
+        trace_scope!("applicationShouldHandleReopen:hasVisibleWindows:");
+        if !has_visible_windows {
+            let mtm = MainThreadMarker::from(self);
+            for window in NSApplication::sharedApplication(mtm).windows().iter() {
+                if let Some(delegate) = window_delegate(window) {
+                    delegate.reopen();
+                }
+            }
+        }
+        true
     }
 
     fn will_terminate(&self, _notification: &NSNotification) {
@@ -489,4 +513,15 @@ fn window_activation_hack(app: &NSApplication) {
             tracing::trace!("Skipping activating invisible window");
         }
     })
+}
+
+// Mtrx patch (hide on close).
+/// The delegate of `window`, if it is one of ours.
+fn window_delegate(window: &NSWindow) -> Option<Retained<WindowDelegate>> {
+    let delegate = unsafe { window.delegate() }?;
+    if !delegate.is_kind_of::<WindowDelegate>() {
+        return None;
+    }
+    // SAFETY: just checked.
+    Some(unsafe { Retained::cast(delegate) })
 }

@@ -56,6 +56,8 @@ pub struct PlatformSpecificWindowAttributes {
     pub tabbing_identifier: Option<String>,
     pub option_as_alt: OptionAsAlt,
     pub borderless_game: bool,
+    // Mtrx patch (hide on close).
+    pub hides_on_close: bool,
 }
 
 impl Default for PlatformSpecificWindowAttributes {
@@ -74,6 +76,8 @@ impl Default for PlatformSpecificWindowAttributes {
             tabbing_identifier: None,
             option_as_alt: Default::default(),
             borderless_game: false,
+            // Mtrx patch (hide on close).
+            hides_on_close: false,
         }
     }
 }
@@ -123,6 +127,10 @@ pub(crate) struct State {
     is_simple_fullscreen: Cell<bool>,
     saved_style: Cell<Option<NSWindowStyleMask>>,
     is_borderless_game: Cell<bool>,
+    // Mtrx patch (hide on close).
+    hides_on_close: bool,
+    /// Hidden by closing, to show again when the app is reopened.
+    hidden_on_close: Cell<bool>,
 }
 
 declare_class!(
@@ -144,7 +152,12 @@ declare_class!(
         #[method(windowShouldClose:)]
         fn window_should_close(&self, _: Option<&AnyObject>) -> bool {
             trace_scope!("windowShouldClose:");
-            self.queue_event(WindowEvent::CloseRequested);
+            // Mtrx patch (hide on close).
+            if self.ivars().hides_on_close {
+                self.hide_on_close();
+            } else {
+                self.queue_event(WindowEvent::CloseRequested);
+            }
             false
         }
 
@@ -207,6 +220,8 @@ declare_class!(
         #[method(windowDidBecomeKey:)]
         fn window_did_become_key(&self, _: Option<&AnyObject>) {
             trace_scope!("windowDidBecomeKey:");
+            // Mtrx patch (hide on close): shown again, from the Window menu say.
+            self.ivars().hidden_on_close.set(false);
             // TODO: center the cursor if the window had mouse grab when it
             // lost focus
             self.queue_event(WindowEvent::Focused(true));
@@ -307,6 +322,10 @@ declare_class!(
             self.ivars().in_fullscreen_transition.set(false);
             if let Some(target_fullscreen) = self.ivars().target_fullscreen.take() {
                 self.set_fullscreen(target_fullscreen);
+            }
+            // Mtrx patch (hide on close): closed in full screen, out of it now.
+            if self.ivars().hidden_on_close.get() {
+                self.hide_on_close();
             }
         }
 
@@ -735,6 +754,9 @@ impl WindowDelegate {
             is_simple_fullscreen: Cell::new(false),
             saved_style: Cell::new(None),
             is_borderless_game: Cell::new(attrs.platform_specific.borderless_game),
+            // Mtrx patch (hide on close).
+            hides_on_close: attrs.platform_specific.hides_on_close,
+            hidden_on_close: Cell::new(false),
         });
         let delegate: Retained<WindowDelegate> = unsafe { msg_send_id![super(delegate), init] };
 
@@ -901,7 +923,41 @@ impl WindowDelegate {
         }
     }
 
+    // Mtrx patch (hide on close).
+    /// Hides the window as closing it would close it: out of full screen first.
+    fn hide_on_close(&self) {
+        let window = self.window();
+        self.ivars().hidden_on_close.set(true);
+        if window.styleMask().contains(NSWindowStyleMask::FullScreen) {
+            // Hidden in `windowDidExitFullScreen:`.
+            window.toggleFullScreen(None);
+            return;
+        }
+        window.orderOut(None);
+        // Still in the Window menu, to bring it back from there.
+        let mtm = MainThreadMarker::from(self);
+        unsafe {
+            NSApplication::sharedApplication(mtm).addWindowsItem_title_filename(
+                window,
+                &window.title(),
+                false,
+            )
+        };
+    }
+
+    // Mtrx patch (hide on close).
+    /// Shows the window again if closing hid it: the app was reopened.
+    pub(super) fn reopen(&self) {
+        if self.ivars().hidden_on_close.take() {
+            self.window().makeKeyAndOrderFront(None);
+        }
+    }
+
     pub fn set_visible(&self, visible: bool) {
+        // Mtrx patch (hide on close).
+        if visible {
+            self.ivars().hidden_on_close.set(false);
+        }
         match visible {
             true => self.window().makeKeyAndOrderFront(None),
             false => self.window().orderOut(None),
