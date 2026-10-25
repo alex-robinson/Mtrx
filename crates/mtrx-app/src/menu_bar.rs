@@ -9,9 +9,10 @@
 //! selection, the find bar, the text size). Their items are enabled as the
 //! focused field can do them (`InputMethod::enables` in our `iced_core`).
 //! AppKit does the rest: Hide, Minimize, Full Screen, and Emoji & Symbols,
-//! Start Dictation and AutoFill, which it adds to a menu called Edit. Quit
-//! closes the window as its close button does, so the session ends first
-//! (`applicationShouldTerminate:` in our winit), also from the Dock.
+//! Start Dictation and AutoFill, which it adds to a menu called Edit. Close
+//! hides the window (see `app::closing`). Quit requests to close it, so the
+//! session ends first (`applicationShouldTerminate:` in our winit), also
+//! from the Dock.
 
 use std::{ffi::CStr, sync::Mutex};
 

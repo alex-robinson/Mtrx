@@ -41,10 +41,17 @@ per day:
 
 ### A1. Window
 
-- [x] ⌘W closes the window and so quits, as the close button does: there
-      is only ever one window (decided 2026-10-24). `main.rs` already sets
-      `exit_on_close_request: false`; `Message::CloseWindow` goes offline
-      and closes.
+- [ ] Closing the window: decided 2026-10-25 from user feedback, by
+      platform (`app::closing`). On macOS the close button, ⌘W and Window ▸
+      Close hide the window, as a Mac app's: the app goes on, synced (Dock
+      badge, notifications, presence), and clicking its Dock icon, a
+      notification or its entry in the Window menu brings it back (a
+      window in full screen leaves it first). Quit (⌘Q, the Dock, logging
+      out) goes offline and ends the session through `Message::CloseWindow`.
+      Windows and Linux keep one window whose closing quits (Ctrl+W too),
+      through `Message::CloseWindow` (decided 2026-10-24). Hidden in our
+      winit (`with_hides_on_close`), so the window and iced's state stay.
+      To check by hand on macOS.
 - [x] Size, position and display remembered (`placement.rs`), and
       maximised; full screen is not, the window opens as it was before. A
       window left on a display since unplugged opens on the main one.

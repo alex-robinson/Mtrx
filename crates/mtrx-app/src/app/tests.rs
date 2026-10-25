@@ -359,10 +359,11 @@ fn window_placement_is_saved() {
 }
 
 /// iced drops the app only after its runtime has stopped, when the SDK's
-/// stores can no longer close (dropping a session then panics): closing the
-/// window ends the session first, and one restored meanwhile.
+/// stores can no longer close (dropping a session then panics): quitting
+/// (on Windows and Linux, closing the window) ends the session first, and
+/// one restored meanwhile.
 #[test]
-fn closing_the_window_ends_the_session() {
+fn quitting_ends_the_session() {
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let dir = TempDir::new().unwrap();
     let session = |name: &str| {
@@ -438,8 +439,19 @@ fn window_left_off_screen_opens_on_the_main_display() {
     assert_eq!(moves(unplugged), [iced::Point::new(156.0, 85.0)]);
 }
 
-/// ⌘W closes the window as its close button does, also with the composer
-/// or another field focused, and on the sign-in screen.
+/// Closing the window hides it on macOS, where the app goes on; elsewhere
+/// the app gets the close request, and quits through `CloseWindow`.
+#[test]
+fn closing_the_window_hides_it_on_macos_and_quits_elsewhere() {
+    let settings = closing(window::Settings::default());
+    assert!(!settings.exit_on_close_request);
+    #[cfg(target_os = "macos")]
+    assert!(settings.platform_specific.hides_on_close);
+}
+
+/// Ctrl+W closes the window as its close button does, also with the
+/// composer or another field focused, and on the sign-in screen. On macOS
+/// ⌘W is the Window menu's Close, which hides the window.
 #[test]
 fn command_w_closes_the_window() {
     use iced::{event::Status, keyboard};
@@ -455,6 +467,10 @@ fn command_w_closes_the_window() {
     };
     assert!(window_keys(press(keyboard::Modifiers::empty()), Status::Ignored, id).is_none());
     let close = window_keys(press(keyboard::Modifiers::COMMAND), Status::Captured, id);
+    if cfg!(target_os = "macos") {
+        assert!(close.is_none());
+        return;
+    }
     assert!(matches!(close, Some(Message::CloseWindow(closed)) if closed == id));
 
     let mut app = app(Screen::Login(Login::default()), Mode::Light);

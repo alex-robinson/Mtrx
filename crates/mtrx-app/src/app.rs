@@ -152,7 +152,8 @@ pub enum Message {
     /// A desktop notification about the room was clicked.
     NotificationClicked(OwnedRoomId),
     WindowFocused(bool),
-    /// The window's close button (or ⌘W, Alt+F4, ...) was pressed.
+    /// Quit (⌘Q, in the Dock, logging out) on macOS; elsewhere the window's
+    /// close button (or Ctrl+W, Alt+F4, ...) was pressed. See [`closing`].
     CloseWindow(window::Id),
     /// Others' presence, and ours.
     Presence(presence::Message),
@@ -567,6 +568,20 @@ impl Environment {
     pub fn window(&self) -> window::Settings {
         self.placement.settings(self.settings.text_size.scale())
     }
+}
+
+/// The window's settings for closing it (`docs/native-behaviour.md`, A1). On
+/// macOS closing it hides it, as a Mac app's main window, and the app goes
+/// on (synced, notifying); clicking its Dock icon shows it again (our
+/// winit). Quitting, and elsewhere closing, requests to close it: the app
+/// goes offline and ends its session first, see [`Message::CloseWindow`].
+pub fn closing(mut window: window::Settings) -> window::Settings {
+    window.exit_on_close_request = false;
+    #[cfg(target_os = "macos")]
+    {
+        window.platform_specific.hides_on_close = true;
+    }
+    window
 }
 
 impl App {
@@ -1793,8 +1808,16 @@ impl App {
                 })
             }
             Message::NotificationClicked(room) => {
+                // Shown again if closing hid it (macOS).
                 let raise = window::oldest().then(|id| match id {
-                    Some(id) => window::gain_focus(id),
+                    Some(id) => window::mode(id).then(move |mode| {
+                        if mode == window::Mode::Hidden {
+                            window::set_mode(id, window::Mode::Windowed)
+                                .chain(window::gain_focus(id))
+                        } else {
+                            window::gain_focus(id)
+                        }
+                    }),
                     None => Task::none(),
                 });
                 Task::batch([raise, self.update(Message::OpenRoom(room))])
@@ -1958,8 +1981,12 @@ impl App {
                 ])
             }
             Message::WindowOpened(..) => Task::none(),
-            Message::WindowMoved(id) => window::is_maximized(id).then(move |maximized| {
-                window::mode(id).then(move |mode| {
+            // Not while closing hid it (macOS): where it is not shown.
+            Message::WindowMoved(id) => window::mode(id).then(move |mode| {
+                if mode == window::Mode::Hidden {
+                    return Task::none();
+                }
+                window::is_maximized(id).then(move |maximized| {
                     window::position(id).map(move |position| Message::WindowPlaced {
                         position,
                         maximized,
@@ -3850,21 +3877,24 @@ async fn run_request(
     result.map_err(|e: mtrx_core::Error| e.to_string())
 }
 
-/// Keys on every screen, whatever is focused: ⌘+ ⌘− ⌘0 zoom, and ⌘W closes
-/// the window as its close button does (Ctrl on Windows and Linux).
+/// Keys on every screen, whatever is focused: ⌘+ ⌘− ⌘0 zoom (Ctrl on Windows
+/// and Linux), and Ctrl+W closes the window as its close button does. On
+/// macOS ⌘W is the Window menu's Close, which hides it (see [`closing`]).
+#[cfg_attr(target_os = "macos", allow(unused_variables))]
 fn window_keys(
     event: iced::Event,
     _status: iced::event::Status,
     window: window::Id,
 ) -> Option<Message> {
-    use iced::keyboard::{self, Key};
+    use iced::keyboard;
     match as_key(event) {
-        iced::Event::Keyboard(keyboard::Event::KeyPressed { key, modifiers, .. }) => match key {
-            Key::Character(c) if c == "w" && modifiers.command() => {
-                Some(Message::CloseWindow(window))
+        iced::Event::Keyboard(keyboard::Event::KeyPressed { key, modifiers, .. }) => {
+            #[cfg(not(target_os = "macos"))]
+            if key.as_ref() == keyboard::Key::Character("w") && modifiers.command() {
+                return Some(Message::CloseWindow(window));
             }
-            _ => Zoom::from_key(&key, modifiers).map(Message::Zoom),
-        },
+            Zoom::from_key(&key, modifiers).map(Message::Zoom)
+        }
         _ => None,
     }
 }
