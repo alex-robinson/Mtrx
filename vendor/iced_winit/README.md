@@ -10,4 +10,6 @@ code:
   see `vendor/iced_core/README.md`.
 - `src/conversion.rs` (menu actions, marked "Mtrx patch (menu actions)"):
   our winit's `WindowEvent::StandardAction` on as `Event::StandardAction`
-  (our `iced_core`), and back.
+  (our `iced_core`), and back. `src/window.rs`: the actions the focused
+  widget's input method enables (`InputMethod::enables`) to our winit's
+  `Window::set_enabled_standard_actions`, for the menu items.

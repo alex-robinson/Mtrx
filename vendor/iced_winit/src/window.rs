@@ -84,6 +84,8 @@ where
                 ime_state: None,
                 // Mtrx patch (surrounding text).
                 ime_surrounding_text: None,
+                // Mtrx patch (menu actions).
+                standard_actions: None,
             },
         );
 
@@ -177,6 +179,8 @@ where
     ime_state: Option<(Rectangle, input_method::Purpose)>,
     // Mtrx patch (surrounding text): the last told to winit.
     ime_surrounding_text: Option<input_method::SurroundingText>,
+    // Mtrx patch (menu actions): the last told to winit.
+    standard_actions: Option<Vec<crate::core::event::StandardAction>>,
 }
 
 impl<P, C> Window<P, C>
@@ -214,6 +218,9 @@ where
     }
 
     pub fn request_input_method(&mut self, input_method: InputMethod) {
+        // Mtrx patch (menu actions).
+        self.update_standard_actions(&input_method);
+
         match input_method {
             InputMethod::Disabled => {
                 self.disable_ime();
@@ -224,6 +231,7 @@ where
                 preedit,
                 // Mtrx patch (surrounding text).
                 surrounding_text,
+                ..
             } => {
                 self.enable_ime(cursor, purpose);
                 // Mtrx patch (surrounding text).
@@ -300,6 +308,28 @@ where
 
             self.ime_state = Some((cursor, purpose));
         }
+    }
+
+    // Mtrx patch (menu actions): the menu items winit enables, as the
+    // focused widget can do their actions.
+    fn update_standard_actions(&mut self, input_method: &InputMethod) {
+        let enabled: Vec<_> = crate::core::event::StandardAction::ALL
+            .into_iter()
+            .filter(|action| input_method.enables(*action))
+            .collect();
+
+        if self.standard_actions.as_ref() == Some(&enabled) {
+            return;
+        }
+
+        let actions: Vec<_> = enabled
+            .iter()
+            .copied()
+            .map(conversion::winit_standard_action)
+            .collect();
+        self.raw.set_enabled_standard_actions(&actions);
+
+        self.standard_actions = Some(enabled);
     }
 
     // Mtrx patch (surrounding text): winit 0.31's

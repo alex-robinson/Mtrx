@@ -1,4 +1,5 @@
 //! Listen to input method events.
+use crate::event::StandardAction;
 use crate::{Pixels, Rectangle};
 
 use std::ops::Range;
@@ -26,7 +27,23 @@ pub enum InputMethod<T = String> {
         /// The text around the cursor, if the widget can tell, so the input
         /// method can replace what was typed before the cursor.
         surrounding_text: Option<SurroundingText>,
+        // Mtrx patch (menu actions).
+        /// What the widget's editing can do now, for the menus.
+        edit: EditState,
     },
+}
+
+// Mtrx patch (menu actions): for the items of an Edit menu, which macOS
+// enables as the focused text view can do them.
+/// What the editing of the widget with an [`InputMethod`] can do now.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct EditState {
+    /// It has something to undo.
+    pub can_undo: bool,
+    /// It has something to redo.
+    pub can_redo: bool,
+    /// Text is selected in it.
+    pub has_selection: bool,
 }
 
 // Mtrx patch (surrounding text): winit 0.31's `ImeSurroundingText`, which
@@ -153,6 +170,7 @@ impl InputMethod {
     ///     purpose: Purpose::Normal,
     ///     preedit: Some(Preedit { content: "1".to_owned(), selection: None, text_size: None }),
     ///     surrounding_text: None,
+    ///     edit: Default::default(),
     /// };
     ///
     /// let open_2 = InputMethod::Enabled {
@@ -160,6 +178,7 @@ impl InputMethod {
     ///     purpose: Purpose::Secure,
     ///     preedit: Some(Preedit { content: "2".to_owned(), selection: None, text_size: None }),
     ///     surrounding_text: None,
+    ///     edit: Default::default(),
     /// };
     ///
     /// let mut ime = InputMethod::Disabled;
@@ -182,6 +201,35 @@ impl InputMethod {
     pub fn is_enabled(&self) -> bool {
         matches!(self, Self::Enabled { .. })
     }
+
+    // Mtrx patch (menu actions).
+    /// Whether `action` can do something now, to enable its menu item: the
+    /// editing ones as the focused widget can do them (its [`EditState`]);
+    /// with none focused, those an app may take for something else: Copy
+    /// and Select All (a selection of its own), Find and the text size.
+    ///
+    /// On macOS a disabled item still takes its shortcut, which then
+    /// reaches nothing: this errs on the side of enabled.
+    pub fn enables(&self, action: StandardAction) -> bool {
+        match self {
+            Self::Disabled => !matches!(
+                action,
+                StandardAction::Undo
+                    | StandardAction::Redo
+                    | StandardAction::Cut
+                    | StandardAction::Paste
+                    | StandardAction::PasteAsPlainText
+            ),
+            Self::Enabled { purpose, edit, .. } => match action {
+                StandardAction::Undo => edit.can_undo,
+                StandardAction::Redo => edit.can_redo,
+                StandardAction::Cut => {
+                    edit.has_selection && *purpose != Purpose::Secure
+                }
+                _ => true,
+            },
+        }
+    }
 }
 
 impl<T> InputMethod<T> {
@@ -197,11 +245,13 @@ impl<T> InputMethod<T> {
                 purpose,
                 preedit,
                 surrounding_text,
+                edit,
             } => InputMethod::Enabled {
                 cursor: *cursor,
                 purpose: *purpose,
                 preedit: preedit.as_ref().map(Preedit::to_owned),
                 surrounding_text: surrounding_text.clone(),
+                edit: *edit,
             },
         }
     }

@@ -192,6 +192,15 @@ impl text::Editor for () {
 
     fn move_to(&mut self, _cursor: text::editor::Cursor) {}
 
+    // Mtrx patch (menu actions).
+    fn can_undo(&self) -> bool {
+        false
+    }
+
+    fn can_redo(&self) -> bool {
+        false
+    }
+
     // Mtrx patch (editing).
     fn caret_at(&self, _point: Point) -> Option<Point> {
         None

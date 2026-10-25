@@ -42,6 +42,7 @@ use editor::Editor;
 
 use crate::core::alignment;
 use crate::core::clipboard::{self, Clipboard};
+use crate::core::event::StandardAction;
 use crate::core::input_method;
 use crate::core::keyboard;
 use crate::core::keyboard::key;
@@ -419,6 +420,13 @@ where
             )
         };
 
+        // Mtrx patch (menu actions): no history of its own.
+        let edit = input_method::EditState {
+            can_undo: false,
+            can_redo: false,
+            has_selection: state.cursor.selection(value).is_some(),
+        };
+
         let secure_value = self.is_secure.then(|| value.secure());
         let value = secure_value.as_ref().unwrap_or(value);
 
@@ -455,6 +463,8 @@ where
             preedit: state.preedit.as_ref().map(input_method::Preedit::as_ref),
             // Mtrx patch (surrounding text).
             surrounding_text,
+            // Mtrx patch (menu actions).
+            edit,
         }
     }
 
@@ -925,111 +935,47 @@ where
             }) => {
                 let state = state::<Renderer>(tree);
 
-                if let Some(focus) = &mut state.is_focused {
-                    let modifiers = state.keyboard_modifiers;
+                // Mtrx patch (menu actions): ⌘C, ⌘X, ⌘V and ⌘A as the menus'
+                // standard actions, see `edit`.
+                let modifiers = state.keyboard_modifiers;
+                let action = match key.to_latin(*physical_key) {
+                    Some('c') if modifiers.command() => {
+                        Some(StandardAction::Copy)
+                    }
+                    Some('x') if modifiers.command() => {
+                        Some(StandardAction::Cut)
+                    }
+                    Some('v') if modifiers.command() && !modifiers.alt() => {
+                        Some(StandardAction::Paste)
+                    }
+                    Some('a') if modifiers.command() => {
+                        Some(StandardAction::SelectAll)
+                    }
+                    _ => None,
+                };
 
-                    match key.to_latin(*physical_key) {
-                        Some('c')
-                            if state.keyboard_modifiers.command()
-                                && !self.is_secure =>
-                        {
-                            if let Some((start, end)) =
-                                state.cursor.selection(&self.value)
-                            {
-                                clipboard.write(
-                                    clipboard::Kind::Standard,
-                                    self.value.select(start, end).to_string(),
-                                );
-                            }
-
-                            shell.capture_event();
-                            return;
-                        }
-                        Some('x')
-                            if state.keyboard_modifiers.command()
-                                && !self.is_secure =>
-                        {
-                            let Some(on_input) = &self.on_input else {
-                                return;
-                            };
-
-                            if let Some((start, end)) =
-                                state.cursor.selection(&self.value)
-                            {
-                                clipboard.write(
-                                    clipboard::Kind::Standard,
-                                    self.value.select(start, end).to_string(),
-                                );
-                            }
-
-                            let mut editor =
-                                Editor::new(&mut self.value, &mut state.cursor);
-                            editor.delete();
-
-                            let message = (on_input)(editor.contents());
-                            shell.publish(message);
-                            shell.capture_event();
-
-                            focus.updated_at = Instant::now();
-                            update_cache(state, &self.value);
-                            return;
-                        }
-                        Some('v')
-                            if state.keyboard_modifiers.command()
-                                && !state.keyboard_modifiers.alt() =>
-                        {
-                            let Some(on_input) = &self.on_input else {
-                                return;
-                            };
-
-                            let content = match state.is_pasting.take() {
-                                Some(content) => content,
-                                None => {
-                                    let content: String = clipboard
-                                        .read(clipboard::Kind::Standard)
-                                        .unwrap_or_default()
-                                        .chars()
-                                        .filter(|c| !c.is_control())
-                                        .collect();
-
-                                    Value::new(&content)
-                                }
-                            };
-
-                            let mut editor =
-                                Editor::new(&mut self.value, &mut state.cursor);
-                            editor.paste(content.clone());
-
-                            let message = if let Some(paste) = &self.on_paste {
-                                (paste)(editor.contents())
-                            } else {
-                                (on_input)(editor.contents())
-                            };
-                            shell.publish(message);
-                            shell.capture_event();
-
-                            state.is_pasting = Some(content);
-                            focus.updated_at = Instant::now();
-                            update_cache(state, &self.value);
-                            return;
-                        }
-                        Some('a') if state.keyboard_modifiers.command() => {
-                            let cursor_before = state.cursor;
-
-                            state.cursor.select_all(&self.value);
-
-                            if cursor_before != state.cursor {
-                                focus.updated_at = Instant::now();
-
-                                shell.request_redraw();
-                            }
-
-                            shell.capture_event();
-                            return;
-                        }
-                        _ => {}
+                if state.is_focused.is_some()
+                    && let Some(changed) = action.and_then(|action| {
+                        edit(
+                            action,
+                            &mut self.value,
+                            state,
+                            self.is_secure,
+                            self.on_input.as_deref(),
+                            self.on_paste.as_deref(),
+                            clipboard,
+                            shell,
+                        )
+                    })
+                {
+                    if changed {
+                        update_cache(state, &self.value);
                     }
 
+                    return;
+                }
+
+                if let Some(focus) = &mut state.is_focused {
                     // Mtrx patch: not the text of a shortcut.
                     if let Some(text) = text.as_ref().filter(|_| {
                         !crate::text_editor::is_shortcut(*pressed_modifiers)
@@ -1264,6 +1210,30 @@ where
                             shell.capture_event();
                         }
                         _ => {}
+                    }
+                }
+            }
+            // Mtrx patch (menu actions): the menus' Copy, Cut, Paste and
+            // Select All.
+            Event::StandardAction(action) => {
+                let state = state::<Renderer>(tree);
+
+                if state.is_focused.is_some() {
+                    // Read afresh: no key release ends a paste from a menu.
+                    state.is_pasting = None;
+
+                    if edit(
+                        *action,
+                        &mut self.value,
+                        state,
+                        self.is_secure,
+                        self.on_input.as_deref(),
+                        self.on_paste.as_deref(),
+                        clipboard,
+                        shell,
+                    ) == Some(true)
+                    {
+                        update_cache(state, &self.value);
                     }
                 }
             }
@@ -1519,6 +1489,115 @@ pub struct State<P: text::Paragraph> {
     cursor: Cursor,
     keyboard_modifiers: keyboard::Modifiers,
     // TODO: Add stateful horizontal scrolling offset
+}
+
+// Mtrx patch (menu actions): ⌘C, ⌘X, ⌘V and ⌘A out of `update`, to serve
+// the standard actions of the menus as well.
+/// Performs `action` in the focused field with `value`: `None` if the field
+/// does not take it, else whether `value` changed.
+#[allow(clippy::too_many_arguments)]
+fn edit<P: text::Paragraph, Message>(
+    action: StandardAction,
+    value: &mut Value,
+    state: &mut State<P>,
+    is_secure: bool,
+    on_input: Option<&dyn Fn(String) -> Message>,
+    on_paste: Option<&dyn Fn(String) -> Message>,
+    clipboard: &mut dyn Clipboard,
+    shell: &mut Shell<'_, Message>,
+) -> Option<bool> {
+    let changed = match action {
+        StandardAction::Copy if !is_secure => {
+            if let Some((start, end)) = state.cursor.selection(value) {
+                clipboard.write(
+                    clipboard::Kind::Standard,
+                    value.select(start, end).to_string(),
+                );
+            }
+
+            false
+        }
+        StandardAction::Cut if !is_secure => {
+            let Some(on_input) = on_input else {
+                return Some(false);
+            };
+
+            if let Some((start, end)) = state.cursor.selection(value) {
+                clipboard.write(
+                    clipboard::Kind::Standard,
+                    value.select(start, end).to_string(),
+                );
+            }
+
+            let mut editor = Editor::new(value, &mut state.cursor);
+            editor.delete();
+
+            let message = (on_input)(editor.contents());
+            shell.publish(message);
+
+            true
+        }
+        // Plain text is all a field takes.
+        StandardAction::Paste | StandardAction::PasteAsPlainText => {
+            let Some(on_input) = on_input else {
+                return Some(false);
+            };
+
+            let content = match state.is_pasting.take() {
+                Some(content) => content,
+                None => {
+                    let content: String = clipboard
+                        .read(clipboard::Kind::Standard)
+                        .unwrap_or_default()
+                        .chars()
+                        .filter(|c| !c.is_control())
+                        .collect();
+
+                    Value::new(&content)
+                }
+            };
+
+            let mut editor = Editor::new(value, &mut state.cursor);
+            editor.paste(content.clone());
+
+            let message = if let Some(paste) = on_paste {
+                (paste)(editor.contents())
+            } else {
+                (on_input)(editor.contents())
+            };
+            shell.publish(message);
+
+            state.is_pasting = Some(content);
+
+            true
+        }
+        StandardAction::SelectAll => {
+            let cursor_before = state.cursor;
+
+            state.cursor.select_all(value);
+
+            if cursor_before == state.cursor {
+                shell.capture_event();
+
+                return Some(false);
+            }
+
+            shell.request_redraw();
+
+            false
+        }
+        _ => return None,
+    };
+
+    if let Some(focus) = &mut state.is_focused
+        && (changed || action == StandardAction::SelectAll)
+    {
+        focus.updated_at = Instant::now();
+    }
+
+    shell.capture_event();
+
+    Some(changed)
 }
 
 fn state<Renderer: text::Renderer>(

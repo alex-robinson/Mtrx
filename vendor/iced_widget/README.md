@@ -41,3 +41,12 @@ section B). Each is marked "Mtrx patch" in the code:
   pointer, and releasing moves it there (`Edit::MoveSelection`), or copies
   it with ⌥ (Ctrl elsewhere); released where pressed, it is a click. The
   pointer is an arrow over the selection, as in a text view.
+- `src/text_editor.rs`, `src/text_input.rs` (menu actions, marked "Mtrx
+  patch (menu actions)", `docs/native-behaviour.md` C): on macOS the Edit
+  menu takes ⌘Z, ⌘C, ⌘V and the rest before the window; they come as
+  `Event::StandardAction` (our `iced_core`). The editor handles one as the
+  key press it stands for, through its key binding (so the app's binding
+  decides, as for the key). The text input's ⌘C, ⌘X, ⌘V and ⌘A are out of
+  `update` (`edit`) and serve the actions too; Paste as Plain Text pastes,
+  plain text being all it takes. Both report their `EditState` with their
+  input method, for the menu to enable Undo, Redo and Cut.

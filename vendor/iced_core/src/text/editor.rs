@@ -38,6 +38,13 @@ pub trait Editor: Sized + Default {
     /// Moves the cursor to the given position.
     fn move_to(&mut self, cursor: Cursor);
 
+    // Mtrx patch (menu actions): for the menus' Undo and Redo.
+    /// Returns whether [`Edit::Undo`] would undo something.
+    fn can_undo(&self) -> bool;
+
+    /// Returns whether [`Edit::Redo`] would redo something.
+    fn can_redo(&self) -> bool;
+
     // Mtrx patch (editing): for text dragged in the editor.
     /// Returns where a click at the given [`Point`] would put the caret, as
     /// [`Selection::Caret`] has it.

@@ -373,6 +373,16 @@ where
 
         let position = cursor + translation;
 
+        // Mtrx patch (menu actions).
+        let edit = input_method::EditState {
+            can_undo: internal.editor.can_undo(),
+            can_redo: internal.editor.can_redo(),
+            has_selection: matches!(
+                internal.editor.selection(),
+                Selection::Range(_)
+            ),
+        };
+
         InputMethod::Enabled {
             cursor: Rectangle::new(
                 position,
@@ -382,6 +392,8 @@ where
             preedit: state.preedit.as_ref().map(input_method::Preedit::as_ref),
             // Mtrx patch (surrounding text).
             surrounding_text,
+            // Mtrx patch (menu actions).
+            edit,
         }
     }
 }
@@ -1679,6 +1691,17 @@ impl<Message> Update<Message> {
                 })
                 .map(Self::Binding)
             }
+            // Mtrx patch (menu actions): as the key press it stands for, so
+            // that the key binding decides (the app's too: ⌘V may paste a
+            // picture).
+            Event::StandardAction(action) => Self::from_event(
+                &Event::Keyboard(action.key_press()),
+                state,
+                bounds,
+                padding,
+                cursor,
+                key_binding,
+            ),
             _ => None,
         }
     }

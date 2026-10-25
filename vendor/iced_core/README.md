@@ -29,3 +29,10 @@ section B1). Each is marked "Mtrx patch" in the code:
   View menus take their shortcuts before the window, so these come instead
   of the key presses. `StandardAction::key_press` is the key press each
   stands for (⌘Z for Undo), which widgets and apps handle it as.
+- `src/input_method.rs`, `src/text/editor.rs` (menu actions): macOS enables
+  an Edit menu's items as the focused text view can do them.
+  `InputMethod::Enabled` carries an `EditState` (can undo, can redo, has a
+  selection), and `InputMethod::enables` tells which standard actions to
+  enable: with no field focused, those an app may take for itself (Copy,
+  Select All, Find, the text size). `Editor::can_undo` and `can_redo`
+  (`src/renderer/null.rs` too).

@@ -26,3 +26,5 @@
   `Edit::MoveSelection` and `caret_at`, for dragging the selection: the
   caret's position for a cursor is out of `selection` (`caret`), unchanged,
   to serve both.
+- Menu actions (marked "Mtrx patch (menu actions)"): `Editor::can_undo` and
+  `can_redo` from the history, for the menus' Undo and Redo.
