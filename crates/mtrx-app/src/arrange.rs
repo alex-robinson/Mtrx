@@ -7,7 +7,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use iced::{Point, Subscription, Task, event, mouse};
+use iced::{Point, Subscription, Task, event, keyboard, mouse};
 use mtrx_core::{
     AtHome, Grouping, OwnedRoomId, OwnedUserId, RoomCategories, RoomSummary, RoomTag, Section,
     Session, Sort, SpaceMembers, home_rooms, space_rooms,
@@ -34,6 +34,8 @@ pub enum Message {
     Row(OwnedRoomId, bool),
     /// The cursor entered or left the pinned Notes row, which is not dragged.
     NotesRow(bool),
+    /// The modifier keys changed, e.g. ⌥ held to show only one section.
+    Modifiers(keyboard::Modifiers),
     /// The left mouse button, anywhere.
     Pressed,
     Released,
@@ -145,6 +147,7 @@ pub struct Arrange {
     pub category_menu: Option<String>,
     pub show_menu: bool,
     pub naming: Option<Naming>,
+    pub modifiers: keyboard::Modifiers,
 }
 
 /// What [`Arrange::update`] works on.
@@ -271,6 +274,7 @@ impl Arrange {
                 }
             }
             Message::NotesRow(hovered) => self.notes_hovered = hovered,
+            Message::Modifiers(modifiers) => self.modifiers = modifiers,
             Message::Pressed => {
                 self.drag = self.hovered.clone().map(|room| Drag {
                     room,
@@ -530,15 +534,23 @@ impl Arrange {
         )
     }
 
-    /// The cursor, while a room may be dragged.
-    pub fn subscription(&self) -> Option<Subscription<app::Message>> {
-        self.drag.as_ref()?;
-        Some(event::listen_with(|event, _status, _window| match event {
-            iced::Event::Mouse(mouse::Event::CursorMoved { position }) => {
-                Some(app::Message::Arrange(Message::Moved(position)))
+    /// The modifier keys, and the cursor while a room may be dragged.
+    pub fn subscription(&self) -> Subscription<app::Message> {
+        let modifiers = event::listen_with(|event, _status, _window| match event {
+            iced::Event::Keyboard(keyboard::Event::ModifiersChanged(modifiers)) => {
+                Some(app::Message::Arrange(Message::Modifiers(modifiers)))
             }
             _ => None,
-        }))
+        });
+        let cursor = self.drag.as_ref().map(|_| {
+            event::listen_with(|event, _status, _window| match event {
+                iced::Event::Mouse(mouse::Event::CursorMoved { position }) => {
+                    Some(app::Message::Arrange(Message::Moved(position)))
+                }
+                _ => None,
+            })
+        });
+        Subscription::batch([modifiers].into_iter().chain(cursor))
     }
 }
 

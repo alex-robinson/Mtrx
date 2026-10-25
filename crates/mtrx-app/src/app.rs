@@ -3370,7 +3370,7 @@ impl App {
                 })
                 .map(|c| Message::Arrange(arrange::Message::Categories(c))),
             );
-            subscriptions.extend(main.arrange.subscription());
+            subscriptions.push(main.arrange.subscription());
             subscriptions.push(
                 Subscription::run_with(Shared(main.session.clone()), |s| {
                     s.0.room_list_colours_updates()

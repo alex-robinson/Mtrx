@@ -614,10 +614,13 @@ fn show_menu_panel<'a>(
     layout: &Layout,
     sections: Vec<Section>,
 ) -> Element<'a, Message> {
+    let collapse = |collapsed: &dyn Fn(&Section) -> bool| {
+        arrange_message(collapse_sections(&sections, collapsed))
+    };
     let mut menu = column![].spacing(1);
     for section in &sections {
         let ticked = !layout.is_collapsed(section);
-        let toggle = arrange_message(arrange::Message::ToggleCollapsed(section.clone()));
+        let toggle = arrange_message(tick(arrange.modifiers, &sections, section));
         let name = section_name(arrange, space, section).to_owned();
         let line = row![
             checkbox(ticked).on_toggle({
@@ -675,12 +678,6 @@ fn show_menu_panel<'a>(
                 .align_y(Alignment::Center),
         );
     }
-    let all = |collapsed| {
-        let sections = (sections.iter())
-            .map(|section| (section.clone(), collapsed))
-            .collect();
-        arrange_message(arrange::Message::Collapse(sections))
-    };
     let footer = |label| {
         button(text(label).size(13).width(Length::Fill).center())
             .width(Length::Fill)
@@ -691,10 +688,16 @@ fn show_menu_panel<'a>(
         .push(container(rule::horizontal(1).style(style::separator)).padding([4, 0]))
         .push(
             row![
-                footer("Show all").on_press(all(false)),
-                footer("Hide all").on_press(all(true))
+                footer("Show all").on_press(collapse(&|_| false)),
+                footer("Hide all").on_press(collapse(&|_| true))
             ]
             .spacing(4),
+        )
+        .push(
+            container(text(ONLY_ONE).size(11).style(text::secondary))
+                .width(Length::Fill)
+                .center_x(Length::Fill)
+                .padding([2, 8]),
         );
     container(menu)
         .width(SHOW_MENU_WIDTH)
@@ -702,6 +705,34 @@ fn show_menu_panel<'a>(
         .style(style::toolbar)
         .into()
 }
+
+/// Ticking or unticking `section` in the Show menu, one of `sections`;
+/// with ⌥ (Alt) held, only it is expanded.
+fn tick(modifiers: Modifiers, sections: &[Section], section: &Section) -> arrange::Message {
+    if modifiers.alt() {
+        collapse_sections(sections, &|other| other != section)
+    } else {
+        arrange::Message::ToggleCollapsed(section.clone())
+    }
+}
+
+/// Collapse the `sections` for which `collapsed` holds, expand the others.
+fn collapse_sections(
+    sections: &[Section],
+    collapsed: &dyn Fn(&Section) -> bool,
+) -> arrange::Message {
+    let sections = (sections.iter())
+        .map(|section| (section.clone(), collapsed(section)))
+        .collect();
+    arrange::Message::Collapse(sections)
+}
+
+/// How to show only one section, below the Show menu.
+const ONLY_ONE: &str = if cfg!(target_os = "macos") {
+    "⌥-click to show only one"
+} else {
+    "Alt+click to show only one"
+};
 
 /// The width of the menu of which sections are expanded.
 const SHOW_MENU_WIDTH: f32 = 280.0;
@@ -1820,6 +1851,28 @@ mod tests {
         // While searching, what it found.
         let found = list(&rooms, None, "o", &arrange, &avatars, &presences);
         assert_eq!(ids(&found), ["!bob:x", "!loose:x", "!notes:x"]);
+    }
+
+    #[test]
+    fn alt_ticks_only_one_section() {
+        let sections = [Section::People, Section::Rooms, Section::LowPriority];
+        assert!(matches!(
+            tick(Modifiers::empty(), &sections, &Section::Rooms),
+            arrange::Message::ToggleCollapsed(Section::Rooms)
+        ));
+        let arrange::Message::Collapse(collapsed) =
+            tick(Modifiers::ALT, &sections, &Section::Rooms)
+        else {
+            panic!("not a collapse");
+        };
+        assert_eq!(
+            collapsed,
+            [
+                (Section::People, true),
+                (Section::Rooms, false),
+                (Section::LowPriority, true),
+            ]
+        );
     }
 
     #[test]
