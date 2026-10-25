@@ -155,7 +155,8 @@ so that Enter probably sends the half-composed text today.
       The history is the editor's (`vendor/iced_graphics`): a new draft
       (sent, another room) starts a fresh one. A paste, an input method's
       commit and a completed mention are a step each.
-- [ ] ⌥⌫ and ⌥⌦ delete a word; ⌘⌫ deletes to the start of the line.
+- [x] ⌥⌫ and ⌥⌦ delete a word; ⌘⌫ deletes to the start of the line
+      (as shown, when it wraps), ⌘⌦ to its end. A step each to undo.
 - [ ] ⌘↑ and ⌘↓ go to the start and end of the draft (with ⇧, select).
 - [ ] ⌥↑ and ⌥↓ go to the start and end of the paragraph.
 - [ ] ⌃K deletes to the end of the line, ⌃Y yanks it back, ⌃T transposes,

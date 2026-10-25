@@ -27,3 +27,5 @@ section B). Each is marked "Mtrx patch" in the code:
 - `src/text_editor.rs` (editing, `docs/native-behaviour.md` B2): key
   bindings for the editing iced lacks. ⌘Z and ⇧⌘Z (Ctrl+Z, Ctrl+Shift+Z
   and Ctrl+Y elsewhere) undo and redo (`Binding::Undo`, `Binding::Redo`).
+  ⌥⌫ and ⌥⌦ delete a word (Ctrl+Backspace, Ctrl+Delete elsewhere), ⌘⌫
+  and ⌘⌦ to the start and end of the line as shown (`Binding::DeleteTo`).

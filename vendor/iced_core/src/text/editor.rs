@@ -131,6 +131,9 @@ pub enum Edit {
     Undo,
     /// Redo the last step undone, unless something was edited since.
     Redo,
+    /// Delete the selection, or from the cursor to where the [`Motion`]
+    /// takes it (a character if it takes it nowhere): ⌥⌫ deletes a word.
+    DeleteTo(Motion),
 }
 
 /// A cursor movement.

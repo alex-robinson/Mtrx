@@ -871,7 +871,54 @@ fn perform_edit(
         }
         // Replayed by the history.
         Edit::Undo | Edit::Redo => {}
+        Edit::DeleteTo(motion) => {
+            delete_to(editor, font_system, motion);
+        }
     }
+}
+
+// Mtrx patch (editing): ⌥⌫, ⌘⌫ and the like.
+/// Deletes the selection, or from the cursor to where `motion` takes it; a
+/// character if it takes it nowhere (a line's edge, where ⌘⌫ joins the
+/// line to the one before, as a text view does).
+fn delete_to(
+    editor: &mut cosmic_text::Editor<'static>,
+    font_system: &mut text::FontSystem,
+    motion: Motion,
+) {
+    if editor.delete_selection() {
+        return;
+    }
+
+    let cursor = editor.cursor();
+    editor.action(
+        font_system.raw(),
+        cosmic_text::Action::Motion(to_motion(motion)),
+    );
+    let to = editor.cursor();
+    editor.set_cursor(cursor);
+
+    let at = |cursor: cosmic_text::Cursor| (cursor.line, cursor.index);
+
+    if at(to) == at(cursor) {
+        editor.action(
+            font_system.raw(),
+            match motion.direction() {
+                Direction::Left => cosmic_text::Action::Backspace,
+                Direction::Right => cosmic_text::Action::Delete,
+            },
+        );
+        return;
+    }
+
+    let (start, end) = if at(to) < at(cursor) {
+        (to, cursor)
+    } else {
+        (cursor, to)
+    };
+
+    editor.set_cursor(start);
+    editor.delete_range(start, end);
 }
 
 fn visual_lines_offset(line: usize, buffer: &cosmic_text::Buffer) -> i32 {

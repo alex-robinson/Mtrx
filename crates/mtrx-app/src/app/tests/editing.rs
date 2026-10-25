@@ -297,3 +297,73 @@ fn a_completed_mention_undoes_in_one_step() {
     content.perform(Action::Edit(Edit::Undo));
     assert_eq!(content.text(), "Ask @ali");
 }
+
+/// The key that widens a motion: ⌥ on macOS, Ctrl elsewhere.
+fn jump() -> Modifiers {
+    if cfg!(target_os = "macos") {
+        Modifiers::ALT
+    } else {
+        Modifiers::CTRL
+    }
+}
+
+#[test]
+fn option_backspace_and_option_delete_delete_a_word() {
+    let mut field = Field::new("Crème brûlée au café");
+    field.named(Named::Backspace, jump());
+    assert_eq!(field.content.text(), "Crème brûlée au ");
+    field.named(Named::Backspace, jump());
+    assert_eq!(field.content.text(), "Crème brûlée ");
+    // A step each.
+    assert_eq!(field.undo(), "Crème brûlée au ");
+
+    let mut field = Field::new("Sea ice");
+    field.named(Named::Home, Modifiers::empty());
+    field.named(Named::Delete, jump());
+    assert_eq!(field.content.text(), " ice");
+    field.named(Named::Delete, jump());
+    assert_eq!(field.content.text(), "");
+
+    // At the start of a line, the line break.
+    let mut field = Field::new("Melt\nrates");
+    field.named(Named::Home, Modifiers::empty());
+    field.named(Named::Backspace, jump());
+    assert_eq!(field.content.text(), "Meltrates");
+
+    // A selection, as Backspace.
+    let mut field = Field::new("Ice shelf");
+    field.named(Named::ArrowLeft, Modifiers::SHIFT);
+    field.named(Named::Backspace, jump());
+    assert_eq!(field.content.text(), "Ice shel");
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn command_backspace_deletes_to_the_start_of_the_line() {
+    let mut field = Field::new("Calving fronts");
+    for _ in 0.." fronts".len() {
+        field.named(Named::ArrowLeft, Modifiers::empty());
+    }
+    field.named(Named::Backspace, Modifiers::COMMAND);
+    assert_eq!(field.content.text(), " fronts");
+    // At its start, it joins the line to the one before.
+    let mut field = Field::new("Melt\nrates");
+    field.named(Named::Home, Modifiers::empty());
+    field.named(Named::Backspace, Modifiers::COMMAND);
+    assert_eq!(field.content.text(), "Meltrates");
+    // The line as shown: a long paragraph wraps, and only its last line
+    // goes.
+    let long = "Ice shelves buttress the glaciers that feed them. ".repeat(4);
+    let mut field = Field::new(long.trim_end());
+    field.named(Named::Backspace, Modifiers::COMMAND);
+    let left = field.content.text();
+    assert!(
+        left.starts_with("Ice shelves buttress") && left.len() < long.len() - 10,
+        "{left:?}"
+    );
+    // ⌘⌦ to its end.
+    let mut field = Field::new("Calving fronts");
+    field.named(Named::Home, Modifiers::empty());
+    field.named(Named::Delete, Modifiers::COMMAND);
+    assert_eq!(field.content.text(), "");
+}

@@ -930,6 +930,9 @@ where
                             Binding::Redo => {
                                 publish(Action::Edit(Edit::Redo));
                             }
+                            Binding::DeleteTo(motion) => {
+                                publish(Action::Edit(Edit::DeleteTo(motion)));
+                            }
                             Binding::Sequence(sequence) => {
                                 for binding in sequence {
                                     apply_binding(
@@ -1205,6 +1208,8 @@ pub enum Binding<Message> {
     Undo,
     /// Redo the last step undone.
     Redo,
+    /// Delete the selection, or to where a [`Motion`] goes.
+    DeleteTo(Motion),
     /// A sequence of bindings to execute.
     Sequence(Vec<Self>),
     /// Produce the given message.
@@ -1279,13 +1284,27 @@ impl<Message> Binding<Message> {
 
         match modified_key.as_ref() {
             keyboard::Key::Named(key::Named::Enter) => Some(Self::Enter),
+            // Mtrx patch (editing): ⌥⌫ and ⌥⌦ delete a word (Ctrl with
+            // them elsewhere), ⌘⌫ and ⌘⌦ to the edge of the line.
             keyboard::Key::Named(key::Named::Backspace) => {
-                Some(Self::Backspace)
+                Some(if modifiers.macos_command() {
+                    Self::DeleteTo(Motion::Home)
+                } else if modifiers.jump() {
+                    Self::DeleteTo(Motion::WordLeft)
+                } else {
+                    Self::Backspace
+                })
             }
             keyboard::Key::Named(key::Named::Delete)
                 if text.is_none() || text.as_deref() == Some("\u{7f}") =>
             {
-                Some(Self::Delete)
+                Some(if modifiers.macos_command() {
+                    Self::DeleteTo(Motion::End)
+                } else if modifiers.jump() {
+                    Self::DeleteTo(Motion::WordRight)
+                } else {
+                    Self::Delete
+                })
             }
             keyboard::Key::Named(key::Named::Escape) => Some(Self::Unfocus),
             _ => {

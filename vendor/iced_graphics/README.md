@@ -17,3 +17,5 @@
   deleting by words, a paste or an input method's commit a step of its
   own); `Edit::Undo` and `Edit::Redo` replay it and bring the selection
   back. A new editor (a new `Content`) starts a fresh history.
+  `Edit::DeleteTo` deletes to where a motion goes, a character if it goes
+  nowhere (⌘⌫ at a line's start joins it to the one before).

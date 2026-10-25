@@ -100,9 +100,11 @@ impl Kind {
             ),
             Edit::DeleteSurrounding { .. } => Self::Surrounding,
             Edit::Paste(_) => Self::Paste,
-            Edit::Indent | Edit::Unindent | Edit::Undo | Edit::Redo => {
-                Self::Alone
-            }
+            Edit::Indent
+            | Edit::Unindent
+            | Edit::Undo
+            | Edit::Redo
+            | Edit::DeleteTo(_) => Self::Alone,
         }
     }
 
