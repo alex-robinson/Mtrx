@@ -11,3 +11,9 @@
   method asks for around the selection, across line endings, and keeps
   the selection for the commit that follows. See
   `vendor/iced_core/README.md`.
+- Editing (marked "Mtrx patch (editing)", `docs/native-behaviour.md` B2):
+  `src/text/editor/history.rs` keeps the editor's undo history, from
+  cosmic-text's change tracking, grouped as a text view does (typing and
+  deleting by words, a paste or an input method's commit a step of its
+  own); `Edit::Undo` and `Edit::Redo` replay it and bring the selection
+  back. A new editor (a new `Content`) starts a fresh history.

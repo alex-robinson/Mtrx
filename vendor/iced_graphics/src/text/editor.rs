@@ -1,4 +1,7 @@
 //! Draw and edit text.
+// Mtrx patch (editing).
+mod history;
+
 use crate::core::text::editor::{
     self, Action, Cursor, Direction, Edit, Motion, Position, Selection,
 };
@@ -24,6 +27,8 @@ struct Internal {
     bounds: Size,
     topmost_line_changed: Option<usize>,
     version: text::Version,
+    // Mtrx patch (editing).
+    history: history::History,
 }
 
 impl Editor {
@@ -307,6 +312,12 @@ impl editor::Editor for Editor {
             text::font_system().write().expect("Write font system");
 
         self.with_internal_mut(|internal| {
+            // Mtrx patch (editing): a move, a click or a selection ends the
+            // step of the history being typed.
+            if !matches!(action, Action::Edit(_) | Action::Scroll { .. }) {
+                internal.history.close();
+            }
+
             let editor = &mut internal.editor;
 
             match action {
@@ -412,51 +423,19 @@ impl editor::Editor for Editor {
                         .unwrap_or_else(|| editor.cursor())
                         .line;
 
-                    match edit {
-                        Edit::Insert(c) => {
-                            editor.action(
-                                font_system.raw(),
-                                cosmic_text::Action::Insert(c),
-                            );
+                    // Mtrx patch (editing): undo and redo replay the
+                    // history, other edits are recorded in it.
+                    let replayed = match edit {
+                        Edit::Undo => internal.history.undo(editor),
+                        Edit::Redo => internal.history.redo(editor),
+                        edit => {
+                            let pending = internal.history.start(&edit, editor);
+                            perform_edit(editor, &mut font_system, edit);
+                            internal.history.record(pending, editor);
+
+                            None
                         }
-                        Edit::Paste(text) => {
-                            editor.insert_string(&text, None);
-                        }
-                        Edit::Indent => {
-                            editor.action(
-                                font_system.raw(),
-                                cosmic_text::Action::Indent,
-                            );
-                        }
-                        Edit::Unindent => {
-                            editor.action(
-                                font_system.raw(),
-                                cosmic_text::Action::Unindent,
-                            );
-                        }
-                        Edit::Enter => {
-                            editor.action(
-                                font_system.raw(),
-                                cosmic_text::Action::Enter,
-                            );
-                        }
-                        Edit::Backspace => {
-                            editor.action(
-                                font_system.raw(),
-                                cosmic_text::Action::Backspace,
-                            );
-                        }
-                        Edit::Delete => {
-                            editor.action(
-                                font_system.raw(),
-                                cosmic_text::Action::Delete,
-                            );
-                        }
-                        // Mtrx patch (surrounding text).
-                        Edit::DeleteSurrounding { before, after } => {
-                            delete_surrounding(editor, before, after);
-                        }
-                    }
+                    };
 
                     let cursor = editor.cursor();
                     let selection_start = editor
@@ -465,7 +444,10 @@ impl editor::Editor for Editor {
                         .unwrap_or(cursor);
 
                     internal.topmost_line_changed = Some(
-                        selection_start.line.min(topmost_line_before_edit),
+                        selection_start
+                            .line
+                            .min(topmost_line_before_edit)
+                            .min(replayed.unwrap_or(usize::MAX)),
                     );
                 }
 
@@ -513,6 +495,9 @@ impl editor::Editor for Editor {
 
     fn move_to(&mut self, cursor: Cursor) {
         self.with_internal_mut(|internal| {
+            // Mtrx patch (editing).
+            internal.history.close();
+
             // TODO: Expose `Affinity`
             internal.editor.set_cursor(cosmic_text::Cursor {
                 line: cursor.position.line,
@@ -765,6 +750,8 @@ impl Default for Internal {
             bounds: Size::ZERO,
             topmost_line_changed: None,
             version: text::Version::default(),
+            // Mtrx patch (editing).
+            history: history::History::default(),
         }
     }
 }
@@ -847,6 +834,44 @@ fn highlight_line(
             (x, width)
         }
     })
+}
+
+// Mtrx patch (editing): an edit, out of `perform` so that the history can
+// record it.
+fn perform_edit(
+    editor: &mut cosmic_text::Editor<'static>,
+    font_system: &mut text::FontSystem,
+    edit: Edit,
+) {
+    match edit {
+        Edit::Insert(c) => {
+            editor.action(font_system.raw(), cosmic_text::Action::Insert(c));
+        }
+        Edit::Paste(text) => {
+            editor.insert_string(&text, None);
+        }
+        Edit::Indent => {
+            editor.action(font_system.raw(), cosmic_text::Action::Indent);
+        }
+        Edit::Unindent => {
+            editor.action(font_system.raw(), cosmic_text::Action::Unindent);
+        }
+        Edit::Enter => {
+            editor.action(font_system.raw(), cosmic_text::Action::Enter);
+        }
+        Edit::Backspace => {
+            editor.action(font_system.raw(), cosmic_text::Action::Backspace);
+        }
+        Edit::Delete => {
+            editor.action(font_system.raw(), cosmic_text::Action::Delete);
+        }
+        // Mtrx patch (surrounding text).
+        Edit::DeleteSurrounding { before, after } => {
+            delete_surrounding(editor, before, after);
+        }
+        // Replayed by the history.
+        Edit::Undo | Edit::Redo => {}
+    }
 }
 
 fn visual_lines_offset(line: usize, buffer: &cosmic_text::Buffer) -> i32 {

@@ -151,7 +151,10 @@ so that Enter probably sends the half-composed text today.
 ### B2. Editing
 
 - [x] Double- and triple-click select a word and a line (iced).
-- [ ] ⌘Z undo, ⇧⌘Z redo; typing grouped into words, as in a text view.
+- [x] ⌘Z undo, ⇧⌘Z redo; typing grouped into words, as in a text view.
+      The history is the editor's (`vendor/iced_graphics`): a new draft
+      (sent, another room) starts a fresh one. A paste, an input method's
+      commit and a completed mention are a step each.
 - [ ] ⌥⌫ and ⌥⌦ delete a word; ⌘⌫ deletes to the start of the line.
 - [ ] ⌘↑ and ⌘↓ go to the start and end of the draft (with ⇧, select).
 - [ ] ⌥↑ and ⌥↓ go to the start and end of the paragraph.

@@ -1062,11 +1062,19 @@ impl App {
                 if !shown || self.covered() {
                     return Task::none();
                 }
-                let edit = text_editor::Action::Edit(text_editor::Edit::Paste(Arc::new(text)));
-                Task::batch([
-                    self.update(Message::Composer(edit)),
-                    iced::widget::operation::focus(room::COMPOSER),
-                ])
+                // Typed, so that it undoes with what is typed next.
+                let typed: Vec<_> = text
+                    .chars()
+                    .map(|c| {
+                        let edit = text_editor::Action::Edit(text_editor::Edit::Insert(c));
+                        self.update(Message::Composer(edit))
+                    })
+                    .collect();
+                Task::batch(
+                    typed
+                        .into_iter()
+                        .chain([iced::widget::operation::focus(room::COMPOSER)]),
+                )
             }
             Message::Mention(message) => {
                 let Screen::Main(main) = &mut self.screen else {

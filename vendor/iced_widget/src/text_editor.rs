@@ -923,6 +923,13 @@ where
                             Binding::Delete => {
                                 publish(Action::Edit(Edit::Delete));
                             }
+                            // Mtrx patch (editing).
+                            Binding::Undo => {
+                                publish(Action::Edit(Edit::Undo));
+                            }
+                            Binding::Redo => {
+                                publish(Action::Edit(Edit::Redo));
+                            }
                             Binding::Sequence(sequence) => {
                                 for binding in sequence {
                                     apply_binding(
@@ -1193,6 +1200,11 @@ pub enum Binding<Message> {
     Backspace,
     /// Delete the next character.
     Delete,
+    // Mtrx patch (editing).
+    /// Undo the last step of the editor's history.
+    Undo,
+    /// Redo the last step undone.
+    Redo,
     /// A sequence of bindings to execute.
     Sequence(Vec<Self>),
     /// Produce the given message.
@@ -1245,6 +1257,15 @@ impl<Message> Binding<Message> {
                 Some(Self::Paste)
             }
             Some('a') if modifiers.command() => Some(Self::SelectAll),
+            // Mtrx patch (editing): ⌘Z and ⇧⌘Z (Ctrl+Z, Ctrl+Shift+Z and
+            // Ctrl+Y elsewhere).
+            Some('z' | 'Z') if modifiers.command() && modifiers.shift() => {
+                Some(Self::Redo)
+            }
+            Some('z') if modifiers.command() => Some(Self::Undo),
+            Some('y') if modifiers.command() && !cfg!(target_os = "macos") => {
+                Some(Self::Redo)
+            }
             _ => None,
         };
 

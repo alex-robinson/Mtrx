@@ -12,3 +12,6 @@ section B1). Each is marked "Mtrx patch" in the code:
   `ImeSurroundingText` and `Ime::DeleteSurrounding`
   (https://github.com/rust-windowing/winit, `winit-core`), so this goes
   once iced moves to winit 0.31.
+- `src/text/editor.rs` (editing, `docs/native-behaviour.md` B2): `Edit`
+  has `Undo` and `Redo`; the history is kept by the renderer's editor
+  (`iced_graphics`).

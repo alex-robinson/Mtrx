@@ -24,3 +24,6 @@ section B). Each is marked "Mtrx patch" in the code:
   its lines with the caret and the selection, a field all of it unless
   secure), and apply its `DeleteSurrounding` before the commit. See
   `vendor/iced_core/README.md`.
+- `src/text_editor.rs` (editing, `docs/native-behaviour.md` B2): key
+  bindings for the editing iced lacks. ⌘Z and ⇧⌘Z (Ctrl+Z, Ctrl+Shift+Z
+  and Ctrl+Y elsewhere) undo and redo (`Binding::Undo`, `Binding::Redo`).

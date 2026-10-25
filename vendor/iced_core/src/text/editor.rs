@@ -125,6 +125,12 @@ pub enum Edit {
         /// The bytes after the selection.
         after: usize,
     },
+    // Mtrx patch (editing): the editor keeps a history of its edits.
+    /// Undo the last step of the history: typing up to a word, a paste, an
+    /// input method's commit; the selection returns as it was before.
+    Undo,
+    /// Redo the last step undone, unless something was edited since.
+    Redo,
 }
 
 /// A cursor movement.
