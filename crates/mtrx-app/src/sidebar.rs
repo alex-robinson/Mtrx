@@ -96,7 +96,8 @@ fn sections<'a>(view: &RoomListView<'a>) -> Vec<(Section, Vec<&'a RoomSummary>)>
 /// are some, categories always, other sections while they have rooms (or
 /// while a room is dragged, to drop it there).
 fn shown_sections<'a>(view: &RoomListView<'a>) -> Vec<(Section, Vec<&'a RoomSummary>)> {
-    let dragging = view.arrange.dragging().is_some();
+    let dragging =
+        (view.arrange.dragging()).is_some_and(|d| matches!(d.item, arrange::Dragged::Room(_)));
     sections(view)
         .into_iter()
         .filter(|(section, entries)| match section {
@@ -946,31 +947,36 @@ fn category_menu<'a>(
     menu(items)
 }
 
-/// The room being dragged, following the cursor.
+/// The room or section being dragged in the room list of `space` (Home for
+/// `None`), following the cursor.
 pub fn drag_preview<'a>(
     rooms: &'a [RoomSummary],
+    space: Option<&OwnedRoomId>,
     arrange: &Arrange,
     avatars: &Avatars,
 ) -> Option<Element<'a, Message>> {
     let drag = arrange.dragging()?;
     let at = drag.at?;
-    let room = rooms.iter().find(|r| r.id == drag.room)?;
-    let chip = container(
-        row![
-            avatars.view(
-                room.id.as_str(),
-                &room.name,
-                room.avatar.as_deref(),
-                ROOM_AVATAR,
-                Shape::Circle,
-            ),
-            text(&room.name).size(14),
-        ]
-        .spacing(8)
-        .align_y(Alignment::Center),
-    )
-    .padding([4, 10])
-    .style(style::toolbar);
+    let content: Element<'a, Message> = match &drag.item {
+        arrange::Dragged::Room(id) => {
+            let room = rooms.iter().find(|r| r.id == *id)?;
+            row![
+                avatars.view(
+                    room.id.as_str(),
+                    &room.name,
+                    room.avatar.as_deref(),
+                    ROOM_AVATAR,
+                    Shape::Circle,
+                ),
+                text(&room.name).size(14),
+            ]
+            .spacing(8)
+            .align_y(Alignment::Center)
+            .into()
+        }
+        arrange::Dragged::Section(section) => section_title(section_name(arrange, space, section)),
+    };
+    let chip = container(content).padding([4, 10]).style(style::toolbar);
     Some(
         container(chip)
             .padding(Padding::ZERO.left(at.x + 12.0).top(at.y + 6.0))
@@ -1189,7 +1195,8 @@ impl<'a> RoomListView<'a> {
     fn room_entry(&self, room: &'a RoomSummary) -> Element<'a, Message> {
         let selected = self.open == Some(&room.id);
         let menu_open = self.arrange.room_menu.as_ref() == Some(&room.id);
-        let hovered = self.arrange.hovered.as_ref() == Some(&room.id);
+        let hovered =
+            matches!(&self.arrange.hovered, Some(arrange::Dragged::Room(id)) if *id == room.id);
         let font = if room.unread_messages > 0 {
             fonts::SEMIBOLD
         } else {

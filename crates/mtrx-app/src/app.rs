@@ -3609,7 +3609,9 @@ impl App {
             Connection::SignedOut => window = window.push(signed_out_bar()),
         }
         let mut layers = stack![window];
-        if let Some(preview) = sidebar::drag_preview(rooms, &main.arrange, &main.avatars) {
+        if let Some(preview) =
+            sidebar::drag_preview(rooms, main.space.as_ref(), &main.arrange, &main.avatars)
+        {
             layers = layers.push(preview);
         }
         layers.into()

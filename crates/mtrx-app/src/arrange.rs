@@ -1,5 +1,6 @@
 //! Arranging the room list: the user's categories, favourites and low
-//! priority, by dragging rooms between sections or through menus.
+//! priority, and the order of its sections, by dragging rooms between
+//! sections and sections to other places, or through menus.
 
 use std::{
     collections::{HashMap, HashSet},
@@ -32,6 +33,8 @@ pub enum Message {
     SpaceMembers(OwnedRoomId, u64, Result<HashSet<OwnedUserId>, String>),
     /// The cursor entered (`true`) or left a room row.
     Row(OwnedRoomId, bool),
+    /// The cursor entered or left a section's grip, which drags it.
+    Grip(Section, bool),
     /// The cursor entered or left the pinned Notes row, which is not dragged.
     NotesRow(bool),
     /// The modifier keys changed, e.g. ⌥ held to show only one section.
@@ -40,7 +43,8 @@ pub enum Message {
     Pressed,
     Released,
     Moved(Point),
-    /// While dragging, the cursor entered (`true`) or left a section.
+    /// While dragging, the cursor entered (`true`) or left a section, which
+    /// a room would drop into, or whose place a section would take.
     Target(Section, bool),
     ToggleCollapsed(Section),
     /// Collapse (`true`) or expand these sections at once.
@@ -68,9 +72,17 @@ pub enum Message {
     Saved(Result<(), String>),
 }
 
-/// A room pressed, and dragged once the cursor moved far enough.
+/// What a drag moves: a room into a section, or a section to the place of
+/// another.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Dragged {
+    Room(OwnedRoomId),
+    Section(Section),
+}
+
+/// A room or section pressed, and dragged once the cursor moved far enough.
 pub struct Drag {
-    pub room: OwnedRoomId,
+    pub item: Dragged,
     start: Option<Point>,
     pub at: Option<Point>,
     pub active: bool,
@@ -137,8 +149,8 @@ pub struct Arrange {
     /// Joined members of the top-level spaces, for the direct chats listed
     /// in them.
     pub space_members: SpaceMembers,
-    /// The room row under the cursor.
-    pub hovered: Option<OwnedRoomId>,
+    /// The room row or section grip under the cursor.
+    pub hovered: Option<Dragged>,
     pub notes_hovered: bool,
     pub drag: Option<Drag>,
     /// The section a drag would drop into.
@@ -168,6 +180,15 @@ impl Arrange {
 
     pub fn dragging(&self) -> Option<&Drag> {
         self.drag.as_ref().filter(|d| d.active)
+    }
+
+    /// The cursor entered (`true`) or left what drags `item`.
+    fn hover(&mut self, item: Dragged, entered: bool) {
+        if entered {
+            self.hovered = Some(item);
+        } else if self.hovered.as_ref() == Some(&item) {
+            self.hovered = None;
+        }
     }
 
     /// What `space` lists, or Home for `None`, in the order of `rooms`: the
@@ -267,17 +288,13 @@ impl Arrange {
             Message::SpaceMembers(space, _, Err(e)) => {
                 warn!(%space, "could not load the space's members: {e}");
             }
-            Message::Row(room, true) => self.hovered = Some(room),
-            Message::Row(room, false) => {
-                if self.hovered.as_ref() == Some(&room) {
-                    self.hovered = None;
-                }
-            }
+            Message::Row(room, entered) => self.hover(Dragged::Room(room), entered),
+            Message::Grip(section, entered) => self.hover(Dragged::Section(section), entered),
             Message::NotesRow(hovered) => self.notes_hovered = hovered,
             Message::Modifiers(modifiers) => self.modifiers = modifiers,
             Message::Pressed => {
-                self.drag = self.hovered.clone().map(|room| Drag {
-                    room,
+                self.drag = self.hovered.clone().map(|item| Drag {
+                    item,
                     start: None,
                     at: None,
                     active: false,
@@ -291,7 +308,10 @@ impl Arrange {
                         drag.active = true;
                         self.room_menu = None;
                         self.category_menu = None;
-                        self.show_menu = false;
+                        // Sections are also dragged in the Show menu.
+                        if matches!(drag.item, Dragged::Room(_)) {
+                            self.show_menu = false;
+                        }
                     }
                 }
             }
@@ -299,7 +319,12 @@ impl Arrange {
                 let drag = self.drag.take();
                 if let (Some(drag), Some(target)) = (drag.filter(|d| d.active), self.target.take())
                 {
-                    return self.move_to(drag.room, target, context);
+                    return match drag.item {
+                        Dragged::Room(room) => self.move_to(room, target, context),
+                        Dragged::Section(section) => {
+                            self.update(Message::MoveSection(section, target), context)
+                        }
+                    };
                 }
                 self.target = None;
             }

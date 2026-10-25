@@ -2268,14 +2268,21 @@ async fn show_menu() {
         );
     }
     send(&mut main, arrange::Message::ShowMenu(true));
-    // Rooms moved to the place of Papers, above it.
+    // Rooms dragged by its grip to the place of Papers, above it.
     let papers = main.arrange.categories.layout(Some(&space)).categories[1]
         .id
         .clone();
-    send(
-        &mut main,
-        arrange::Message::MoveSection(Section::Rooms, Section::Category(papers.clone())),
-    );
+    for message in [
+        arrange::Message::Grip(Section::Rooms, true),
+        arrange::Message::Pressed,
+        arrange::Message::Moved(iced::Point::new(200.0, 330.0)),
+        arrange::Message::Moved(iced::Point::new(200.0, 300.0)),
+        arrange::Message::Target(Section::Category(papers.clone()), true),
+        arrange::Message::Released,
+    ] {
+        send(&mut main, message);
+    }
+    assert!(main.arrange.show_menu);
     let order = main.arrange.categories.layout(Some(&space)).order();
     assert_eq!(order[3..5], [Section::Rooms, Section::Category(papers)]);
     let mut app = app(Screen::Main(Box::new(main)), Mode::Light);
