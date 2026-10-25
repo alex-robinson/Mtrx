@@ -41,7 +41,7 @@ per day:
 
 ### A1. Window
 
-- [ ] Closing the window: decided 2026-10-25 from user feedback, by
+- [x] Closing the window: decided 2026-10-25 from user feedback, by
       platform (`app::closing`). On macOS the close button, ⌘W and Window ▸
       Close hide the window, as a Mac app's: the app goes on, synced (Dock
       badge, notifications, presence), and clicking its Dock icon, a
@@ -150,10 +150,11 @@ so that Enter probably sends the half-composed text today.
       would not start; patched in `vendor/winit` (winit #4748/#4749). To
       check by hand, from the app bundle (`cargo xtask bundle`): without
       a bundle identifier Dictation stalls.
-- [ ] ⌃⌘Space opens Emoji & Symbols and inserts the pick. The pick is
+- [x] ⌃⌘Space opens Emoji & Symbols and inserts the pick. The pick is
       inserted (winit #4748/#4749 backport), but ⌃⌘Space itself is the key
       equivalent of the Edit menu's Emoji & Symbols, which macOS adds to an
-      Edit menu: the Edit menu is there now (C), to check by hand.
+      Edit menu: the Edit menu is there now (C). Checked by hand
+      2026-10-25.
 
 ### B2. Editing
 
@@ -208,19 +209,19 @@ item is disabled only where its key does nothing. Quit goes through
 closing, also from the Dock and when logging out (`applicationShouldTerminate:`
 in our winit). See the READMEs in `vendor/`.
 
-Done in code, with tests of the actions doing what the keys do; to check
-by hand in the app (the menus, what macOS adds to them):
+Done, with tests of the actions doing what the keys do, and checked by
+hand on macOS 2026-10-25:
 
-- [ ] App menu: About, Settings… (⌘,), Hide, Hide Others, Show All, Quit.
+- [x] App menu: About, Settings… (⌘,), Hide, Hide Others, Show All, Quit.
       Quit (⌘Q) goes through `Message::CloseWindow`, as closing does:
       winit's own Quit exited without going offline or ending the session.
-- [ ] Edit: Undo, Redo, Cut, Copy, Paste, Paste as Plain Text (⌥⇧⌘V),
+- [x] Edit: Undo, Redo, Cut, Copy, Paste, Paste as Plain Text (⌥⇧⌘V),
       Select All, Find (⌘F, ⌘G, ⇧⌘G); macOS adds Emoji & Symbols, Start
       Dictation and AutoFill.
-- [ ] View: Bigger, Smaller, Actual Size (⌘+ ⌘− ⌘0, already keys), Enter
+- [x] View: Bigger, Smaller, Actual Size (⌘+ ⌘− ⌘0, already keys), Enter
       Full Screen (⌃⌘F).
-- [ ] Window: Minimize (⌘M), Zoom, Close (⌘W), Bring All to Front.
-- [ ] Help: the website.
+- [x] Window: Minimize (⌘M), Zoom, Close (⌘W), Bring All to Front.
+- [x] Help: the website.
 
 ## D. Text rendering
 
