@@ -54,6 +54,7 @@ mod sidebar;
 mod style;
 mod text_size;
 mod tint;
+mod update;
 #[cfg(windows)]
 mod windows;
 

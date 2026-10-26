@@ -30,7 +30,7 @@ use objc2_app_kit::{
 };
 use objc2_foundation::{NSObject, NSString};
 
-const WEBSITE: &str = "https://alex-robinson.github.io/Mtrx/";
+const WEBSITE: &str = "https://mathesislab.github.io/Mtrx/";
 
 /// A standard action of the window's view, by the action message an item
 /// sends: `NSTextFinderAction` in its tag for find.
@@ -58,8 +58,8 @@ enum Does {
     Standard(Standard),
     /// An action message of AppKit's, to the first responder.
     AppKit(&'static CStr),
-    /// Opens the settings, through [`settings_chosen`].
-    Settings,
+    /// Sent to the app, through [`chosen`].
+    App(Chosen),
     /// Opens the website.
     Website,
 }
@@ -107,7 +107,7 @@ fn item_with(
 /// The menus, by title (the app menu's is the app's name, which macOS
 /// shows in bold).
 fn menus() -> Vec<(&'static str, Vec<Entry>)> {
-    use Does::{AppKit, Settings, Standard as S, Website};
+    use Does::{App, AppKit, Standard as S, Website};
     use NSEventModifierFlags as M;
     use Standard::*;
 
@@ -118,7 +118,8 @@ fn menus() -> Vec<(&'static str, Vec<Entry>)> {
             vec![
                 item("About Mtrx", AppKit(c"orderFrontStandardAboutPanel:"), ""),
                 Entry::Separator,
-                item("Settings…", Settings, ","),
+                item("Check for Updates…", App(Chosen::CheckForUpdates), ""),
+                item("Settings…", App(Chosen::Settings), ","),
                 Entry::Separator,
                 Entry::Submenu("Services", Vec::new()),
                 Entry::Separator,
@@ -225,9 +226,12 @@ define_class!(
     impl Target {
         #[unsafe(method(showSettings:))]
         fn show_settings(&self, _sender: Option<&AnyObject>) {
-            if let Some(sender) = SETTINGS.lock().unwrap().as_ref() {
-                let _ = sender.unbounded_send(());
-            }
+            send(Chosen::Settings);
+        }
+
+        #[unsafe(method(checkForUpdates:))]
+        fn check_for_updates(&self, _sender: Option<&AnyObject>) {
+            send(Chosen::CheckForUpdates);
         }
 
         #[unsafe(method(openWebsite:))]
@@ -237,17 +241,30 @@ define_class!(
     }
 );
 
-/// Where Settings… sends, to [`settings_chosen`].
-static SETTINGS: Mutex<Option<mpsc::UnboundedSender<()>>> = Mutex::new(None);
-
-/// Settings… chosen in the app menu.
-pub fn settings_chosen() -> Subscription<()> {
-    Subscription::run(settings)
+/// An item of the app menu that the app acts on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Chosen {
+    Settings,
+    CheckForUpdates,
 }
 
-fn settings() -> impl Stream<Item = ()> {
+/// Where the app's items send, to [`chosen`].
+static CHOSEN: Mutex<Option<mpsc::UnboundedSender<Chosen>>> = Mutex::new(None);
+
+fn send(chosen: Chosen) {
+    if let Some(sender) = CHOSEN.lock().unwrap().as_ref() {
+        let _ = sender.unbounded_send(chosen);
+    }
+}
+
+/// The app's items chosen in the app menu.
+pub fn chosen() -> Subscription<Chosen> {
+    Subscription::run(receive)
+}
+
+fn receive() -> impl Stream<Item = Chosen> {
     let (sender, receiver) = mpsc::unbounded();
-    *SETTINGS.lock().unwrap() = Some(sender);
+    *CHOSEN.lock().unwrap() = Some(sender);
     receiver
 }
 
@@ -311,7 +328,8 @@ fn menu_item(mtm: MainThreadMarker, target: &Target, item: Item) -> Retained<NSM
     let (message, tag) = match item.does {
         Does::Standard(standard) => standard.message(),
         Does::AppKit(message) => (message, 0),
-        Does::Settings => (c"showSettings:", 0),
+        Does::App(Chosen::Settings) => (c"showSettings:", 0),
+        Does::App(Chosen::CheckForUpdates) => (c"checkForUpdates:", 0),
         Does::Website => (c"openWebsite:", 0),
     };
     let action = Sel::register(message);
@@ -326,7 +344,7 @@ fn menu_item(mtm: MainThreadMarker, target: &Target, item: Item) -> Retained<NSM
     };
     menu_item.setKeyEquivalentModifierMask(item.modifiers);
     menu_item.setTag(tag);
-    if matches!(item.does, Does::Settings | Does::Website) {
+    if matches!(item.does, Does::App(_) | Does::Website) {
         // SAFETY: the target outlives the menu (see `install`).
         unsafe { menu_item.setTarget(Some(target)) };
     }

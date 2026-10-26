@@ -8,7 +8,7 @@ use std::{
 };
 
 use iced::{
-    Alignment, Element, Length,
+    Alignment, Element, Length, Theme,
     task::Handle,
     widget::{
         button, column, container, pick_list, row, scrollable, space, text, text_input, toggler,
@@ -29,6 +29,7 @@ use crate::{
     style,
     text_size::TextSize,
     tint::Tint,
+    update::{self, Updater},
 };
 
 const FILE: &str = "settings.json";
@@ -59,6 +60,8 @@ pub struct Settings {
     pub pinned_notes: bool,
     /// Others see when we are online or idle; otherwise we are offline.
     pub share_presence: bool,
+    /// Looking for newer versions of the app.
+    pub updates: update::Preferences,
     /// Room list colours chosen before they were kept in the account
     /// ([`mtrx_core::RoomListColours`]): moved there once, then dropped.
     #[serde(rename = "home_tint", skip_serializing)]
@@ -83,6 +86,7 @@ impl Default for Settings {
             room_pictures: false,
             pinned_notes: true,
             share_presence: true,
+            updates: update::Preferences::default(),
             legacy_home_tint: None,
             legacy_space_tints: BTreeMap::new(),
         }
@@ -137,6 +141,9 @@ pub enum Message {
     RoomPictures(bool),
     PinnedNotes(bool),
     SharePresence(bool),
+    /// Look for updates at start and once a day.
+    AutomaticUpdates(bool),
+    UpdateChannel(update::Channel),
     /// The room list's colour in a space, or at home.
     Tint(Option<OwnedRoomId>, Tint),
     FormKind(FormKind),
@@ -178,6 +185,9 @@ pub enum Action {
     /// Sharing our presence was turned on or off; save the settings and
     /// set it.
     SharePresence,
+    /// The update channel changed; save the settings and look for updates
+    /// on it.
+    CheckUpdates,
     SetSpaceService(OwnedRoomId, Option<CallService>),
     /// Open a room, or a space with its rooms, to every member.
     LetEveryoneEdit {
@@ -417,6 +427,14 @@ impl Panel {
                 settings.share_presence = on;
                 return Action::SharePresence;
             }
+            Message::AutomaticUpdates(on) => {
+                settings.updates.automatic = on;
+                return Action::Save;
+            }
+            Message::UpdateChannel(channel) => {
+                settings.updates.channel = channel;
+                return Action::CheckUpdates;
+            }
             Message::Tint(space, tint) => return Action::Colour(space, tint),
             Message::FormKind(kind) => self.form.kind = kind,
             Message::FormName(name) => self.form.name = name,
@@ -531,7 +549,8 @@ impl Panel {
 
     /// `spaces`: the top-level spaces, for their room list colours;
     /// `at_home`: which rooms of spaces Home lists, from the account;
-    /// `presence_shared`: the server shares presence (as far as known).
+    /// `presence_shared`: the server shares presence (as far as known);
+    /// `updater`: whether there is a newer version, first in the panel.
     pub fn view<'a>(
         &'a self,
         settings: &'a Settings,
@@ -539,6 +558,7 @@ impl Panel {
         colours: &RoomListColours,
         at_home: AtHome,
         presence_shared: bool,
+        updater: &'a Updater,
     ) -> Element<'a, app::Message> {
         let mut panel = column![
             row![
@@ -549,6 +569,8 @@ impl Panel {
                     .on_press(app::Message::ShowSettings(false)),
             ]
             .align_y(Alignment::Center),
+            heading("Updates"),
+            updates(&settings.updates, updater),
             heading("General"),
             option(
                 "Appearance",
@@ -913,6 +935,96 @@ impl SpaceCalls {
     }
 }
 
+/// This version or a newer one, and how to look for them.
+fn updates<'a>(
+    preferences: &'a update::Preferences,
+    updater: &'a Updater,
+) -> Element<'a, app::Message> {
+    let current = update::current();
+    let action = |label, message, style: fn(&Theme, button::Status) -> button::Style| {
+        button(text(label).size(13))
+            .padding([4, 10])
+            .style(style)
+            .on_press(app::Message::Update(message))
+    };
+    let state = |line: String, detail: Option<String>| {
+        let mut lines = column![text(line)].spacing(2);
+        if let Some(detail) = detail {
+            lines = lines.push(text(detail).size(12).style(text::secondary));
+        }
+        lines.width(Length::Fill)
+    };
+    let status = match &updater.available {
+        Some(update) => row![
+            state(
+                format!("Mtrx {} is available", update.version),
+                Some(
+                    updater
+                        .error
+                        .clone()
+                        .unwrap_or(format!("You have {current}."))
+                ),
+            ),
+            action(
+                "What's new",
+                update::Message::Notes,
+                style::secondary_button
+            ),
+            if updater.installing {
+                button(text("Installing…").size(13))
+                    .padding([4, 10])
+                    .style(style::primary_button)
+            } else if update.installable() {
+                action(
+                    "Install and restart",
+                    update::Message::Download,
+                    style::primary_button,
+                )
+            } else {
+                action("Download", update::Message::Download, style::primary_button)
+            },
+        ],
+        None => {
+            let line = if updater.checking {
+                "Looking for updates…".to_owned()
+            } else if updater.checked.is_some() && updater.error.is_none() {
+                format!("Mtrx {current} is the newest version.")
+            } else {
+                format!("This is Mtrx {current}.")
+            };
+            let mut check = button(text("Check now").size(13))
+                .padding([4, 10])
+                .style(style::secondary_button);
+            if !updater.checking {
+                check = check.on_press(app::Message::Update(update::Message::Check));
+            }
+            row![state(line, updater.error.clone()), check]
+        }
+    };
+    column![
+        status.spacing(8).align_y(Alignment::Center),
+        option(
+            "Check automatically",
+            "At start and once a day.",
+            toggler(preferences.automatic)
+                .on_toggle(|on| message(Message::AutomaticUpdates(on)))
+                .into(),
+        ),
+        option(
+            "Channel",
+            "Beta also offers pre-releases, to try new things first.",
+            pick_list(update::Channel::ALL, Some(preferences.channel), |c| {
+                message(Message::UpdateChannel(c))
+            })
+            .text_size(13)
+            .padding(6)
+            .into(),
+        ),
+    ]
+    .spacing(14)
+    .into()
+}
+
 fn heading<'a>(label: &str) -> Element<'a, app::Message> {
     text(label.to_uppercase())
         .size(11)
@@ -1103,6 +1215,11 @@ mod tests {
             room_pictures: true,
             pinned_notes: false,
             share_presence: false,
+            updates: crate::update::Preferences {
+                automatic: false,
+                channel: crate::update::Channel::Beta,
+                seen: Some("0.4.0".into()),
+            },
             legacy_home_tint: None,
             legacy_space_tints: BTreeMap::new(),
         };
@@ -1112,6 +1229,7 @@ mod tests {
         assert!(saved.contains(r#""appearance": "Dark""#), "{saved}");
         assert!(saved.contains(r#""text_size": "Larger""#), "{saved}");
         assert!(saved.contains(r#""share_presence": false"#), "{saved}");
+        assert!(saved.contains(r#""channel": "beta""#), "{saved}");
         std::fs::write(&path, "{}").unwrap();
         assert_eq!(Settings::load(&path), Settings::default(), "older file");
 

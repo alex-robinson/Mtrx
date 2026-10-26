@@ -52,6 +52,7 @@ use crate::{
     style::{self, MESSAGE_INSET, SPACE_BAR_WIDTH},
     text_size::Zoom,
     tint::Tint,
+    update::{self, Updater},
 };
 
 /// How often times shown relative to now are refreshed.
@@ -123,6 +124,11 @@ pub enum Message {
     Tick,
     ShowSettings(bool),
     Settings(settings::Message),
+    Update(update::Message),
+    /// Open the settings and look for updates: Check for Updates… in the
+    /// app menu, which only macOS has.
+    #[cfg(target_os = "macos")]
+    CheckForUpdates,
     AddMenu(bool),
     OpenDialog(dialog::Kind),
     Dialog(dialog::Message),
@@ -282,6 +288,7 @@ pub struct App {
     scale: f32,
     math: Math,
     badge: Badge,
+    updater: Updater,
 }
 
 enum Screen {
@@ -596,6 +603,7 @@ impl App {
         let settings_file = Settings::path(&data_root);
         #[cfg(target_os = "macos")]
         settings.appearance.apply();
+        update::clean_up();
         let app = Self {
             profile: profile.clone(),
             focused: true,
@@ -615,6 +623,7 @@ impl App {
             scale: 1.0,
             math: Math::new(),
             badge: Badge::default(),
+            updater: Updater::default(),
         };
         let restore = Task::perform(
             async move { Session::restore(profile).await.map(|s| Shared(Arc::new(s))) },
@@ -641,7 +650,11 @@ impl App {
             }),
             None => Task::none(),
         });
-        (app, Task::batch([restore, scale, mode, opened, menu_bar]))
+        let update = Task::done(Message::Update(update::Message::Tick));
+        (
+            app,
+            Task::batch([restore, scale, mode, opened, menu_bar, update]),
+        )
     }
 
     /// The theme the app is drawn in.
@@ -1272,6 +1285,16 @@ impl App {
             }
             Message::ShowSettings(true) => self.open_settings(),
             Message::Settings(message) => self.settings_update(message),
+            #[cfg(target_os = "macos")]
+            Message::CheckForUpdates => {
+                let check = (self.updater).update(update::Message::Check, &self.settings.updates);
+                Task::batch([self.open_settings(), check])
+            }
+            Message::Update(message) => {
+                let task = self.updater.update(message, &self.settings.updates);
+                self.update_seen();
+                task
+            }
             Message::Calls(room, message) => self.calls(room, message),
             Message::AddMenu(open) => {
                 if let Screen::Main(main) = &mut self.screen {
@@ -2391,7 +2414,19 @@ impl App {
             }
         }
         self.settings_panel = Some(panel);
+        self.update_seen();
         Task::batch(tasks)
+    }
+
+    /// An update shown in the open settings is seen: no dot on the gear
+    /// until a newer one.
+    fn update_seen(&mut self) {
+        if self.settings_panel.is_none() || !self.updater.unseen(&self.settings.updates) {
+            return;
+        }
+        let version = (self.updater.available.as_ref()).map(|u| u.version.to_string());
+        self.settings.updates.seen = version;
+        self.save_settings();
     }
 
     /// Room list colours chosen before the account kept them, moved there
@@ -2436,6 +2471,11 @@ impl App {
             settings::Action::Save => {
                 self.save_settings();
                 Task::none()
+            }
+            settings::Action::CheckUpdates => {
+                self.save_settings();
+                self.updater
+                    .update(update::Message::Check, &self.settings.updates)
             }
             settings::Action::Appearance => {
                 self.save_settings();
@@ -3317,11 +3357,14 @@ impl App {
             iced::system::theme_changes().map(Message::ThemeMode),
             // Also on the sign-in screen.
             iced::event::listen_with(window_keys),
+            iced::time::every(update::TICK).map(|_| Message::Update(update::Message::Tick)),
         ];
-        // Settings… in the app menu.
+        // Settings… and Check for Updates… in the app menu.
         #[cfg(target_os = "macos")]
-        subscriptions
-            .push(crate::menu_bar::settings_chosen().map(|()| Message::ShowSettings(true)));
+        subscriptions.push(crate::menu_bar::chosen().map(|chosen| match chosen {
+            crate::menu_bar::Chosen::Settings => Message::ShowSettings(true),
+            crate::menu_bar::Chosen::CheckForUpdates => Message::CheckForUpdates,
+        }));
         if let Screen::Main(main) = &self.screen {
             subscriptions.push(
                 Subscription::run_with(Shared(main.session.clone()), |s| s.0.scheduled_updates())
@@ -3370,7 +3413,7 @@ impl App {
                 })
                 .map(|c| Message::Arrange(arrange::Message::Categories(c))),
             );
-            subscriptions.extend(main.arrange.subscription());
+            subscriptions.push(main.arrange.subscription());
             subscriptions.push(
                 Subscription::run_with(Shared(main.session.clone()), |s| {
                     s.0.room_list_colours_updates()
@@ -3462,6 +3505,7 @@ impl App {
                             &main.colours,
                             main.arrange.categories.at_home,
                             !main.presences.unavailable(),
+                            &self.updater,
                         ),
                         Message::ShowSettings(false),
                     )
@@ -3510,6 +3554,7 @@ impl App {
             &main.arrange,
             &self.settings.room_list,
             &main.avatars,
+            self.updater.unseen(&self.settings.updates),
         );
         let room_list = sidebar::room_list(main.room_list_view(&self.settings));
 
@@ -3609,7 +3654,9 @@ impl App {
             Connection::SignedOut => window = window.push(signed_out_bar()),
         }
         let mut layers = stack![window];
-        if let Some(preview) = sidebar::drag_preview(rooms, &main.arrange, &main.avatars) {
+        if let Some(preview) =
+            sidebar::drag_preview(rooms, main.space.as_ref(), &main.arrange, &main.avatars)
+        {
             layers = layers.push(preview);
         }
         layers.into()

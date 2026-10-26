@@ -8,7 +8,8 @@ use iced::{
         key::{self, Named},
     },
     widget::{
-        button, column, container, mouse_area, row, scrollable, space, stack, text, text_input,
+        button, checkbox, column, container, mouse_area, row, rule, scrollable, space, stack, text,
+        text_input,
     },
 };
 use mtrx_core::{
@@ -25,6 +26,7 @@ use crate::{
     fonts,
     hint::{Position, hint, shortcut},
     icons, info,
+    popover::{Edge, Side, popover},
     presence::{self, Presences},
     style::{self, ROOM_AVATAR, ROOM_ROW, SPACE_AVATAR, SPACE_BAR_WIDTH},
     tint::Tint,
@@ -88,6 +90,37 @@ fn sections<'a>(view: &RoomListView<'a>) -> Vec<(Section, Vec<&'a RoomSummary>)>
         .categories
         .layout(space.map(|s| s.as_ref()))
         .group(listed, &view.grouping)
+}
+
+/// The sections the room list shows, with their rooms: Invites when there
+/// are some, categories always, other sections while they have rooms (or
+/// while a room is dragged, to drop it there).
+fn shown_sections<'a>(view: &RoomListView<'a>) -> Vec<(Section, Vec<&'a RoomSummary>)> {
+    let dragging =
+        (view.arrange.dragging()).is_some_and(|d| matches!(d.item, arrange::Dragged::Room(_)));
+    sections(view)
+        .into_iter()
+        .filter(|(section, entries)| match section {
+            Section::Invites => !entries.is_empty(),
+            Section::Category(_) => true,
+            _ => dragging || !entries.is_empty(),
+        })
+        .collect()
+}
+
+/// The sections shown above and below `section` in `order`, which it
+/// moves past.
+fn neighbours<'a>(
+    order: &'a [Section],
+    section: &Section,
+) -> (Option<&'a Section>, Option<&'a Section>) {
+    let Some(at) = order.iter().position(|s| s == section) else {
+        return (None, None);
+    };
+    (
+        at.checked_sub(1).and_then(|i| order.get(i)),
+        order.get(at + 1),
+    )
 }
 
 /// What the search finds in what `space` (or Home) lists: rooms and chats
@@ -246,12 +279,14 @@ pub fn direct_users<'a>(view: &RoomListView<'a>, own: &UserId) -> Vec<&'a OwnedU
         .collect()
 }
 
+/// `update`: a newer version not yet seen in Settings, a dot on the gear.
 pub fn space_bar<'a>(
     rooms: &[RoomSummary],
     selected: Option<&OwnedRoomId>,
     arrange: &Arrange,
     grouping: &Grouping,
     avatars: &Avatars,
+    update: bool,
 ) -> Element<'a, Message> {
     let entry = |icon: Element<'a, Message>, title: String, target: Option<OwnedRoomId>, unread| {
         let is_selected = selected == target.as_ref();
@@ -300,20 +335,33 @@ pub fn space_bar<'a>(
     .style(style::list_item(false))
     .on_press(Message::OpenDialog(Kind::NewSpace));
     bar = bar.push(container(with_tooltip(new_space, "New space".into())).center_x(Length::Fill));
-    let settings = button(icons::gear(20.0, |theme| {
+    let mut gear = stack![icons::gear(20.0, |theme| {
         theme
             .extended_palette()
             .background
             .base
             .text
             .scale_alpha(0.7)
-    }))
-    .padding(8)
-    .style(style::list_item(false))
-    .on_press(Message::ShowSettings(true));
+    })];
+    if update {
+        let dot = container(space())
+            .width(8)
+            .height(8)
+            .style(style::update_dot);
+        gear = gear.push(container(dot).align_right(20.0));
+    }
+    let settings = button(gear)
+        .padding(8)
+        .style(style::list_item(false))
+        .on_press(Message::ShowSettings(true));
+    let tip = if update {
+        "Settings: a new version of Mtrx is available"
+    } else {
+        "Settings"
+    };
     container(column![
         scrollable(bar.spacing(4).width(Length::Fill).padding([8, 0])).height(Length::Fill),
-        container(with_tooltip(settings, "Settings".into()))
+        container(with_tooltip(settings, tip.into()))
             .center_x(Length::Fill)
             .padding([8, 0]),
     ])
@@ -431,6 +479,9 @@ pub fn room_list<'a>(view: RoomListView<'a>) -> Element<'a, Message> {
     );
     let filter = filter.trim().to_lowercase();
     if filter.is_empty() {
+        if let Some(space) = selected_space {
+            list = list.push(show_menu(&view, space));
+        }
         if let Some(notes) = view.notes {
             list = list.push(view.notes_entry(notes));
         }
@@ -476,17 +527,17 @@ fn arranged<'a>(view: &RoomListView<'a>) -> Vec<Element<'a, Message>> {
         .categories
         .layout(view.selected_space.map(|s| s.as_ref()));
     let dragging = arrange.dragging().is_some();
+    let room_dragged = dragging && arrange.dragged_section().is_none();
     let space = view.selected_space;
+    let shown = shown_sections(view);
+    let order: Vec<Section> = (shown.iter().map(|(s, _)| s.clone()))
+        .filter(|s| *s != Section::Invites)
+        .collect();
+    let landing = landing(arrange, &order);
     let mut elements = Vec::new();
-    for (section, entries) in sections(view) {
-        let shown = match section {
-            Section::Invites => !entries.is_empty(),
-            Section::Category(_) => true,
-            _ => dragging || !entries.is_empty(),
-        };
-        if !shown {
-            continue;
-        }
+    for (section, entries) in shown {
+        let at = order.iter().position(|s| *s == section);
+        elements.push(drop_line(at.is_some() && landing == at));
         let collapsed = layout.is_collapsed(&section);
         let renaming = arrange
             .naming
@@ -499,7 +550,7 @@ fn arranged<'a>(view: &RoomListView<'a>) -> Vec<Element<'a, Message>> {
         if let Section::Category(id) = &section
             && arrange.category_menu.as_ref() == Some(id)
         {
-            block = block.push(category_menu(layout, space, id));
+            block = block.push(category_menu(layout, space, id, &order));
         }
         let empty = entries.is_empty();
         for room in entries {
@@ -517,7 +568,8 @@ fn arranged<'a>(view: &RoomListView<'a>) -> Vec<Element<'a, Message>> {
             );
         }
         elements.push(if dragging && section != Section::Invites {
-            let target = arrange.target.as_ref() == Some(&section);
+            // A room drops into the section, a section takes its place.
+            let target = room_dragged && arrange.target.as_ref() == Some(&section);
             mouse_area(
                 container(block)
                     .width(Length::Fill)
@@ -533,8 +585,205 @@ fn arranged<'a>(view: &RoomListView<'a>) -> Vec<Element<'a, Message>> {
             block.into()
         });
     }
+    elements.push(drop_line(landing == Some(order.len())));
     elements
 }
+
+/// "Show 4 of 6": the button opening the menu of which of a space's
+/// sections are expanded, the others shown collapsed.
+fn show_menu<'a>(view: &RoomListView<'a>, space: &OwnedRoomId) -> Element<'a, Message> {
+    let arrange = view.arrange;
+    let layout = arrange.categories.layout(Some(space));
+    let sections: Vec<Section> = (shown_sections(view).into_iter())
+        .map(|(section, _)| section)
+        .filter(|s| *s != Section::Invites)
+        .collect();
+    let expanded = sections.iter().filter(|s| !layout.is_collapsed(s)).count();
+    let open = arrange.show_menu;
+    // While open, a click on it closes the menu as any outside click.
+    let toggle = button(
+        row![
+            text(format!("Show {expanded} of {}", sections.len())).size(12),
+            icons::chevron(10.0, true, |theme| {
+                theme
+                    .extended_palette()
+                    .background
+                    .base
+                    .text
+                    .scale_alpha(0.7)
+            }),
+        ]
+        .spacing(4)
+        .align_y(Alignment::Center),
+    )
+    .padding([2, 8])
+    .style(style::secondary_button)
+    .on_press_maybe((!open).then(|| arrange_message(arrange::Message::ShowMenu(true))));
+    let menu = open.then(|| show_menu_panel(arrange, Some(space), layout, sections));
+    container(
+        popover(toggle, menu, Side::Below, Edge::Left)
+            .on_dismiss(arrange_message(arrange::Message::ShowMenu(false))),
+    )
+    .padding(Padding::new(0.0).top(2).bottom(4))
+    .into()
+}
+
+/// A space's sections, ticked while expanded and dragged by their grips to
+/// other places, then showing or hiding them all.
+fn show_menu_panel<'a>(
+    arrange: &Arrange,
+    space: Option<&OwnedRoomId>,
+    layout: &Layout,
+    sections: Vec<Section>,
+) -> Element<'a, Message> {
+    let collapse = |collapsed: &dyn Fn(&Section) -> bool| {
+        arrange_message(collapse_sections(&sections, collapsed))
+    };
+    let landing = landing(arrange, &sections);
+    let mut menu = column![];
+    for (at, section) in sections.iter().enumerate() {
+        let ticked = !layout.is_collapsed(section);
+        let toggle = arrange_message(tick(arrange.modifiers, &sections, section));
+        let name = section_name(arrange, space, section).to_owned();
+        let line = row![
+            checkbox(ticked).on_toggle({
+                let toggle = toggle.clone();
+                move |_| toggle.clone()
+            }),
+            ellipsis(name.clone()).size(13).width(Length::Fill),
+        ]
+        .spacing(8)
+        .align_y(Alignment::Center);
+        let item = button(line)
+            .width(Length::Fill)
+            .padding([4, 8])
+            .style(style::list_item(false))
+            .on_press(toggle);
+        // The user's names may be cut short.
+        let item = match section {
+            Section::Category(_) => hint(item, name, Position::Right),
+            _ => item.into(),
+        };
+        let row_message = |entered| match arrange.dragged_section() {
+            Some(_) => arrange::Message::Target(section.clone(), entered),
+            None => arrange::Message::SectionHovered(section.clone(), entered),
+        };
+        let line = mouse_area(
+            row![item, container(grip(arrange, section)).padding(4)]
+                .spacing(1)
+                .align_y(Alignment::Center),
+        )
+        .on_enter(arrange_message(row_message(true)))
+        .on_exit(arrange_message(row_message(false)));
+        menu = menu.push(drop_line(landing == Some(at))).push(line);
+    }
+    menu = menu.push(drop_line(landing == Some(sections.len())));
+    let footer = |label| {
+        button(text(label).size(13).width(Length::Fill).center())
+            .width(Length::Fill)
+            .padding([4, 8])
+            .style(style::list_item(false))
+    };
+    menu = menu
+        .push(container(rule::horizontal(1).style(style::separator)).padding([4, 0]))
+        .push(
+            row![
+                footer("Show all").on_press(collapse(&|_| false)),
+                footer("Hide all").on_press(collapse(&|_| true))
+            ]
+            .spacing(4),
+        )
+        .push(
+            container(text(ONLY_ONE).size(11).style(text::secondary))
+                .width(Length::Fill)
+                .center_x(Length::Fill)
+                .padding([2, 8]),
+        );
+    container(menu)
+        .width(SHOW_MENU_WIDTH)
+        .padding(4)
+        .style(style::toolbar)
+        .into()
+}
+
+/// The grip dragging `section`, showing while its heading or row in the
+/// Show menu is under the cursor, or it is dragged.
+fn grip<'a>(arrange: &Arrange, section: &Section) -> Element<'a, Message> {
+    let shown = arrange.section_hovered.as_ref() == Some(section)
+        || arrange.dragged_section() == Some(section);
+    let color: fn(&Theme) -> Color = if shown {
+        |theme| {
+            theme
+                .extended_palette()
+                .background
+                .base
+                .text
+                .scale_alpha(0.6)
+        }
+    } else {
+        |_| Color::TRANSPARENT
+    };
+    let grip = |entered| arrange_message(arrange::Message::Grip(section.clone(), entered));
+    mouse_area(icons::grip(14.0, color))
+        .on_enter(grip(true))
+        .on_exit(grip(false))
+        .interaction(iced::mouse::Interaction::Grab)
+        .into()
+}
+
+/// Where the section being dragged would land among `order`: the gap
+/// before the section counted from 0 (the gap after the last for its
+/// length); none while it is over its own place.
+fn landing(arrange: &Arrange, order: &[Section]) -> Option<usize> {
+    let place = |section| order.iter().position(|s| s == section);
+    let from = place(arrange.dragged_section()?)?;
+    let to = place(arrange.target.as_ref()?)?;
+    match to.cmp(&from) {
+        std::cmp::Ordering::Less => Some(to),
+        std::cmp::Ordering::Equal => None,
+        std::cmp::Ordering::Greater => Some(to + 1),
+    }
+}
+
+/// The gap between two sections, a line where a dragged one would land.
+fn drop_line<'a>(active: bool) -> Element<'a, Message> {
+    container(space())
+        .width(Length::Fill)
+        .height(2)
+        .style(move |theme| style::drop_line(theme, active))
+        .into()
+}
+
+/// Ticking or unticking `section` in the Show menu, one of `sections`;
+/// with ⌥ (Alt) held, only it is expanded.
+fn tick(modifiers: Modifiers, sections: &[Section], section: &Section) -> arrange::Message {
+    if modifiers.alt() {
+        collapse_sections(sections, &|other| other != section)
+    } else {
+        arrange::Message::ToggleCollapsed(section.clone())
+    }
+}
+
+/// Collapse the `sections` for which `collapsed` holds, expand the others.
+fn collapse_sections(
+    sections: &[Section],
+    collapsed: &dyn Fn(&Section) -> bool,
+) -> arrange::Message {
+    let sections = (sections.iter())
+        .map(|section| (section.clone(), collapsed(section)))
+        .collect();
+    arrange::Message::Collapse(sections)
+}
+
+/// How to show only one section, below the Show menu.
+const ONLY_ONE: &str = if cfg!(target_os = "macos") {
+    "⌥-click to show only one"
+} else {
+    "Alt+click to show only one"
+};
+
+/// The width of the menu of which sections are expanded.
+const SHOW_MENU_WIDTH: f32 = 280.0;
 
 fn arrange_message(message: arrange::Message) -> Message {
     Message::Arrange(message)
@@ -560,21 +809,24 @@ fn section_name<'a>(
     }
 }
 
-/// A section's name, which collapses and expands it; a category's also
-/// has its menu.
+/// A section's name, which collapses and expands it, and its grip; a
+/// category's also has its menu.
 fn section_header<'a>(
     section: &Section,
     collapsed: bool,
     space: Option<&OwnedRoomId>,
     arrange: &Arrange,
 ) -> Element<'a, Message> {
-    let chevron = if collapsed { "▸" } else { "▾" };
+    // The grey of the section's name.
+    let chevron = icons::chevron(12.0, !collapsed, |theme| {
+        text::secondary(theme).color.unwrap_or(theme.palette().text)
+    });
     let title = button(
         row![
-            text(chevron).size(10).style(text::secondary),
-            section_title(section_name(arrange, space, section)),
+            chevron,
+            section_title(section_name(arrange, space, section))
         ]
-        .spacing(6)
+        .spacing(5)
         .align_y(Alignment::Center),
     )
     .padding(0)
@@ -583,7 +835,7 @@ fn section_header<'a>(
     .on_press(arrange_message(arrange::Message::ToggleCollapsed(
         section.clone(),
     )));
-    let mut header = row![title].align_y(Alignment::Center);
+    let mut header = row![title].spacing(2).align_y(Alignment::Center);
     if let Section::Category(id) = section {
         let open = arrange.category_menu.as_ref() == Some(id);
         header = header.push(with_tooltip(
@@ -596,8 +848,15 @@ fn section_header<'a>(
             "Rename, sort, move or delete the category".into(),
         ));
     }
-    container(header)
-        .padding(Padding::new(8.0).top(14).bottom(4))
+    if *section != Section::Invites {
+        header = header.push(grip(arrange, section));
+    }
+    let hovered =
+        |entered| arrange_message(arrange::Message::SectionHovered(section.clone(), entered));
+    // 14 above with the line where a dragged section would land.
+    mouse_area(container(header).padding(Padding::new(8.0).top(12).bottom(4)))
+        .on_enter(hovered(true))
+        .on_exit(hovered(false))
         .into()
 }
 
@@ -621,7 +880,7 @@ fn name_input<'a>(name: &str) -> Element<'a, Message> {
             .padding([4, 8])
             .size(13),
     )
-    .padding(Padding::new(0.0).top(10).bottom(4))
+    .padding(Padding::new(0.0).top(8).bottom(4))
     .into()
 }
 
@@ -689,15 +948,18 @@ fn room_menu<'a>(
     menu(items)
 }
 
-/// Rename, choose rooms, sort, reorder and delete a category.
+/// Rename, choose rooms, sort, reorder and delete a category, one of the
+/// sections shown in `order`.
 fn category_menu<'a>(
     layout: &Layout,
     in_space: Option<&OwnedRoomId>,
     id: &str,
+    order: &[Section],
 ) -> Element<'a, Message> {
-    let Some(at) = layout.categories.iter().position(|c| c.id == id) else {
+    let Some(category) = layout.category(id) else {
         return space().into();
     };
+    let (above, below) = neighbours(order, &Section::Category(id.to_owned()));
     let id = id.to_owned();
     let item = |label: &str, message| (label.to_owned(), arrange_message(message));
     let mut items = vec![
@@ -711,54 +973,60 @@ fn category_menu<'a>(
             }),
         ),
     ];
-    items.push(match layout.categories[at].sort {
+    items.push(match category.sort {
         Sort::Activity => item("Sort A–Z", arrange::Message::Sort(id.clone(), Sort::Name)),
         Sort::Name => item(
             "Sort by recent activity",
             arrange::Message::Sort(id.clone(), Sort::Activity),
         ),
     });
-    if at > 0 {
+    let section = Section::Category(id.clone());
+    if let Some(above) = above {
         items.push(item(
             "Move up",
-            arrange::Message::MoveCategory(id.clone(), -1),
+            arrange::Message::MoveSection(section.clone(), above.clone()),
         ));
     }
-    if at + 1 < layout.categories.len() {
+    if let Some(below) = below {
         items.push(item(
             "Move down",
-            arrange::Message::MoveCategory(id.clone(), 1),
+            arrange::Message::MoveSection(section, below.clone()),
         ));
     }
     items.push(item("Delete category", arrange::Message::Delete(id)));
     menu(items)
 }
 
-/// The room being dragged, following the cursor.
+/// The room or section being dragged in the room list of `space` (Home for
+/// `None`), following the cursor.
 pub fn drag_preview<'a>(
     rooms: &'a [RoomSummary],
+    space: Option<&OwnedRoomId>,
     arrange: &Arrange,
     avatars: &Avatars,
 ) -> Option<Element<'a, Message>> {
     let drag = arrange.dragging()?;
     let at = drag.at?;
-    let room = rooms.iter().find(|r| r.id == drag.room)?;
-    let chip = container(
-        row![
-            avatars.view(
-                room.id.as_str(),
-                &room.name,
-                room.avatar.as_deref(),
-                ROOM_AVATAR,
-                Shape::Circle,
-            ),
-            text(&room.name).size(14),
-        ]
-        .spacing(8)
-        .align_y(Alignment::Center),
-    )
-    .padding([4, 10])
-    .style(style::toolbar);
+    let content: Element<'a, Message> = match &drag.item {
+        arrange::Dragged::Room(id) => {
+            let room = rooms.iter().find(|r| r.id == *id)?;
+            row![
+                avatars.view(
+                    room.id.as_str(),
+                    &room.name,
+                    room.avatar.as_deref(),
+                    ROOM_AVATAR,
+                    Shape::Circle,
+                ),
+                text(&room.name).size(14),
+            ]
+            .spacing(8)
+            .align_y(Alignment::Center)
+            .into()
+        }
+        arrange::Dragged::Section(section) => section_title(section_name(arrange, space, section)),
+    };
+    let chip = container(content).padding([4, 10]).style(style::toolbar);
     Some(
         container(chip)
             .padding(Padding::ZERO.left(at.x + 12.0).top(at.y + 6.0))
@@ -977,7 +1245,8 @@ impl<'a> RoomListView<'a> {
     fn room_entry(&self, room: &'a RoomSummary) -> Element<'a, Message> {
         let selected = self.open == Some(&room.id);
         let menu_open = self.arrange.room_menu.as_ref() == Some(&room.id);
-        let hovered = self.arrange.hovered.as_ref() == Some(&room.id);
+        let hovered =
+            matches!(&self.arrange.hovered, Some(arrange::Dragged::Room(id)) if *id == room.id);
         let font = if room.unread_messages > 0 {
             fonts::SEMIBOLD
         } else {
@@ -1466,7 +1735,7 @@ mod tests {
         assert!(!unread(&rooms, None, &arrange, &grouping));
 
         arrange.categories.at_home.favourites = true;
-        assert_eq!(home(&arrange)[1], section("Favourites", &["!star:x"]));
+        assert_eq!(home(&arrange)[2], section("Favourites", &["!star:x"]));
         assert!(!unread(&rooms, None, &arrange, &grouping));
 
         arrange.categories.at_home.all_rooms = true;
@@ -1474,8 +1743,8 @@ mod tests {
             home(&arrange),
             [
                 section("Invites", &["!offer:x"]),
-                section("Favourites", &["!star:x"]),
                 section("Direct messages", &["!bob:x"]),
+                section("Favourites", &["!star:x"]),
                 section("Rooms", &["!inside:x", "!loose:x"]),
             ]
         );
@@ -1593,12 +1862,12 @@ mod tests {
 
         // What Home shows: not the space's room.
         let home = list(&rooms, None, "", &arrange, &avatars, &presences);
-        assert_eq!(ids(&home), ["!fav:x", "!bob:x", "!notes:x", "!loose:x"]);
+        assert_eq!(ids(&home), ["!bob:x", "!notes:x", "!fav:x", "!loose:x"]);
         assert_eq!(
-            go_to(&home, Go::Row(1))
+            go_to(&home, Go::Row(2))
                 .map(|r| r.id.to_string())
                 .as_deref(),
-            Some("!bob:x")
+            Some("!fav:x")
         );
         arrange.categories.at_home.all_rooms = true;
 
@@ -1607,7 +1876,7 @@ mod tests {
         home.notes = Some(Notes::Room(&rooms[5]));
         assert_eq!(
             ids(&home),
-            ["!notes:x", "!fav:x", "!bob:x", "!inside:x", "!loose:x"]
+            ["!notes:x", "!bob:x", "!fav:x", "!inside:x", "!loose:x"]
         );
         let to = |view: &RoomListView, go| go_to(view, go).map(|r| r.id.to_string());
         // From outside the list, the first or last.
@@ -1615,9 +1884,9 @@ mod tests {
         assert_eq!(to(&home, Go::Above).as_deref(), Some("!loose:x"));
         let inside = id("!inside:x");
         home.open = Some(&inside);
-        assert_eq!(to(&home, Go::Above).as_deref(), Some("!bob:x"));
+        assert_eq!(to(&home, Go::Above).as_deref(), Some("!fav:x"));
         assert_eq!(to(&home, Go::Below).as_deref(), Some("!loose:x"));
-        assert_eq!(to(&home, Go::Row(1)).as_deref(), Some("!fav:x"));
+        assert_eq!(to(&home, Go::Row(1)).as_deref(), Some("!bob:x"));
         assert_eq!(to(&home, Go::Row(8)), None);
         // Not past the ends.
         let loose = id("!loose:x");
@@ -1629,16 +1898,38 @@ mod tests {
         (arrange.categories.layout_mut(None)).toggle_collapsed(&Section::Rooms);
         unread_in(&mut rooms, "!loose:x");
         let mut home = list(&rooms, None, "", &arrange, &avatars, &presences);
-        assert_eq!(ids(&home), ["!fav:x", "!bob:x", "!notes:x", "!loose:x"]);
+        assert_eq!(ids(&home), ["!bob:x", "!notes:x", "!fav:x", "!loose:x"]);
         home.open = Some(&inside);
         assert_eq!(
             ids(&home),
-            ["!fav:x", "!bob:x", "!notes:x", "!inside:x", "!loose:x"]
+            ["!bob:x", "!notes:x", "!fav:x", "!inside:x", "!loose:x"]
         );
 
         // While searching, what it found.
         let found = list(&rooms, None, "o", &arrange, &avatars, &presences);
         assert_eq!(ids(&found), ["!bob:x", "!loose:x", "!notes:x"]);
+    }
+
+    #[test]
+    fn alt_ticks_only_one_section() {
+        let sections = [Section::People, Section::Rooms, Section::LowPriority];
+        assert!(matches!(
+            tick(Modifiers::empty(), &sections, &Section::Rooms),
+            arrange::Message::ToggleCollapsed(Section::Rooms)
+        ));
+        let arrange::Message::Collapse(collapsed) =
+            tick(Modifiers::ALT, &sections, &Section::Rooms)
+        else {
+            panic!("not a collapse");
+        };
+        assert_eq!(
+            collapsed,
+            [
+                (Section::People, true),
+                (Section::Rooms, false),
+                (Section::LowPriority, true),
+            ]
+        );
     }
 
     #[test]

@@ -1,5 +1,6 @@
 //! Arranging the room list: the user's categories, favourites and low
-//! priority, by dragging rooms between sections or through menus.
+//! priority, and the order of its sections, by dragging rooms between
+//! sections and sections to other places, or through menus.
 
 use std::{
     collections::{HashMap, HashSet},
@@ -7,7 +8,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use iced::{Point, Subscription, Task, event, mouse};
+use iced::{Point, Subscription, Task, event, keyboard, mouse};
 use mtrx_core::{
     AtHome, Grouping, OwnedRoomId, OwnedUserId, RoomCategories, RoomSummary, RoomTag, Section,
     Session, Sort, SpaceMembers, home_rooms, space_rooms,
@@ -32,15 +33,27 @@ pub enum Message {
     SpaceMembers(OwnedRoomId, u64, Result<HashSet<OwnedUserId>, String>),
     /// The cursor entered (`true`) or left a room row.
     Row(OwnedRoomId, bool),
+    /// The cursor entered or left a section's grip, which drags it.
+    Grip(Section, bool),
+    /// The cursor entered or left a section's heading or its row in the
+    /// Show menu, which show its grip.
+    SectionHovered(Section, bool),
     /// The cursor entered or left the pinned Notes row, which is not dragged.
     NotesRow(bool),
+    /// The modifier keys changed, e.g. ⌥ held to show only one section.
+    Modifiers(keyboard::Modifiers),
     /// The left mouse button, anywhere.
     Pressed,
     Released,
     Moved(Point),
-    /// While dragging, the cursor entered (`true`) or left a section.
+    /// While dragging, the cursor entered (`true`) or left a section, which
+    /// a room would drop into, or whose place a section would take.
     Target(Section, bool),
     ToggleCollapsed(Section),
+    /// Collapse (`true`) or expand these sections at once.
+    Collapse(Vec<(Section, bool)>),
+    /// Open or close the menu of which sections a space shows expanded.
+    ShowMenu(bool),
     RoomMenu(Option<OwnedRoomId>),
     CategoryMenu(Option<String>),
     MoveTo(OwnedRoomId, Section),
@@ -53,7 +66,8 @@ pub enum Message {
     Name(String),
     SaveName,
     Delete(String),
-    MoveCategory(String, isize),
+    /// Move a section to the place of another.
+    MoveSection(Section, Section),
     Sort(String, Sort),
     /// Which rooms of spaces Home lists too, from the settings.
     AtHome(AtHome),
@@ -61,9 +75,17 @@ pub enum Message {
     Saved(Result<(), String>),
 }
 
-/// A room pressed, and dragged once the cursor moved far enough.
+/// What a drag moves: a room into a section, or a section to the place of
+/// another.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Dragged {
+    Room(OwnedRoomId),
+    Section(Section),
+}
+
+/// A room or section pressed, and dragged once the cursor moved far enough.
 pub struct Drag {
-    pub room: OwnedRoomId,
+    pub item: Dragged,
     start: Option<Point>,
     pub at: Option<Point>,
     pub active: bool,
@@ -130,15 +152,19 @@ pub struct Arrange {
     /// Joined members of the top-level spaces, for the direct chats listed
     /// in them.
     pub space_members: SpaceMembers,
-    /// The room row under the cursor.
-    pub hovered: Option<OwnedRoomId>,
+    /// The room row or section grip under the cursor.
+    pub hovered: Option<Dragged>,
+    /// The section whose grip shows.
+    pub section_hovered: Option<Section>,
     pub notes_hovered: bool,
     pub drag: Option<Drag>,
     /// The section a drag would drop into.
     pub target: Option<Section>,
     pub room_menu: Option<OwnedRoomId>,
     pub category_menu: Option<String>,
+    pub show_menu: bool,
     pub naming: Option<Naming>,
+    pub modifiers: keyboard::Modifiers,
 }
 
 /// What [`Arrange::update`] works on.
@@ -159,6 +185,23 @@ impl Arrange {
 
     pub fn dragging(&self) -> Option<&Drag> {
         self.drag.as_ref().filter(|d| d.active)
+    }
+
+    /// The section being dragged.
+    pub fn dragged_section(&self) -> Option<&Section> {
+        match &self.dragging()?.item {
+            Dragged::Section(section) => Some(section),
+            Dragged::Room(_) => None,
+        }
+    }
+
+    /// The cursor entered (`true`) or left what drags `item`.
+    fn hover(&mut self, item: Dragged, entered: bool) {
+        if entered {
+            self.hovered = Some(item);
+        } else if self.hovered.as_ref() == Some(&item) {
+            self.hovered = None;
+        }
     }
 
     /// What `space` lists, or Home for `None`, in the order of `rooms`: the
@@ -237,11 +280,13 @@ impl Arrange {
         let open = self.drag.is_some()
             || self.room_menu.is_some()
             || self.category_menu.is_some()
+            || self.show_menu
             || self.naming.is_some();
         self.drag = None;
         self.target = None;
         self.room_menu = None;
         self.category_menu = None;
+        self.show_menu = false;
         self.naming = None;
         open
     }
@@ -256,16 +301,19 @@ impl Arrange {
             Message::SpaceMembers(space, _, Err(e)) => {
                 warn!(%space, "could not load the space's members: {e}");
             }
-            Message::Row(room, true) => self.hovered = Some(room),
-            Message::Row(room, false) => {
-                if self.hovered.as_ref() == Some(&room) {
-                    self.hovered = None;
+            Message::Row(room, entered) => self.hover(Dragged::Room(room), entered),
+            Message::Grip(section, entered) => self.hover(Dragged::Section(section), entered),
+            Message::SectionHovered(section, true) => self.section_hovered = Some(section),
+            Message::SectionHovered(section, false) => {
+                if self.section_hovered.as_ref() == Some(&section) {
+                    self.section_hovered = None;
                 }
             }
             Message::NotesRow(hovered) => self.notes_hovered = hovered,
+            Message::Modifiers(modifiers) => self.modifiers = modifiers,
             Message::Pressed => {
-                self.drag = self.hovered.clone().map(|room| Drag {
-                    room,
+                self.drag = self.hovered.clone().map(|item| Drag {
+                    item,
                     start: None,
                     at: None,
                     active: false,
@@ -279,6 +327,10 @@ impl Arrange {
                         drag.active = true;
                         self.room_menu = None;
                         self.category_menu = None;
+                        // Sections are also dragged in the Show menu.
+                        if matches!(drag.item, Dragged::Room(_)) {
+                            self.show_menu = false;
+                        }
                     }
                 }
             }
@@ -286,7 +338,12 @@ impl Arrange {
                 let drag = self.drag.take();
                 if let (Some(drag), Some(target)) = (drag.filter(|d| d.active), self.target.take())
                 {
-                    return self.move_to(drag.room, target, context);
+                    return match drag.item {
+                        Dragged::Room(room) => self.move_to(room, target, context),
+                        Dragged::Section(section) => {
+                            self.update(Message::MoveSection(section, target), context)
+                        }
+                    };
                 }
                 self.target = None;
             }
@@ -300,6 +357,19 @@ impl Arrange {
                 return self.change(context.session, move |c| {
                     c.layout_mut(space.as_deref()).toggle_collapsed(&section)
                 });
+            }
+            Message::Collapse(sections) => {
+                return self.change(context.session, move |c| {
+                    let layout = c.layout_mut(space.as_deref());
+                    for (section, collapsed) in &sections {
+                        layout.set_collapsed(section, *collapsed);
+                    }
+                });
+            }
+            Message::ShowMenu(open) => {
+                self.show_menu = open;
+                self.room_menu = None;
+                self.category_menu = None;
             }
             Message::RoomMenu(room) => {
                 self.room_menu = room;
@@ -384,9 +454,9 @@ impl Arrange {
                     c.layout_mut(space.as_deref()).remove_category(&id)
                 });
             }
-            Message::MoveCategory(id, by) => {
+            Message::MoveSection(section, to) => {
                 return self.change(context.session, move |c| {
-                    c.layout_mut(space.as_deref()).move_category(&id, by)
+                    c.layout_mut(space.as_deref()).move_section(&section, &to)
                 });
             }
             Message::Sort(id, sort) => {
@@ -508,15 +578,23 @@ impl Arrange {
         )
     }
 
-    /// The cursor, while a room may be dragged.
-    pub fn subscription(&self) -> Option<Subscription<app::Message>> {
-        self.drag.as_ref()?;
-        Some(event::listen_with(|event, _status, _window| match event {
-            iced::Event::Mouse(mouse::Event::CursorMoved { position }) => {
-                Some(app::Message::Arrange(Message::Moved(position)))
+    /// The modifier keys, and the cursor while a room may be dragged.
+    pub fn subscription(&self) -> Subscription<app::Message> {
+        let modifiers = event::listen_with(|event, _status, _window| match event {
+            iced::Event::Keyboard(keyboard::Event::ModifiersChanged(modifiers)) => {
+                Some(app::Message::Arrange(Message::Modifiers(modifiers)))
             }
             _ => None,
-        }))
+        });
+        let cursor = self.drag.as_ref().map(|_| {
+            event::listen_with(|event, _status, _window| match event {
+                iced::Event::Mouse(mouse::Event::CursorMoved { position }) => {
+                    Some(app::Message::Arrange(Message::Moved(position)))
+                }
+                _ => None,
+            })
+        });
+        Subscription::batch([modifiers].into_iter().chain(cursor))
     }
 }
 

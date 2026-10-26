@@ -43,9 +43,14 @@ pub struct AtHome {
 /// The arrangement of one space's room list (or Home's).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Layout {
-    /// In display order.
+    /// In the order they take among the sections until the user reorders
+    /// them.
     #[serde(default)]
     pub categories: Vec<Category>,
+    /// The sections below Invites in display order, once the user reordered
+    /// them; empty for the default order ([`Layout::order`]).
+    #[serde(default)]
+    pub order: Vec<Section>,
     /// Sections shown as their heading only.
     #[serde(default)]
     pub collapsed: Vec<Section>,
@@ -119,11 +124,25 @@ impl Default for Grouping {
     }
 }
 
+impl Grouping {
+    /// Whether the room list has `section` (if it is a category: if the
+    /// layout has it).
+    pub fn has(&self, section: &Section) -> bool {
+        match section {
+            Section::Favourites => self.favourites,
+            Section::People => self.people,
+            Section::LowPriority => self.low_priority,
+            _ => true,
+        }
+    }
+}
+
 impl RoomCategories {
     /// The layout of `space`, or Home's for `None`.
     pub fn layout(&self, space: Option<&RoomId>) -> &Layout {
         static EMPTY: Layout = Layout {
             categories: Vec::new(),
+            order: Vec::new(),
             collapsed: Vec::new(),
         };
         match space {
@@ -163,21 +182,51 @@ impl Layout {
 
     /// Delete a category; its rooms go back to their default section.
     pub fn remove_category(&mut self, id: &str) {
+        let section = Section::Category(id.to_owned());
         self.categories.retain(|c| c.id != id);
-        self.collapsed
-            .retain(|s| *s != Section::Category(id.to_owned()));
+        self.order.retain(|s| *s != section);
+        self.collapsed.retain(|s| *s != section);
     }
 
-    /// Move a category one place up (`-1`) or down (`1`).
-    pub fn move_category(&mut self, id: &str, by: isize) {
-        let Some(from) = self.categories.iter().position(|c| c.id == id) else {
-            return;
-        };
-        let to = from
-            .saturating_add_signed(by)
-            .min(self.categories.len() - 1);
-        let category = self.categories.remove(from);
-        self.categories.insert(to, category);
+    /// The sections below Invites, which always come first, in display
+    /// order; the built-in ones whether the room list has them or not. By
+    /// default direct chats, favourites, the categories, other rooms and
+    /// low priority; sections missing from the user's order (categories
+    /// added since) go last.
+    pub fn order(&self) -> Vec<Section> {
+        let mut order: Vec<Section> = Vec::new();
+        for section in &self.order {
+            let known = match section {
+                Section::Invites => false,
+                Section::Category(id) => self.category(id).is_some(),
+                _ => true,
+            };
+            if known && !order.contains(section) {
+                order.push(section.clone());
+            }
+        }
+        let default = [Section::People, Section::Favourites]
+            .into_iter()
+            .chain((self.categories.iter()).map(|c| Section::Category(c.id.clone())))
+            .chain([Section::Rooms, Section::LowPriority]);
+        for section in default {
+            if !order.contains(&section) {
+                order.push(section);
+            }
+        }
+        order
+    }
+
+    /// Move `section` to the place of `to`, which moves one place towards
+    /// where `section` was, as do the sections between them.
+    pub fn move_section(&mut self, section: &Section, to: &Section) {
+        let mut order = self.order();
+        let place = |s| order.iter().position(|o| o == s);
+        if let (Some(from), Some(to)) = (place(section), place(to)) {
+            let section = order.remove(from);
+            order.insert(to, section);
+            self.order = order;
+        }
     }
 
     /// Put `room` into a category, or out of all of them for `None`.
@@ -200,12 +249,15 @@ impl Layout {
         self.collapsed.contains(section)
     }
 
-    pub fn toggle_collapsed(&mut self, section: &Section) {
-        if self.is_collapsed(section) {
-            self.collapsed.retain(|s| s != section);
-        } else {
+    pub fn set_collapsed(&mut self, section: &Section, collapsed: bool) {
+        self.collapsed.retain(|s| s != section);
+        if collapsed {
             self.collapsed.push(section.clone());
         }
+    }
+
+    pub fn toggle_collapsed(&mut self, section: &Section) {
+        self.set_collapsed(section, !self.is_collapsed(section));
     }
 
     /// The section `room` belongs in.
@@ -233,21 +285,11 @@ impl Layout {
         grouping: &Grouping,
     ) -> Vec<(Section, Vec<&'a RoomSummary>)> {
         let mut sections = vec![(Section::Invites, Vec::new())];
-        if grouping.favourites {
-            sections.push((Section::Favourites, Vec::new()));
-        }
         sections.extend(
-            self.categories
-                .iter()
-                .map(|c| (Section::Category(c.id.clone()), Vec::new())),
+            (self.order().into_iter())
+                .filter(|s| grouping.has(s))
+                .map(|s| (s, Vec::new())),
         );
-        if grouping.people {
-            sections.push((Section::People, Vec::new()));
-        }
-        sections.push((Section::Rooms, Vec::new()));
-        if grouping.low_priority {
-            sections.push((Section::LowPriority, Vec::new()));
-        }
         for room in rooms {
             let section = self.section_of(room, grouping);
             if let Some((_, list)) = sections.iter_mut().find(|(s, _)| *s == section) {
@@ -385,9 +427,9 @@ mod tests {
             order,
             [
                 Section::Invites,
+                Section::People,
                 Section::Favourites,
                 Section::Category(work.clone()),
-                Section::People,
                 Section::Rooms,
                 Section::LowPriority,
             ]
@@ -440,13 +482,67 @@ mod tests {
             layout.category_of(&room).map(|c| c.id.clone()),
             Some(b.clone())
         );
-        layout.move_category(&b, -1);
-        assert_eq!(layout.categories[0].id, b);
-        layout.move_category(&b, -1);
-        assert_eq!(layout.categories[0].id, b);
         layout.toggle_collapsed(&Section::Category(b.clone()));
+        layout.move_section(&Section::Category(b.clone()), &Section::People);
         layout.remove_category(&b);
         assert!(layout.category_of(&room).is_none());
+        assert!(layout.collapsed.is_empty());
+        assert!(!layout.order.contains(&Section::Category(b)));
+    }
+
+    #[test]
+    fn sections_are_reordered() {
+        let mut layout = Layout::default();
+        let a = Section::Category(layout.add_category("A"));
+        assert_eq!(
+            layout.order(),
+            [
+                Section::People,
+                Section::Favourites,
+                a.clone(),
+                Section::Rooms,
+                Section::LowPriority,
+            ]
+        );
+
+        // Rooms to A's place, with Favourites not shown: Favourites stays.
+        layout.move_section(&Section::Rooms, &a);
+        // New categories go last; Invites and unknown sections are ignored.
+        let b = Section::Category(layout.add_category("B"));
+        layout.move_section(&Section::Invites, &b);
+        layout.order.push(Section::Category("gone".into()));
+        let order = [
+            Section::People,
+            Section::Favourites,
+            Section::Rooms,
+            a.clone(),
+            Section::LowPriority,
+            b.clone(),
+        ];
+        assert_eq!(layout.order(), order);
+        // Down past several: those between move up.
+        layout.move_section(&Section::People, &a);
+        assert_eq!(
+            layout.order(),
+            [&order[1..4], &order[..1], &order[4..]].concat()
+        );
+        layout.move_section(&Section::People, &Section::Favourites);
+        assert_eq!(layout.order(), order);
+
+        let no_favourites = Grouping {
+            favourites: false,
+            ..Grouping::default()
+        };
+        let sections: Vec<_> = (layout.group([], &no_favourites).into_iter())
+            .map(|(s, _)| s)
+            .collect();
+        assert_eq!(sections[0], Section::Invites);
+        assert_eq!(sections[1..], [&order[..1], &order[2..]].concat());
+
+        layout.set_collapsed(&a, true);
+        layout.set_collapsed(&a, true);
+        assert_eq!(layout.collapsed, std::slice::from_ref(&a));
+        layout.set_collapsed(&a, false);
         assert!(layout.collapsed.is_empty());
     }
 

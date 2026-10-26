@@ -1,4 +1,5 @@
-# A version tag (v0.1.2) builds the packages for all three platforms and
+# A version tag (v0.1.2) builds the packages for all three platforms,
+# signs them for the app's updates (with the MTRX_UPDATE_KEY secret) and
 # attaches them to a draft release, to be described and published by hand,
 # or to the tag's release if one is already there.
 name: Release
@@ -21,14 +22,16 @@ jobs:
   release:
     needs: [macos, linux, windows]
     runs-on: ubuntu-latest
+    env:
+      # From `cargo xtask keygen`; without it the files are not signed and
+      # the app downloads updates in the browser instead of installing them.
+      MTRX_UPDATE_KEY: ${{ secrets.MTRX_UPDATE_KEY }}
     steps:
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
-      - name: Draft release
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.ref_name }}
+      - name: Collect the packages
         run: |
           mkdir assets
           cp artifacts/Mtrx-macos-arm64/Mtrx-macos-arm64.zip assets/
@@ -37,12 +40,27 @@ jobs:
           # A name without the version, so the website can link to the
           # latest release's.
           cp artifacts/linux-packages/mtrx_*_amd64.deb assets/Mtrx-linux-amd64.deb
+      - uses: dtolnay/rust-toolchain@stable
+        if: env.MTRX_UPDATE_KEY != ''
+      - name: Sign for the app's updates
+        if: env.MTRX_UPDATE_KEY != ''
+        run: cargo xtask sign assets/*
+      - name: Draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
           ls -la assets
+          # A version such as 0.4.0-beta.1 is a pre-release: the app offers
+          # it on its Beta channel only.
+          prerelease=()
+          if [[ "$TAG" == *-* ]]; then prerelease=(--prerelease); fi
           # A release published by hand ahead of the build (a Mac package
           # built locally, say) gets the packages added, replacing its own.
           if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release upload "$TAG" assets/* --repo "$GITHUB_REPOSITORY" --clobber
           else
             gh release create "$TAG" assets/* --repo "$GITHUB_REPOSITORY" \
-              --draft --verify-tag --title "Mtrx ${TAG#v}" --notes "Mtrx ${TAG#v}"
+              --draft --verify-tag "${prerelease[@]}" \
+              --title "Mtrx ${TAG#v}" --notes "Mtrx ${TAG#v}"
           fi

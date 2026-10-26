@@ -19,6 +19,12 @@ chrono.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 open = "5.4.4"
+# Updates: GitHub's list of releases, and comparing their versions.
+reqwest.workspace = true
+semver = "1.0.28"
+# Updates: checking the release files' signatures (`cargo xtask sign`).
+ed25519-dalek = "3.0.0"
+base64.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 unicode-segmentation = "1.13.3"

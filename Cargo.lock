@@ -5140,7 +5140,9 @@ name = "mtrx-app"
 version = "0.3.0"
 dependencies = [
  "arboard",
+ "base64 0.23.1",
  "chrono",
+ "ed25519-dalek",
  "emojis",
  "futures-util",
  "hayro",
@@ -5158,8 +5160,10 @@ dependencies = [
  "objc2-app-kit 0.3.2",
  "objc2-foundation 0.3.2",
  "open",
+ "reqwest",
  "resvg 0.45.1",
  "rfd",
+ "semver",
  "serde",
  "serde_json",
  "tempfile",
@@ -10879,7 +10883,10 @@ name = "xtask"
 version = "0.3.0"
 dependencies = [
  "anyhow",
+ "base64 0.23.1",
+ "ed25519-dalek",
  "png 0.17.16",
+ "rand 0.10.3",
  "resvg 0.45.1",
 ]
 
