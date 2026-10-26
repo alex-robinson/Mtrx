@@ -49,7 +49,6 @@ jobs:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
         with:
-          save-if: ${{ github.ref == 'refs/heads/main' }}
           # Saved from main only: pull requests restore it.
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Format
