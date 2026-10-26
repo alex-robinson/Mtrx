@@ -3524,14 +3524,14 @@ impl App {
                     )
                 } else if let Some(card) = &main.info {
                     (
-                        card.view(
-                            &main.rooms.rooms,
-                            &main.avatars,
-                            &main.own_user,
-                            &main.presences,
-                            main.now,
-                            self.settings.pinned_notes,
-                        ),
+                        card.view(info::Shown {
+                            rooms: &main.rooms.rooms,
+                            avatars: &main.avatars,
+                            own_user: &main.own_user,
+                            presences: &main.presences,
+                            now: main.now,
+                            pinned_notes: self.settings.pinned_notes,
+                        }),
                         Message::Info(info::Message::Close),
                     )
                 } else if let Some(viewer) = &main.viewer {

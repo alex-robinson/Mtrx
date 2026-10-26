@@ -10,8 +10,8 @@ use iced::{
     },
 };
 use mtrx_core::{
-    Access, MxcUri, NotifyMode, OwnedMxcUri, OwnedRoomId, OwnedUserId, Presence, RoomKind,
-    RoomSettings, RoomSummary, RoomTag, UserInfo, UserSummary,
+    Access, MxcUri, NotifyMode, OwnedMxcUri, OwnedRoomId, OwnedUserId, RoomKind, RoomSettings,
+    RoomSummary, RoomTag, UserInfo, UserSummary,
 };
 
 use crate::{
@@ -28,6 +28,19 @@ use crate::{
 const AVATAR: f32 = 64.0;
 /// Height of a person's shared rooms list; more scroll.
 const SHARED_HEIGHT: f32 = 200.0;
+
+/// What a card shows, besides its target: the rooms we know, pictures, who
+/// we are, people's presence as of `now`, and whether the Notes are pinned
+/// at the top (our own card switches it).
+#[derive(Clone, Copy)]
+pub struct Shown<'a> {
+    pub rooms: &'a [RoomSummary],
+    pub avatars: &'a Avatars,
+    pub own_user: &'a OwnedUserId,
+    pub presences: &'a Presences,
+    pub now: SystemTime,
+    pub pinned_notes: bool,
+}
 
 /// What to show a card for.
 #[derive(Debug, Clone)]
@@ -174,23 +187,11 @@ impl Card {
         }
     }
 
-    /// `presences` and `now`: a person's presence.
-    pub fn view<'a>(
-        &'a self,
-        rooms: &'a [RoomSummary],
-        avatars: &Avatars,
-        own_user: &OwnedUserId,
-        presences: &Presences,
-        now: SystemTime,
-        pinned_notes: bool,
-    ) -> Element<'a, app::Message> {
+    pub fn view<'a>(&'a self, shown: Shown<'a>) -> Element<'a, app::Message> {
         let body = match &self.target {
-            Target::User(user) => {
-                let presence = presences.get(&user.id);
-                self.user_view(user, rooms, avatars, own_user, presence, now, pinned_notes)
-            }
-            Target::Room(id) => match rooms.iter().find(|r| &r.id == id) {
-                Some(room) => self.room_view(room, rooms, avatars),
+            Target::User(user) => self.user_view(user, shown),
+            Target::Room(id) => match shown.rooms.iter().find(|r| &r.id == id) {
+                Some(room) => self.room_view(room, shown),
                 None => text("This room is not in your list.").into(),
             },
         };
@@ -209,13 +210,17 @@ impl Card {
     fn user_view<'a>(
         &'a self,
         user: &'a UserSummary,
-        rooms: &'a [RoomSummary],
-        avatars: &Avatars,
-        own_user: &OwnedUserId,
-        presence: Option<&Presence>,
-        now: SystemTime,
-        pinned_notes: bool,
+        shown: Shown<'a>,
     ) -> Element<'a, app::Message> {
+        let Shown {
+            rooms,
+            avatars,
+            own_user,
+            presences,
+            now,
+            pinned_notes,
+        } = shown;
+        let presence = presences.get(&user.id);
         let name = user.name.as_deref().unwrap_or(user.id.localpart());
         // The star favourites the direct chat, made if there is none.
         let chat = rooms
@@ -292,9 +297,9 @@ impl Card {
     fn room_view<'a>(
         &'a self,
         room: &'a RoomSummary,
-        rooms: &'a [RoomSummary],
-        avatars: &Avatars,
+        shown: Shown<'a>,
     ) -> Element<'a, app::Message> {
+        let Shown { rooms, avatars, .. } = shown;
         let settings = self.settings.as_ref();
         let allowed = |can: fn(&RoomSettings) -> bool| settings.is_some_and(can) && !self.saving;
         let star = sidebar::star_button(&room.id, room.tag == RoomTag::Favourite);
