@@ -20,7 +20,7 @@ use iced::{
 use mtrx_core::{
     CallService, Event, EventContent, EventKey, Media, Member, MembershipChange, MessageKind,
     MxcUri, OwnedEventId, OwnedRoomId, OwnedUserId, RoomKind, RoomSummary, RoomTimeline,
-    ScheduledMessage, SendState, TimelineEntry, Topic, UserId,
+    ScheduledMessage, SendState, TimelineEntry, Topic, UserId, describe_change,
 };
 
 use crate::{
@@ -1311,6 +1311,7 @@ fn event_view<'a>(
         EventContent::Membership { .. }
         | EventContent::DisplayNameChange { .. }
         | EventContent::CallLink { .. }
+        | EventContent::Topic { .. }
         | EventContent::OtherState { .. } => return space().into(),
     };
 
@@ -1963,7 +1964,19 @@ pub fn state_summary(events: &[&Event]) -> String {
                 format!("{name} created and configured the room")
             }
             // Initial settings belong to "created and configured".
-            EventContent::OtherState { .. } if creators.contains(&event.sender) => continue,
+            EventContent::OtherState { .. } | EventContent::Topic { .. }
+                if creators.contains(&event.sender) =>
+            {
+                continue;
+            }
+            EventContent::Topic { old, new } => {
+                match describe_change(old.as_deref().unwrap_or_default(), new) {
+                    Some(change) => format!("{name} {change}"),
+                    // Set again as it was.
+                    None if old.is_some() => continue,
+                    None => format!("{name} changed the topic"),
+                }
+            }
             EventContent::OtherState { event_type } => match event_type.as_str() {
                 "m.room.name" => format!("{name} renamed the room"),
                 "m.room.topic" => format!("{name} changed the topic"),
@@ -2045,6 +2058,26 @@ mod tests {
         assert_eq!(
             state_summary(&[&set, &removed]),
             "alice changed the call link to https://meet.jit.si/ice · alice removed the call link"
+        );
+    }
+
+    #[test]
+    fn summarises_topic_changes() {
+        let alice: mtrx_core::OwnedUserId = "@alice:x".try_into().unwrap();
+        let change = |id: &str, old: Option<&str>, new: &str| Event {
+            content: EventContent::Topic {
+                old: old.map(Into::into),
+                new: new.into(),
+            },
+            ..Event::test_message(id, alice.clone(), "")
+        };
+        let call = "[call] https://zoom.us/j/1";
+        let text = change("$a", None, "Weekly");
+        let added = change("$b", Some("Weekly"), &format!("Weekly\n{call}"));
+        let same = change("$c", Some(call), call);
+        assert_eq!(
+            state_summary(&[&text, &added, &same]),
+            "alice changed the topic · alice added the call Zoom"
         );
     }
 

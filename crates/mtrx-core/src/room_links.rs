@@ -11,6 +11,11 @@
 //!
 //! The calls come first, and the first is the room's: the header joins it.
 
+use matrix_sdk::ruma::{
+    events::{AnySyncTimelineEvent, StateEventType},
+    serde::Raw,
+};
+use serde::Deserialize;
 use url::Url;
 
 use crate::{CallService, recognize_call_link};
@@ -72,6 +77,77 @@ impl Topic {
     pub fn default_call(&self) -> Option<&RoomLink> {
         self.calls().next()
     }
+}
+
+/// What changed from topic `old` to `new`, e.g. "added the link Paper
+/// draft and made Weekly the room's call"; none if nothing did.
+pub fn describe_change(old: &str, new: &str) -> Option<String> {
+    let (old, new) = (Topic::parse(old), Topic::parse(new));
+    let find = |links: &[RoomLink], url: &Url| links.iter().position(|l| &l.url == url);
+    let what = |link: &RoomLink| {
+        let kind = if link.is_call() { "call" } else { "link" };
+        format!("{kind} {}", link.name(&[]))
+    };
+    let mut parts = Vec::new();
+    if old.text != new.text {
+        parts.push("changed the topic".to_owned());
+    }
+    for link in &new.links {
+        match find(&old.links, &link.url) {
+            None => parts.push(format!("added the {}", what(link))),
+            Some(at) if old.links[at] != *link => parts.push(format!("changed the {}", what(link))),
+            Some(_) => {}
+        }
+    }
+    for link in &old.links {
+        if find(&new.links, &link.url).is_none() {
+            parts.push(format!("removed the {}", what(link)));
+        }
+    }
+    // A call that was there before, now first.
+    let new_call = (new.default_call())
+        .filter(|call| old.default_call().map(|c| &c.url) != Some(&call.url))
+        .filter(|call| find(&old.links, &call.url).is_some());
+    if let Some(call) = new_call {
+        parts.push(format!("made {} the room's call", call.name(&[])));
+    } else if parts.is_empty() {
+        let order =
+            |topic: &Topic| -> Vec<Url> { topic.links.iter().map(|l| l.url.clone()).collect() };
+        if order(&old) != order(&new) {
+            parts.push("reordered the calls and links".to_owned());
+        }
+    }
+    let last = parts.pop()?;
+    Some(match parts.is_empty() {
+        true => last,
+        false => format!("{} and {last}", parts.join(", ")),
+    })
+}
+
+/// The old (if known) and new topic a timeline's state event of
+/// `event_type` sets; none if it is not a topic.
+pub(crate) fn topic_change(
+    event_type: &StateEventType,
+    raw: Option<&Raw<AnySyncTimelineEvent>>,
+) -> Option<(Option<String>, String)> {
+    #[derive(Deserialize)]
+    struct Content {
+        #[serde(default)]
+        topic: String,
+    }
+    #[derive(Deserialize)]
+    struct Unsigned {
+        prev_content: Option<Content>,
+    }
+    if *event_type != StateEventType::RoomTopic {
+        return None;
+    }
+    let raw = raw?;
+    let new = raw.get_field::<Content>("content").ok()??.topic;
+    let old = (raw.get_field::<Unsigned>("unsigned").ok().flatten())
+        .and_then(|u| u.prev_content)
+        .map(|c| c.topic);
+    Some((old, new))
 }
 
 impl RoomLink {
@@ -291,6 +367,83 @@ mod tests {
             "[call] https://b.org/\n[link] https://a.org/",
             "the calls first"
         );
+    }
+
+    #[test]
+    fn describes_changes() {
+        let old = "About.\n\
+            [call] https://meet.google.com/abc-defg-hij\n\
+            [call Weekly] https://zoom.us/j/1\n\
+            [link Draft] https://overleaf.com/a";
+        let describe = |new: &str| describe_change(old, new);
+        assert_eq!(describe(old), None);
+        assert_eq!(
+            describe(&old.replace("About.", "About us.")).as_deref(),
+            Some("changed the topic")
+        );
+        assert_eq!(
+            describe(
+                "About.\n\
+                 [call Weekly] https://zoom.us/j/1\n\
+                 [call] https://meet.google.com/abc-defg-hij\n\
+                 [link Draft] https://overleaf.com/a"
+            )
+            .as_deref(),
+            Some("made Weekly the room's call")
+        );
+        assert_eq!(
+            describe(
+                "About.\n\
+                 [call] https://meet.google.com/abc-defg-hij\n\
+                 [call Weekly passcode 1] https://zoom.us/j/1\n\
+                 [link] https://drive.google.com/x"
+            )
+            .as_deref(),
+            Some(
+                "changed the call Weekly, added the link drive.google.com and removed the link \
+                 Draft"
+            )
+        );
+        assert_eq!(
+            describe_change("", "[link] https://a.org/\n[link] https://b.org/").as_deref(),
+            Some("added the link a.org and added the link b.org")
+        );
+        assert_eq!(
+            describe_change(
+                "[link] https://a.org/\n[link] https://b.org/",
+                "[link] https://b.org/\n[link] https://a.org/"
+            )
+            .as_deref(),
+            Some("reordered the calls and links")
+        );
+    }
+
+    #[test]
+    fn reads_topic_changes_from_the_timeline() {
+        let event = |content: &str, unsigned: &str| {
+            Raw::<AnySyncTimelineEvent>::from_json_string(format!(
+                r#"{{"type": "m.room.topic", "state_key": "", "event_id": "$a",
+                    "sender": "@alice:x", "origin_server_ts": 1, "content": {content},
+                    "unsigned": {unsigned}}}"#
+            ))
+            .unwrap()
+        };
+        let topic = StateEventType::RoomTopic;
+        let changed = event(
+            r#"{"topic": "new"}"#,
+            r#"{"prev_content": {"topic": "old"}}"#,
+        );
+        assert_eq!(
+            topic_change(&topic, Some(&changed)),
+            Some((Some("old".into()), "new".into()))
+        );
+        let first = event(r#"{"topic": "new"}"#, "{}");
+        assert_eq!(
+            topic_change(&topic, Some(&first)),
+            Some((None, "new".into()))
+        );
+        assert_eq!(topic_change(&StateEventType::RoomName, Some(&first)), None);
+        assert_eq!(topic_change(&topic, None), None);
     }
 
     #[test]

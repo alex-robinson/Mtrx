@@ -44,7 +44,7 @@ use tracing::warn;
 use crate::{
     Error, Result, Session, calls,
     media::{self, MediaRef},
-    system_time,
+    room_links, system_time,
 };
 use mtrx_format::{Document, Mention, MentionTarget, markdown_to_matrix};
 
@@ -176,6 +176,7 @@ impl Event {
             EventContent::Membership { .. }
                 | EventContent::DisplayNameChange { .. }
                 | EventContent::CallLink { .. }
+                | EventContent::Topic { .. }
                 | EventContent::OtherState { .. }
         )
     }
@@ -237,9 +238,15 @@ pub enum EventContent {
         user: OwnedUserId,
         new_name: Option<String>,
     },
-    /// The room's call link was set, or removed (`None`).
+    /// The room's old standing call link was set, or removed (`None`).
     CallLink {
         url: Option<String>,
+    },
+    /// The room's topic changed, from `old` if known: its text, or its
+    /// calls and links (see [`crate::describe_change`]).
+    Topic {
+        old: Option<String>,
+        new: String,
     },
     /// A state event we do not render in detail, e.g. `m.room.topic`.
     OtherState {
@@ -1018,11 +1025,15 @@ impl Converter {
             },
             TimelineItemContent::OtherState(state) => {
                 let event_type = state.content().event_type();
-                match calls::call_link_change(&event_type, event.original_json()) {
-                    Some(url) => EventContent::CallLink { url },
-                    None => EventContent::OtherState {
+                let raw = event.original_json();
+                if let Some(url) = calls::call_link_change(&event_type, raw) {
+                    EventContent::CallLink { url }
+                } else if let Some((old, new)) = room_links::topic_change(&event_type, raw) {
+                    EventContent::Topic { old, new }
+                } else {
+                    EventContent::OtherState {
                         event_type: event_type.to_string(),
-                    },
+                    }
                 }
             }
             _ => return None,
