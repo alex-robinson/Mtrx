@@ -5,9 +5,12 @@
 name: iOS
 
 on:
-  # Each pull request runs once on its merge with main; nothing runs on
-  # plain pushes. Packages come from the release workflow on a tag.
+  # Each pull request runs once on its merge with main. A push to main only
+  # builds the Rust library, to save the build cache that pull requests then
+  # restore.
   pull_request:
+    branches: [main]
+  push:
     branches: [main]
   workflow_dispatch:
 
@@ -20,6 +23,8 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  # On main only the Rust library, for the cache.
+  WARM: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
 
 jobs:
   ios:
@@ -33,15 +38,19 @@ jobs:
           targets: aarch64-apple-ios,aarch64-apple-ios-sim
       - uses: Swatinem/rust-cache@v2
         with:
+          # Saved from main only: pull requests restore it.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
           key: ios
       - name: Build the xcframework and Swift bindings
         run: scripts/build-ios-ffi.sh
       - name: Build the app for the simulator
+        if: env.WARM != 'true'
         working-directory: apps/ios
         run: |
           xcodebuild build -project Mtrx.xcodeproj -scheme Mtrx -configuration Release \
             -destination 'generic/platform=iOS Simulator' -derivedDataPath build -quiet
       - name: Choose a simulator
+        if: env.WARM != 'true'
         # The first available iPhone, whichever the runner has.
         run: |
           device=$(xcrun simctl list devices available -j \
@@ -53,11 +62,13 @@ jobs:
           fi
           echo "DEVICE=$device" >> "$GITHUB_ENV"
       - name: Unit tests
+        if: env.WARM != 'true'
         working-directory: apps/ios
         run: |
           xcodebuild test -project Mtrx.xcodeproj -scheme Mtrx \
             -destination "platform=iOS Simulator,id=$DEVICE" -derivedDataPath build -quiet
       - name: Start the app in the simulator
+        if: env.WARM != 'true'
         # The Release app runs for 15 s without crashing; screenshot as an
         # artifact (the sign-in screen, as no account is saved).
         run: |
@@ -77,18 +88,20 @@ jobs:
             || { echo "Mtrx (pid $pid) is not running" >&2; exit 1; }
           xcrun simctl terminate "$DEVICE" org.mtrx.Mtrx
       - name: Package
+        if: env.WARM != 'true'
         run: |
           mkdir -p target/mobile
           ditto -c -k --sequesterRsrc --keepParent \
             apps/ios/build/Build/Products/Release-iphonesimulator/Mtrx.app \
             target/mobile/Mtrx-ios-simulator.zip
       - uses: actions/upload-artifact@v4
+        if: env.WARM != 'true'
         with:
           name: Mtrx-ios-simulator
           path: target/mobile/Mtrx-ios-simulator.zip
           if-no-files-found: error
       - uses: actions/upload-artifact@v4
-        if: always()
+        if: always() && env.WARM != 'true'
         with:
           name: ios-smoke
           path: target/smoke
