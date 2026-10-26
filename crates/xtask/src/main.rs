@@ -3,7 +3,7 @@
 //! - `render SVG PNG SIZE`: render an SVG to a square PNG.
 //! - `icons`: make the iOS and Android icons and the website's logo from the
 //!   logo (see [`icons`]); run it after changing the logo.
-//! - `version X.Y.Z`: set the version of the workspace and the iOS and
+//! - `version X.Y.Z[-beta.N]`: set the version of the workspace and the iOS and
 //!   Android apps (see [`version`]).
 //! - `bundle`: build the app and wrap it as `target/bundle/Mtrx.app` (macOS),
 //!   an AppImage and a `.deb` (Linux, see [`linux`]), or a portable zip and
@@ -160,7 +160,8 @@ fn bundle(root: &Path) -> Result<()> {
 
 #[cfg(not(any(target_os = "linux", windows)))]
 fn info_plist() -> String {
-    let version = env!("CARGO_PKG_VERSION");
+    let version = version::Version::current();
+    let (release, code) = (version.release(), version.code());
     format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -172,8 +173,8 @@ fn info_plist() -> String {
     <key>CFBundleExecutable</key><string>mtrx-app</string>
     <key>CFBundleIconFile</key><string>Mtrx</string>
     <key>CFBundlePackageType</key><string>APPL</string>
-    <key>CFBundleShortVersionString</key><string>{version}</string>
-    <key>CFBundleVersion</key><string>{version}</string>
+    <key>CFBundleShortVersionString</key><string>{release}</string>
+    <key>CFBundleVersion</key><string>{code}</string>
     <key>LSMinimumSystemVersion</key><string>11.0</string>
     <key>LSApplicationCategoryType</key><string>public.app-category.social-networking</string>
     <key>NSHighResolutionCapable</key><true/>

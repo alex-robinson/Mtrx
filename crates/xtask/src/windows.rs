@@ -178,6 +178,6 @@ begin
 end;
 "#
     .replace("@GUID@", APP_GUID)
-    .replace("@VERSION@", env!("CARGO_PKG_VERSION"))
+    .replace("@VERSION@", &super::version::Version::current().to_string())
     .replace("@APP_ID@", BUNDLE_ID)
 }

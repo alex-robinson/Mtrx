@@ -17,9 +17,8 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 
-use super::{BUNDLE_ID as APP_ID, LOGO, render, run};
+use super::{BUNDLE_ID as APP_ID, LOGO, render, run, version::Version};
 
-const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// Icon sizes for the hicolor theme.
 const ICON_SIZES: [u32; 8] = [16, 24, 32, 48, 64, 128, 256, 512];
 const MAINTAINER: &str = "Alexander Robinson <alexander.robinson@awi.de>";
@@ -76,7 +75,8 @@ fn appimage(root: &Path, out: &Path) -> Result<PathBuf> {
 /// `mtrx_<version>_<arch>.deb` with the app and the `mtrx` CLI.
 fn deb(root: &Path, out: &Path) -> Result<PathBuf> {
     let arch = deb_arch()?;
-    let name = format!("mtrx_{VERSION}_{arch}");
+    let version = Version::current().debian();
+    let name = format!("mtrx_{version}_{arch}");
     let staging = fresh_dir(&out.join(&name))?;
     let usr = staging.join("usr");
     install(root, &usr, &["mtrx-app", "mtrx"])?;
@@ -91,7 +91,7 @@ fn deb(root: &Path, out: &Path) -> Result<PathBuf> {
     let binaries = ["mtrx-app", "mtrx"].map(|b| usr.join("bin").join(b));
     let control = format!(
         "Package: mtrx\n\
-         Version: {VERSION}\n\
+         Version: {version}\n\
          Architecture: {arch}\n\
          Maintainer: {MAINTAINER}\n\
          Installed-Size: {size}\n\
