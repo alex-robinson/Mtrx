@@ -2,13 +2,21 @@
 name: Windows
 
 on:
-  # Each pull request runs once on its merge with main; nothing runs on
-  # plain pushes. Packages come from the release workflow on a tag.
+  # Each pull request runs once on its merge with main. A push to main only
+  # builds, to save the build cache that pull requests then restore.
+  # Packages come from the release workflow on a tag.
   pull_request:
+    branches: [main]
+  push:
     branches: [main]
   workflow_dispatch:
   # From the release workflow, for the packages.
   workflow_call:
+
+env:
+  # On main only the build, for the cache; packages on a tag or by hand.
+  WARM: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+  PACKAGE: ${{ startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch' }}
 
 concurrency:
   group: windows-${{ github.ref }}
@@ -23,19 +31,25 @@ jobs:
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
+        with:
+          # Saved from main only: pull requests restore it.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Test
-        run: cargo test --workspace
+        run: cargo test --workspace ${{ env.WARM == 'true' && '--no-run' || '' }}
       - name: Inno Setup
+        if: env.PACKAGE == 'true'
         run: |
           if (-not (Get-Command iscc -ErrorAction SilentlyContinue) -and
               -not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) {
             choco install innosetup --no-progress -y
           }
       - name: Package
+        if: env.PACKAGE == 'true'
         run: cargo xtask bundle
       - uses: actions/upload-artifact@v4
+        if: env.PACKAGE == 'true'
         with:
           name: Mtrx-windows-x64
           path: |

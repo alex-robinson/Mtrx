@@ -3,9 +3,12 @@
 name: Linux
 
 on:
-  # Each pull request runs once on its merge with main; nothing runs on
-  # plain pushes. Packages come from the release workflow on a tag.
+  # Each pull request runs once on its merge with main. A push to main only
+  # builds, to save the build cache that pull requests then restore.
+  # Packages come from the release workflow on a tag.
   pull_request:
+    branches: [main]
+  push:
     branches: [main]
   workflow_dispatch:
   # From the release workflow, for the packages.
@@ -20,6 +23,9 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  # On main only the build, for the cache; packages on a tag or by hand.
+  WARM: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+  PACKAGE: ${{ startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch' }}
 
 jobs:
   test:
@@ -42,46 +48,59 @@ jobs:
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          # Saved from main only: pull requests restore it.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Format
+        if: env.WARM != 'true'
         run: cargo fmt --all --check
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: File dialogs use the XDG portal
+        if: env.WARM != 'true'
         run: cargo tree -p mtrx-app -e features -i rfd | grep -q 'rfd feature "xdg-portal"'
       - name: Tests
-        run: cargo test --workspace
+        run: cargo test --workspace ${{ env.WARM == 'true' && '--no-run' || '' }}
       - name: Keyring tests (GNOME Keyring)
+        if: env.WARM != 'true'
         run: |
           dbus-run-session -- bash -c '
             echo -n ci | gnome-keyring-daemon --daemonize --unlock --components=secrets >/dev/null
             cargo test -p mtrx-core --lib -- --ignored keyring_round_trip'
       - name: Keyring tests (no Secret Service)
+        if: env.WARM != 'true'
         run: cargo test -p mtrx-core --lib -- --ignored keyring_missing
         env:
           DBUS_SESSION_BUS_ADDRESS: unix:path=/nonexistent
       - name: Synapse
+        if: env.WARM != 'true'
         run: |
           # The container runs Synapse as uid 991; it writes to data/.
           mkdir -p testserver/data
           chmod 777 testserver/data
           testserver/run.sh
       - name: Integration tests (mtrx-core)
+        if: env.WARM != 'true'
         run: cargo test -p mtrx-core --test integration -- --ignored
       - name: Integration tests (mtrx-ffi)
+        if: env.WARM != 'true'
         run: cargo test -p mtrx-ffi --test integration -- --ignored
       - name: UI tests (mtrx-app)
+        if: env.WARM != 'true'
         run: cargo test -p mtrx-app -- --ignored --skip big_room
       - name: Synapse log
-        if: failure()
+        if: failure() && env.WARM != 'true'
         run: docker logs mtrx-synapse 2>&1 | tail -100
       - uses: actions/upload-artifact@v4
-        if: always()
+        if: always() && env.WARM != 'true'
         with:
           name: ui-snapshots
           path: target/ui-snapshots
           if-no-files-found: warn
 
   package:
+    if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
     # The oldest Ubuntu we support: the binaries need its glibc (2.35).
     runs-on: ubuntu-22.04
     timeout-minutes: 90
@@ -112,6 +131,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
           # Not the 24.04 cache: C objects built against a newer glibc.
           key: ubuntu-22.04
       - name: Bundle

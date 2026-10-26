@@ -2,9 +2,12 @@
 name: macOS
 
 on:
-  # Each pull request runs once on its merge with main; nothing runs on
-  # plain pushes. Packages come from the release workflow on a tag.
+  # Each pull request runs once on its merge with main. A push to main only
+  # builds, to save the build cache that pull requests then restore.
+  # Packages come from the release workflow on a tag.
   pull_request:
+    branches: [main]
+  push:
     branches: [main]
   workflow_dispatch:
   # From the release workflow, for the package.
@@ -19,6 +22,9 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  # On main only the build, for the cache; packages on a tag or by hand.
+  WARM: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+  PACKAGE: ${{ startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch' }}
 
 jobs:
   macos:
@@ -31,17 +37,23 @@ jobs:
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
+        with:
+          # Saved from main only: pull requests restore it.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Format
+        if: env.WARM != 'true'
         run: cargo fmt --all --check
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Test
-        run: cargo test --workspace
+        run: cargo test --workspace ${{ env.WARM == 'true' && '--no-run' || '' }}
       - name: Package
+        if: env.PACKAGE == 'true'
         run: |
           cargo xtask bundle
           ditto -c -k --sequesterRsrc --keepParent target/bundle/Mtrx.app target/bundle/Mtrx-macos-arm64.zip
       - uses: actions/upload-artifact@v4
+        if: env.PACKAGE == 'true'
         with:
           name: Mtrx-macos-arm64
           path: target/bundle/Mtrx-macos-arm64.zip
