@@ -5,7 +5,9 @@ use std::time::SystemTime;
 
 use iced::{
     Alignment, Element, Length,
-    widget::{button, checkbox, column, container, row, scrollable, space, text, text_input},
+    widget::{
+        button, checkbox, column, container, row, scrollable, space, text, text_input, toggler,
+    },
 };
 use mtrx_core::{
     Access, MxcUri, NotifyMode, OwnedMxcUri, OwnedRoomId, OwnedUserId, Presence, RoomKind,
@@ -19,6 +21,7 @@ use crate::{
     fonts,
     presence::{self, Presences},
     selectable::selectable_text,
+    settings::{self, Preference},
     sidebar, style,
 };
 
@@ -179,11 +182,12 @@ impl Card {
         own_user: &OwnedUserId,
         presences: &Presences,
         now: SystemTime,
+        pinned_notes: bool,
     ) -> Element<'a, app::Message> {
         let body = match &self.target {
             Target::User(user) => {
                 let presence = presences.get(&user.id);
-                self.user_view(user, rooms, avatars, own_user, presence, now)
+                self.user_view(user, rooms, avatars, own_user, presence, now, pinned_notes)
             }
             Target::Room(id) => match rooms.iter().find(|r| &r.id == id) {
                 Some(room) => self.room_view(room, rooms, avatars),
@@ -210,6 +214,7 @@ impl Card {
         own_user: &OwnedUserId,
         presence: Option<&Presence>,
         now: SystemTime,
+        pinned_notes: bool,
     ) -> Element<'a, app::Message> {
         let name = user.name.as_deref().unwrap_or(user.id.localpart());
         // The star favourites the direct chat, made if there is none.
@@ -259,7 +264,15 @@ impl Card {
         if let Some(error) = &self.error {
             card = card.push(text(error).size(12).style(text::danger));
         }
+        // Our own card is the Notes': where they are pinned too.
         let message = if user.id == *own_user {
+            card = card.push(settings::option(
+                "Notes at the top",
+                "Your notes to self stay at the top of the room list, in every space.",
+                toggler(pinned_notes)
+                    .on_toggle(|on| settings::preference(Preference::PinnedNotes(on)))
+                    .into(),
+            ));
             "Notes to self"
         } else {
             "Message"

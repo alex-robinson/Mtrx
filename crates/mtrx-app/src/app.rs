@@ -2463,10 +2463,15 @@ impl App {
     }
 
     fn settings_update(&mut self, message: settings::Message) -> Task<Message> {
-        let Some(panel) = &mut self.settings_panel else {
-            return Task::none();
+        // Preferences change also from outside the panel, e.g. a card.
+        let action = match (message, &mut self.settings_panel) {
+            (settings::Message::Preference(preference), _) => {
+                settings::change(&mut self.settings, preference)
+            }
+            (message, Some(panel)) => panel.update(&mut self.settings, message),
+            (_, None) => return Task::none(),
         };
-        match panel.update(&mut self.settings, message) {
+        match action {
             settings::Action::None => Task::none(),
             settings::Action::Save => {
                 self.save_settings();
@@ -2516,7 +2521,10 @@ impl App {
                     },
                 )
                 .abortable();
-                panel.google.signing_in = Some(handle);
+                // Asked for from the panel, which shows it signing in.
+                if let Some(panel) = &mut self.settings_panel {
+                    panel.google.signing_in = Some(handle);
+                }
                 task
             }
             settings::Action::Colour(space, tint) => {
@@ -3522,6 +3530,7 @@ impl App {
                             &main.own_user,
                             &main.presences,
                             main.now,
+                            self.settings.pinned_notes,
                         ),
                         Message::Info(info::Message::Close),
                     )

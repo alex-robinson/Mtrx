@@ -128,8 +128,10 @@ impl Settings {
     }
 }
 
+/// A preference changed, which the Settings panel need not be open for
+/// (see [`change`]).
 #[derive(Debug, Clone)]
-pub enum Message {
+pub enum Preference {
     Appearance(Appearance),
     TextSize(TextSize),
     ColoredNames(bool),
@@ -146,6 +148,11 @@ pub enum Message {
     UpdateChannel(update::Channel),
     /// The room list's colour in a space, or at home.
     Tint(Option<OwnedRoomId>, Tint),
+}
+
+#[derive(Debug, Clone)]
+pub enum Message {
+    Preference(Preference),
     FormKind(FormKind),
     FormName(String),
     FormUrl(String),
@@ -387,55 +394,62 @@ impl fmt::Display for SpaceChoice {
     }
 }
 
+/// Change a preference, which needs no open panel.
+pub fn change(settings: &mut Settings, preference: Preference) -> Action {
+    match preference {
+        Preference::Appearance(appearance) => {
+            settings.appearance = appearance;
+            Action::Appearance
+        }
+        Preference::TextSize(size) => {
+            settings.text_size = size;
+            Action::TextSize
+        }
+        Preference::ColoredNames(colored) => {
+            settings.colored_names = colored;
+            Action::Save
+        }
+        Preference::DesktopNotifications(on) => {
+            settings.desktop_notifications = on;
+            Action::Save
+        }
+        Preference::IconBadge(on) => {
+            settings.icon_badge = on;
+            Action::Save
+        }
+        Preference::RoomList(grouping) => {
+            settings.room_list = grouping;
+            Action::Save
+        }
+        Preference::AtHome(at_home) => Action::AtHome(at_home),
+        Preference::RoomPictures(on) => {
+            settings.room_pictures = on;
+            Action::Save
+        }
+        Preference::PinnedNotes(on) => {
+            settings.pinned_notes = on;
+            Action::Save
+        }
+        Preference::SharePresence(on) => {
+            settings.share_presence = on;
+            Action::SharePresence
+        }
+        Preference::AutomaticUpdates(on) => {
+            settings.updates.automatic = on;
+            Action::Save
+        }
+        Preference::UpdateChannel(channel) => {
+            settings.updates.channel = channel;
+            Action::CheckUpdates
+        }
+        Preference::Tint(space, tint) => Action::Colour(space, tint),
+    }
+}
+
 impl Panel {
     pub fn update(&mut self, settings: &mut Settings, message: Message) -> Action {
         match message {
-            Message::Appearance(appearance) => {
-                settings.appearance = appearance;
-                return Action::Appearance;
-            }
-            Message::TextSize(size) => {
-                settings.text_size = size;
-                return Action::TextSize;
-            }
-            Message::ColoredNames(colored) => {
-                settings.colored_names = colored;
-                return Action::Save;
-            }
-            Message::DesktopNotifications(on) => {
-                settings.desktop_notifications = on;
-                return Action::Save;
-            }
-            Message::IconBadge(on) => {
-                settings.icon_badge = on;
-                return Action::Save;
-            }
-            Message::RoomList(grouping) => {
-                settings.room_list = grouping;
-                return Action::Save;
-            }
-            Message::AtHome(at_home) => return Action::AtHome(at_home),
-            Message::RoomPictures(on) => {
-                settings.room_pictures = on;
-                return Action::Save;
-            }
-            Message::PinnedNotes(on) => {
-                settings.pinned_notes = on;
-                return Action::Save;
-            }
-            Message::SharePresence(on) => {
-                settings.share_presence = on;
-                return Action::SharePresence;
-            }
-            Message::AutomaticUpdates(on) => {
-                settings.updates.automatic = on;
-                return Action::Save;
-            }
-            Message::UpdateChannel(channel) => {
-                settings.updates.channel = channel;
-                return Action::CheckUpdates;
-            }
-            Message::Tint(space, tint) => return Action::Colour(space, tint),
+            Message::Preference(preference) => return change(settings, preference),
             Message::FormKind(kind) => self.form.kind = kind,
             Message::FormName(name) => self.form.name = name,
             Message::FormUrl(url) => self.form.url = url,
@@ -576,7 +590,7 @@ impl Panel {
                 "Appearance",
                 "Light or dark; Follow system changes with your computer's setting.",
                 pick_list(Appearance::ALL, Some(settings.appearance), |a| {
-                    message(Message::Appearance(a))
+                    preference(Preference::Appearance(a))
                 })
                 .text_size(13)
                 .padding(6)
@@ -591,7 +605,7 @@ impl Panel {
                     shortcut("0"),
                 ),
                 pick_list(TextSize::ALL, Some(settings.text_size), |s| {
-                    message(Message::TextSize(s))
+                    preference(Preference::TextSize(s))
                 })
                 .text_size(13)
                 .padding(6)
@@ -606,7 +620,7 @@ impl Panel {
                 },
                 toggler(settings.share_presence)
                     .on_toggle_maybe(
-                        presence_shared.then_some(|on| message(Message::SharePresence(on)))
+                        presence_shared.then_some(|on| preference(Preference::SharePresence(on)))
                     )
                     .into(),
             ),
@@ -615,7 +629,7 @@ impl Panel {
                 "Coloured names",
                 "Show people's names in their own colour, as Element does.",
                 toggler(settings.colored_names)
-                    .on_toggle(|on| message(Message::ColoredNames(on)))
+                    .on_toggle(|on| preference(Preference::ColoredNames(on)))
                     .into(),
             ),
             option(
@@ -623,7 +637,7 @@ impl Panel {
                 "New messages that notify by your Matrix notification settings, \
                  unless you are looking at the room.",
                 toggler(settings.desktop_notifications)
-                    .on_toggle(|on| message(Message::DesktopNotifications(on)))
+                    .on_toggle(|on| preference(Preference::DesktopNotifications(on)))
                     .into(),
             ),
             option(
@@ -631,7 +645,7 @@ impl Panel {
                 "How many unread messages notify by your Matrix notification \
                  settings, on the app's icon in the Dock.",
                 toggler(settings.icon_badge)
-                    .on_toggle(|on| message(Message::IconBadge(on)))
+                    .on_toggle(|on| preference(Preference::IconBadge(on)))
                     .into(),
             ),
             heading("Room list"),
@@ -642,14 +656,14 @@ impl Panel {
                 "Rooms show their picture or initial, instead of # for public \
                  rooms and a lock for private ones.",
                 toggler(settings.room_pictures)
-                    .on_toggle(|on| message(Message::RoomPictures(on)))
+                    .on_toggle(|on| preference(Preference::RoomPictures(on)))
                     .into(),
             ),
             option(
                 "Notes at the top",
                 "Your notes to self stay at the top of the room list, in every space.",
                 toggler(settings.pinned_notes)
-                    .on_toggle(|on| message(Message::PinnedNotes(on)))
+                    .on_toggle(|on| preference(Preference::PinnedNotes(on)))
                     .into(),
             ),
             tints(colours, spaces),
@@ -1007,14 +1021,14 @@ fn updates<'a>(
             "Check automatically",
             "At start and once a day.",
             toggler(preferences.automatic)
-                .on_toggle(|on| message(Message::AutomaticUpdates(on)))
+                .on_toggle(|on| preference(Preference::AutomaticUpdates(on)))
                 .into(),
         ),
         option(
             "Channel",
             "Beta also offers pre-releases, to try new things first.",
             pick_list(update::Channel::ALL, Some(preferences.channel), |c| {
-                message(Message::UpdateChannel(c))
+                preference(Preference::UpdateChannel(c))
             })
             .text_size(13)
             .padding(6)
@@ -1049,7 +1063,7 @@ fn tints<'a>(
                     .style(move |theme: &iced::Theme, status| {
                         style::swatch(theme, status, tint, selected)
                     })
-                    .on_press(message(Message::Tint(space.clone(), tint))),
+                    .on_press(preference(Preference::Tint(space.clone(), tint))),
                 tint.name(),
                 Position::Top,
             )
@@ -1090,7 +1104,7 @@ fn room_list_options<'a>(grouping: Grouping) -> Element<'a, app::Message> {
             .on_toggle(move |on| {
                 let mut grouping = grouping;
                 set(&mut grouping, on);
-                message(Message::RoomList(grouping))
+                preference(Preference::RoomList(grouping))
             })
             .into()
     };
@@ -1137,7 +1151,7 @@ fn home_options<'a>(at_home: AtHome, grouping: Grouping) -> Element<'a, app::Mes
             "Also the rooms of your spaces; otherwise Home has your chats, \
              invites and rooms in no space. Synced to your other devices.",
             toggler(at_home.all_rooms)
-                .on_toggle(move |all_rooms| message(Message::AtHome(AtHome {
+                .on_toggle(move |all_rooms| preference(Preference::AtHome(AtHome {
                     all_rooms,
                     ..at_home
                 })))
@@ -1148,7 +1162,7 @@ fn home_options<'a>(at_home: AtHome, grouping: Grouping) -> Element<'a, app::Mes
             favourites,
             toggler(at_home.favourites)
                 .on_toggle_maybe(can_favourite.then_some(move |favourites| {
-                    message(Message::AtHome(AtHome {
+                    preference(Preference::AtHome(AtHome {
                         favourites,
                         ..at_home
                     }))
@@ -1160,7 +1174,8 @@ fn home_options<'a>(at_home: AtHome, grouping: Grouping) -> Element<'a, app::Mes
     .into()
 }
 
-fn option<'a>(
+/// A setting: its name and what it does, beside its control.
+pub fn option<'a>(
     label: &'a str,
     description: impl text::IntoFragment<'a>,
     control: Element<'a, app::Message>,
@@ -1189,6 +1204,10 @@ fn small_button<'a>(label: &'a str, on_press: app::Message) -> Element<'a, app::
 
 fn message(message: Message) -> app::Message {
     app::Message::Settings(message)
+}
+
+pub fn preference(preference: Preference) -> app::Message {
+    message(Message::Preference(preference))
 }
 
 #[cfg(test)]
@@ -1255,7 +1274,7 @@ mod tests {
     fn chooses_the_appearance() {
         let mut settings = Settings::default();
         assert_eq!(settings.appearance, Appearance::System);
-        let action = Panel::default().update(&mut settings, Message::Appearance(Appearance::Light));
+        let action = change(&mut settings, Preference::Appearance(Appearance::Light));
         assert!(matches!(action, Action::Appearance));
         assert_eq!(settings.appearance, Appearance::Light);
     }
@@ -1264,7 +1283,7 @@ mod tests {
     fn chooses_the_text_size() {
         let mut settings = Settings::default();
         assert_eq!(settings.text_size, TextSize::Default);
-        let action = Panel::default().update(&mut settings, Message::TextSize(TextSize::Large));
+        let action = change(&mut settings, Preference::TextSize(TextSize::Large));
         assert!(matches!(action, Action::TextSize));
         assert_eq!(settings.text_size, TextSize::Large);
     }
@@ -1273,7 +1292,7 @@ mod tests {
     fn shares_presence_unless_turned_off() {
         let mut settings = Settings::default();
         assert!(settings.share_presence);
-        let action = Panel::default().update(&mut settings, Message::SharePresence(false));
+        let action = change(&mut settings, Preference::SharePresence(false));
         assert!(matches!(action, Action::SharePresence));
         assert!(!settings.share_presence);
     }
@@ -1285,7 +1304,7 @@ mod tests {
             all_rooms: true,
             favourites: false,
         };
-        let action = Panel::default().update(&mut settings, Message::AtHome(at_home));
+        let action = change(&mut settings, Preference::AtHome(at_home));
         assert!(matches!(action, Action::AtHome(sent) if sent == at_home));
         // Not in the settings file.
         assert_eq!(settings, Settings::default());
