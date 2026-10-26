@@ -380,7 +380,13 @@ impl ApplicationDelegate {
         } else {
             tracing::debug!(?event, "had to queue event since another is currently being handled");
             let this = self.retain();
-            self.ivars().run_loop.queue_closure(move || this.handle_event(event));
+            // Mtrx patch (quit): while terminating, the queued events (such as a closed window's
+            // `Destroyed`) reach the application, which then exits.
+            if self.ivars().terminating.get() {
+                self.ivars().run_loop.queue_closure_in_common_modes(move || this.handle_event(event));
+            } else {
+                self.ivars().run_loop.queue_closure(move || this.handle_event(event));
+            }
         }
     }
 

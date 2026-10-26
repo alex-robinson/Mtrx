@@ -166,20 +166,6 @@ impl RunLoop {
     /// put the event at the very front of the queue, to be handled as soon as possible after
     /// handling whatever event it's currently handling.
     pub fn queue_closure(&self, closure: impl FnOnce() + 'static) {
-        extern "C" {
-            fn CFRunLoopPerformBlock(rl: CFRunLoopRef, mode: CFTypeRef, block: &Block<dyn Fn()>);
-        }
-
-        // Convert `FnOnce()` to `Block<dyn Fn()>`.
-        let closure = Cell::new(Some(closure));
-        let block = block2::RcBlock::new(move || {
-            if let Some(closure) = closure.take() {
-                closure()
-            } else {
-                error!("tried to execute queued closure on main thread twice");
-            }
-        });
-
         // There are a few common modes (`kCFRunLoopCommonModes`) defined by Cocoa:
         // - `NSDefaultRunLoopMode`, alias of `kCFRunLoopDefaultMode`.
         // - `NSEventTrackingRunLoopMode`, used when mouse-dragging and live-resizing a window.
@@ -195,7 +181,31 @@ impl RunLoop {
         // and be delivered to the application afterwards.
         //
         // [#1779]: https://github.com/rust-windowing/winit/issues/1779
-        let mode = unsafe { kCFRunLoopDefaultMode as CFTypeRef };
+        self.perform_block(unsafe { kCFRunLoopDefaultMode as CFTypeRef }, closure)
+    }
+
+    // Mtrx patch (quit).
+    /// [`Self::queue_closure`], in the common modes: while the application waits to terminate
+    /// (`NSTerminateLater`), AppKit runs the run loop in `NSModalPanelRunLoopMode` until it is
+    /// replied to, and no event handler is on the stack.
+    pub fn queue_closure_in_common_modes(&self, closure: impl FnOnce() + 'static) {
+        self.perform_block(unsafe { kCFRunLoopCommonModes as CFTypeRef }, closure)
+    }
+
+    fn perform_block(&self, mode: CFTypeRef, closure: impl FnOnce() + 'static) {
+        extern "C" {
+            fn CFRunLoopPerformBlock(rl: CFRunLoopRef, mode: CFTypeRef, block: &Block<dyn Fn()>);
+        }
+
+        // Convert `FnOnce()` to `Block<dyn Fn()>`.
+        let closure = Cell::new(Some(closure));
+        let block = block2::RcBlock::new(move || {
+            if let Some(closure) = closure.take() {
+                closure()
+            } else {
+                error!("tried to execute queued closure on main thread twice");
+            }
+        });
 
         // SAFETY: The runloop is valid, the mode is a `CFStringRef`, and the block is `'static`.
         unsafe { CFRunLoopPerformBlock(self.0, mode, &block) }
