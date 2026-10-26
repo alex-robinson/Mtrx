@@ -619,7 +619,8 @@ fn show_menu<'a>(view: &RoomListView<'a>, space: &OwnedRoomId) -> Element<'a, Me
     .padding([2, 8])
     .style(style::secondary_button)
     .on_press_maybe((!open).then(|| arrange_message(arrange::Message::ShowMenu(true))));
-    let menu = open.then(|| show_menu_panel(arrange, Some(space), layout, sections));
+    let notes = view.notes.is_some();
+    let menu = open.then(|| show_menu_panel(arrange, Some(space), layout, sections, notes));
     container(
         popover(toggle, menu, Side::Below, Edge::Left)
             .on_dismiss(arrange_message(arrange::Message::ShowMenu(false))),
@@ -629,12 +630,14 @@ fn show_menu<'a>(view: &RoomListView<'a>, space: &OwnedRoomId) -> Element<'a, Me
 }
 
 /// A space's sections, ticked while expanded and dragged by their grips to
-/// other places, then showing or hiding them all.
+/// other places, then showing or hiding them all; with the Notes pinned at
+/// the top (`notes`), where they are set.
 fn show_menu_panel<'a>(
     arrange: &Arrange,
     space: Option<&OwnedRoomId>,
     layout: &Layout,
     sections: Vec<Section>,
+    notes: bool,
 ) -> Element<'a, Message> {
     let collapse = |collapsed: &dyn Fn(&Section) -> bool| {
         arrange_message(collapse_sections(&sections, collapsed))
@@ -678,6 +681,12 @@ fn show_menu_panel<'a>(
         menu = menu.push(drop_line(landing == Some(at))).push(line);
     }
     menu = menu.push(drop_line(landing == Some(sections.len())));
+    let note = |line| {
+        container(text(line).size(11).style(text::secondary))
+            .width(Length::Fill)
+            .center_x(Length::Fill)
+            .padding([2, 8])
+    };
     let footer = |label| {
         button(text(label).size(13).width(Length::Fill).center())
             .width(Length::Fill)
@@ -693,12 +702,10 @@ fn show_menu_panel<'a>(
             ]
             .spacing(4),
         )
-        .push(
-            container(text(ONLY_ONE).size(11).style(text::secondary))
-                .width(Length::Fill)
-                .center_x(Length::Fill)
-                .padding([2, 8]),
-        );
+        .push(note(ONLY_ONE));
+    if notes {
+        menu = menu.push(note(NOTES_PINNED));
+    }
     container(menu)
         .width(SHOW_MENU_WIDTH)
         .padding(4)
@@ -781,6 +788,9 @@ const ONLY_ONE: &str = if cfg!(target_os = "macos") {
 } else {
     "Alt+click to show only one"
 };
+
+/// Where the Notes pinned at the top are set, below the Show menu.
+const NOTES_PINNED: &str = "Notes at the top: in Settings";
 
 /// The width of the menu of which sections are expanded.
 const SHOW_MENU_WIDTH: f32 = 280.0;
