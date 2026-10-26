@@ -589,8 +589,9 @@ fn arranged<'a>(view: &RoomListView<'a>) -> Vec<Element<'a, Message>> {
     elements
 }
 
-/// "Show 4 of 6": the button opening the menu of which of a space's
-/// sections are expanded, the others shown collapsed.
+/// "Show 4 of 6": the button across two thirds of the room list, opening
+/// the menu of which of a space's sections are expanded, the others shown
+/// collapsed.
 fn show_menu<'a>(view: &RoomListView<'a>, space: &OwnedRoomId) -> Element<'a, Message> {
     let arrange = view.arrange;
     let layout = arrange.categories.layout(Some(space));
@@ -602,29 +603,36 @@ fn show_menu<'a>(view: &RoomListView<'a>, space: &OwnedRoomId) -> Element<'a, Me
     let open = arrange.show_menu;
     // While open, a click on it closes the menu as any outside click.
     let toggle = button(
-        row![
-            text(format!("Show {expanded} of {}", sections.len())).size(12),
-            icons::chevron(10.0, true, |theme| {
-                theme
-                    .extended_palette()
-                    .background
-                    .base
-                    .text
-                    .scale_alpha(0.7)
-            }),
-        ]
-        .spacing(4)
-        .align_y(Alignment::Center),
+        container(
+            row![
+                text(format!("Show {expanded} of {}", sections.len())).size(12),
+                icons::chevron(10.0, true, |theme| {
+                    theme
+                        .extended_palette()
+                        .background
+                        .base
+                        .text
+                        .scale_alpha(0.7)
+                }),
+            ]
+            .spacing(4)
+            .align_y(Alignment::Center),
+        )
+        .center_x(Length::Fill),
     )
+    .width(Length::FillPortion(4))
     .padding([2, 8])
     .style(style::secondary_button)
     .on_press_maybe((!open).then(|| arrange_message(arrange::Message::ShowMenu(true))));
     let notes = view.notes.is_some();
     let menu = open.then(|| show_menu_panel(arrange, Some(space), layout, sections, notes));
-    container(
+    let margin = || iced::widget::space().width(Length::FillPortion(1));
+    container(row![
+        margin(),
         popover(toggle, menu, Side::Below, Edge::Left)
             .on_dismiss(arrange_message(arrange::Message::ShowMenu(false))),
-    )
+        margin(),
+    ])
     .padding(Padding::new(0.0).top(2).bottom(4))
     .into()
 }
