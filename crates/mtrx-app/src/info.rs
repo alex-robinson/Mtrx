@@ -10,8 +10,8 @@ use iced::{
     },
 };
 use mtrx_core::{
-    Access, MxcUri, NotifyMode, OwnedMxcUri, OwnedRoomId, OwnedUserId, RoomKind, RoomSettings,
-    RoomSummary, RoomTag, UserInfo, UserSummary,
+    Access, CallService, MxcUri, NotifyMode, OwnedMxcUri, OwnedRoomId, OwnedUserId, RoomKind,
+    RoomSettings, RoomSummary, RoomTag, Topic, UserInfo, UserSummary,
 };
 
 use crate::{
@@ -22,7 +22,7 @@ use crate::{
     presence::{self, Presences},
     selectable::selectable_text,
     settings::{self, Preference},
-    sidebar, style,
+    sidebar, style, topic,
 };
 
 const AVATAR: f32 = 64.0;
@@ -30,8 +30,9 @@ const AVATAR: f32 = 64.0;
 const SHARED_HEIGHT: f32 = 200.0;
 
 /// What a card shows, besides its target: the rooms we know, pictures, who
-/// we are, people's presence as of `now`, and whether the Notes are pinned
-/// at the top (our own card switches it).
+/// we are, people's presence as of `now`, whether the Notes are pinned at
+/// the top (our own card switches it), and our call services, naming a
+/// room's calls.
 #[derive(Clone, Copy)]
 pub struct Shown<'a> {
     pub rooms: &'a [RoomSummary],
@@ -40,6 +41,7 @@ pub struct Shown<'a> {
     pub presences: &'a Presences,
     pub now: SystemTime,
     pub pinned_notes: bool,
+    pub call_services: &'a [CallService],
 }
 
 /// What to show a card for.
@@ -57,7 +59,7 @@ pub enum Message {
     SettingsLoaded(OwnedRoomId, Result<RoomSettings, String>),
     Copy(String),
     Name(String),
-    Topic(String),
+    Topic(topic::Edit),
     /// Save the changed name and topic.
     SaveDetails,
     Notify(NotifyMode),
@@ -77,7 +79,7 @@ pub struct Card {
     pub settings: Option<RoomSettings>,
     /// The room's name and topic as edited.
     name: String,
-    topic: String,
+    topic: topic::Editor,
     /// A change is being saved.
     pub saving: bool,
     error: Option<String>,
@@ -93,7 +95,7 @@ impl Card {
         };
         Self {
             name: room.map(|r| r.name.clone()).unwrap_or_default(),
-            topic: room.and_then(|r| r.topic.clone()).unwrap_or_default(),
+            topic: topic::Editor::new(room.and_then(|r| r.topic.as_deref()).unwrap_or_default()),
             target,
             shared: None,
             settings: None,
@@ -131,10 +133,9 @@ impl Card {
     /// The edited name and topic, if they differ from `room`'s.
     pub fn changed_details(&self, room: &RoomSummary) -> (Option<String>, Option<String>) {
         let name = self.name.trim();
-        let topic = self.topic.trim();
         (
             (!name.is_empty() && name != room.name).then(|| name.to_owned()),
-            (topic != room.topic.as_deref().unwrap_or_default()).then(|| topic.to_owned()),
+            (self.topic.changed(room.topic.as_deref())).then(|| self.topic.topic()),
         )
     }
 
@@ -160,7 +161,7 @@ impl Card {
             }
             Message::Copy(copied) => self.copied = Some(copied),
             Message::Name(name) => self.name = name,
-            Message::Topic(topic) => self.topic = topic,
+            Message::Topic(edit) => self.topic.update(edit),
             Message::Notify(mode) => {
                 if let Some(settings) = &mut self.settings {
                     settings.notify = mode;
@@ -219,6 +220,7 @@ impl Card {
             presences,
             now,
             pinned_notes,
+            ..
         } = shown;
         let presence = presences.get(&user.id);
         let name = user.name.as_deref().unwrap_or(user.id.localpart());
@@ -299,7 +301,12 @@ impl Card {
         room: &'a RoomSummary,
         shown: Shown<'a>,
     ) -> Element<'a, app::Message> {
-        let Shown { rooms, avatars, .. } = shown;
+        let Shown {
+            rooms,
+            avatars,
+            call_services,
+            ..
+        } = shown;
         let settings = self.settings.as_ref();
         let allowed = |can: fn(&RoomSettings) -> bool| settings.is_some_and(can) && !self.saving;
         let star = sidebar::star_button(&room.id, room.tag == RoomTag::Favourite);
@@ -336,42 +343,26 @@ impl Card {
         }
 
         // Editable where allowed, else text to select from.
-        let field =
-            |label, value: &'a str, missing: &str, can: bool, on_input: fn(String) -> Message| {
-                if !can {
-                    let shown: Element<'a, app::Message> = if value.trim().is_empty() {
-                        text(missing.to_owned())
-                            .size(13)
-                            .style(text::secondary)
-                            .into()
-                    } else {
-                        selectable_text(value).size(13).into()
-                    };
-                    return labelled(label, shown);
-                }
-                let input = text_input(missing, value)
-                    .style(style::input)
-                    .padding([5, 8])
-                    .size(13)
-                    .on_input(move |value| app::Message::Info(on_input(value)))
-                    .on_submit(app::Message::Info(Message::SaveDetails));
-                labelled(label, input)
-            };
+        let name: Element<'a, app::Message> = if allowed(|s| s.can_rename) {
+            text_input("Room name", &self.name)
+                .style(style::input)
+                .padding([5, 8])
+                .size(13)
+                .on_input(|value| app::Message::Info(Message::Name(value)))
+                .on_submit(app::Message::Info(Message::SaveDetails))
+                .into()
+        } else {
+            selectable_text(self.name.as_str()).size(13).into()
+        };
+        let topic: Element<'a, app::Message> = if allowed(|s| s.can_change_topic) {
+            (self.topic.view(call_services)).map(|edit| app::Message::Info(Message::Topic(edit)))
+        } else {
+            let topic = Topic::parse(room.topic.as_deref().unwrap_or_default());
+            topic::details(&topic, call_services, None)
+        };
         card = card
-            .push(field(
-                "Name",
-                &self.name,
-                "Room name",
-                allowed(|s| s.can_rename),
-                Message::Name,
-            ))
-            .push(field(
-                "Topic",
-                &self.topic,
-                "What the room is about",
-                allowed(|s| s.can_change_topic),
-                Message::Topic,
-            ));
+            .push(labelled("Name", name))
+            .push(labelled("Topic and links", topic));
         let (name, topic) = self.changed_details(room);
         if name.is_some() || topic.is_some() {
             card = card.push(row![
@@ -380,7 +371,8 @@ impl Card {
                     .padding([4, 12])
                     .style(style::primary_button)
                     .on_press_maybe(
-                        (!self.saving).then_some(app::Message::Info(Message::SaveDetails))
+                        (!self.saving && self.topic.valid())
+                            .then_some(app::Message::Info(Message::SaveDetails))
                     ),
             ]);
         }

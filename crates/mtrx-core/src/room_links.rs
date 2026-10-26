@@ -9,7 +9,7 @@
 //! [link Paper draft] https://www.overleaf.com/project/abc
 //! ```
 //!
-//! The first call is the room's: the header joins it.
+//! The calls come first, and the first is the room's: the header joins it.
 
 use url::Url;
 
@@ -53,11 +53,13 @@ impl Topic {
         }
     }
 
-    /// The text, then a line for each link, in order.
+    /// The text, then a line for each call, then for each other link, in
+    /// their order.
     pub fn to_topic(&self) -> String {
         let text = Some(self.text.trim().to_owned()).filter(|t| !t.is_empty());
+        let others = self.links.iter().filter(|l| !l.is_call());
         (text.into_iter())
-            .chain(self.links.iter().map(RoomLink::line))
+            .chain(self.calls().chain(others).map(RoomLink::line))
             .collect::<Vec<_>>()
             .join("\n")
     }
@@ -285,12 +287,9 @@ mod tests {
             "the same once tidied"
         );
         assert_eq!(
-            Topic {
-                text: String::new(),
-                links: vec![link(LinkKind::Link, None, "https://a.org/")],
-            }
-            .to_topic(),
-            "[link] https://a.org/"
+            Topic::parse("[link] https://a.org/\n[call] https://b.org/").to_topic(),
+            "[call] https://b.org/\n[link] https://a.org/",
+            "the calls first"
         );
     }
 

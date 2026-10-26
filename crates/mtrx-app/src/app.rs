@@ -22,7 +22,7 @@ use mtrx_core::{
     CallService, Connection, Contact, Google, Media, MediaRef, Member, Notification, OwnedEventId,
     OwnedMxcUri, OwnedRoomId, OwnedUserId, PresenceState, Profile, RecoveryStep, RoomKind,
     RoomList, RoomListColours, RoomListState, RoomOrAliasId, RoomTag, RoomTimeline,
-    ScheduledMessage, SecretStore, ServiceKind, Session, TimelineEntry, Url,
+    ScheduledMessage, SecretStore, ServiceKind, Session, TimelineEntry, Topic, Url,
 };
 
 use crate::{
@@ -52,6 +52,7 @@ use crate::{
     style::{self, MESSAGE_INSET, SPACE_BAR_WIDTH},
     text_size::Zoom,
     tint::Tint,
+    topic,
     update::{self, Updater},
 };
 
@@ -164,6 +165,8 @@ pub enum Message {
     /// Others' presence, and ours.
     Presence(presence::Message),
     Calls(OwnedRoomId, calls::Message),
+    /// The open room's topic and links, in its header.
+    Topic(OwnedRoomId, topic::Message),
     RecoveryKey(String),
     Recover,
     RecoveryProgress(RecoveryStep),
@@ -1296,6 +1299,7 @@ impl App {
                 task
             }
             Message::Calls(room, message) => self.calls(room, message),
+            Message::Topic(room, message) => self.room_topic(room, message),
             Message::AddMenu(open) => {
                 if let Screen::Main(main) = &mut self.screen {
                     main.add_menu = open;
@@ -2646,17 +2650,24 @@ impl App {
         let session = main.session.clone();
         let google = self.google.clone();
         let state = &mut room.calls;
-        let reply = move |message| Message::Calls(room_id.clone(), message);
-        match message {
-            Calls::Link(link) => state.link = link,
-            Calls::CanSetLink(can_set) => state.can_set_link = can_set,
-            Calls::SpaceService(service) => state.space_service = service,
+        let moved = match message {
+            Calls::SpaceService(service) => {
+                state.space_service = service;
+                return Task::none();
+            }
             Calls::OpenMenu => {
                 state.menu = true;
-                state.editor = None;
                 state.error = None;
+                return Task::none();
             }
-            Calls::Close => state.close(),
+            Calls::Close => {
+                state.close();
+                return Task::none();
+            }
+            Calls::Open(url) => {
+                state.close();
+                return Task::done(Message::LinkClicked(url));
+            }
             Calls::Start(service) => {
                 state.busy = true;
                 state.menu = false;
@@ -2670,7 +2681,7 @@ impl App {
                             .await
                             .map_err(|e| e.to_string())
                     },
-                    move |result| reply(Calls::Started(result)),
+                    move |result| Message::Calls(room_id.clone(), Calls::Started(result)),
                 );
             }
             Calls::Started(result) => {
@@ -2679,63 +2690,73 @@ impl App {
                 if let Err(e) = result {
                     room.error = Some(e);
                 }
+                return Task::none();
             }
-            Calls::LinkSaved(result) => {
-                state.busy = false;
-                match result {
-                    Ok(()) => {
-                        state.menu = false;
-                        state.editor = None;
-                    }
-                    Err(e) => state.error = Some(e),
-                }
-            }
-            Calls::EditLink => {
-                state.menu = false;
-                state.error = None;
-                state.editor = Some(state.link.as_ref().map(Url::to_string).unwrap_or_default());
-                state.announce = false;
-            }
-            Calls::LinkInput(input) => state.editor = Some(input),
-            Calls::Announce(on) => state.announce = on,
-            Calls::NewLink(service) => {
-                state.editor = service.new_link().map(|link| link.to_string());
-            }
-            Calls::SaveLink | Calls::RemoveLink => {
-                let link = match message {
-                    Calls::SaveLink => match state.editor.as_deref().map(str::trim).map(Url::parse)
-                    {
-                        Some(Ok(link)) => Some(link),
-                        _ => return Task::none(),
-                    },
-                    _ => None,
+            Calls::Calls(order) => state.calls.update(order).map(|moved| (true, moved)),
+            Calls::Links(order) => state.links.update(order).map(|moved| (false, moved)),
+        };
+        let Some((calls, moved)) = moved else {
+            return Task::none();
+        };
+        // A call moved to the top becomes the room's: the topic changes.
+        let synced = (main.rooms.rooms.iter())
+            .find(|r| r.id == room_id)
+            .and_then(|r| r.topic.as_deref());
+        let shown = Topic::parse(room.topic.shown(synced));
+        let topic = topic::moved(shown, calls, moved).to_topic();
+        self.save_topic(room_id, topic)
+    }
+
+    /// The open room's topic and links, in the header's panel.
+    fn room_topic(&mut self, room_id: OwnedRoomId, message: topic::Message) -> Task<Message> {
+        let Screen::Main(main) = &mut self.screen else {
+            return Task::none();
+        };
+        let Some(room) = main.room.as_mut().filter(|r| r.id == room_id) else {
+            return Task::none();
+        };
+        match message {
+            topic::Message::Save => {
+                let Some(editor) = &room.topic.editor else {
+                    return Task::none();
                 };
-                let announce = link.clone().filter(|_| state.announce);
-                state.busy = true;
-                state.error = None;
-                let room = room.id.clone();
-                return Task::perform(
-                    async move {
-                        session
-                            .set_call_link(&room, link.as_ref())
-                            .await
-                            .map_err(|e| e.to_string())?;
-                        if let Some(link) = announce {
-                            session
-                                .announce_call_link(&room, &link)
-                                .await
-                                .map_err(|e| e.to_string())?;
-                        }
-                        Ok(())
-                    },
-                    move |result| reply(Calls::LinkSaved(result)),
-                );
+                let topic = editor.topic();
+                return self.save_topic(room_id, topic);
             }
+            // From the call menu too.
+            topic::Message::Edit => room.calls.close(),
+            _ => {}
         }
+        let synced = (main.rooms.rooms.iter())
+            .find(|r| r.id == room_id)
+            .and_then(|r| r.topic.as_deref());
+        let shown = room.topic.shown(synced).to_owned();
+        room.topic.update(message, &shown);
         Task::none()
     }
 
-    /// Permission and space call service of a newly opened room.
+    /// Save `topic` as the open room's, shown until the room list has it.
+    fn save_topic(&mut self, room_id: OwnedRoomId, topic: String) -> Task<Message> {
+        let Screen::Main(main) = &mut self.screen else {
+            return Task::none();
+        };
+        let Some(room) = main.room.as_mut().filter(|r| r.id == room_id) else {
+            return Task::none();
+        };
+        room.topic.save(topic.clone());
+        let session = main.session.clone();
+        let room = room_id.clone();
+        Task::perform(
+            async move {
+                session
+                    .set_room_topic(&room, &topic)
+                    .await
+                    .map_err(|e| e.to_string())
+            },
+            move |result| Message::Topic(room_id.clone(), topic::Message::Saved(result)),
+        )
+    }
+
     /// Something shows over the main view, as [`App::view`] puts it there:
     /// the settings, a dialog, an info card or a viewer.
     fn covered(&self) -> bool {
@@ -2749,6 +2770,8 @@ impl App {
             || main.pdf.is_some()
     }
 
+    /// Whether we may change a newly opened room's topic, and the call
+    /// service of its space; its old call link moved into its topic.
     fn load_room_calls(&self, room_id: &OwnedRoomId) -> Task<Message> {
         let Screen::Main(main) = &self.screen else {
             return Task::none();
@@ -2756,19 +2779,21 @@ impl App {
         let session = main.session.clone();
         let spaces = sidebar::ancestors(&main.rooms.rooms, room_id);
         let room = room_id.clone();
-        let reply = {
-            let room = room.clone();
-            move |message| Message::Calls(room.clone(), message)
-        };
-        let can_set = {
-            let (session, room) = (session.clone(), room.clone());
+        let can_edit = {
+            let (session, room, reply) = (session.clone(), room.clone(), room.clone());
             Task::perform(
-                async move { session.can_set_call_link(&room).await.ok() },
-                {
-                    let reply = reply.clone();
-                    move |can_set| reply(calls::Message::CanSetLink(can_set))
-                },
+                async move { session.can_change_topic(&room).await.ok() },
+                move |can| Message::Topic(reply.clone(), topic::Message::CanEdit(can)),
             )
+        };
+        let old_link = {
+            let (session, room) = (session.clone(), room.clone());
+            Task::future(async move {
+                if let Err(e) = session.move_call_link_to_topic(&room).await {
+                    tracing::warn!("moving the call link of {room} into its topic: {e}");
+                }
+            })
+            .discard()
         };
         let space_service = Task::perform(
             async move {
@@ -2779,9 +2804,9 @@ impl App {
                 }
                 None
             },
-            move |service| reply(calls::Message::SpaceService(service)),
+            move |service| Message::Calls(room.clone(), calls::Message::SpaceService(service)),
         );
-        Task::batch([can_set, space_service])
+        Task::batch([can_edit, old_link, space_service])
     }
 
     fn act(&mut self, message: actions::Message) -> Task<Message> {
@@ -3455,25 +3480,6 @@ impl App {
             }
             if let Some(room) = &main.room {
                 subscriptions.push(Subscription::run_with(
-                    (Shared(main.session.clone()), room.id.clone()),
-                    |(session, room)| {
-                        let (session, room) = (session.0.clone(), room.clone());
-                        iced::stream::channel(4, async move |mut tx| {
-                            let Ok(links) = session.call_link_updates(&room).await else {
-                                return;
-                            };
-                            let mut links = std::pin::pin!(links);
-                            while let Some(link) = links.next().await {
-                                let message =
-                                    Message::Calls(room.clone(), calls::Message::Link(link));
-                                if tx.send(message).await.is_err() {
-                                    return;
-                                }
-                            }
-                        })
-                    },
-                ));
-                subscriptions.push(Subscription::run_with(
                     (Shared(room.timeline.clone()), "typing"),
                     |(t, _)| {
                         let id = t.0.room_id().clone();
@@ -3531,6 +3537,7 @@ impl App {
                             presences: &main.presences,
                             now: main.now,
                             pinned_notes: self.settings.pinned_notes,
+                            call_services: &self.settings.call_services,
                         }),
                         Message::Info(info::Message::Close),
                     )

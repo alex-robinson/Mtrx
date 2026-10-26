@@ -4,6 +4,7 @@ use crate::tint::Tint;
 
 use iced::{
     Background, Border, Color, Theme,
+    border::Radius,
     widget::{button, container, rule, text_editor, text_input},
 };
 
@@ -309,6 +310,27 @@ pub fn list_item(selected: bool) -> impl Fn(&Theme, button::Status) -> button::S
     }
 }
 
+/// The `left` or right half of a split button: `base` with rounded
+/// corners on that side only.
+pub fn split_button(
+    base: fn(&Theme, button::Status) -> button::Style,
+    left: bool,
+) -> impl Fn(&Theme, button::Status) -> button::Style {
+    move |theme, status| {
+        let style = base(theme, status);
+        let (outer, inner) = (BUTTON_RADIUS, 0.0);
+        let radius = if left {
+            Radius::new(inner).top_left(outer).bottom_left(outer)
+        } else {
+            Radius::new(inner).top_right(outer).bottom_right(outer)
+        };
+        button::Style {
+            border: style.border.rounded(radius),
+            ..style
+        }
+    }
+}
+
 /// Corner radius of buttons.
 const BUTTON_RADIUS: f32 = 6.0;
 /// Corner radius of text fields.
@@ -368,6 +390,11 @@ pub fn secondary_button(theme: &Theme, status: button::Status) -> button::Style 
             ..base
         },
     }
+}
+
+/// The colour of [`secondary_button`]'s text, for icons in it.
+pub fn on_secondary(theme: &Theme) -> Color {
+    secondary_button(theme, button::Status::Active).text_color
 }
 
 pub fn text_button(theme: &Theme, status: button::Status) -> button::Style {
