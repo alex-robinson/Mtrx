@@ -131,6 +131,7 @@ pub enum Message {
     #[cfg(target_os = "macos")]
     CheckForUpdates,
     AddMenu(bool),
+    SpaceMenu(Option<sidebar::SpaceMenu>),
     OpenDialog(dialog::Kind),
     /// Join a space or room from elsewhere.
     OpenJoin,
@@ -348,6 +349,8 @@ struct Main {
     background: Option<(String, String)>,
     /// The room list's "+" menu is open.
     add_menu: bool,
+    /// The space bar's "+" menu, or a space's, is open.
+    space_menu: Option<sidebar::SpaceMenu>,
     /// The invite shown instead of a room, and whether it is being answered.
     invite: Option<(OwnedRoomId, bool)>,
     /// A room being opened (its timeline loads).
@@ -437,6 +440,7 @@ impl Main {
             joined_space: None,
             background: None,
             add_menu: false,
+            space_menu: None,
             invite: None,
             opening: None,
             notice: None,
@@ -739,6 +743,19 @@ impl App {
                 | Message::OpenRoom(_)
                 | Message::WindowResized(_)
         );
+        // A menu's choice closes it.
+        if let Screen::Main(main) = &mut self.screen
+            && main.space_menu.is_some()
+            && matches!(
+                message,
+                Message::OpenDialog(_)
+                    | Message::OpenJoin
+                    | Message::ShowSpace(..)
+                    | Message::SelectSpace(_)
+            )
+        {
+            main.space_menu = None;
+        }
         let remember = matches!(message, Message::OpenRoom(_) | Message::SelectSpace(_));
         let task = self.handle(message);
         if remember {
@@ -1385,6 +1402,12 @@ impl App {
             Message::AddMenu(open) => {
                 if let Screen::Main(main) = &mut self.screen {
                     main.add_menu = open;
+                }
+                Task::none()
+            }
+            Message::SpaceMenu(menu) => {
+                if let Screen::Main(main) = &mut self.screen {
+                    main.space_menu = menu;
                 }
                 Task::none()
             }
@@ -3932,6 +3955,7 @@ impl App {
             &main.arrange,
             &self.settings.room_list,
             &main.avatars,
+            main.space_menu.as_ref(),
             self.updater.unseen(&self.settings.updates),
         );
         let room_list = sidebar::room_list(main.room_list_view(&self.settings));

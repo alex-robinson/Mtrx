@@ -21,11 +21,12 @@ use crate::{
     app::Message,
     arrange::{self, Arrange, NAME_INPUT},
     avatar::{Avatars, Shape},
+    context_menu::{self, context_menu},
     dialog::Kind,
     ellipsis::{ellipsis, followed_by},
     fonts,
     hint::{Position, hint, shortcut},
-    icons, info,
+    icons, info, overview,
     popover::{Edge, Side, popover},
     presence::{self, Presences},
     style::{self, ROOM_AVATAR, ROOM_ROW, SPACE_AVATAR, SPACE_BAR_WIDTH},
@@ -282,13 +283,22 @@ pub fn direct_users<'a>(view: &RoomListView<'a>, own: &UserId) -> Vec<&'a OwnedU
         .collect()
 }
 
-/// `update`: a newer version not yet seen in Settings, a dot on the gear.
+/// A menu of the space bar: its "+", or a space's (right-click).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SpaceMenu {
+    Add,
+    Of(OwnedRoomId),
+}
+
+/// `menu`: the open one; `update`: a newer version not yet seen in
+/// Settings, a dot on the gear.
 pub fn space_bar<'a>(
     rooms: &[RoomSummary],
     selected: Option<&OwnedRoomId>,
     arrange: &Arrange,
     grouping: &Grouping,
     avatars: &Avatars,
+    menu: Option<&SpaceMenu>,
     update: bool,
 ) -> Element<'a, Message> {
     let entry = |icon: Element<'a, Message>, title: String, target: Option<OwnedRoomId>, unread| {
@@ -304,8 +314,23 @@ pub fn space_bar<'a>(
         let entry_button = button(icon)
             .padding(4)
             .style(style::list_item(is_selected))
-            .on_press(Message::SelectSpace(target));
-        container(with_tooltip(entry_button, title)).center_x(Length::Fill)
+            .on_press(Message::SelectSpace(target.clone()));
+        let entry_button = with_tooltip(entry_button, title.clone());
+        // A space's own menu, on right-click.
+        let entry_button: Element<'a, Message> = match target {
+            Some(space) => {
+                let open = menu == Some(&SpaceMenu::Of(space.clone()));
+                context_menu(
+                    entry_button,
+                    open.then(|| space_menu(space.clone(), title)),
+                    Message::SpaceMenu(Some(SpaceMenu::Of(space))),
+                )
+                .on_dismiss(Message::SpaceMenu(None))
+                .into()
+            }
+            None => entry_button,
+        };
+        container(entry_button).center_x(Length::Fill)
     };
 
     let mut bar = column![entry(
@@ -329,15 +354,29 @@ pub fn space_bar<'a>(
             unread(rooms, Some(&space.id), arrange, grouping),
         ));
     }
-    let new_space = button(
+    let adding = menu == Some(&SpaceMenu::Add);
+    let add = button(
         container(text("+").size(22).font(fonts::SEMIBOLD))
             .center(SPACE_AVATAR)
             .style(style::new_space_tile),
     )
     .padding(4)
-    .style(style::list_item(false))
-    .on_press(Message::OpenDialog(Kind::NewSpace));
-    bar = bar.push(container(with_tooltip(new_space, "New space".into())).center_x(Length::Fill));
+    .style(style::list_item(adding))
+    .on_press(Message::SpaceMenu((!adding).then_some(SpaceMenu::Add)));
+    let add_menu = adding.then(|| {
+        context_menu::menu([
+            ("New space…".to_owned(), Message::OpenDialog(Kind::NewSpace)),
+            ("Join a space or room…".to_owned(), Message::OpenJoin),
+        ])
+    });
+    let add = popover(
+        with_tooltip(add, "New space, or join one".into()),
+        add_menu,
+        Side::Below,
+        Edge::Left,
+    )
+    .on_dismiss(Message::SpaceMenu(None));
+    bar = bar.push(container(add).center_x(Length::Fill));
     let mut gear = stack![icons::gear(20.0, |theme| {
         theme
             .extended_palette()
@@ -445,7 +484,7 @@ pub fn room_list<'a>(view: RoomListView<'a>) -> Element<'a, Message> {
             button(ellipsis(title).size(16).font(fonts::SEMIBOLD))
                 .padding([4, 8])
                 .style(style::list_item(false))
-                .on_press(Message::ShowInfo(info::Target::Room(space.clone()))),
+                .on_press(Message::ShowSpace(space.clone(), overview::Tab::Rooms)),
             "Rooms, members and settings of the space",
             Position::Bottom,
         ),
@@ -456,7 +495,7 @@ pub fn room_list<'a>(view: RoomListView<'a>) -> Element<'a, Message> {
     let mut list = column![
         row![
             container(heading).width(Length::Fill),
-            with_tooltip(add, "New room, chat or category; join a room".into()),
+            with_tooltip(add, "New room, chat or category, or join one".into()),
         ]
         .align_y(Alignment::Center)
     ]
@@ -1039,6 +1078,31 @@ pub fn drag_preview<'a>(
     )
 }
 
+/// A space's menu in the space bar.
+fn space_menu<'a>(space: OwnedRoomId, name: String) -> Element<'a, Message> {
+    context_menu::menu([
+        (
+            "Overview".to_owned(),
+            Message::ShowSpace(space.clone(), overview::Tab::Rooms),
+        ),
+        (
+            "Invite people…".to_owned(),
+            Message::OpenDialog(Kind::Invite {
+                room: space.clone(),
+                name: name.clone(),
+            }),
+        ),
+        (
+            "Space settings…".to_owned(),
+            Message::ShowSpace(space.clone(), overview::Tab::Settings),
+        ),
+        (
+            "Leave the space…".to_owned(),
+            Message::OpenDialog(Kind::Leave { room: space, name }),
+        ),
+    ])
+}
+
 /// What the room list's "+" offers; more inside a space.
 fn add_menu_view<'a>(space: Option<(OwnedRoomId, String)>) -> Element<'a, Message> {
     let item = |label: String, message: Message| {
@@ -1052,15 +1116,22 @@ fn add_menu_view<'a>(space: Option<(OwnedRoomId, String)>) -> Element<'a, Messag
     let mut menu = column![].spacing(1);
     menu = menu.push(dialog(
         match &space {
-            Some((_, name)) => format!("New room in {name}"),
-            None => "New room".into(),
+            Some((_, name)) => format!("New room in {name}…"),
+            None => "New room…".into(),
         },
         Kind::NewRoom {
             space: space.clone(),
         },
     ));
+    // In a space, its own rooms to join; at Home, any.
+    if let Some((id, name)) = &space {
+        menu = menu.push(item(
+            format!("Browse rooms in {name}…"),
+            Message::ShowSpace(id.clone(), overview::Tab::Rooms),
+        ));
+    }
     menu = menu
-        .push(dialog("New direct chat".into(), Kind::DirectChat))
+        .push(dialog("New direct chat…".into(), Kind::DirectChat))
         .push(dialog(
             "New category…".into(),
             Kind::Category {
@@ -1068,32 +1139,28 @@ fn add_menu_view<'a>(space: Option<(OwnedRoomId, String)>) -> Element<'a, Messag
                 category: None,
                 room: None,
             },
-        ))
-        .push(item("Join a space or room…".into(), Message::OpenJoin));
-    if let Some((id, name)) = space {
-        menu = menu
-            .push(dialog(
-                "Add existing rooms…".into(),
-                Kind::AddExisting {
-                    space: id.clone(),
-                    name: name.clone(),
-                },
-            ))
-            .push(dialog(
-                "Invite people to the space…".into(),
-                Kind::Invite {
-                    room: id.clone(),
-                    name: name.clone(),
-                },
-            ))
-            .push(item(
-                "Space settings…".into(),
-                Message::ShowInfo(info::Target::Room(id.clone())),
-            ))
-            .push(dialog(
-                "Leave the space…".into(),
-                Kind::Leave { room: id, name },
-            ));
+        ));
+    match space {
+        None => menu = menu.push(item("Join a space or room…".into(), Message::OpenJoin)),
+        Some((id, name)) => {
+            menu = menu
+                .push(container(rule::horizontal(1).style(style::separator)).padding([4, 6]))
+                .push(dialog(
+                    "Invite people…".into(),
+                    Kind::Invite {
+                        room: id.clone(),
+                        name: name.clone(),
+                    },
+                ))
+                .push(item(
+                    "Space settings…".into(),
+                    Message::ShowSpace(id.clone(), overview::Tab::Settings),
+                ))
+                .push(dialog(
+                    "Leave the space…".into(),
+                    Kind::Leave { room: id, name },
+                ));
+        }
     }
     container(menu)
         .padding(4)
