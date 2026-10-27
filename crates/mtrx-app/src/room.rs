@@ -92,7 +92,7 @@ pub struct Room {
     pub attachments: Vec<Attached>,
     pub later: SendLater,
     pub calls: RoomCalls,
-    /// The header's panel with the topic and links; closed when the room
+    /// The topic panel, below the room header; closed when the room
     /// opens.
     pub topic: topic::Panel,
     pub compose: Compose,
@@ -991,25 +991,25 @@ impl Room {
             );
         }
         let mut title = column![opens_info(about.into())];
-        // The caret, then the topic's first line while closed: open or
-        // close the panel below the header. While it is open, a click here
-        // is outside it and closes it.
-        if summary.is_some() && (!topic.text.is_empty() || !topic.links.is_empty() || can_edit) {
+        // The caret, then a preview of the topic while closed: open or
+        // close the topic panel. While it is open, a click here is outside
+        // it and closes it.
+        let preview = topic::preview(&topic, look.call_services, can_edit);
+        if summary.is_some() && preview.is_some() {
             let open = self.topic.open;
-            let mut line = row![icons::chevron(10.0, open, |theme| {
+            // Level with the middle of lowercase text, below the line's.
+            let caret = container(icons::chevron(10.0, open, |theme| {
                 theme
                     .extended_palette()
                     .background
                     .base
                     .text
                     .scale_alpha(0.7)
-            })]
-            .spacing(6)
-            .align_y(Alignment::Center);
-            if !open {
-                // Without text, what the caret opens.
-                let first = topic.text.lines().next().unwrap_or("Header");
-                line = line.push(ellipsis(first.to_owned()).size(12).style(text::secondary));
+            }))
+            .padding(Padding::ZERO.top(2));
+            let mut line = row![caret].spacing(6).align_y(Alignment::Center);
+            if !open && let Some(preview) = preview {
+                line = line.push(ellipsis(preview).size(12).style(text::secondary));
             }
             title = title.push(
                 mouse_area(line)

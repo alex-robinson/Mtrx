@@ -1,4 +1,5 @@
-//! A room's topic and its links (see [`Topic`]): the room header's panel,
+//! A room's topic and its links (see [`Topic`]): the topic panel below the
+//! room header,
 //! showing them in full, and the editor the panel and the room card share:
 //! the text and a list of links, or the whole topic as text, as other apps
 //! show it.
@@ -47,7 +48,7 @@ pub enum Message {
     CanEdit(Option<bool>),
 }
 
-/// The room header's panel below its row: open or not, the topic's
+/// The topic panel, dropping below the room header: open or not, the topic's
 /// editor, and a topic saved but not synced yet.
 #[derive(Default)]
 pub struct Panel {
@@ -132,8 +133,8 @@ impl Panel {
         Task::none()
     }
 
-    /// The topic in full and its links, or the editor, across the room
-    /// below the header.
+    /// The topic in full and its links, or the editor, below the room
+    /// header.
     pub fn view<'a>(
         &'a self,
         room: &OwnedRoomId,
@@ -192,6 +193,20 @@ impl Panel {
         }
         panel.spacing(8).into()
     }
+}
+
+/// The line the room header previews the topic with, beside the caret:
+/// its text's first line, else its links' names, else "Add a topic" if
+/// `can_edit`.
+pub fn preview(topic: &Topic, services: &[CallService], can_edit: bool) -> Option<String> {
+    if let Some(first) = topic.text.lines().next() {
+        return Some(first.to_owned());
+    }
+    if !topic.links.is_empty() {
+        let names: Vec<String> = topic.links.iter().map(|l| l.name(services)).collect();
+        return Some(names.join(" · "));
+    }
+    can_edit.then(|| "Add a topic".to_owned())
 }
 
 /// The topic's text in full, to select and copy, and a button for each
@@ -734,6 +749,22 @@ mod tests {
              [call] https://meet.google.com/abc-defg-hij\n\
              [link Draft] https://overleaf.com/project/a"
         );
+    }
+
+    #[test]
+    fn previews_the_text_else_the_links() {
+        let preview = |topic: &str, can_edit| preview(&Topic::parse(topic), &[], can_edit);
+        assert_eq!(preview(TOPIC, false).as_deref(), Some("About."));
+        assert_eq!(
+            preview(
+                "[call Weekly] https://zoom.us/j/1\n[link] https://overleaf.com/a",
+                false
+            )
+            .as_deref(),
+            Some("Weekly · overleaf.com")
+        );
+        assert_eq!(preview("", true).as_deref(), Some("Add a topic"));
+        assert_eq!(preview("", false), None);
     }
 
     #[test]

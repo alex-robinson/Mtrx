@@ -165,7 +165,7 @@ pub enum Message {
     /// Others' presence, and ours.
     Presence(presence::Message),
     Calls(OwnedRoomId, calls::Message),
-    /// The open room's topic and links, in its header.
+    /// The open room's topic and links, in its topic panel.
     Topic(OwnedRoomId, topic::Message),
     RecoveryKey(String),
     Recover,
@@ -2712,7 +2712,7 @@ impl App {
         self.save_topic(room_id, topic)
     }
 
-    /// The open room's topic and links, in the header's panel.
+    /// The open room's topic and links, in the topic panel.
     fn room_topic(&mut self, room_id: OwnedRoomId, message: topic::Message) -> Task<Message> {
         let Screen::Main(main) = &mut self.screen else {
             return Task::none();

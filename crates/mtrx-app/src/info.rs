@@ -360,14 +360,14 @@ impl Card {
             let topic = Topic::parse(room.topic.as_deref().unwrap_or_default());
             topic::details(&topic, call_services)
         };
-        // One box for what the room's header shows.
-        let header = container(topic)
+        // The topic's text and links in one box.
+        let topic = container(topic)
             .width(Length::Fill)
             .padding(10)
             .style(style::section);
         card = card
             .push(labelled("Name", name))
-            .push(labelled("Header", header));
+            .push(labelled("Topic", topic));
         let (name, topic) = self.changed_details(room);
         if name.is_some() || topic.is_some() {
             card = card.push(row![

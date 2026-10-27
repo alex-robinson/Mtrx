@@ -1013,11 +1013,11 @@ async fn main_screen_with_math() {
             }
         }
         // A click elsewhere closes the call menu (dark) or the list of
-        // readers and the header's panel (light), and does nothing else:
+        // readers and the topic panel (light), and does nothing else:
         // what is behind neither lights up under the cursor nor takes the
         // click.
         let mut ui = Simulator::with_size(fonts::settings(), Size::new(1200.0, 800.0), app.view());
-        // Below the header's panel, on the timeline.
+        // Below the topic panel, on the timeline.
         ui.point_at(iced::Point::new(400.0, 450.0));
         ui.simulate(iced_test::simulator::click());
         let messages: Vec<_> = ui.into_messages().collect();
@@ -1048,8 +1048,8 @@ async fn main_screen_with_math() {
                 main.room.as_mut().unwrap().readers = None;
             }
             composer_keeps_focus(&mut app);
-            // The header's panel, not editing: Edit in its corner.
-            snapshot(&app, "header-panel");
+            // The topic panel, not editing: Edit in its corner.
+            snapshot(&app, "topic-panel");
         } else {
             // A service in the call menu says what starting a call does.
             snapshot_at(&app, "call-menu-hint", Some(iced::Point::new(864.0, 110.0)));

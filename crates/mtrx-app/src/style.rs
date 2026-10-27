@@ -622,8 +622,8 @@ pub fn card_button(theme: &Theme, status: button::Status) -> button::Style {
     }
 }
 
-/// A box around the parts of one thing in a card, as the room header's
-/// text and links.
+/// A box around the parts of one thing in a card, as a room topic's text
+/// and links.
 pub fn section(theme: &Theme) -> container::Style {
     let palette = theme.extended_palette();
     container::Style {
