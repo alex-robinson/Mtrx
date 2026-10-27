@@ -75,6 +75,7 @@ fn main() -> iced::Result {
     logo::notifications_from_bundle();
 
     let environment = app::Environment::load().expect("valid MTRX_PROFILE and data directory");
+    log_panics(environment.data_root().join(CRASH_LOG));
     let window = environment.window();
     iced::application(
         move || app::App::boot(environment.clone()),
@@ -94,4 +95,55 @@ fn main() -> iced::Result {
         ..window
     }))
     .run()
+}
+
+/// Where panics are written down, in the data directory.
+const CRASH_LOG: &str = "crash.log";
+/// Past this size the log starts over.
+const CRASH_LOG_MAX: u64 = 1 << 20;
+
+/// Panics also go to `path`, with a backtrace: started from the Finder or
+/// a menu, the app has no terminal to print them to.
+fn log_panics(path: std::path::PathBuf) {
+    let print = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        print(info);
+        let report = format!(
+            "{} Mtrx {}, {}\n{}\n",
+            chrono::Local::now().to_rfc3339(),
+            env!("CARGO_PKG_VERSION"),
+            info,
+            std::backtrace::Backtrace::force_capture()
+        );
+        let _ = append_report(&path, &report);
+    }));
+}
+
+fn append_report(path: &std::path::Path, report: &str) -> std::io::Result<()> {
+    use std::io::Write;
+    let full = std::fs::metadata(path).is_ok_and(|m| m.len() > CRASH_LOG_MAX);
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .append(!full)
+        .truncate(full)
+        .open(path)?;
+    writeln!(file, "{report}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn crash_log_appends_and_starts_over_when_full() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join(CRASH_LOG);
+        append_report(&path, "first").unwrap();
+        append_report(&path, "second").unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "first\nsecond\n");
+        std::fs::write(&path, vec![b'x'; CRASH_LOG_MAX as usize + 1]).unwrap();
+        append_report(&path, "third").unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "third\n");
+    }
 }

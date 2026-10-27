@@ -3,7 +3,7 @@
 use std::{
     fmt,
     hash::{Hash, Hasher},
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::Arc,
     time::{Duration, Instant, SystemTime},
 };
@@ -577,6 +577,11 @@ impl Environment {
     /// text size: the same in logical pixels at any text size.
     pub fn window(&self) -> window::Settings {
         self.placement.settings(self.settings.text_size.scale())
+    }
+
+    /// Where the settings, the profiles and the crash log are.
+    pub fn data_root(&self) -> &Path {
+        &self.data_root
     }
 }
 
