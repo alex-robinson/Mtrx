@@ -592,6 +592,16 @@ impl<Message> Widget<Message, Theme, Renderer> for Selectable<'_, Message> {
         let state = tree.state.downcast_mut::<State>();
         let bounds = layout.bounds();
         if self.own {
+            // A menu's Copy as the key press it stands for: macOS's Edit
+            // menu takes ⌘C before the window.
+            let key_press;
+            let event = match event {
+                Event::StandardAction(action) => {
+                    key_press = Event::Keyboard(action.key_press());
+                    &key_press
+                }
+                event => event,
+            };
             update_own(state, event, bounds, cursor, clipboard, shell);
             return;
         }
@@ -923,6 +933,13 @@ mod tests {
             Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)),
         ]);
         assert_eq!(ui.simulate([command_c()]), [Status::Captured]);
+        // Copy from the Edit menu, which takes ⌘C on macOS.
+        assert_eq!(
+            ui.simulate([Event::StandardAction(
+                iced_core::event::StandardAction::Copy
+            )]),
+            [Status::Captured]
+        );
         // A click elsewhere clears it.
         ui.point_at((350.0, 90.0));
         let _ = ui.simulate([Event::Mouse(mouse::Event::ButtonPressed(
