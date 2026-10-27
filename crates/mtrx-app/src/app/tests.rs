@@ -1048,6 +1048,8 @@ async fn main_screen_with_math() {
                 main.room.as_mut().unwrap().readers = None;
             }
             composer_keeps_focus(&mut app);
+            // The header's panel, not editing: Edit in its corner.
+            snapshot(&app, "header-panel");
         } else {
             // A service in the call menu says what starting a call does.
             snapshot_at(&app, "call-menu-hint", Some(iced::Point::new(864.0, 110.0)));

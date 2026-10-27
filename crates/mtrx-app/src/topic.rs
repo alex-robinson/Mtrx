@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use iced::{
     Alignment, Color, Element, Font, Length, Task, Theme,
-    widget::{button, column, row, space, text, text_editor, text_input, toggler},
+    widget::{button, column, container, row, space, text, text_editor, text_input, toggler},
 };
 use mtrx_core::{CallService, LinkKind, OwnedRoomId, RoomLink, Topic, Url};
 
@@ -170,8 +170,21 @@ impl Panel {
                 .spacing(8)
             }
             None => {
-                let edit = (self.can_edit == Some(true)).then(|| message(Message::Edit));
-                column![details(topic, services, edit)]
+                let details = details(topic, services);
+                if self.can_edit == Some(true) {
+                    // In the corner, clear of the text and links.
+                    let edit = button(
+                        row![icons::pencil(12.0, secondary), text("Edit").size(13)]
+                            .spacing(5)
+                            .align_y(Alignment::Center),
+                    )
+                    .padding([4, 10])
+                    .style(style::secondary_button)
+                    .on_press(message(Message::Edit));
+                    column![row![container(details).width(Length::Fill), edit].spacing(12)]
+                } else {
+                    column![details]
+                }
             }
         };
         if let Some(error) = &self.error {
@@ -182,12 +195,8 @@ impl Panel {
 }
 
 /// The topic's text in full, to select and copy, and a button for each
-/// link; with Edit when given.
-pub fn details<'a>(
-    topic: &Topic,
-    services: &[CallService],
-    edit: Option<app::Message>,
-) -> Element<'a, app::Message> {
+/// link.
+pub fn details<'a>(topic: &Topic, services: &[CallService]) -> Element<'a, app::Message> {
     let mut details = column![].spacing(10);
     if !topic.text.is_empty() {
         details = details.push(selectable_text(topic.text.clone()).size(13));
@@ -215,18 +224,6 @@ pub fn details<'a>(
             link.url.to_string(),
             Position::Bottom,
         ));
-    }
-    if let Some(edit) = edit {
-        links = links.push(
-            button(
-                row![icons::pencil(12.0, secondary), text("Edit").size(12)]
-                    .spacing(4)
-                    .align_y(Alignment::Center),
-            )
-            .padding([4, 8])
-            .style(style::text_button)
-            .on_press(edit),
-        );
     }
     if topic.text.is_empty() && topic.links.is_empty() {
         details = details.push(

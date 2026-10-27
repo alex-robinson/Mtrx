@@ -1070,15 +1070,11 @@ impl Room {
         ];
         let header = header.push(rule::horizontal(1).style(style::separator));
         // The topic in full and its links, or their editor, dropping over
-        // the timeline.
+        // the timeline below the room's picture.
         let panel = self.topic.open.then(|| {
             container(
                 scrollable(
-                    container(self.topic.view(&self.id, &topic, look.call_services)).padding(
-                        Padding::new(10.0)
-                            .left(TIMELINE_PADDING + MESSAGE_PADDING + HEADER_AVATAR + 10.0)
-                            .right(TIMELINE_PADDING + MESSAGE_PADDING),
-                    ),
+                    container(self.topic.view(&self.id, &topic, look.call_services)).padding(14),
                 )
                 .height(Length::Shrink),
             )
@@ -1087,7 +1083,7 @@ impl Room {
             .into()
         });
         popover(header, panel, Side::Below, Edge::Left)
-            .full_width()
+            .share_of_anchor(2.0 / 3.0, TIMELINE_PADDING + MESSAGE_PADDING)
             .on_dismiss(Message::Topic(self.id.clone(), topic::Message::Dismiss))
             .into()
     }
