@@ -82,6 +82,8 @@ pub struct RoomSettings {
     pub notify: NotifyMode,
     pub access: Access,
     pub can_change_access: bool,
+    /// For a space: may list rooms in it.
+    pub can_add_rooms: bool,
 }
 
 impl Session {
@@ -97,6 +99,7 @@ impl Session {
             can_invite: levels.user_can_invite(&own),
             access: room.join_rule().into(),
             can_change_access: can(StateEventType::RoomJoinRules),
+            can_add_rooms: can(StateEventType::SpaceChild),
             notify: self.notify_mode(&room).await.into(),
         })
     }

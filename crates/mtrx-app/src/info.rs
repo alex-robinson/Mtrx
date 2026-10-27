@@ -19,6 +19,7 @@ use crate::{
     fonts, frame,
     hint::{Position, hint},
     icons,
+    overview::{self, Overview},
     presence::{self, Presences},
     selectable::selectable_text,
     settings::{self, Preference},
@@ -28,6 +29,8 @@ use crate::{
 /// The picture in the card's header.
 const AVATAR: f32 = 40.0;
 const WIDTH: f32 = 460.0;
+/// A space's card, with its rooms.
+const OVERVIEW_WIDTH: f32 = 720.0;
 /// Height of a person's shared rooms list; more scroll.
 const SHARED_HEIGHT: f32 = 200.0;
 
@@ -70,13 +73,14 @@ pub enum Message {
     RemovePicture,
     /// A change was saved on the server, or not.
     Saved(Result<(), String>),
+    Overview(overview::Message),
     Close,
 }
 
 /// A card's parts, for its [`frame::frame`].
 struct Framed<'a> {
     title: Element<'a, app::Message>,
-    action: Option<Element<'a, app::Message>>,
+    actions: Vec<Element<'a, app::Message>>,
     body: Element<'a, app::Message>,
 }
 
@@ -94,15 +98,21 @@ pub struct Card {
     error: Option<String>,
     /// The text last copied, to confirm it.
     copied: Option<String>,
+    /// For a space: its rooms and members too.
+    pub overview: Option<Overview>,
 }
 
 impl Card {
-    pub fn new(target: Target, rooms: &[RoomSummary]) -> Self {
+    /// A space's card opens on `tab`.
+    pub fn new(target: Target, rooms: &[RoomSummary], tab: overview::Tab) -> Self {
         let room = match &target {
             Target::Room(id) => rooms.iter().find(|r| &r.id == id),
             Target::User(_) => None,
         };
         Self {
+            overview: room
+                .filter(|r| r.kind == RoomKind::Space)
+                .map(|r| Overview::new(r.id.clone(), tab)),
             name: room.map(|r| r.name.clone()).unwrap_or_default(),
             topic: topic::Editor::new(room.and_then(|r| r.topic.as_deref()).unwrap_or_default()),
             target,
@@ -148,7 +158,8 @@ impl Card {
         )
     }
 
-    pub fn update(&mut self, message: Message) {
+    /// What the space's overview needs done, if anything.
+    pub fn update(&mut self, message: Message) -> overview::Action {
         match message {
             Message::UserLoaded(id, Ok(info)) => {
                 if let Target::User(user) = &mut self.target
@@ -193,14 +204,20 @@ impl Card {
                 self.saving = false;
                 self.error = result.err();
             }
+            Message::Overview(message) => {
+                if let Some(overview) = &mut self.overview {
+                    return overview.update(message);
+                }
+            }
             Message::Close => {}
         }
+        overview::Action::None
     }
 
     pub fn view<'a>(&'a self, shown: Shown<'a>) -> Element<'a, app::Message> {
         let Framed {
             title,
-            action,
+            actions,
             body,
         } = match &self.target {
             Target::User(user) => self.user_view(user, shown),
@@ -208,17 +225,21 @@ impl Card {
                 Some(room) => self.room_view(room, shown),
                 None => Framed {
                     title: frame::title("Room"),
-                    action: None,
+                    actions: Vec::new(),
                     body: text("This room is not in your list.").into(),
                 },
             },
         };
         frame::frame(
             title,
-            action,
+            actions,
             app::Message::Info(Message::Close),
             body,
-            WIDTH,
+            if self.overview.is_some() {
+                OVERVIEW_WIDTH
+            } else {
+                WIDTH
+            },
         )
     }
 
@@ -317,10 +338,10 @@ impl Card {
         };
         Framed {
             title: title.into(),
-            action: Some(frame::primary(
+            actions: vec![frame::primary(
                 message,
                 Some(app::Message::ChatWith(user.id.clone())),
-            )),
+            )],
             body: card.into(),
         }
     }
@@ -516,35 +537,57 @@ impl Card {
             card = card.push(text(error).size(12).style(text::danger));
         }
 
-        // Invite in the members list, where the people are.
-        let mut actions = row![].spacing(4);
-        if !room.invited && settings.is_some_and(|s| s.can_invite) {
-            let invite = if room.kind == RoomKind::Space {
-                app::Message::OpenDialog(Kind::Invite {
-                    room: room.id.clone(),
-                    name: room.name.clone(),
-                })
-            } else {
-                app::Message::ShowMembers(room.id.clone())
+        let can_invite = !room.invited && settings.is_some_and(|s| s.can_invite);
+        let leave = button(text("Leave…").size(13))
+            .style(style::text_button)
+            .on_press(app::Message::OpenDialog(Kind::Leave {
+                room: room.id.clone(),
+                name: room.name.clone(),
+            }));
+        let Some(overview) = &self.overview else {
+            // Invite in the members list, where the people are.
+            let mut actions = row![].spacing(4);
+            if can_invite {
+                actions = actions.push(
+                    button(text("Invite…").size(13))
+                        .style(style::text_button)
+                        .on_press(app::Message::ShowMembers(room.id.clone())),
+                );
+            }
+            return Framed {
+                title,
+                actions: self.room_action(room).into_iter().collect(),
+                body: card.push(actions.push(leave)).into(),
             };
-            actions = actions.push(
+        };
+        // A space: its rooms, members and these settings, in tabs.
+        let mut actions = Vec::new();
+        if can_invite && overview.tab != overview::Tab::Members {
+            actions.push(
                 button(text("Invite…").size(13))
-                    .style(style::text_button)
-                    .on_press(invite),
+                    .padding([4, 12])
+                    .style(style::secondary_button)
+                    .on_press(app::Message::Info(Message::Overview(
+                        overview::Message::Tab(overview::Tab::Members),
+                    )))
+                    .into(),
             );
         }
-        actions = actions.push(
-            button(text("Leave…").size(13))
-                .style(style::text_button)
-                .on_press(app::Message::OpenDialog(Kind::Leave {
-                    room: room.id.clone(),
-                    name: room.name.clone(),
-                })),
-        );
+        actions.extend(self.room_action(room));
+        let topic = Topic::parse(room.topic.as_deref().unwrap_or_default());
+        let about = (!topic.text.trim().is_empty() || !topic.links.is_empty())
+            .then(|| topic::details(&topic, call_services));
         Framed {
             title,
-            action: self.room_action(room),
-            body: card.push(actions).into(),
+            actions,
+            body: overview.view(
+                room,
+                shown,
+                about,
+                settings.is_some_and(|s| s.can_add_rooms),
+                can_invite,
+                card.push(leave).into(),
+            ),
         }
     }
 

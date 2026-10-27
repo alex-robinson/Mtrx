@@ -446,7 +446,7 @@ pub fn room_list<'a>(view: RoomListView<'a>) -> Element<'a, Message> {
                 .padding([4, 8])
                 .style(style::list_item(false))
                 .on_press(Message::ShowInfo(info::Target::Room(space.clone()))),
-            "Space settings, address and link",
+            "Rooms, members and settings of the space",
             Position::Bottom,
         ),
         None => container(ellipsis(title).size(16).font(fonts::SEMIBOLD))

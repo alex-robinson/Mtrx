@@ -12,8 +12,8 @@ use iced::{
     },
 };
 use mtrx_core::{
-    Contact, Grouping, NewRoom, OwnedRoomId, OwnedUserId, Permissions, RoomCategories, RoomSummary,
-    UserId, UserSummary,
+    Contact, Grouping, NewRoom, OwnedRoomId, OwnedUserId, Permissions, RoomCategories, RoomKind,
+    RoomSummary, UserId, UserSummary,
 };
 
 use crate::{
@@ -505,7 +505,7 @@ impl Dialog {
             Kind::DirectChat => ("New direct chat".into(), "Start chat"),
             Kind::Join => ("Join a room".into(), "Join"),
             Kind::Invite { name, .. } => (format!("Invite to {name}"), "Invite"),
-            Kind::AddExisting { name, .. } => (format!("Add rooms to {name}"), "Add"),
+            Kind::AddExisting { name, .. } => (format!("Add your rooms to {name}"), "Add"),
             Kind::Leave { name, .. } => (format!("Leave {name}?"), "Leave"),
             Kind::SignOut => ("Sign out?".into(), "Sign out"),
             Kind::Category { category: None, .. } => ("New category".into(), "Create"),
@@ -672,7 +672,8 @@ impl Dialog {
         section.into()
     }
 
-    /// Joined rooms not yet in `space`, to tick.
+    /// Joined rooms (not direct chats) not yet in `space` that the search
+    /// finds, to tick.
     fn rooms_view<'a>(
         &'a self,
         space: &OwnedRoomId,
@@ -680,23 +681,56 @@ impl Dialog {
     ) -> Element<'a, app::Message> {
         let candidates: Vec<_> = rooms
             .iter()
-            .filter(|r| !r.invited && r.id != *space && !r.parents.contains(space))
+            .filter(|r| {
+                !r.invited
+                    && r.kind != RoomKind::Direct
+                    && r.id != *space
+                    && !r.parents.contains(space)
+            })
             .collect();
         if candidates.is_empty() {
             return text("All your rooms are already in this space.")
                 .size(13)
                 .into();
         }
-        let list = candidates.into_iter().map(|room| {
-            let chosen = self.rooms.contains(&room.id);
-            button(text(&room.name))
+        let query = self.query.trim().to_lowercase();
+        let found: Vec<_> = candidates
+            .into_iter()
+            .filter(|r| r.name.to_lowercase().contains(&query))
+            .collect();
+        let chosen = match self.rooms.len() {
+            0 => "Rooms you're in that aren't in this space yet.".to_owned(),
+            1 => "1 room chosen".to_owned(),
+            n => format!("{n} rooms chosen"),
+        };
+        let list = found.into_iter().map(|room| {
+            let toggle = message(Message::ToggleRoom(room.id.clone()));
+            let mut line = row![
+                checkbox(self.rooms.contains(&room.id)).on_toggle({
+                    let toggle = toggle.clone();
+                    move |_| toggle.clone()
+                }),
+                text(&room.name).width(Length::Fill),
+            ]
+            .spacing(8)
+            .align_y(Alignment::Center);
+            if room.kind == RoomKind::Space {
+                line = line.push(text("space").size(12).style(text::secondary));
+            }
+            button(line)
                 .width(Length::Fill)
                 .padding([4, 8])
-                .style(style::list_item(chosen))
-                .on_press(message(Message::ToggleRoom(room.id.clone())))
+                .style(style::list_item(false))
+                .on_press(toggle)
                 .into()
         });
-        scrollable(column(list).spacing(2)).height(260).into()
+        column![
+            self.field("Search your rooms", &self.query, Message::Query),
+            text(chosen).size(12).style(text::secondary),
+            scrollable(column(list).spacing(2)).height(300),
+        ]
+        .spacing(8)
+        .into()
     }
 }
 

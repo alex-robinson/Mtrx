@@ -40,6 +40,7 @@ mod mention;
 mod menu_bar;
 mod message;
 mod message_menu;
+mod overview;
 mod pdf;
 mod pdf_viewer;
 mod pins;

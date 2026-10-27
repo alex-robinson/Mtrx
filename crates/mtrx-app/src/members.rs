@@ -29,7 +29,7 @@ pub fn view<'a>(
     avatars: &Avatars,
     presences: &Presences,
 ) -> Element<'a, Message> {
-    let mut panel = column![
+    let panel = column![
         row![
             text("Members")
                 .size(14)
@@ -52,28 +52,40 @@ pub fn view<'a>(
     ]
     .spacing(2)
     .padding(8);
-    match list {
-        None => panel = panel.push(text("Loading…").size(12).style(text::secondary)),
-        Some(Err(e)) => panel = panel.push(text(e).size(12).style(text::danger)),
-        Some(Ok(members)) => {
-            let (joined, invited): (Vec<_>, Vec<_>) = members.iter().partition(|m| !m.invited);
-            panel = panel.push(heading(format!("Joined · {}", joined.len())));
-            for member in joined {
-                panel = panel.push(entry(member, own, avatars, presences));
-            }
-            if !invited.is_empty() {
-                panel = panel.push(heading(format!("Invited · {}", invited.len())));
-                for member in invited {
-                    panel = panel.push(entry(member, own, avatars, presences));
-                }
-            }
-        }
-    }
-    container(scrollable(panel))
+    container(scrollable(panel.push(rows(list, own, avatars, presences))))
         .width(WIDTH)
         .height(Length::Fill)
         .style(style::panel)
         .into()
+}
+
+/// The members once loaded (`list`), joined then invited, or why loading
+/// failed; also in a space's overview.
+pub fn rows<'a>(
+    list: Option<&'a Result<Vec<Member>, String>>,
+    own: &OwnedUserId,
+    avatars: &Avatars,
+    presences: &Presences,
+) -> Element<'a, Message> {
+    let mut rows = column![].spacing(2);
+    match list {
+        None => rows = rows.push(text("Loading…").size(12).style(text::secondary)),
+        Some(Err(e)) => rows = rows.push(text(e).size(12).style(text::danger)),
+        Some(Ok(members)) => {
+            let (joined, invited): (Vec<_>, Vec<_>) = members.iter().partition(|m| !m.invited);
+            rows = rows.push(heading(format!("Joined · {}", joined.len())));
+            for member in joined {
+                rows = rows.push(entry(member, own, avatars, presences));
+            }
+            if !invited.is_empty() {
+                rows = rows.push(heading(format!("Invited · {}", invited.len())));
+                for member in invited {
+                    rows = rows.push(entry(member, own, avatars, presences));
+                }
+            }
+        }
+    }
+    rows.into()
 }
 
 /// Pictures of the listed members, with their size.

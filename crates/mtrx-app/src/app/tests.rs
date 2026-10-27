@@ -1767,7 +1767,11 @@ async fn room_management_screens() {
     let contacts = session.contacts().await.unwrap();
     snapshot(
         &main_with(&|main| {
-            let mut card = info::Card::new(info::Target::User(bob_info.user.clone()), &[]);
+            let mut card = info::Card::new(
+                info::Target::User(bob_info.user.clone()),
+                &[],
+                overview::Tab::Rooms,
+            );
             card.update(info::Message::UserLoaded(
                 bob.user_id(),
                 Ok(bob_info.clone()),
@@ -1780,7 +1784,11 @@ async fn room_management_screens() {
     let settings = session.room_settings(&room).await.unwrap();
     snapshot(
         &main_with(&|main| {
-            let mut card = info::Card::new(info::Target::Room(room.clone()), &main.rooms.rooms);
+            let mut card = info::Card::new(
+                info::Target::Room(room.clone()),
+                &main.rooms.rooms,
+                overview::Tab::Rooms,
+            );
             card.update(info::Message::SettingsLoaded(
                 room.clone(),
                 Ok(settings.clone()),

@@ -41,7 +41,7 @@ use crate::{
     login::{self, Login},
     math::{self, Math, Rendered},
     media::{self, Previews, Viewer},
-    members, mention, message, pdf_viewer, pins,
+    members, mention, message, overview, pdf_viewer, pins,
     placement::{self, Frame, Placement},
     presence::{self, Activity, Presences},
     room::{self, Look, Older, Room},
@@ -151,6 +151,8 @@ pub enum Message {
     ToggleMembers,
     /// Open the room with its members shown (where Invite is).
     ShowMembers(OwnedRoomId),
+    /// A space's card, on one of its tabs.
+    ShowSpace(OwnedRoomId, overview::Tab),
     /// A room's members, and whether we may mention everyone (`@room`).
     MembersLoaded(OwnedRoomId, Result<(Vec<Member>, bool), String>),
     /// Completing a mention in the composer.
@@ -443,6 +445,9 @@ impl Main {
         let rooms = &self.rooms.rooms;
         let mut wanted = sidebar::avatars(&self.room_list_view(settings));
         wanted.extend(self.info.as_ref().and_then(|c| c.avatar(rooms)));
+        if let Some(overview) = self.info.as_ref().and_then(|c| c.overview.as_ref()) {
+            wanted.extend(overview.avatars());
+        }
         if let Some(room) = &self.room {
             wanted.extend(room.avatars(
                 rooms.iter().find(|r| r.id == room.id),
@@ -1442,45 +1447,8 @@ impl App {
                 }
                 Task::none()
             }
-            Message::ShowInfo(target) => {
-                let Screen::Main(main) = &mut self.screen else {
-                    return Task::none();
-                };
-                main.arrange.escape();
-                main.add_menu = false;
-                // Opened from the list of a message's readers, say.
-                if let Some(room) = &mut main.room {
-                    room.readers = None;
-                    room.reactors = None;
-                }
-                let card = info::Card::new(target, &main.rooms.rooms);
-                // Fresher than the watcher's, and for people it does not follow.
-                let presence = match card.user() {
-                    Some(user) if *user != main.own_user && !main.presences.unavailable() => {
-                        presence::look_up(&main.session, user.clone()).map(Message::Presence)
-                    }
-                    _ => Task::none(),
-                };
-                let load = match card.user() {
-                    Some(user) => {
-                        let (session, user) = (main.session.clone(), user.clone());
-                        Task::perform(
-                            {
-                                let user = user.clone();
-                                async move { session.user_info(&user).await.map_err(|e| e.to_string()) }
-                            },
-                            move |result| {
-                                Message::Info(info::Message::UserLoaded(user.clone(), result))
-                            },
-                        )
-                    }
-                    None => card
-                        .room()
-                        .map_or_else(Task::none, |room| load_settings(&main.session, room)),
-                };
-                main.info = Some(card);
-                Task::batch([load, presence, self.load_avatars()])
-            }
+            Message::ShowInfo(target) => self.show_card(target, overview::Tab::Rooms),
+            Message::ShowSpace(space, tab) => self.show_card(info::Target::Room(space), tab),
             Message::Info(message) => {
                 let Screen::Main(main) = &mut self.screen else {
                     return Task::none();
@@ -1489,6 +1457,7 @@ impl App {
                     return Task::none();
                 };
                 let session = main.session.clone();
+                let overview_session = main.session.clone();
                 let room = card.room().cloned();
                 let saved = |result: mtrx_core::Result<()>| {
                     Message::Info(info::Message::Saved(result.map_err(|e| e.to_string())))
@@ -1553,8 +1522,13 @@ impl App {
                     (info::Message::Saved(_), Some(room)) => load_settings(&session, &room),
                     _ => Task::none(),
                 };
-                card.update(message);
-                Task::batch([task, self.load_avatars()])
+                let overview = match card.update(message) {
+                    overview::Action::None => Task::none(),
+                    action => card.overview.as_ref().map_or(Task::none(), |o| {
+                        overview_task(&overview_session, &o.space, action)
+                    }),
+                };
+                Task::batch([task, overview, self.load_avatars()])
             }
             Message::FavouritePerson(user) => {
                 let Screen::Main(main) = &self.screen else {
@@ -3487,6 +3461,48 @@ impl App {
     }
 
     /// Request the pictures on screen.
+    /// Show the card of a person or room; a space's opens on `tab`.
+    fn show_card(&mut self, target: info::Target, tab: overview::Tab) -> Task<Message> {
+        let Screen::Main(main) = &mut self.screen else {
+            return Task::none();
+        };
+        main.arrange.escape();
+        main.add_menu = false;
+        // Opened from the list of a message's readers, say.
+        if let Some(room) = &mut main.room {
+            room.readers = None;
+            room.reactors = None;
+        }
+        let card = info::Card::new(target, &main.rooms.rooms, tab);
+        // Fresher than the watcher's, and for people it does not follow.
+        let presence = match card.user() {
+            Some(user) if *user != main.own_user && !main.presences.unavailable() => {
+                presence::look_up(&main.session, user.clone()).map(Message::Presence)
+            }
+            _ => Task::none(),
+        };
+        let load = match card.user() {
+            Some(user) => {
+                let (session, user) = (main.session.clone(), user.clone());
+                Task::perform(
+                    {
+                        let user = user.clone();
+                        async move { session.user_info(&user).await.map_err(|e| e.to_string()) }
+                    },
+                    move |result| Message::Info(info::Message::UserLoaded(user.clone(), result)),
+                )
+            }
+            None => card
+                .room()
+                .map_or_else(Task::none, |room| load_settings(&main.session, room)),
+        };
+        let overview = card.overview.as_ref().map_or(Task::none(), |o| {
+            overview_task(&main.session, &o.space, o.opened())
+        });
+        main.info = Some(card);
+        Task::batch([load, presence, overview, self.load_avatars()])
+    }
+
     fn load_avatars(&mut self) -> Task<Message> {
         let Screen::Main(main) = &mut self.screen else {
             return Task::none();
@@ -4292,6 +4308,63 @@ fn attach(room: OwnedRoomId, paths: Vec<PathBuf>) -> Task<Message> {
 
 /// Load the room's members, for its member list and mentions, and whether
 /// we may mention everyone.
+/// Load or join what a space's overview needs.
+fn overview_task(
+    session: &Arc<Session>,
+    space: &OwnedRoomId,
+    action: overview::Action,
+) -> Task<Message> {
+    use overview::{Action, Message as Overview};
+    let session = session.clone();
+    let done = |message: Overview| Message::Info(info::Message::Overview(message));
+    match action {
+        Action::None => Task::none(),
+        Action::Load(space) => Task::perform(
+            {
+                let space = space.clone();
+                async move { session.space_children(&space).await }
+            },
+            move |result| {
+                done(Overview::Loaded(
+                    space.clone(),
+                    result.map_err(|e| e.to_string()),
+                ))
+            },
+        ),
+        Action::LoadMembers => {
+            let space = space.clone();
+            Task::perform(
+                async move { session.members(&space).await },
+                move |result| done(Overview::MembersLoaded(result.map_err(|e| e.to_string()))),
+            )
+        }
+        Action::Join(room, via) => Task::perform(
+            {
+                let room = room.clone();
+                async move { session.join(<&RoomOrAliasId>::from(&*room), &via).await }
+            },
+            move |result| {
+                done(Overview::Done(
+                    room.clone(),
+                    result.map(|_| ()).map_err(|e| e.to_string()),
+                ))
+            },
+        ),
+        Action::Knock(room, via) => Task::perform(
+            {
+                let room = room.clone();
+                async move { session.knock(&room.into(), via).await }
+            },
+            move |result| {
+                done(Overview::Done(
+                    room.clone(),
+                    result.map_err(|e| e.to_string()),
+                ))
+            },
+        ),
+    }
+}
+
 fn load_members(session: &Arc<Session>, room: &mut Room) -> Task<Message> {
     room.loading_members = true;
     let (session, id) = (session.clone(), room.id.clone());
