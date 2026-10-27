@@ -1387,6 +1387,8 @@ async fn images_and_files() -> Result<()> {
         mimetype: "image/png".into(),
         bytes: bytes.clone(),
     };
+    // Each upload reports its progress, and is gone once sent.
+    let uploads = alice_timeline.uploads().await?;
     let pending = alice_timeline
         .send(
             "Results:",
@@ -1399,6 +1401,17 @@ async fn images_and_files() -> Result<()> {
         )
         .await?;
     timeout("all sent", pending.sent()).await??;
+    let mut uploads = std::pin::pin!(uploads);
+    let mut seen = false;
+    timeout("uploads reported", async {
+        while let Some(now) = uploads.next().await {
+            seen |= now.iter().any(|u| u.total > 0);
+            if seen && now.is_empty() {
+                break;
+            }
+        }
+    })
+    .await?;
 
     let bob_timeline = bob.session.timeline(&room).await?;
     let entries = wait_for("bob sees the files", bob_timeline.updates(), |e| {

@@ -384,6 +384,47 @@ impl RoomTimeline {
         WatchStream::new(self.entries.clone())
     }
 
+    /// The files being uploaded for messages sent here from now on, after
+    /// each step of any; empty once all are sent, or failed.
+    pub async fn uploads(&self) -> Result<impl Stream<Item = Vec<Upload>> + use<>> {
+        let (_, updates) = (self.timeline.room().send_queue())
+            .subscribe()
+            .await
+            .map_err(timeline_error)?;
+        Ok(BroadcastStream::new(updates)
+            .scan(Vec::<Upload>::new(), |uploads, update| {
+                let changed = match update {
+                    Ok(RoomSendQueueUpdate::MediaUpload {
+                        related_to,
+                        progress,
+                        ..
+                    }) => {
+                        let message = EventKey(TimelineEventItemId::TransactionId(related_to));
+                        uploads.retain(|u| u.message != message);
+                        uploads.push(Upload {
+                            message,
+                            sent: progress.current,
+                            total: progress.total,
+                        });
+                        true
+                    }
+                    Ok(
+                        RoomSendQueueUpdate::SentEvent { transaction_id, .. }
+                        | RoomSendQueueUpdate::SendError { transaction_id, .. }
+                        | RoomSendQueueUpdate::CancelledLocalEvent { transaction_id },
+                    ) => {
+                        let message = EventKey(TimelineEventItemId::TransactionId(transaction_id));
+                        let before = uploads.len();
+                        uploads.retain(|u| u.message != message);
+                        uploads.len() != before
+                    }
+                    _ => false,
+                };
+                std::future::ready(Some(changed.then(|| uploads.clone())))
+            })
+            .filter_map(std::future::ready))
+    }
+
     /// Load up to `events` older events. Returns `true` once the start of the
     /// room is reached.
     pub async fn paginate_back(&self, events: u16) -> Result<bool> {
@@ -729,6 +770,16 @@ pub fn mention_targets<'a>(
     targets
 }
 
+/// A file being uploaded for a message being sent.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Upload {
+    /// The message, by its local echo's key.
+    pub message: EventKey,
+    /// Bytes sent so far, and in all.
+    pub sent: usize,
+    pub total: usize,
+}
+
 /// A message in the send queue.
 pub struct PendingSend {
     transaction_id: OwnedTransactionId,
@@ -775,6 +826,9 @@ impl Session {
                 (self.client.clone(), self.room_keys.clone(), room_id.clone());
             tokio::spawn(async move { keys.download(&client, &room).await });
         }
+        // Files sent report their upload's progress (see
+        // [`RoomTimeline::uploads`]).
+        self.client.send_queue().enable_upload_progress(true);
         // The open room is subscribed: sync then brings all of its state,
         // its pinned messages too, which the room list leaves out.
         (self.sync.room_list_service())
