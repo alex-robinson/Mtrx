@@ -62,6 +62,8 @@ enum Does {
     App(Chosen),
     /// Opens the website.
     Website,
+    /// Opens GitHub's form for a new issue.
+    Feedback,
 }
 
 /// An item: its title, what it does, and its shortcut (a key with
@@ -107,7 +109,7 @@ fn item_with(
 /// The menus, by title (the app menu's is the app's name, which macOS
 /// shows in bold).
 fn menus() -> Vec<(&'static str, Vec<Entry>)> {
-    use Does::{App, AppKit, Standard as S, Website};
+    use Does::{App, AppKit, Feedback, Standard as S, Website};
     use NSEventModifierFlags as M;
     use Standard::*;
 
@@ -189,7 +191,13 @@ fn menus() -> Vec<(&'static str, Vec<Entry>)> {
                 item("Bring All to Front", AppKit(c"arrangeInFront:"), ""),
             ],
         ),
-        ("Help", vec![item("Mtrx Website", Website, "")]),
+        (
+            "Help",
+            vec![
+                item("Mtrx Website", Website, ""),
+                item("Send Feedback…", Feedback, ""),
+            ],
+        ),
     ]
 }
 
@@ -237,6 +245,11 @@ define_class!(
         #[unsafe(method(openWebsite:))]
         fn open_website(&self, _sender: Option<&AnyObject>) {
             let _ = open::that_detached(WEBSITE);
+        }
+
+        #[unsafe(method(sendFeedback:))]
+        fn send_feedback(&self, _sender: Option<&AnyObject>) {
+            let _ = open::that_detached(crate::feedback::url());
         }
     }
 );
@@ -331,6 +344,7 @@ fn menu_item(mtm: MainThreadMarker, target: &Target, item: Item) -> Retained<NSM
         Does::App(Chosen::Settings) => (c"showSettings:", 0),
         Does::App(Chosen::CheckForUpdates) => (c"checkForUpdates:", 0),
         Does::Website => (c"openWebsite:", 0),
+        Does::Feedback => (c"sendFeedback:", 0),
     };
     let action = Sel::register(message);
     // SAFETY: each action message takes its sender, as AppKit sends it.
@@ -344,7 +358,7 @@ fn menu_item(mtm: MainThreadMarker, target: &Target, item: Item) -> Retained<NSM
     };
     menu_item.setKeyEquivalentModifierMask(item.modifiers);
     menu_item.setTag(tag);
-    if matches!(item.does, Does::App(_) | Does::Website) {
+    if matches!(item.does, Does::App(_) | Does::Website | Does::Feedback) {
         // SAFETY: the target outlives the menu (see `install`).
         unsafe { menu_item.setTarget(Some(target)) };
     }

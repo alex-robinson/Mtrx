@@ -200,6 +200,58 @@ impl<M> canvas::Program<M> for Link {
     }
 }
 
+/// A pushpin, leaning right: a pinned message.
+pub fn pin<'a, M: 'a>(size: f32, color: fn(&Theme) -> Color) -> Element<'a, M> {
+    canvas::Canvas::new(Pin { color })
+        .width(size)
+        .height(size)
+        .into()
+}
+
+struct Pin {
+    color: fn(&Theme) -> Color,
+}
+
+impl<M> canvas::Program<M> for Pin {
+    type State = ();
+
+    fn draw(
+        &self,
+        _state: &(),
+        renderer: &Renderer,
+        theme: &Theme,
+        bounds: Rectangle,
+        _cursor: mouse::Cursor,
+    ) -> Vec<Geometry> {
+        let mut frame = Frame::new(renderer, bounds.size());
+        let s = bounds.width;
+        let color = (self.color)(theme);
+        let rect = |x: f32, y: f32, w: f32, h: f32| {
+            Path::rectangle(
+                iced::Point::new(x * s, y * s),
+                iced::Size::new(w * s, h * s),
+            )
+        };
+        frame.translate(Vector::new(s / 2.0, s / 2.0));
+        frame.rotate(std::f32::consts::FRAC_PI_4);
+        // The cap, the barrel, the collar, then the needle.
+        frame.fill(&rect(-0.2, -0.46, 0.4, 0.12), color);
+        frame.fill(&rect(-0.12, -0.36, 0.24, 0.32), color);
+        frame.fill(&rect(-0.28, -0.06, 0.56, 0.12), color);
+        frame.stroke(
+            &Path::line(
+                iced::Point::new(0.0, 0.04 * s),
+                iced::Point::new(0.0, 0.46 * s),
+            ),
+            Stroke::default()
+                .with_color(color)
+                .with_width((s / 10.0).max(1.0))
+                .with_line_cap(canvas::LineCap::Round),
+        );
+        vec![frame.into_geometry()]
+    }
+}
+
 /// A page with its top right corner folded.
 pub fn file<'a, M: 'a>(size: f32, color: fn(&Theme) -> Color) -> Element<'a, M> {
     canvas::Canvas::new(File { color })

@@ -85,6 +85,7 @@ mod tests {
             direct_user: None,
             alias: None,
             joined_members: 1,
+            pinned: Vec::new(),
         };
         assert_eq!(view.found(&[]), None);
         assert_eq!(view.found(&[summary(&room)]), Some((None, room.clone())));

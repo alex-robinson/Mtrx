@@ -58,7 +58,9 @@ admins. `--moderated` gives the usual Matrix rules instead, and
 A room's calls and links are lines at the end of its topic, so other apps
 show them too: `[call] URL`, `[call Weekly passcode 123] URL`, `[link] URL`,
 `[link Paper draft] URL`. The first call is the one the header's Join button
-opens; the others, and the links, are in the menu beside it.
+opens; the others, and the links, are in the menu beside it. The caret below
+the room's name opens the topic panel: the topic in full, its links, and the
+pinned messages (pinned from a message's menu), each a click away.
 
 Presence (online, idle, offline, last active, a status message) is read
 from the server, about once a minute for the people shown, as sync does

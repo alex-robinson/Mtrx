@@ -284,7 +284,7 @@ impl Session {
         Ok(())
     }
 
-    async fn can_send_state(&self, room_id: &RoomId, event_type: &str) -> Result<bool> {
+    pub(crate) async fn can_send_state(&self, room_id: &RoomId, event_type: &str) -> Result<bool> {
         let levels = self
             .room(room_id)?
             .power_levels()

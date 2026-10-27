@@ -167,13 +167,85 @@ pub fn space_bar(theme: &Theme) -> container::Style {
     }
 }
 
-/// The bar along the bottom while offline.
+/// The colours of a problem, light pink, and of a wait, light blue (dark
+/// shades of them in dark mode): background and text.
+fn problem_colors(theme: &Theme) -> (Color, Color) {
+    if theme.extended_palette().is_dark {
+        (
+            Color::from_rgb8(0x4a, 0x2b, 0x33),
+            Color::from_rgb8(0xf6, 0xdf, 0xe4),
+        )
+    } else {
+        (
+            Color::from_rgb8(0xfd, 0xe9, 0xee),
+            Color::from_rgb8(0x5c, 0x22, 0x30),
+        )
+    }
+}
+
+fn wait_colors(theme: &Theme) -> (Color, Color) {
+    if theme.extended_palette().is_dark {
+        (
+            Color::from_rgb8(0x22, 0x36, 0x4e),
+            Color::from_rgb8(0xdd, 0xea, 0xfa),
+        )
+    } else {
+        (
+            Color::from_rgb8(0xe6, 0xf0, 0xfc),
+            Color::from_rgb8(0x1f, 0x3b, 0x5f),
+        )
+    }
+}
+
+/// The bar along the bottom while offline, or once the session ended.
 pub fn offline_bar(theme: &Theme) -> container::Style {
-    let palette = theme.extended_palette();
+    let (background, text) = problem_colors(theme);
     container::Style {
-        background: Some(Background::Color(palette.warning.weak.color)),
-        text_color: Some(palette.warning.weak.text),
+        background: Some(Background::Color(background)),
+        text_color: Some(text),
         ..Default::default()
+    }
+}
+
+/// A button on a problem's light pink, as Retry now in the offline bar:
+/// dark pink.
+pub fn problem_button(_theme: &Theme, status: button::Status) -> button::Style {
+    let background = match status {
+        button::Status::Active => Color::from_rgb8(0xb0, 0x26, 0x4b),
+        button::Status::Hovered => Color::from_rgb8(0x9a, 0x1f, 0x41),
+        button::Status::Pressed => Color::from_rgb8(0x84, 0x19, 0x37),
+        button::Status::Disabled => Color::from_rgb8(0xb0, 0x26, 0x4b).scale_alpha(0.5),
+    };
+    button::Style {
+        background: Some(Background::Color(background)),
+        text_color: Color::WHITE,
+        border: Border::default().rounded(BUTTON_RADIUS),
+        ..Default::default()
+    }
+}
+
+/// The status pill above the composer: a problem, else a wait.
+pub fn status_pill(problem: bool) -> impl Fn(&Theme) -> container::Style {
+    move |theme| {
+        let (background, text) = if problem {
+            problem_colors(theme)
+        } else {
+            wait_colors(theme)
+        };
+        container::Style {
+            background: Some(Background::Color(background)),
+            text_color: Some(text),
+            border: Border::default()
+                .rounded(16)
+                .width(1)
+                .color(text.scale_alpha(0.15)),
+            shadow: iced::Shadow {
+                color: Color::BLACK.scale_alpha(0.12),
+                offset: iced::Vector::new(0.0, 1.0),
+                blur_radius: 4.0,
+            },
+            ..Default::default()
+        }
     }
 }
 
@@ -306,6 +378,27 @@ pub fn list_item(selected: bool) -> impl Fn(&Theme, button::Status) -> button::S
             text_color: palette.background.base.text,
             border: Border::default().rounded(8),
             ..Default::default()
+        }
+    }
+}
+
+/// `base`, ringed in the primary colour while `on`: buttons asking to be
+/// pressed, as Cancel and Save after a click outside an editor.
+pub fn ringed(
+    base: fn(&Theme, button::Status) -> button::Style,
+    on: bool,
+) -> impl Fn(&Theme, button::Status) -> button::Style {
+    move |theme, status| {
+        let style = base(theme, status);
+        if !on {
+            return style;
+        }
+        button::Style {
+            border: style
+                .border
+                .width(2)
+                .color(theme.extended_palette().primary.strong.color),
+            ..style
         }
     }
 }
@@ -597,6 +690,20 @@ pub fn card_button(theme: &Theme, status: button::Status) -> button::Style {
         background: Some(Background::Color(background)),
         text_color: palette.background.base.text,
         border: card.border,
+        ..Default::default()
+    }
+}
+
+/// A box around the parts of one thing in a card, as a room topic's text
+/// and links.
+pub fn section(theme: &Theme) -> container::Style {
+    let palette = theme.extended_palette();
+    container::Style {
+        background: Some(Background::Color(palette.background.base.color)),
+        border: Border::default()
+            .rounded(8)
+            .width(1)
+            .color(palette.background.strong.color),
         ..Default::default()
     }
 }

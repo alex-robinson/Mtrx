@@ -358,11 +358,16 @@ impl Card {
             (self.topic.view(call_services)).map(|edit| app::Message::Info(Message::Topic(edit)))
         } else {
             let topic = Topic::parse(room.topic.as_deref().unwrap_or_default());
-            topic::details(&topic, call_services, None)
+            topic::details(&topic, call_services)
         };
+        // The topic's text and links in one box.
+        let topic = container(topic)
+            .width(Length::Fill)
+            .padding(10)
+            .style(style::section);
         card = card
             .push(labelled("Name", name))
-            .push(labelled("Topic and links", topic));
+            .push(labelled("Topic", topic));
         let (name, topic) = self.changed_details(room);
         if name.is_some() || topic.is_some() {
             card = card.push(row![

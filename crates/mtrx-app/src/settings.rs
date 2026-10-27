@@ -24,7 +24,7 @@ use crate::{
     app,
     appearance::Appearance,
     dialog::Kind,
-    fonts,
+    feedback, fonts,
     hint::{Position, hint, shortcut},
     style,
     text_size::TextSize,
@@ -585,6 +585,16 @@ impl Panel {
             .align_y(Alignment::Center),
             heading("Updates"),
             updates(&settings.updates, updater),
+            heading("Feedback"),
+            option(
+                "Send feedback",
+                "Report a problem or suggest an idea, on GitHub.",
+                button(text("Send Feedback…").size(13))
+                    .padding([4, 10])
+                    .style(style::secondary_button)
+                    .on_press(app::Message::LinkClicked(feedback::url()))
+                    .into(),
+            ),
             heading("General"),
             option(
                 "Appearance",

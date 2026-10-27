@@ -541,6 +541,9 @@ impl From<&core::EventContent> for EventContent {
             core::EventContent::Topic { .. } => Self::OtherState {
                 event_type: "m.room.topic".into(),
             },
+            core::EventContent::Pins(_) => Self::OtherState {
+                event_type: "m.room.pinned_events".into(),
+            },
             core::EventContent::OtherState { event_type } => Self::OtherState {
                 event_type: event_type.clone(),
             },
@@ -883,6 +886,7 @@ mod tests {
             direct_user: Some("@bob:example.org".try_into().unwrap()),
             alias: None,
             joined_members: 2,
+            pinned: Vec::new(),
         };
         let state = core::RoomListState {
             rooms: vec![room],

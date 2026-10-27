@@ -22,6 +22,8 @@ use crate::{
 };
 
 const MENU_WIDTH: f32 = 300.0;
+/// The split button's height, both halves the same whatever they show.
+const SPLIT_HEIGHT: f32 = 27.0;
 
 #[derive(Debug, Clone)]
 pub enum Message {
@@ -131,9 +133,11 @@ impl RoomCalls {
                     button(
                         row![icons::camera(14.0, on_primary), text("Join").size(13)]
                             .spacing(6)
+                            .height(Length::Fill)
                             .align_y(Alignment::Center),
                     )
-                    .padding([5, 12])
+                    .height(Length::Fill)
+                    .padding([0, 12])
                     .style(style::split_button(style::primary_button, true))
                     .on_press(app::Message::LinkClicked(call.url.to_string()))
                     .into(),
@@ -152,8 +156,9 @@ impl RoomCalls {
                     None => "Add a call service in Settings to start calls".to_owned(),
                 };
                 tip(
-                    button(text("Start call").size(13))
-                        .padding([5, 10])
+                    button(container(text("Start call").size(13)).center_y(Length::Fill))
+                        .height(Length::Fill)
+                        .padding([0, 10])
                         .style(style::split_button(style::secondary_button, true))
                         .on_press_maybe(
                             service
@@ -182,8 +187,9 @@ impl RoomCalls {
         counts = counts.push(icons::chevron(10.0, true, style::on_secondary));
         // While open, a click on it closes the menu as any outside click.
         let toggle = tip(
-            button(counts)
-                .padding([5, 8])
+            button(counts.height(Length::Fill))
+                .height(Length::Fill)
+                .padding([0, 8])
                 .style(style::split_button(style::secondary_button, false))
                 .on_press_maybe((!open).then(|| self.message(Message::OpenMenu)))
                 .into(),
@@ -193,7 +199,7 @@ impl RoomCalls {
         );
         let menu = open.then(|| self.menu_view(topic, own, can_edit));
         popover(
-            row![main, toggle].spacing(1).align_y(Alignment::Center),
+            row![main, toggle].spacing(1).height(SPLIT_HEIGHT),
             menu,
             Side::Below,
             Edge::Right,

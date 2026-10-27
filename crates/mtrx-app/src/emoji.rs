@@ -256,17 +256,46 @@ impl Panel {
 pub fn runs(text: &str) -> Vec<(bool, String)> {
     let mut runs: Vec<(bool, String)> = Vec::new();
     for grapheme in text.graphemes(true) {
-        let pictographic = grapheme.contains('\u{fe0f}')
-            || grapheme.chars().next().is_some_and(|c| c >= '\u{2600}');
-        let emoji = pictographic
-            && (emojis::get(grapheme).is_some()
-                || emojis::get(&format!("{grapheme}\u{fe0f}")).is_some());
+        let emoji = is_emoji(grapheme);
         match runs.last_mut() {
             Some((kind, run)) if *kind == emoji => run.push_str(grapheme),
             _ => runs.push((emoji, grapheme.to_owned())),
         }
     }
     runs
+}
+
+/// The emoji of `text`, in order, one for each use: what sending it uses.
+pub fn used(text: &str) -> Vec<String> {
+    text.graphemes(true)
+        .filter(|g| is_emoji(g))
+        .map(str::to_owned)
+        .collect()
+}
+
+/// The emoji of `new` beyond those `old` has, one for each use: what an
+/// edit adds.
+pub fn added(old: &str, new: &str) -> Vec<String> {
+    let mut old = used(old);
+    used(new)
+        .into_iter()
+        .filter(|emoji| match old.iter().position(|o| o == emoji) {
+            Some(at) => {
+                old.swap_remove(at);
+                false
+            }
+            None => true,
+        })
+        .collect()
+}
+
+/// See [`runs`].
+fn is_emoji(grapheme: &str) -> bool {
+    let pictographic =
+        grapheme.contains('\u{fe0f}') || grapheme.chars().next().is_some_and(|c| c >= '\u{2600}');
+    pictographic
+        && (emojis::get(grapheme).is_some()
+            || emojis::get(&format!("{grapheme}\u{fe0f}")).is_some())
 }
 
 fn drawable(emoji: &emojis::Emoji) -> bool {
@@ -290,6 +319,14 @@ mod tests {
         assert_eq!(runs("© 2026 → done ✅"), ["© 2026 → done ", "E:✅"]);
         assert_eq!(runs("👩‍🔬🧊"), ["E:👩‍🔬🧊"]);
         assert!(runs("").is_empty());
+    }
+
+    #[test]
+    fn emoji_sent_and_added() {
+        assert_eq!(used("Done ✅ 🎉🎉 → 👍🏽 ©"), ["✅", "🎉", "🎉", "👍🏽"]);
+        assert!(used("No emoji :)").is_empty());
+        assert_eq!(added("Nice 🎉", "Nice 🎉🎉 👩‍🔬"), ["🎉", "👩‍🔬"]);
+        assert!(added("🎉 ok", "ok").is_empty());
     }
 
     #[test]

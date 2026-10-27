@@ -10,7 +10,8 @@ use std::{
 use eyeball_im::Vector;
 use futures_util::{Stream, StreamExt, stream};
 use matrix_sdk::ruma::{
-    EventId, OwnedEventId, OwnedMxcUri, OwnedRoomId, OwnedTransactionId, OwnedUserId, UInt, UserId,
+    EventId, OwnedEventId, OwnedMxcUri, OwnedRoomId, OwnedTransactionId, OwnedUserId, RoomId, UInt,
+    UserId,
     api::client::receipt::create_receipt::v3::ReceiptType,
     events::{
         Mentions,
@@ -42,9 +43,9 @@ use tokio_stream::wrappers::{BroadcastStream, WatchStream};
 use tracing::warn;
 
 use crate::{
-    Error, Result, Session, calls,
+    Error, PinsChange, Result, Session, calls,
     media::{self, MediaRef},
-    room_links, system_time,
+    pins, room_links, system_time,
 };
 use mtrx_format::{Document, Mention, MentionTarget, markdown_to_matrix};
 
@@ -177,6 +178,7 @@ impl Event {
                 | EventContent::DisplayNameChange { .. }
                 | EventContent::CallLink { .. }
                 | EventContent::Topic { .. }
+                | EventContent::Pins(_)
                 | EventContent::OtherState { .. }
         )
     }
@@ -248,7 +250,9 @@ pub enum EventContent {
         old: Option<String>,
         new: String,
     },
-    /// A state event we do not render in detail, e.g. `m.room.topic`.
+    /// Messages were pinned or unpinned.
+    Pins(PinsChange),
+    /// A state event we do not render in detail, e.g. `m.room.name`.
     OtherState {
         event_type: String,
     },
@@ -378,6 +382,47 @@ impl RoomTimeline {
     /// The current entries, then every change.
     pub fn updates(&self) -> impl Stream<Item = Vec<TimelineEntry>> + use<> {
         WatchStream::new(self.entries.clone())
+    }
+
+    /// The files being uploaded for messages sent here from now on, after
+    /// each step of any; empty once all are sent, or failed.
+    pub async fn uploads(&self) -> Result<impl Stream<Item = Vec<Upload>> + use<>> {
+        let (_, updates) = (self.timeline.room().send_queue())
+            .subscribe()
+            .await
+            .map_err(timeline_error)?;
+        Ok(BroadcastStream::new(updates)
+            .scan(Vec::<Upload>::new(), |uploads, update| {
+                let changed = match update {
+                    Ok(RoomSendQueueUpdate::MediaUpload {
+                        related_to,
+                        progress,
+                        ..
+                    }) => {
+                        let message = EventKey(TimelineEventItemId::TransactionId(related_to));
+                        uploads.retain(|u| u.message != message);
+                        uploads.push(Upload {
+                            message,
+                            sent: progress.current,
+                            total: progress.total,
+                        });
+                        true
+                    }
+                    Ok(
+                        RoomSendQueueUpdate::SentEvent { transaction_id, .. }
+                        | RoomSendQueueUpdate::SendError { transaction_id, .. }
+                        | RoomSendQueueUpdate::CancelledLocalEvent { transaction_id },
+                    ) => {
+                        let message = EventKey(TimelineEventItemId::TransactionId(transaction_id));
+                        let before = uploads.len();
+                        uploads.retain(|u| u.message != message);
+                        uploads.len() != before
+                    }
+                    _ => false,
+                };
+                std::future::ready(Some(changed.then(|| uploads.clone())))
+            })
+            .filter_map(std::future::ready))
     }
 
     /// Load up to `events` older events. Returns `true` once the start of the
@@ -725,6 +770,16 @@ pub fn mention_targets<'a>(
     targets
 }
 
+/// A file being uploaded for a message being sent.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Upload {
+    /// The message, by its local echo's key.
+    pub message: EventKey,
+    /// Bytes sent so far, and in all.
+    pub sent: usize,
+    pub total: usize,
+}
+
 /// A message in the send queue.
 pub struct PendingSend {
     transaction_id: OwnedTransactionId,
@@ -771,12 +826,26 @@ impl Session {
                 (self.client.clone(), self.room_keys.clone(), room_id.clone());
             tokio::spawn(async move { keys.download(&client, &room).await });
         }
-        let timeline = Arc::new(
-            self.room(room_id)?
-                .timeline()
-                .await
-                .map_err(timeline_error)?,
-        );
+        // Files sent report their upload's progress (see
+        // [`RoomTimeline::uploads`]).
+        self.client.send_queue().enable_upload_progress(true);
+        // The open room is subscribed: sync then brings all of its state,
+        // its pinned messages too, which the room list leaves out.
+        (self.sync.room_list_service())
+            .set_room_subscriptions(&[room_id])
+            .await;
+        let timeline = self
+            .room(room_id)?
+            .timeline()
+            .await
+            .map_err(timeline_error)?;
+        Ok(self.room_timeline(room_id, timeline).await)
+    }
+
+    /// `timeline` of the room `room_id`, its items converted to entries as
+    /// they come.
+    pub(crate) async fn room_timeline(&self, room_id: &RoomId, timeline: Timeline) -> RoomTimeline {
+        let timeline = Arc::new(timeline);
         let (items, stream) = timeline.subscribe().await;
         // Convert each item once, when it is added or changed, by mirroring
         // the SDK's diffs onto converted entries.
@@ -852,13 +921,13 @@ impl Session {
                 }
             }
         });
-        Ok(RoomTimeline {
-            room_id: room_id.clone(),
+        RoomTimeline {
+            room_id: room_id.to_owned(),
             timeline,
             send_lock: self.send_lock.clone(),
             entries,
             task,
-        })
+        }
     }
 }
 
@@ -894,7 +963,7 @@ fn send_handle(item: &EventTimelineItem) -> Result<SendHandle> {
         .ok_or_else(|| Error::Timeline("not a message being sent".into()))
 }
 
-fn timeline_error(e: impl std::fmt::Display) -> Error {
+pub(crate) fn timeline_error(e: impl std::fmt::Display) -> Error {
     Error::Timeline(e.to_string())
 }
 
@@ -1030,6 +1099,8 @@ impl Converter {
                     EventContent::CallLink { url }
                 } else if let Some((old, new)) = room_links::topic_change(&event_type, raw) {
                     EventContent::Topic { old, new }
+                } else if let Some(change) = pins::pins_change(&event_type, raw) {
+                    EventContent::Pins(change)
                 } else {
                     EventContent::OtherState {
                         event_type: event_type.to_string(),

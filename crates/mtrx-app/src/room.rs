@@ -4,7 +4,7 @@ use std::{
     collections::HashMap,
     rc::Rc,
     sync::Arc,
-    time::{Duration, SystemTime},
+    time::{Duration, Instant, SystemTime},
 };
 
 use iced::{
@@ -20,7 +20,7 @@ use iced::{
 use mtrx_core::{
     CallService, Event, EventContent, EventKey, Media, Member, MembershipChange, MessageKind,
     MxcUri, OwnedEventId, OwnedRoomId, OwnedUserId, RoomKind, RoomSummary, RoomTimeline,
-    ScheduledMessage, SendState, TimelineEntry, Topic, UserId, describe_change,
+    ScheduledMessage, SendState, TimelineEntry, Topic, Upload, UserId, describe_change,
 };
 
 use crate::{
@@ -44,6 +44,7 @@ use crate::{
     mention::{self, Candidate, Completion},
     message,
     message_menu::{self, MenuAt},
+    pins,
     popover::{Edge, Side, popover},
     presence::{self, Presences},
     rows::{self, Part, Row, display_name, time},
@@ -52,6 +53,7 @@ use crate::{
     selection::{self, Bounds, Point, Pos, Selection, Shown, Step},
     send_later::{self, SendLater},
     sidebar,
+    status::{self, Status},
     style::{
         self, GUTTER_SPACING, HEADER_AVATAR, MESSAGE_PADDING, SENDER_AVATAR, TEXT_MARGIN,
         TIMELINE_PADDING, TOOLBAR_HEIGHT,
@@ -69,6 +71,8 @@ const WINDOW_STEP: usize = 50;
 /// scroll up for more.
 const FILL: usize = 40;
 
+/// Uploads quicker than this do not show in the status pill.
+const UPLOAD_SHOWN_AFTER: Duration = Duration::from_millis(500);
 /// The message field, focused again after inserting an emoji.
 pub const COMPOSER: &str = "composer";
 /// Right padding of the composer's text, clear of its paperclip and smiley.
@@ -92,9 +96,11 @@ pub struct Room {
     pub attachments: Vec<Attached>,
     pub later: SendLater,
     pub calls: RoomCalls,
-    /// The header's panel with the topic and links; closed when the room
+    /// The topic panel, below the room header; closed when the room
     /// opens.
     pub topic: topic::Panel,
+    /// Its pinned messages.
+    pub pins: pins::Pins,
     pub compose: Compose,
     /// A sent or scheduled message being edited in place.
     pub editing: Option<InlineEdit>,
@@ -141,7 +147,11 @@ pub struct Room {
     pub paginating: bool,
     /// A new timeline is being loaded (⌘R).
     pub reloading: bool,
+    /// Shown in the status pill until dismissed.
     pub error: Option<String>,
+    /// Files of messages being sent, uploading, and since when.
+    uploads: Vec<Upload>,
+    uploading_since: Option<Instant>,
     /// [`Event::id`] of the message under the cursor.
     hovered: Option<String>,
     /// [`Event::id`] of the message just gone to, e.g. a reply's original.
@@ -167,6 +177,7 @@ impl Room {
         Self {
             calls: RoomCalls::new(id.clone()),
             topic: topic::Panel::default(),
+            pins: pins::Pins::default(),
             compose: Compose::New,
             editing: None,
             picker: None,
@@ -197,6 +208,8 @@ impl Room {
             paginating: false,
             reloading: false,
             error: None,
+            uploads: Vec::new(),
+            uploading_since: None,
             hovered: None,
             marked: None,
             seeking: None,
@@ -667,6 +680,56 @@ impl Room {
         })
     }
 
+    /// The files being uploaded now.
+    pub fn set_uploads(&mut self, uploads: Vec<Upload>) {
+        self.uploading_since = match (uploads.is_empty(), self.uploading_since) {
+            (true, _) => None,
+            (false, None) => Some(Instant::now()),
+            (false, since) => since,
+        };
+        self.uploads = uploads;
+    }
+
+    /// What the status pill says, if anything: a problem first, then
+    /// looking for a message, then uploads taking longer than a moment.
+    fn status(&self) -> Option<Status> {
+        if let Some(error) = &self.error {
+            return Some(Status::Problem(error.clone()));
+        }
+        if self.seeking.is_some() {
+            let back_to = self.entries.iter().find_map(|entry| match entry {
+                TimelineEntry::Event(event) => Some(event.timestamp),
+                _ => None,
+            });
+            return Some(Status::Seeking { back_to });
+        }
+        let since = self.uploading_since?;
+        if since.elapsed() < UPLOAD_SHOWN_AFTER {
+            return None;
+        }
+        let first = self.uploads.first()?;
+        let name = (self.entries.iter())
+            .find_map(|entry| match entry {
+                TimelineEntry::Event(event) if event.key == first.message => match &event.content {
+                    EventContent::Message(m) => m.media.as_ref().map(|f| f.filename.clone()),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .unwrap_or_else(|| "a file".to_owned());
+        let (sent, total) =
+            (self.uploads.iter()).fold((0, 0), |(sent, total), u| (sent + u.sent, total + u.total));
+        Some(Status::Uploading {
+            name,
+            files: self.uploads.len(),
+            done: if total == 0 {
+                0.0
+            } else {
+                sent as f32 / total as f32
+            },
+        })
+    }
+
     pub fn view<'a>(
         &'a self,
         summary: Option<&'a RoomSummary>,
@@ -708,6 +771,8 @@ impl Room {
             frequent_emoji: look.frequent_emoji,
             confirm_delete: self.confirm_delete.as_deref(),
             editing: self.editing.as_ref(),
+            pinned: summary.map_or(&[], |s| &s.pinned),
+            can_pin: self.pins.can_pin == Some(true),
         };
 
         let mut timeline = column![].padding([8.0, TIMELINE_PADDING]);
@@ -910,14 +975,9 @@ impl Room {
         if let Some(bar) = self.compose.bar() {
             above = above.push(bar);
         }
-        let mut below = column![];
-        if let Some(error) = &self.error {
-            below = below.push(text(error).size(12).style(text::danger));
-        }
         let bottom = column![
             above,
             row![composer, send].spacing(8).align_y(Alignment::End),
-            below,
         ]
         .spacing(6)
         .padding([8.0, TIMELINE_PADDING + MESSAGE_PADDING]);
@@ -928,6 +988,19 @@ impl Room {
             find_bar = find_bar.push(find.view(Message::Find));
             find_bar = find_bar.push(rule::horizontal(1));
         }
+        // What the room waits on, or what failed, over the timeline's
+        // bottom left.
+        let timeline: Element<'a, Message> = match self.status() {
+            Some(status) => stack![
+                timeline,
+                container(status::view(&status))
+                    .align_left(Length::Fill)
+                    .align_bottom(Length::Fill)
+                    .padding(Padding::new(8.0).left(TIMELINE_PADDING + MESSAGE_PADDING)),
+            ]
+            .into(),
+            None => timeline.into(),
+        };
         let main = column![find_bar, timeline, bottom].width(Length::Fill);
         // The member list comes after, so it does not move the composer.
         let mut body = row![main];
@@ -962,45 +1035,81 @@ impl Room {
             .filter(|s| s.kind == RoomKind::Direct && !s.is_notes(look.own_user))
             .and_then(|s| s.direct_user.as_ref())
             .and_then(|user| look.presences.get(user));
-        let mut name_line = row![ellipsis(name).size(16).font(fonts::SEMIBOLD)]
-            .spacing(4)
-            .align_y(Alignment::Center);
-        if summary.is_some() && (!topic.text.is_empty() || !topic.links.is_empty() || can_edit) {
-            let open = self.topic.open;
-            name_line = name_line.push(hint(
-                button(icons::chevron(10.0, open, |theme| {
-                    theme
-                        .extended_palette()
-                        .background
-                        .base
-                        .text
-                        .scale_alpha(0.7)
-                }))
-                .padding([4, 4])
-                .style(style::text_button)
-                .on_press(Message::Topic(self.id.clone(), topic::Message::Toggle)),
-                if open {
-                    "Hide the topic and links"
-                } else {
-                    "Show the topic and links in full"
-                },
+        // The name (and the person's presence) and picture open the room's
+        // info card.
+        let info = summary.map_or(info::Target::Room(self.id.clone()), info::target_of);
+        let about_tip = match summary.map(|s| s.kind) {
+            Some(RoomKind::Direct) => "Who this is",
+            _ => "Room settings and address",
+        };
+        let opens_info = |content: Element<'a, Message>| {
+            hint(
+                mouse_area(content)
+                    .interaction(mouse::Interaction::Pointer)
+                    .on_press(Message::ShowInfo(info.clone())),
+                about_tip,
                 Position::Bottom,
-            ));
-        }
-        let mut title = column![name_line];
+            )
+        };
+        let mut about = column![ellipsis(name).size(16).font(fonts::SEMIBOLD)];
         if let Some(line) = presence.and_then(|p| presence::line(p, look.now)) {
-            title = title.push(ellipsis(line).size(12).style(text::secondary));
+            about = about.push(ellipsis(line).size(12).style(text::secondary));
         }
         // A room just created or joined is listed once sync delivers it.
         if summary.is_none() {
-            title = title.push(
+            about = about.push(
                 text("Setting up the room… it appears in the list in a moment.")
                     .size(12)
                     .style(text::secondary),
             );
         }
-        if let Some(first) = topic.text.lines().next() {
-            title = title.push(ellipsis(first.to_owned()).size(12).style(text::secondary));
+        let mut title = column![opens_info(about.into())];
+        // The caret, then a preview of the topic and how many messages are
+        // pinned while closed: open or close the topic panel. While it is
+        // open, a click here is outside it and closes it.
+        let preview = topic::preview(&topic, look.call_services, can_edit);
+        let pinned = summary.map_or(&[][..], |s| &s.pinned);
+        if summary.is_some() && (preview.is_some() || !pinned.is_empty()) {
+            let open = self.topic.open;
+            // As the section headers' caret, between the middle of the
+            // capitals and that of the lowercase letters.
+            let caret = container(icons::chevron(12.0, open, |theme| {
+                theme
+                    .extended_palette()
+                    .background
+                    .base
+                    .text
+                    .scale_alpha(0.7)
+            }))
+            .padding(Padding::ZERO.top(1));
+            let mut line = row![caret].spacing(5).align_y(Alignment::Center);
+            if !open && !pinned.is_empty() {
+                line = line.push(
+                    row![
+                        icons::pin(11.0, |theme| {
+                            theme
+                                .extended_palette()
+                                .background
+                                .base
+                                .text
+                                .scale_alpha(0.55)
+                        }),
+                        text(pinned.len().to_string())
+                            .size(12)
+                            .style(text::secondary),
+                    ]
+                    .spacing(2)
+                    .align_y(Alignment::Center),
+                );
+            }
+            if !open && let Some(preview) = preview {
+                line = line.push(ellipsis(preview).size(12).style(text::secondary));
+            }
+            title = title.push(
+                mouse_area(line)
+                    .interaction(mouse::Interaction::Pointer)
+                    .on_press(Message::Topic(self.id.clone(), topic::Message::Toggle)),
+            );
         }
         let avatar = avatars.view(
             self.id.as_str(),
@@ -1012,27 +1121,17 @@ impl Room {
         let avatar = presence::with_dot(avatar, presence, HEADER_AVATAR, |theme| {
             theme.extended_palette().background.base.color
         });
-        // The name and picture open the room's info card.
-        let info = summary.map_or(info::Target::Room(self.id.clone()), info::target_of);
-        let about = mouse_area(
-            row![avatar, title.width(Length::Fill)]
-                .spacing(10)
-                .align_y(Alignment::Center),
-        )
-        .interaction(mouse::Interaction::Pointer)
-        .on_press(Message::ShowInfo(info));
-        let about_tip = match summary.map(|s| s.kind) {
-            Some(RoomKind::Direct) => "Who this is",
-            _ => "Room settings and address",
-        };
+        let about = row![opens_info(avatar), title.width(Length::Fill)]
+            .spacing(10)
+            .align_y(Alignment::Center);
         let members_tip = if look.show_members {
             "Hide the member list"
         } else {
             "Show who is in the room"
         };
-        let mut header = column![
+        let header = column![
             row![
-                hint(about, about_tip, Position::Bottom),
+                about,
                 self.calls
                     .header_controls(&topic, look.call_services, can_edit),
                 hint(
@@ -1063,21 +1162,24 @@ impl Room {
             .align_y(Alignment::Center)
             .padding([8.0, TIMELINE_PADDING + MESSAGE_PADDING]),
         ];
-        if self.topic.open {
-            header = header
-                .push(rule::horizontal(1).style(style::separator))
-                .push(
-                    container(self.topic.view(&self.id, &topic, look.call_services))
-                        .width(Length::Fill)
-                        .padding(
-                            Padding::new(10.0)
-                                .left(TIMELINE_PADDING + MESSAGE_PADDING + HEADER_AVATAR + 10.0)
-                                .right(TIMELINE_PADDING + MESSAGE_PADDING),
-                        ),
-                );
-        }
-        header
-            .push(rule::horizontal(1).style(style::separator))
+        let header = header.push(rule::horizontal(1).style(style::separator));
+        // The topic in full and its links, or their editor, dropping over
+        // the timeline below the room's picture.
+        let panel = self.topic.open.then(|| {
+            let mut content =
+                column![self.topic.view(&self.id, &topic, look.call_services)].spacing(14);
+            // Not while the topic is edited.
+            if self.topic.editor.is_none() {
+                content = content.push(self.pins.view(&self.id, pinned));
+            }
+            container(scrollable(container(content).padding(14)).height(Length::Shrink))
+                .width(Length::Fill)
+                .style(style::toolbar)
+                .into()
+        });
+        popover(header, panel, Side::Below, Edge::Left)
+            .share_of_anchor(2.0 / 3.0, TIMELINE_PADDING + MESSAGE_PADDING)
+            .on_dismiss(Message::Topic(self.id.clone(), topic::Message::Dismiss))
             .into()
     }
 }
@@ -1142,6 +1244,9 @@ struct Context<'a, 'b> {
     confirm_delete: Option<&'b str>,
     /// The message being edited in place, if any.
     editing: Option<&'a InlineEdit>,
+    /// The room's pinned messages, and whether we may pin.
+    pinned: &'b [OwnedEventId],
+    can_pin: bool,
 }
 
 impl<'a> Context<'a, '_> {
@@ -1312,6 +1417,7 @@ fn event_view<'a>(
         | EventContent::DisplayNameChange { .. }
         | EventContent::CallLink { .. }
         | EventContent::Topic { .. }
+        | EventContent::Pins(_)
         | EventContent::OtherState { .. } => return space().into(),
     };
 
@@ -1338,8 +1444,15 @@ fn event_view<'a>(
             .get(event.id.as_str())
             .is_some_and(|&i| bounds.in_message(i).is_some())
     });
+    let pin = (event.event_id.as_ref())
+        .filter(|_| context.can_pin)
+        .map(|id| pins::menu_item(id, context.pinned.contains(id)));
     let menu_items = message
-        .map(|m| message_menu::items(m, math_shown, in_selection))
+        .map(|m| {
+            let mut items = message_menu::items(m, math_shown, in_selection);
+            items.extend(pin);
+            items
+        })
         .filter(|items| !items.is_empty());
     let menu_view = |at| match menu_at {
         Some(MenuAt::Link(url)) if at == MenuAt::Cursor => {
@@ -1977,6 +2090,7 @@ pub fn state_summary(events: &[&Event]) -> String {
                     None => format!("{name} changed the topic"),
                 }
             }
+            EventContent::Pins(change) => format!("{name} {}", change.describe()),
             EventContent::OtherState { event_type } => match event_type.as_str() {
                 "m.room.name" => format!("{name} renamed the room"),
                 "m.room.topic" => format!("{name} changed the topic"),

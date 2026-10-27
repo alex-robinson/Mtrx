@@ -1,4 +1,5 @@
-//! A room's topic and its links (see [`Topic`]): the room header's panel,
+//! A room's topic and its links (see [`Topic`]): the topic panel below the
+//! room header,
 //! showing them in full, and the editor the panel and the room card share:
 //! the text and a list of links, or the whole topic as text, as other apps
 //! show it.
@@ -6,8 +7,8 @@
 use std::time::{Duration, Instant};
 
 use iced::{
-    Alignment, Color, Element, Font, Length, Theme,
-    widget::{button, column, row, space, text, text_editor, text_input, toggler},
+    Alignment, Color, Element, Font, Length, Task, Theme,
+    widget::{button, column, container, row, space, text, text_editor, text_input, toggler},
 };
 use mtrx_core::{CallService, LinkKind, OwnedRoomId, RoomLink, Topic, Url};
 
@@ -25,11 +26,18 @@ use crate::{
 /// How long a saved topic shows before the room list has it (sync lags
 /// behind the server's answer).
 const TOPIC_SYNC: Duration = Duration::from_secs(10);
+/// How long Cancel and Save stand out after a click outside the editor.
+const NUDGE: Duration = Duration::from_millis(1500);
 
 #[derive(Debug, Clone)]
 pub enum Message {
-    /// Open or close the panel: the caret beside the room's name.
+    /// Open or close the panel: the caret below the room's name.
     Toggle,
+    /// A click outside the open panel: closes it, unless changes are being
+    /// edited, which Cancel and Save then point out.
+    Dismiss,
+    /// The nudge of this number is over.
+    Settle(u32),
     /// Edit the topic in the panel, opening it.
     Edit,
     Editor(Edit),
@@ -40,7 +48,7 @@ pub enum Message {
     CanEdit(Option<bool>),
 }
 
-/// The room header's panel below its row: open or not, the topic's
+/// The topic panel, dropping below the room header: open or not, the topic's
 /// editor, and a topic saved but not synced yet.
 #[derive(Default)]
 pub struct Panel {
@@ -50,6 +58,8 @@ pub struct Panel {
     pub saving: bool,
     pub error: Option<String>,
     saved: Option<(String, Instant)>,
+    /// Cancel and Save stand out, after the click outside numbered so.
+    nudge: (u32, bool),
 }
 
 impl Panel {
@@ -70,12 +80,28 @@ impl Panel {
         self.saved = Some((topic, Instant::now()));
     }
 
-    pub fn update(&mut self, message: Message, topic: &str) {
+    pub fn update(&mut self, message: Message, topic: &str) -> Task<Message> {
         match message {
             Message::Toggle => {
                 self.open = !self.open;
                 self.editor = None;
                 self.error = None;
+            }
+            Message::Dismiss => {
+                if self.editor.as_ref().is_some_and(|e| e.changed(Some(topic))) {
+                    let nudge = self.nudge.0 + 1;
+                    self.nudge = (nudge, true);
+                    let settle = async { tokio::time::sleep(NUDGE).await };
+                    return Task::perform(settle, move |()| Message::Settle(nudge));
+                }
+                self.open = false;
+                self.editor = None;
+                self.error = None;
+            }
+            Message::Settle(nudge) => {
+                if nudge == self.nudge.0 {
+                    self.nudge.1 = false;
+                }
             }
             Message::Edit => {
                 self.open = true;
@@ -104,10 +130,11 @@ impl Panel {
             // The app saves.
             Message::Save => {}
         }
+        Task::none()
     }
 
-    /// The topic in full and its links, or the editor, across the room
-    /// below the header's row.
+    /// The topic in full and its links, or the editor, below the room
+    /// header.
     pub fn view<'a>(
         &'a self,
         room: &OwnedRoomId,
@@ -121,15 +148,16 @@ impl Panel {
         let mut panel = match &self.editor {
             Some(editor) => {
                 let edit = message.clone();
+                let nudged = self.nudge.1;
                 let actions = row![
                     space::horizontal(),
                     button(text("Cancel").size(13))
                         .padding([4, 10])
-                        .style(style::text_button)
+                        .style(style::ringed(style::text_button, nudged))
                         .on_press(message(Message::Cancel)),
                     button(text("Save").size(13))
                         .padding([4, 12])
-                        .style(style::primary_button)
+                        .style(style::ringed(style::primary_button, nudged))
                         .on_press_maybe(
                             (editor.valid() && !self.saving).then(|| message(Message::Save))
                         ),
@@ -143,8 +171,21 @@ impl Panel {
                 .spacing(8)
             }
             None => {
-                let edit = (self.can_edit == Some(true)).then(|| message(Message::Edit));
-                column![details(topic, services, edit)]
+                let details = details(topic, services);
+                if self.can_edit == Some(true) {
+                    // In the corner, clear of the text and links.
+                    let edit = button(
+                        row![icons::pencil(12.0, secondary), text("Edit").size(13)]
+                            .spacing(5)
+                            .align_y(Alignment::Center),
+                    )
+                    .padding([4, 10])
+                    .style(style::secondary_button)
+                    .on_press(message(Message::Edit));
+                    column![row![container(details).width(Length::Fill), edit].spacing(12)]
+                } else {
+                    column![details]
+                }
             }
         };
         if let Some(error) = &self.error {
@@ -154,13 +195,23 @@ impl Panel {
     }
 }
 
+/// The line the room header previews the topic with, beside the caret:
+/// its text's first line, else its links' names, else "Add a topic" if
+/// `can_edit`.
+pub fn preview(topic: &Topic, services: &[CallService], can_edit: bool) -> Option<String> {
+    if let Some(first) = topic.text.lines().next() {
+        return Some(first.to_owned());
+    }
+    if !topic.links.is_empty() {
+        let names: Vec<String> = topic.links.iter().map(|l| l.name(services)).collect();
+        return Some(names.join(" · "));
+    }
+    can_edit.then(|| "Add a topic".to_owned())
+}
+
 /// The topic's text in full, to select and copy, and a button for each
-/// link; with Edit when given.
-pub fn details<'a>(
-    topic: &Topic,
-    services: &[CallService],
-    edit: Option<app::Message>,
-) -> Element<'a, app::Message> {
+/// link.
+pub fn details<'a>(topic: &Topic, services: &[CallService]) -> Element<'a, app::Message> {
     let mut details = column![].spacing(10);
     if !topic.text.is_empty() {
         details = details.push(selectable_text(topic.text.clone()).size(13));
@@ -188,18 +239,6 @@ pub fn details<'a>(
             link.url.to_string(),
             Position::Bottom,
         ));
-    }
-    if let Some(edit) = edit {
-        links = links.push(
-            button(
-                row![icons::pencil(12.0, secondary), text("Edit").size(12)]
-                    .spacing(4)
-                    .align_y(Alignment::Center),
-            )
-            .padding([4, 8])
-            .style(style::text_button)
-            .on_press(edit),
-        );
     }
     if topic.text.is_empty() && topic.links.is_empty() {
         details = details.push(
@@ -713,13 +752,55 @@ mod tests {
     }
 
     #[test]
+    fn previews_the_text_else_the_links() {
+        let preview = |topic: &str, can_edit| preview(&Topic::parse(topic), &[], can_edit);
+        assert_eq!(preview(TOPIC, false).as_deref(), Some("About."));
+        assert_eq!(
+            preview(
+                "[call Weekly] https://zoom.us/j/1\n[link] https://overleaf.com/a",
+                false
+            )
+            .as_deref(),
+            Some("Weekly · overleaf.com")
+        );
+        assert_eq!(preview("", true).as_deref(), Some("Add a topic"));
+        assert_eq!(preview("", false), None);
+    }
+
+    #[test]
     fn shows_a_saved_topic_until_synced() {
         let mut panel = Panel::default();
         assert_eq!(panel.shown(Some("old")), "old");
         panel.save("new".into());
         assert_eq!(panel.shown(Some("old")), "new");
         assert_eq!(panel.shown(Some("new")), "new");
-        panel.update(Message::Saved(Err("no".into())), "old");
+        let _ = panel.update(Message::Saved(Err("no".into())), "old");
         assert_eq!(panel.shown(Some("old")), "old");
+    }
+
+    #[test]
+    fn a_click_outside_closes_unless_changes_are_edited() {
+        let mut panel = Panel::default();
+        let _ = panel.update(Message::Toggle, "About.");
+        let _ = panel.update(Message::Dismiss, "About.");
+        assert!(!panel.open);
+        // Editing, unchanged.
+        let _ = panel.update(Message::Edit, "About.");
+        let _ = panel.update(Message::Dismiss, "About.");
+        assert!(!panel.open && panel.editor.is_none());
+        // Changed: Cancel and Save stand out until the last nudge settles.
+        let _ = panel.update(Message::Edit, "About.");
+        let _ = panel.update(Message::Editor(Edit::Add(false)), "About.");
+        let _ = panel.update(
+            Message::Editor(Edit::Url(0, "overleaf.com".into())),
+            "About.",
+        );
+        let _ = panel.update(Message::Dismiss, "About.");
+        let _ = panel.update(Message::Dismiss, "About.");
+        assert!(panel.open && panel.editor.is_some() && panel.nudge == (2, true));
+        let _ = panel.update(Message::Settle(1), "About.");
+        assert!(panel.nudge.1);
+        let _ = panel.update(Message::Settle(2), "About.");
+        assert!(!panel.nudge.1);
     }
 }

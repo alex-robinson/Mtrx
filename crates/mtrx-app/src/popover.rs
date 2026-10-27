@@ -18,6 +18,8 @@ use iced::{
 
 /// Space between the widget and the panel.
 const GAP: f32 = 4.0;
+/// The narrowest a panel sized by its anchor gets, room allowing.
+const MIN_SHARED_WIDTH: f32 = 440.0;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Side {
@@ -41,6 +43,8 @@ pub struct Popover<'a, Message> {
     edge: Edge,
     on_dismiss: Option<Message>,
     click_through: bool,
+    /// Its share of the anchor's width, and the inset from its edge.
+    share: Option<(f32, f32)>,
 }
 
 /// `anchor`, with `panel` floating on `side` of it, lined up with its
@@ -59,6 +63,7 @@ pub fn popover<'a, Message: Clone + 'a>(
         edge,
         on_dismiss: None,
         click_through: false,
+        share: None,
     }
 }
 
@@ -72,6 +77,14 @@ impl<Message> Popover<'_, Message> {
     /// Clicks and the cursor outside the panel still reach what is there.
     pub fn click_through(mut self) -> Self {
         self.click_through = true;
+        self
+    }
+
+    /// The panel `share` of the anchor's width (at least
+    /// [`MIN_SHARED_WIDTH`], room allowing), `inset` in from its edge, and
+    /// no taller than the window has room for on its side.
+    pub fn share_of_anchor(mut self, share: f32, inset: f32) -> Self {
+        self.share = Some((share, inset));
         self
     }
 }
@@ -191,15 +204,17 @@ impl<'a, Message: Clone + 'a> Widget<Message, Theme, Renderer> for Popover<'a, M
             translation,
         );
         let panel = self.open.then(|| {
-            floating(
-                &mut self.panel,
-                panel_tree,
-                layout.bounds() + translation,
-                self.side,
-                self.edge,
-                self.on_dismiss.clone(),
-                self.click_through,
-            )
+            overlay::Element::new(Box::new(Panel {
+                panel: &mut self.panel,
+                tree: panel_tree,
+                anchor: layout.bounds() + translation,
+                side: self.side,
+                edge: self.edge,
+                on_dismiss: self.on_dismiss.clone(),
+                click_through: self.click_through,
+                share: self.share,
+                window: Size::ZERO,
+            }))
         });
         let overlays: Vec<_> = nested.into_iter().chain(panel).collect();
         (!overlays.is_empty()).then(|| overlay::Group::with_children(overlays).overlay())
@@ -226,6 +241,7 @@ pub fn floating<'a, 'b, Message: Clone + 'a>(
         edge,
         on_dismiss,
         click_through,
+        share: None,
         window: Size::ZERO,
     }))
 }
@@ -238,6 +254,8 @@ struct Panel<'a, 'b, Message> {
     edge: Edge,
     on_dismiss: Option<Message>,
     click_through: bool,
+    /// See [`Popover::share_of_anchor`].
+    share: Option<(f32, f32)>,
     /// The window's size, as of the last layout.
     window: Size,
 }
@@ -245,15 +263,29 @@ struct Panel<'a, 'b, Message> {
 impl<Message: Clone> overlay::Overlay<Message, Theme, Renderer> for Panel<'_, '_, Message> {
     fn layout(&mut self, renderer: &Renderer, bounds: Size) -> Node {
         self.window = bounds;
-        let node = self.panel.as_widget_mut().layout(
-            self.tree,
-            renderer,
-            &Limits::new(Size::ZERO, bounds),
-        );
+        let (limits, inset) = match self.share {
+            Some((share, inset)) => {
+                let room = match self.side {
+                    Side::Above => self.anchor.y - GAP,
+                    Side::Below => bounds.height - (self.anchor.y + self.anchor.height + GAP),
+                };
+                let width = (self.anchor.width * share)
+                    .max(MIN_SHARED_WIDTH)
+                    .min(self.anchor.width - 2.0 * inset)
+                    .max(0.0);
+                let limits = Limits::new(Size::new(width, 0.0), Size::new(width, room.max(0.0)));
+                (limits, inset)
+            }
+            None => (Limits::new(Size::ZERO, bounds), 0.0),
+        };
+        let node = self
+            .panel
+            .as_widget_mut()
+            .layout(self.tree, renderer, &limits);
         let size = node.size();
         let x = match self.edge {
-            Edge::Left => self.anchor.x,
-            Edge::Right => self.anchor.x + self.anchor.width - size.width,
+            Edge::Left => self.anchor.x + inset,
+            Edge::Right => self.anchor.x + self.anchor.width - inset - size.width,
         }
         .clamp(0.0, (bounds.width - size.width).max(0.0));
         let above = self.anchor.y - GAP - size.height;

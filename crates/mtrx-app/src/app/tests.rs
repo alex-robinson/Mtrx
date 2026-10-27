@@ -794,10 +794,22 @@ async fn main_screen_with_math() {
         open.entries = entries.clone();
         with_start(&mut open.entries);
         open.hover(hovered.clone(), true);
-        // The room's calls and links, in its topic.
+        // The room's calls and links, in its topic; its first message
+        // pinned.
+        let first = (entries.iter())
+            .find_map(|e| match e {
+                TimelineEntry::Event(ev) if matches!(ev.content, EventContent::Message(_)) => {
+                    ev.event_id.clone()
+                }
+                _ => None,
+            })
+            .unwrap();
         if let Some(summary) = main.rooms.rooms.iter_mut().find(|r| r.id == room) {
             summary.topic = Some(TOPIC.into());
+            summary.pinned = vec![first];
         }
+        open.pins.update(pins::Message::CanPin(Some(true)));
+        open.pins.update(pins::Message::Updated(entries.clone()));
         open.calls.space_service =
             Some(CallService::jitsi("Lab Jitsi", "https://video.lab.example").unwrap());
         // The call menu and reaction picker in one shot, the topic's editor
@@ -1013,10 +1025,12 @@ async fn main_screen_with_math() {
             }
         }
         // A click elsewhere closes the call menu (dark) or the list of
-        // readers (light), and does nothing else: what is behind neither
-        // lights up under the cursor nor takes the click.
+        // readers and the topic panel (light), and does nothing else:
+        // what is behind neither lights up under the cursor nor takes the
+        // click.
         let mut ui = Simulator::with_size(fonts::settings(), Size::new(1200.0, 800.0), app.view());
-        ui.point_at(iced::Point::new(400.0, 130.0));
+        // Below the topic panel, on the timeline.
+        ui.point_at(iced::Point::new(400.0, 450.0));
         ui.simulate(iced_test::simulator::click());
         let messages: Vec<_> = ui.into_messages().collect();
         assert!(
@@ -1030,6 +1044,7 @@ async fn main_screen_with_math() {
             messages.iter().all(|m| matches!(
                 m,
                 Message::Calls(_, calls::Message::Close)
+                    | Message::Topic(_, topic::Message::Dismiss)
                     | Message::Act(actions::Message::CloseReaders | actions::Message::ClosePicker)
             )),
             "{messages:?}"
@@ -1045,6 +1060,8 @@ async fn main_screen_with_math() {
                 main.room.as_mut().unwrap().readers = None;
             }
             composer_keeps_focus(&mut app);
+            // The topic panel, not editing: Edit in its corner.
+            snapshot(&app, "topic-panel");
         } else {
             // A service in the call menu says what starting a call does.
             snapshot_at(&app, "call-menu-hint", Some(iced::Point::new(864.0, 110.0)));
@@ -1657,6 +1674,21 @@ async fn room_management_screens() {
             main.add_menu = true;
         }),
         "menus",
+    );
+    // The status pill: looking for a message gone to, and a problem.
+    snapshot(
+        &main_with(&|main| {
+            let room = main.room.as_mut().unwrap();
+            room.seeking = Some(("$gone:localhost".try_into().unwrap(), 3));
+        }),
+        "status-seeking",
+    );
+    snapshot(
+        &main_with(&|main| {
+            main.room.as_mut().unwrap().error =
+                Some("The original message was not found in the room's history".into());
+        }),
+        "status-problem",
     );
     snapshot(
         &main_with(&|main| main.connection = Connection::Offline),

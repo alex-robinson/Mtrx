@@ -8,7 +8,8 @@ use matrix_sdk::{
     Client, Room, RoomState,
     deserialized_responses::SyncOrStrippedState,
     ruma::{
-        OwnedMxcUri, OwnedRoomId, OwnedServerName, OwnedUserId, RoomId, RoomOrAliasId, UserId,
+        OwnedEventId, OwnedMxcUri, OwnedRoomId, OwnedServerName, OwnedUserId, RoomId,
+        RoomOrAliasId, UserId,
         api::client::room::create_room::v3::{
             CreationContent, Request as CreateRoomRequest, RoomPreset,
         },
@@ -68,6 +69,8 @@ pub struct RoomSummary {
     /// The room's address, e.g. `#ice-sheets:example.org`.
     pub alias: Option<String>,
     pub joined_members: u64,
+    /// The pinned messages, in the order they were pinned.
+    pub pinned: Vec<OwnedEventId>,
 }
 
 impl RoomSummary {
@@ -246,6 +249,7 @@ async fn summarize(items: &Vector<RoomListItem>) -> Vec<RoomSummary> {
             direct_user,
             alias: room.canonical_alias().map(|a| a.to_string()),
             joined_members: room.joined_members_count(),
+            pinned: room.pinned_event_ids().unwrap_or_default(),
         });
     }
     rooms

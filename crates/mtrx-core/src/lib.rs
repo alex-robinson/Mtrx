@@ -20,6 +20,7 @@ mod notes;
 mod notifications;
 mod people;
 mod permissions;
+mod pins;
 mod presence;
 mod profile;
 mod push;
@@ -52,6 +53,7 @@ pub use notes::notes_markdown;
 pub use notifications::Notification;
 pub use people::{Contact, UserInfo};
 pub use permissions::{Permissions, SpaceUpdate};
+pub use pins::PinsChange;
 pub use presence::{Presence, PresenceState, PresenceWatcher, describe_last_active};
 pub use profile::Profile;
 pub use push::{HttpPusher, PushNotification, PusherInfo};
@@ -69,7 +71,7 @@ pub use spaces::{
 pub use timeline::{
     Attachment, Event, EventContent, EventKey, Media, MediaKind, MembershipChange, Message,
     MessageKind, PendingSend, Reaction, Reader, Reply, RoomTimeline, SendState, TimelineEntry,
-    UtdCause, mention_targets,
+    Upload, UtdCause, mention_targets,
 };
 
 pub use url::Url;

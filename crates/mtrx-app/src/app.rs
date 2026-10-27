@@ -3,7 +3,7 @@
 use std::{
     fmt,
     hash::{Hash, Hasher},
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::Arc,
     time::{Duration, Instant, SystemTime},
 };
@@ -41,7 +41,7 @@ use crate::{
     login::{self, Login},
     math::{self, Math, Rendered},
     media::{self, Previews, Viewer},
-    members, mention, message, pdf_viewer,
+    members, mention, message, pdf_viewer, pins,
     placement::{self, Frame, Placement},
     presence::{self, Activity, Presences},
     room::{self, Look, Older, Room},
@@ -165,8 +165,15 @@ pub enum Message {
     /// Others' presence, and ours.
     Presence(presence::Message),
     Calls(OwnedRoomId, calls::Message),
-    /// The open room's topic and links, in its header.
+    /// The open room's topic and links, in its topic panel.
     Topic(OwnedRoomId, topic::Message),
+    Pins(OwnedRoomId, pins::Message),
+    /// The files of messages being sent, uploading now.
+    Uploads(OwnedRoomId, Vec<mtrx_core::Upload>),
+    /// Close the problem the status pill shows.
+    DismissError,
+    /// Stop loading older messages to find the one gone to.
+    StopSeeking,
     RecoveryKey(String),
     Recover,
     RecoveryProgress(RecoveryStep),
@@ -578,6 +585,11 @@ impl Environment {
     pub fn window(&self) -> window::Settings {
         self.placement.settings(self.settings.text_size.scale())
     }
+
+    /// Where the settings, the profiles and the crash log are.
+    pub fn data_root(&self) -> &Path {
+        &self.data_root
+    }
 }
 
 /// The window's settings for closing it (`docs/native-behaviour.md`, A1). On
@@ -885,7 +897,12 @@ impl App {
                 let members = main
                     .arrange
                     .load_space_members(&main.session, &main.rooms.rooms);
-                Task::batch([members, self.load_avatars(), self.restore_view()])
+                Task::batch([
+                    members,
+                    self.load_pinned(),
+                    self.load_avatars(),
+                    self.restore_view(),
+                ])
             }
             Message::SelectSpace(space) => {
                 let Screen::Main(main) = &mut self.screen else {
@@ -977,6 +994,7 @@ impl App {
                             self.load_avatars(),
                             self.load_previews(),
                             self.load_room_calls(&id),
+                            self.load_pinned(),
                         ])
                     }
                     Err(e) => {
@@ -1170,9 +1188,10 @@ impl App {
                     .collect();
                 room.error = None;
                 let (id, timeline) = (room.id.clone(), room.timeline.clone());
+                let used = emoji::used(&text);
                 // Queue only: the local echo shows the send state. Queued
                 // first, so it shows before the server hears of anything.
-                Task::perform(
+                let send = Task::perform(
                     async move {
                         let sent = timeline
                             .send(text.trim_end(), files, compose.reply_to().map(|id| &**id))
@@ -1182,7 +1201,8 @@ impl App {
                         sent
                     },
                     move |result| Message::Sent(id.clone(), result.map_err(|e| e.to_string())),
-                )
+                );
+                Task::batch([send, used_emoji(main, used)])
             }
             Message::SendingSlow(id, row) => {
                 if let Screen::Main(main) = &mut self.screen
@@ -1300,6 +1320,39 @@ impl App {
             }
             Message::Calls(room, message) => self.calls(room, message),
             Message::Topic(room, message) => self.room_topic(room, message),
+            Message::Uploads(room_id, uploads) => {
+                if let Screen::Main(main) = &mut self.screen
+                    && let Some(room) = main.room.as_mut().filter(|r| r.id == room_id)
+                {
+                    room.set_uploads(uploads);
+                }
+                Task::none()
+            }
+            Message::DismissError | Message::StopSeeking => {
+                if let Screen::Main(main) = &mut self.screen
+                    && let Some(room) = main.room.as_mut()
+                {
+                    match message {
+                        Message::DismissError => room.error = None,
+                        _ => room.seeking = None,
+                    }
+                }
+                Task::none()
+            }
+            Message::Pins(room_id, message) => {
+                let Screen::Main(main) = &mut self.screen else {
+                    return Task::none();
+                };
+                let Some(room) = main.room.as_mut().filter(|r| r.id == room_id) else {
+                    return Task::none();
+                };
+                if let pins::Message::GoTo(event) = message {
+                    room.topic.open = false;
+                    return Task::done(Message::GoTo(event));
+                }
+                room.pins.update(message);
+                Task::none()
+            }
             Message::AddMenu(open) => {
                 if let Screen::Main(main) = &mut self.screen {
                     main.add_menu = open;
@@ -1367,10 +1420,8 @@ impl App {
                 };
                 emoji::insert(&mut room.composer, &emoji);
                 room.update_completion();
-                Task::batch([
-                    iced::widget::operation::focus(room::COMPOSER),
-                    used_emoji(main, emoji),
-                ])
+                // Counted as used once sent.
+                iced::widget::operation::focus(room::COMPOSER)
             }
             Message::FrequentEmoji(emoji) => {
                 if let Screen::Main(main) = &mut self.screen {
@@ -2707,7 +2758,7 @@ impl App {
         self.save_topic(room_id, topic)
     }
 
-    /// The open room's topic and links, in the header's panel.
+    /// The open room's topic and links, in the topic panel.
     fn room_topic(&mut self, room_id: OwnedRoomId, message: topic::Message) -> Task<Message> {
         let Screen::Main(main) = &mut self.screen else {
             return Task::none();
@@ -2731,8 +2782,9 @@ impl App {
             .find(|r| r.id == room_id)
             .and_then(|r| r.topic.as_deref());
         let shown = room.topic.shown(synced).to_owned();
-        room.topic.update(message, &shown);
-        Task::none()
+        room.topic
+            .update(message, &shown)
+            .map(move |message| Message::Topic(room_id.clone(), message))
     }
 
     /// Save `topic` as the open room's, shown until the room list has it.
@@ -2795,6 +2847,13 @@ impl App {
             })
             .discard()
         };
+        let can_pin = {
+            let (session, room, reply) = (session.clone(), room.clone(), room.clone());
+            Task::perform(
+                async move { session.can_pin(&room).await.ok() },
+                move |can| Message::Pins(reply.clone(), pins::Message::CanPin(can)),
+            )
+        };
         let space_service = Task::perform(
             async move {
                 for space in spaces {
@@ -2806,7 +2865,32 @@ impl App {
             },
             move |service| Message::Calls(room.clone(), calls::Message::SpaceService(service)),
         );
-        Task::batch([can_edit, old_link, space_service])
+        Task::batch([can_edit, can_pin, old_link, space_service])
+    }
+
+    /// Make the open room's pinned messages' timeline, once it has pins.
+    fn load_pinned(&mut self) -> Task<Message> {
+        let Screen::Main(main) = &mut self.screen else {
+            return Task::none();
+        };
+        let Some(room) = main.room.as_mut() else {
+            return Task::none();
+        };
+        let pinned = (main.rooms.rooms.iter())
+            .find(|r| r.id == room.id)
+            .map_or(&[][..], |r| &r.pinned);
+        if !room.pins.request(pinned) {
+            return Task::none();
+        }
+        let (session, id, reply) = (main.session.clone(), room.id.clone(), room.id.clone());
+        Task::perform(
+            async move {
+                (session.pinned_timeline(&id).await)
+                    .map(|t| Shared(Arc::new(t)))
+                    .map_err(|e| e.to_string())
+            },
+            move |result| Message::Pins(reply.clone(), pins::Message::Loaded(result)),
+        )
     }
 
     fn act(&mut self, message: actions::Message) -> Task<Message> {
@@ -2822,6 +2906,13 @@ impl App {
             Message::Act(Act::Done(result.map_err(|e| e.to_string())))
         };
         match message {
+            Act::Pin(event, pin) => {
+                let (session, room_id) = (main.session.clone(), room.id.clone());
+                Task::perform(
+                    async move { session.set_pinned(&room_id, &event, pin).await },
+                    done,
+                )
+            }
             Act::React(key, emoji) => {
                 room.picker = None;
                 room.emoji = None;
@@ -2832,7 +2923,7 @@ impl App {
                     },
                     done,
                 );
-                Task::batch([react, used_emoji(main, emoji)])
+                Task::batch([react, used_emoji(main, vec![emoji])])
             }
             Act::EditEmoji(message) => {
                 let Some(edit) = &mut room.editing else {
@@ -2862,7 +2953,8 @@ impl App {
                 if let Some(edit) = &mut room.editing {
                     edit.insert_emoji(&emoji);
                 }
-                Task::batch([InlineEdit::focus(), used_emoji(main, emoji)])
+                // Counted as used once saved.
+                InlineEdit::focus()
             }
             Act::OpenMenu(id, at) => {
                 room.menu = Some((id, at));
@@ -3026,7 +3118,8 @@ impl App {
                 }
                 let session = main.session.clone();
                 let target = edit.target.clone();
-                Task::perform(
+                let added = edit.added_emoji();
+                let save = Task::perform(
                     async move {
                         match target {
                             Editing::Sent(key) => timeline.edit_markdown(&key, &text).await,
@@ -3034,7 +3127,8 @@ impl App {
                         }
                     },
                     |result| Message::Act(Act::EditSaved(result.map_err(|e| e.to_string()))),
-                )
+                );
+                Task::batch([save, used_emoji(main, added)])
             }
             Act::EditSaved(Ok(())) | Act::CancelEdit => {
                 room.editing = None;
@@ -3492,6 +3586,24 @@ impl App {
                     t.0.updates()
                         .map(move |entries| Message::Timeline(id.clone(), entries))
                 }));
+                subscriptions.push(Subscription::run_with(
+                    (Shared(room.timeline.clone()), "uploads"),
+                    |(t, _)| {
+                        let (timeline, id) = (t.0.clone(), t.0.room_id().clone());
+                        iced::futures::stream::once(async move { timeline.uploads().await })
+                            .filter_map(|uploads| async move { uploads.ok() })
+                            .flatten()
+                            .map(move |uploads| Message::Uploads(id.clone(), uploads))
+                    },
+                ));
+                if let Some(pinned) = &room.pins.timeline {
+                    subscriptions.push(Subscription::run_with(Shared(pinned.clone()), |t| {
+                        let id = t.0.room_id().clone();
+                        t.0.updates().map(move |entries| {
+                            Message::Pins(id.clone(), pins::Message::Updated(entries))
+                        })
+                    }));
+                }
                 subscriptions.push(media::dropped_files());
             }
         }
@@ -3788,7 +3900,7 @@ fn offline_bar<'a>() -> Element<'a, Message> {
                 .width(Length::Fill),
             button(text("Retry now").size(13))
                 .padding([3, 10])
-                .style(style::secondary_button)
+                .style(style::problem_button)
                 .on_press(Message::Reconnect),
         ]
         .spacing(10)
@@ -3813,7 +3925,7 @@ fn signed_out_bar<'a>() -> Element<'a, Message> {
             hint(
                 button(text("Sign in again").size(13))
                     .padding([3, 10])
-                    .style(style::primary_button)
+                    .style(style::problem_button)
                     .on_press(Message::SignInAgain),
                 "Remove this device's data and log in again (your recovery key unlocks older messages)",
                 Position::Top,
@@ -4252,14 +4364,19 @@ fn load_frequent_emoji(session: &Arc<Session>) -> Task<Message> {
     )
 }
 
-/// Count a use of `emoji`: first among the most used here at once, and in
-/// account data (shared with Element).
-fn used_emoji(main: &mut Main, emoji: String) -> Task<Message> {
-    main.frequent_emoji.retain(|e| *e != emoji);
-    main.frequent_emoji.insert(0, emoji.clone());
+/// Count the uses of `used` (reacted with, sent): first among the most
+/// used here at once, and in account data (shared with Element).
+fn used_emoji(main: &mut Main, used: Vec<String>) -> Task<Message> {
+    if used.is_empty() {
+        return Task::none();
+    }
+    for emoji in &used {
+        main.frequent_emoji.retain(|e| e != emoji);
+        main.frequent_emoji.insert(0, emoji.clone());
+    }
     let session = main.session.clone();
     Task::future(async move {
-        if let Err(e) = session.record_emoji(&emoji).await {
+        if let Err(e) = session.record_emoji(&used).await {
             tracing::warn!("could not record the emoji used: {e}");
         }
     })
