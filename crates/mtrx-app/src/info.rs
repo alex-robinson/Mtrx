@@ -5,9 +5,7 @@ use std::time::SystemTime;
 
 use iced::{
     Alignment, Element, Length,
-    widget::{
-        button, checkbox, column, container, row, scrollable, space, text, text_input, toggler,
-    },
+    widget::{button, checkbox, column, container, row, scrollable, text, text_input, toggler},
 };
 use mtrx_core::{
     Access, CallService, MxcUri, NotifyMode, OwnedMxcUri, OwnedRoomId, OwnedUserId, RoomKind,
@@ -18,14 +16,16 @@ use crate::{
     app, arrange,
     avatar::{Avatars, Shape},
     dialog::Kind,
-    fonts,
+    fonts, frame,
     presence::{self, Presences},
     selectable::selectable_text,
     settings::{self, Preference},
     sidebar, style, topic,
 };
 
-const AVATAR: f32 = 64.0;
+/// The picture in the card's header.
+const AVATAR: f32 = 40.0;
+const WIDTH: f32 = 460.0;
 /// Height of a person's shared rooms list; more scroll.
 const SHARED_HEIGHT: f32 = 200.0;
 
@@ -69,6 +69,13 @@ pub enum Message {
     /// A change was saved on the server, or not.
     Saved(Result<(), String>),
     Close,
+}
+
+/// A card's parts, for its [`frame::frame`].
+struct Framed<'a> {
+    title: Element<'a, app::Message>,
+    action: Option<Element<'a, app::Message>>,
+    body: Element<'a, app::Message>,
 }
 
 pub struct Card {
@@ -189,30 +196,55 @@ impl Card {
     }
 
     pub fn view<'a>(&'a self, shown: Shown<'a>) -> Element<'a, app::Message> {
-        let body = match &self.target {
+        let Framed {
+            title,
+            action,
+            body,
+        } = match &self.target {
             Target::User(user) => self.user_view(user, shown),
             Target::Room(id) => match shown.rooms.iter().find(|r| &r.id == id) {
                 Some(room) => self.room_view(room, shown),
-                None => text("This room is not in your list.").into(),
+                None => Framed {
+                    title: frame::title("Room"),
+                    action: None,
+                    body: text("This room is not in your list.").into(),
+                },
             },
         };
-        // The scrollbar beside the content, not over it.
-        let body = scrollable(body).direction(scrollable::Direction::Vertical(
-            scrollable::Scrollbar::new().spacing(8),
-        ));
-        container(body)
-            .padding(20)
-            .width(440)
-            .max_height(640)
-            .style(style::dialog)
-            .into()
+        frame::frame(
+            title,
+            action,
+            app::Message::Info(Message::Close),
+            body,
+            WIDTH,
+        )
     }
 
-    fn user_view<'a>(
-        &'a self,
-        user: &'a UserSummary,
-        shown: Shown<'a>,
-    ) -> Element<'a, app::Message> {
+    /// The header's main button for the room: Save once the name or topic
+    /// changed, else Open (a room, not a space).
+    fn room_action<'a>(&self, room: &RoomSummary) -> Option<Element<'a, app::Message>> {
+        let (name, topic) = self.changed_details(room);
+        if name.is_some() || topic.is_some() {
+            Some(frame::primary(
+                "Save",
+                (!self.saving && self.topic.valid())
+                    .then_some(app::Message::Info(Message::SaveDetails)),
+            ))
+        } else {
+            (room.kind != RoomKind::Space && !room.invited)
+                .then(|| frame::primary("Open", Some(app::Message::OpenRoom(room.id.clone()))))
+        }
+    }
+
+    /// Saves the changed name and topic (⌘↩), if any.
+    pub fn submit(&self, rooms: &[RoomSummary]) -> Option<app::Message> {
+        let room = rooms.iter().find(|r| Some(&r.id) == self.room())?;
+        let (name, topic) = self.changed_details(room);
+        ((name.is_some() || topic.is_some()) && !self.saving && self.topic.valid())
+            .then_some(app::Message::Info(Message::SaveDetails))
+    }
+
+    fn user_view<'a>(&'a self, user: &'a UserSummary, shown: Shown<'a>) -> Framed<'a> {
         let Shown {
             rooms,
             avatars,
@@ -246,13 +278,10 @@ impl Card {
         if let Some(line) = presence.and_then(|p| presence::line(p, now)) {
             title = title.push(text(line).size(13).style(text::secondary));
         }
-        let mut card = column![
-            row![picture, title.width(Length::Fill), star]
-                .spacing(14)
-                .align_y(Alignment::Center),
-            self.copyable("User ID", user.id.to_string()),
-        ]
-        .spacing(14);
+        let title = row![picture, title.width(Length::Fill), star]
+            .spacing(12)
+            .align_y(Alignment::Center);
+        let mut card = column![self.copyable("User ID", user.id.to_string())].spacing(14);
         let shared = match &self.shared {
             None if self.error.is_none() => Some(text("Loading…").size(13).style(text::secondary)),
             None => None,
@@ -284,23 +313,19 @@ impl Card {
         } else {
             "Message"
         };
-        let actions = row![
-            space::horizontal(),
-            button(text(message))
-                .style(style::primary_button)
-                .on_press(app::Message::ChatWith(user.id.clone())),
-        ]
-        .spacing(8);
-        card.push(actions.push(close())).into()
+        Framed {
+            title: title.into(),
+            action: Some(frame::primary(
+                message,
+                Some(app::Message::ChatWith(user.id.clone())),
+            )),
+            body: card.into(),
+        }
     }
 
     /// Picture, name and topic (editable where allowed), favourite and low
     /// priority, notifications, the address, and invite and leave.
-    fn room_view<'a>(
-        &'a self,
-        room: &'a RoomSummary,
-        shown: Shown<'a>,
-    ) -> Element<'a, app::Message> {
+    fn room_view<'a>(&'a self, room: &'a RoomSummary, shown: Shown<'a>) -> Framed<'a> {
         let Shown {
             rooms,
             avatars,
@@ -310,18 +335,18 @@ impl Card {
         let settings = self.settings.as_ref();
         let allowed = |can: fn(&RoomSettings) -> bool| settings.is_some_and(can) && !self.saving;
         let star = sidebar::star_button(&room.id, room.tag == RoomTag::Favourite);
-        let mut card = column![heading(
+        let title = heading(
             avatars.view(
                 room.id.as_str(),
                 &room.name,
                 room.avatar.as_deref(),
                 AVATAR,
-                Shape::Circle
+                Shape::Circle,
             ),
             &room.name,
-            star
-        )]
-        .spacing(14);
+            star,
+        );
+        let mut card = column![].spacing(14);
 
         if allowed(|s| s.can_change_picture) {
             let mut picture = row![
@@ -368,19 +393,6 @@ impl Card {
         card = card
             .push(labelled("Name", name))
             .push(labelled("Topic", topic));
-        let (name, topic) = self.changed_details(room);
-        if name.is_some() || topic.is_some() {
-            card = card.push(row![
-                space::horizontal(),
-                button(text("Save").size(13))
-                    .padding([4, 12])
-                    .style(style::primary_button)
-                    .on_press_maybe(
-                        (!self.saving && self.topic.valid())
-                            .then_some(app::Message::Info(Message::SaveDetails))
-                    ),
-            ]);
-        }
 
         if let Some(settings) = settings {
             // The chosen one stays enabled to look chosen, not greyed.
@@ -508,34 +520,36 @@ impl Card {
             card = card.push(text(error).size(12).style(text::danger));
         }
 
-        let mut actions = row![
-            button(text("Leave…"))
+        // Invite in the members list, where the people are.
+        let mut actions = row![].spacing(4);
+        if !room.invited && settings.is_some_and(|s| s.can_invite) {
+            let invite = if room.kind == RoomKind::Space {
+                app::Message::OpenDialog(Kind::Invite {
+                    room: room.id.clone(),
+                    name: room.name.clone(),
+                })
+            } else {
+                app::Message::ShowMembers(room.id.clone())
+            };
+            actions = actions.push(
+                button(text("Invite…").size(13))
+                    .style(style::text_button)
+                    .on_press(invite),
+            );
+        }
+        actions = actions.push(
+            button(text("Leave…").size(13))
                 .style(style::text_button)
                 .on_press(app::Message::OpenDialog(Kind::Leave {
                     room: room.id.clone(),
                     name: room.name.clone(),
                 })),
-            space::horizontal()
-        ]
-        .spacing(8);
-        if !room.invited && settings.is_some_and(|s| s.can_invite) {
-            actions = actions.push(
-                button(text("Invite…"))
-                    .style(style::secondary_button)
-                    .on_press(app::Message::OpenDialog(Kind::Invite {
-                        room: room.id.clone(),
-                        name: room.name.clone(),
-                    })),
-            );
+        );
+        Framed {
+            title,
+            action: self.room_action(room),
+            body: card.push(actions).into(),
         }
-        if room.kind != RoomKind::Space {
-            actions = actions.push(
-                button(text("Open"))
-                    .style(style::primary_button)
-                    .on_press(app::Message::OpenRoom(room.id.clone())),
-            );
-        }
-        card.push(actions.push(close())).into()
     }
 
     /// A label, the value and a button copying it.
@@ -589,7 +603,7 @@ fn heading<'a>(
         container(selectable_text(name).size(18).font(fonts::SEMIBOLD)).width(Length::Fill),
         star,
     ]
-    .spacing(14)
+    .spacing(12)
     .align_y(Alignment::Center)
     .into()
 }
@@ -626,13 +640,6 @@ fn shared_view<'a>(shared: &[OwnedRoomId], rooms: &'a [RoomSummary]) -> Element<
     ]
     .spacing(4)
     .into()
-}
-
-fn close<'a>() -> Element<'a, app::Message> {
-    button(text("Close"))
-        .style(style::secondary_button)
-        .on_press(app::Message::Info(Message::Close))
-        .into()
 }
 
 /// A card target for a room in the list: the person for a direct chat.

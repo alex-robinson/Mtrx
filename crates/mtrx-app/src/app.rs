@@ -146,7 +146,11 @@ pub enum Message {
     GoToRoom(sidebar::Go),
     FocusSearch,
     Escape,
+    /// ⌘↩: the open dialog's main action, or saving the card's changes.
+    Submit,
     ToggleMembers,
+    /// Open the room with its members shown (where Invite is).
+    ShowMembers(OwnedRoomId),
     /// A room's members, and whether we may mention everyone (`@room`).
     MembersLoaded(OwnedRoomId, Result<(Vec<Member>, bool), String>),
     /// Completing a mention in the composer.
@@ -1755,9 +1759,19 @@ impl App {
                 }
             }
             Message::FocusSearch => iced::widget::operation::focus(sidebar::SEARCH),
-            // Closes the topmost thing: the image viewer's menu, the
-            // viewer, a drag, menu or category name, else the search.
+            // Closes the topmost thing: the settings, a dialog, the image
+            // viewer's menu, the viewer, a card, a drag, menu or category
+            // name, else the search.
             Message::Escape => {
+                if self.settings_panel.is_some() {
+                    self.settings_panel = None;
+                    return Task::none();
+                }
+                if let Screen::Main(main) = &self.screen
+                    && main.dialog.is_some()
+                {
+                    return Task::done(Message::Dialog(dialog::Message::Cancel));
+                }
                 if let Screen::Main(main) = &mut self.screen {
                     if let Some(viewer) = main.viewer.as_mut().filter(|v| v.menu) {
                         viewer.menu = false;
@@ -1824,6 +1838,38 @@ impl App {
                     }
                 }
                 Task::none()
+            }
+            Message::Submit => {
+                let Screen::Main(main) = &self.screen else {
+                    return Task::none();
+                };
+                let submit = if self.settings_panel.is_some() {
+                    None
+                } else if main.dialog.is_some() {
+                    Some(Message::Dialog(dialog::Message::Submit))
+                } else {
+                    main.info
+                        .as_ref()
+                        .and_then(|card| card.submit(&main.rooms.rooms))
+                };
+                submit.map_or_else(Task::none, Task::done)
+            }
+            Message::ShowMembers(id) => {
+                let Screen::Main(main) = &mut self.screen else {
+                    return Task::none();
+                };
+                main.show_members = true;
+                main.info = None;
+                match main.room.as_mut() {
+                    Some(room) if room.id == id => {
+                        if room.loading_members {
+                            Task::none()
+                        } else {
+                            load_members(&main.session, room)
+                        }
+                    }
+                    _ => Task::done(Message::OpenRoom(id)),
+                }
             }
             Message::ToggleMembers => {
                 let Screen::Main(main) = &mut self.screen else {
@@ -4077,8 +4123,8 @@ fn window_keys(
     }
 }
 
-/// ⌘K / Ctrl+K focuses the room search, Esc closes the viewer or clears the
-/// search, ⌘C, ⌘A and Shift with an arrow act on the timeline's selection;
+/// ⌘K / Ctrl+K focuses the room search, Esc closes what floats on top or
+/// clears the search, ⌘↩ submits a dialog, ⌘C, ⌘A and Shift with an arrow act on the timeline's selection;
 /// window focus.
 fn shortcuts(
     event: iced::Event,
@@ -4137,6 +4183,7 @@ fn shortcuts(
             }
             Key::Character(c) if c == "r" && modifiers.command() => Some(Message::Reload),
             Key::Named(Named::Escape) => Some(Message::Escape),
+            Key::Named(Named::Enter) if modifiers.command() => Some(Message::Submit),
             // Typed with nothing focused: a character, not a shortcut.
             _ if status == iced::event::Status::Ignored
                 && !modifiers.command()

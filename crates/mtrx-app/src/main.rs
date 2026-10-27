@@ -22,6 +22,7 @@ mod emoji;
 mod feedback;
 mod find;
 mod fonts;
+mod frame;
 mod hint;
 mod icons;
 mod info;

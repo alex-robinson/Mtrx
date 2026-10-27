@@ -19,7 +19,7 @@ use mtrx_core::{
 use crate::{
     app,
     arrange::{self, Arrange, CategoryEdit},
-    fonts, sidebar, style,
+    fonts, frame, sidebar, style,
 };
 
 /// Which dialog is open.
@@ -140,8 +140,9 @@ pub struct Dialog {
     error: Option<String>,
 }
 
-/// After this long a request offers to continue in the background.
+/// After this long a request says it may continue in the background.
 const SLOW: Duration = Duration::from_secs(15);
+const WIDTH: f32 = 480.0;
 
 impl Dialog {
     pub fn new(kind: Kind) -> Self {
@@ -328,8 +329,8 @@ impl Dialog {
         if elapsed >= SLOW {
             status = status.push(
                 text(
-                    "The server is taking long. You can continue in the background; \
-                     Mtrx tells you when it is done.",
+                    "The server is taking long. You can close this; Mtrx tells you \
+                     when it is done.",
                 )
                 .size(12)
                 .style(text::secondary),
@@ -510,7 +511,7 @@ impl Dialog {
             Kind::Category { category: None, .. } => ("New category".into(), "Create"),
             Kind::Category { .. } => ("Edit category".into(), "Save"),
         };
-        let mut body = column![text(title).size(18).font(fonts::SEMIBOLD)].spacing(12);
+        let mut body = column![].spacing(12);
         body = match &self.kind {
             Kind::NewRoom { .. } | Kind::NewSpace => {
                 let space = matches!(self.kind, Kind::NewSpace);
@@ -573,35 +574,33 @@ impl Dialog {
             body = body.push(text(error).size(12).style(text::danger));
         }
         let ready = (self.request().is_some() || self.category_edit().is_some()) && !self.busy();
-        let slow = self
-            .busy
-            .is_some_and(|since| self.now.saturating_duration_since(since) >= SLOW);
-        let cancel = match (self.busy(), slow) {
-            (false, _) => Some("Cancel"),
-            (true, true) => Some("Continue in background"),
-            (true, false) => None,
+        let submit_message = ready.then(|| message(Message::Submit));
+        // A confirmation is short: its answer below the question, as in
+        // system alerts. A form's action stays in the header.
+        let action = if matches!(self.kind, Kind::Leave { .. } | Kind::SignOut) {
+            body = body.push(
+                row![
+                    space::horizontal(),
+                    button(text("Cancel"))
+                        .style(style::text_button)
+                        .on_press(message(Message::Cancel)),
+                    button(text(submit))
+                        .style(style::danger_button)
+                        .on_press_maybe(submit_message),
+                ]
+                .spacing(8),
+            );
+            None
+        } else {
+            Some(frame::primary(submit, submit_message))
         };
-        body = body.push(
-            row![
-                space::horizontal(),
-                button(text(cancel.unwrap_or("Cancel")))
-                    .style(style::text_button)
-                    .on_press_maybe(cancel.map(|_| message(Message::Cancel))),
-                button(text(submit))
-                    .style(if matches!(self.kind, Kind::Leave { .. } | Kind::SignOut) {
-                        style::danger_button
-                    } else {
-                        style::primary_button
-                    })
-                    .on_press_maybe(ready.then(|| message(Message::Submit))),
-            ]
-            .spacing(8),
-        );
-        container(body)
-            .padding(20)
-            .width(480)
-            .style(style::dialog)
-            .into()
+        frame::frame(
+            frame::title(title),
+            action,
+            message(Message::Cancel),
+            body,
+            WIDTH,
+        )
     }
 
     fn field<'a>(

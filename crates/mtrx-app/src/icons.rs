@@ -1071,3 +1071,199 @@ impl<M> canvas::Program<M> for XCircle {
         vec![frame.into_geometry()]
     }
 }
+
+/// A cross: closes.
+pub fn cross<'a, M: 'a>(size: f32, color: fn(&Theme) -> Color) -> Element<'a, M> {
+    sketch(size, color, |frame, s, stroke| {
+        let p = |x: f32, y: f32| iced::Point::new(x * s, y * s);
+        frame.stroke(&Path::line(p(0.22, 0.22), p(0.78, 0.78)), stroke);
+        frame.stroke(&Path::line(p(0.78, 0.22), p(0.22, 0.78)), stroke);
+    })
+}
+
+/// A tick: done.
+pub fn check<'a, M: 'a>(size: f32, color: fn(&Theme) -> Color) -> Element<'a, M> {
+    sketch(size, color, |frame, s, stroke| {
+        let p = |x: f32, y: f32| iced::Point::new(x * s, y * s);
+        frame.stroke(
+            &Path::new(|path| {
+                path.move_to(p(0.18, 0.54));
+                path.line_to(p(0.4, 0.75));
+                path.line_to(p(0.82, 0.27));
+            }),
+            stroke,
+        );
+    })
+}
+
+/// Two overlapping sheets: copies.
+pub fn copy<'a, M: 'a>(size: f32, color: fn(&Theme) -> Color) -> Element<'a, M> {
+    sketch(size, color, |frame, s, stroke| {
+        let p = |x: f32, y: f32| iced::Point::new(x * s, y * s);
+        let sheet = |x: f32, y: f32| {
+            Path::rounded_rectangle(
+                p(x, y),
+                iced::Size::new(0.5 * s, 0.56 * s),
+                (0.08 * s).into(),
+            )
+        };
+        frame.stroke(&sheet(0.36, 0.3), stroke);
+        // The sheet behind shows above and left of the front one.
+        frame.stroke(
+            &Path::new(|path| {
+                path.move_to(p(0.24, 0.7));
+                path.line_to(p(0.22, 0.7));
+                path.line_to(p(0.14, 0.62));
+                path.line_to(p(0.14, 0.22));
+                path.line_to(p(0.22, 0.14));
+                path.line_to(p(0.56, 0.14));
+                path.line_to(p(0.64, 0.22));
+            }),
+            stroke,
+        );
+    })
+}
+
+/// A globe: anyone can join.
+pub fn globe<'a, M: 'a>(size: f32, color: fn(&Theme) -> Color) -> Element<'a, M> {
+    sketch(size, color, |frame, s, stroke| {
+        let center = frame.center();
+        let radius = s * 0.4;
+        frame.stroke(&Path::circle(center, radius), stroke);
+        frame.stroke(
+            &Path::line(
+                iced::Point::new(center.x - radius, center.y),
+                iced::Point::new(center.x + radius, center.y),
+            ),
+            stroke,
+        );
+        // A meridian: an ellipse, as two arcs.
+        frame.stroke(
+            &Path::new(|path| {
+                path.ellipse(canvas::path::arc::Elliptical {
+                    center,
+                    radii: Vector::new(radius * 0.45, radius),
+                    rotation: iced::Radians(0.0),
+                    start_angle: iced::Radians(0.0),
+                    end_angle: iced::Radians(std::f32::consts::TAU),
+                });
+            }),
+            stroke,
+        );
+    })
+}
+
+/// Two people: members of a space can join.
+pub fn people<'a, M: 'a>(size: f32, color: fn(&Theme) -> Color) -> Element<'a, M> {
+    sketch(size, color, |frame, s, stroke| {
+        let p = |x: f32, y: f32| iced::Point::new(x * s, y * s);
+        let person = |frame: &mut Frame, x: f32| {
+            frame.stroke(&Path::circle(p(x, 0.34), 0.13 * s), stroke);
+            frame.stroke(
+                &Path::new(|path| {
+                    path.arc(canvas::path::Arc {
+                        center: p(x, 0.82),
+                        radius: 0.22 * s,
+                        start_angle: iced::Radians(std::f32::consts::PI),
+                        end_angle: iced::Radians(std::f32::consts::TAU),
+                    });
+                }),
+                stroke,
+            );
+        };
+        person(frame, 0.34);
+        person(frame, 0.68);
+    })
+}
+
+/// A door ajar: ask to join.
+pub fn door<'a, M: 'a>(size: f32, color: fn(&Theme) -> Color) -> Element<'a, M> {
+    sketch(size, color, |frame, s, stroke| {
+        let p = |x: f32, y: f32| iced::Point::new(x * s, y * s);
+        frame.stroke(
+            &Path::new(|path| {
+                path.move_to(p(0.2, 0.86));
+                path.line_to(p(0.2, 0.14));
+                path.line_to(p(0.72, 0.14));
+                path.line_to(p(0.72, 0.86));
+            }),
+            stroke,
+        );
+        frame.stroke(
+            &Path::new(|path| {
+                path.move_to(p(0.2, 0.14));
+                path.line_to(p(0.5, 0.24));
+                path.line_to(p(0.5, 0.92));
+                path.line_to(p(0.2, 0.86));
+            }),
+            stroke,
+        );
+    })
+}
+
+/// Four tiles: a space.
+pub fn tiles<'a, M: 'a>(size: f32, color: fn(&Theme) -> Color) -> Element<'a, M> {
+    sketch(size, color, |frame, s, stroke| {
+        let side = 0.3 * s;
+        for (x, y) in [(0.16, 0.16), (0.54, 0.16), (0.16, 0.54), (0.54, 0.54)] {
+            frame.stroke(
+                &Path::rounded_rectangle(
+                    iced::Point::new(x * s, y * s),
+                    iced::Size::new(side, side),
+                    (0.06 * s).into(),
+                ),
+                stroke,
+            );
+        }
+    })
+}
+
+/// A magnifying glass: searches.
+pub fn search<'a, M: 'a>(size: f32, color: fn(&Theme) -> Color) -> Element<'a, M> {
+    sketch(size, color, |frame, s, stroke| {
+        let p = |x: f32, y: f32| iced::Point::new(x * s, y * s);
+        frame.stroke(&Path::circle(p(0.43, 0.43), 0.26 * s), stroke);
+        frame.stroke(&Path::line(p(0.62, 0.62), p(0.84, 0.84)), stroke);
+    })
+}
+
+/// An icon of round-capped strokes, drawn by `draw` on a square of side
+/// `s` (the size).
+fn sketch<'a, M: 'a>(
+    size: f32,
+    color: fn(&Theme) -> Color,
+    draw: fn(&mut Frame, f32, Stroke<'static>),
+) -> Element<'a, M> {
+    canvas::Canvas::new(Sketch { color, draw })
+        .width(size)
+        .height(size)
+        .into()
+}
+
+struct Sketch {
+    color: fn(&Theme) -> Color,
+    draw: fn(&mut Frame, f32, Stroke<'static>),
+}
+
+impl<M> canvas::Program<M> for Sketch {
+    type State = ();
+
+    fn draw(
+        &self,
+        _state: &(),
+        renderer: &Renderer,
+        theme: &Theme,
+        bounds: Rectangle,
+        _cursor: mouse::Cursor,
+    ) -> Vec<Geometry> {
+        let mut frame = Frame::new(renderer, bounds.size());
+        let s = bounds.width;
+        let stroke = Stroke::default()
+            .with_color((self.color)(theme))
+            .with_width((s / 11.0).max(1.0))
+            .with_line_cap(canvas::LineCap::Round)
+            .with_line_join(canvas::LineJoin::Round);
+        (self.draw)(&mut frame, s, stroke);
+        vec![frame.into_geometry()]
+    }
+}
