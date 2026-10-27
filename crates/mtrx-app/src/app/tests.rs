@@ -30,6 +30,11 @@ mod keyboard;
 mod menu;
 
 const TIMEOUT: Duration = Duration::from_secs(30);
+/// The snapshot room's topic, with its calls and links.
+const TOPIC: &str = "Ice sheet runs and the weekly call.\n\
+    [call] https://meet.jit.si/ice-sheets-weekly\n\
+    [call Lab passcode 4711] https://zoom.us/j/123456789\n\
+    [link Paper draft] https://www.overleaf.com/project/ice";
 
 fn snapshot_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/ui-snapshots")
@@ -789,15 +794,19 @@ async fn main_screen_with_math() {
         open.entries = entries.clone();
         with_start(&mut open.entries);
         open.hover(hovered.clone(), true);
-        open.calls.link = Some(Url::parse("https://meet.jit.si/ice-sheets-weekly").unwrap());
+        // The room's calls and links, in its topic.
+        if let Some(summary) = main.rooms.rooms.iter_mut().find(|r| r.id == room) {
+            summary.topic = Some(TOPIC.into());
+        }
         open.calls.space_service =
             Some(CallService::jitsi("Lab Jitsi", "https://video.lab.example").unwrap());
-        // The start menu and reaction picker in one shot, the link editor
+        // The call menu and reaction picker in one shot, the topic's editor
         // and a reply in the other.
         open.calls.menu = mode == Mode::Dark;
         if mode == Mode::Light {
-            open.calls.editor = Some("https://meet.jit.si/ice-sheets-weekly".into());
-            open.calls.announce = true;
+            open.topic.open = true;
+            open.topic.can_edit = Some(true);
+            open.topic.editor = Some(topic::Editor::new(TOPIC));
             // The hovered message's menu, from its toolbar.
             open.menu = Some((hovered.clone(), MenuAt::Toolbar));
             // Text selected from the first message into bob's reply.
@@ -1003,17 +1012,18 @@ async fn main_screen_with_math() {
                 }
             }
         }
-        // A click elsewhere closes the call menu (dark) or link editor and
-        // the list of readers (light), and does nothing else: what is
-        // behind neither lights up under the cursor nor takes the click.
+        // A click elsewhere closes the call menu (dark) or the list of
+        // readers (light), and does nothing else: what is behind neither
+        // lights up under the cursor nor takes the click.
         let mut ui = Simulator::with_size(fonts::settings(), Size::new(1200.0, 800.0), app.view());
         ui.point_at(iced::Point::new(400.0, 130.0));
         ui.simulate(iced_test::simulator::click());
         let messages: Vec<_> = ui.into_messages().collect();
         assert!(
-            messages
-                .iter()
-                .any(|m| matches!(m, Message::Calls(_, calls::Message::Close))),
+            mode == Mode::Light
+                || messages
+                    .iter()
+                    .any(|m| matches!(m, Message::Calls(_, calls::Message::Close))),
             "{messages:?}"
         );
         assert!(
@@ -1093,7 +1103,7 @@ fn composer_keeps_focus(app: &mut App) {
     }
     // Nothing else open that could take the focus.
     room(app).menu = None;
-    room(app).calls.editor = None;
+    room(app).topic.editor = None;
     room(app).typing.clear();
 
     let mut renderer = iced::futures::executor::block_on(iced::Renderer::new(
@@ -1740,7 +1750,8 @@ async fn room_management_screens() {
                 room.clone(),
                 Ok(settings.clone()),
             ));
-            card.update(info::Message::Topic("Ice sheet runs, weekly".into()));
+            // A link being added.
+            card.update(info::Message::Topic(topic::Edit::Add(false)));
             main.info = Some(card);
         }),
         "room-settings",

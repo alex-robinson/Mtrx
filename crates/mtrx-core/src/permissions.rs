@@ -47,14 +47,13 @@ const ADMIN_STATE: [&str; 7] = [
 ];
 
 /// State every member changes in an open room.
-const MEMBER_STATE: [&str; 8] = [
+const MEMBER_STATE: [&str; 7] = [
     "m.room.name",
     "m.room.topic",
     "m.room.avatar",
     "m.room.pinned_events",
     "m.space.child",
     "m.space.parent",
-    "org.mtrx.call_link",
     "org.mtrx.call_service",
 ];
 

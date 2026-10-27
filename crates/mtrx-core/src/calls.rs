@@ -1,26 +1,22 @@
-//! Calls through links: meeting links in messages are recognised, a room can
-//! have a standing call link, and a space can set the call service its rooms
-//! use to start calls. Links and services live in room state, so every
-//! member sees them.
+//! Calls through links: meeting links in messages are recognised, and a
+//! space can set the call service its rooms use to start calls, in its state,
+//! so every member sees it. A room's own calls are in its topic (see
+//! [`crate::Topic`]); its old standing call link moves there.
 
-use futures_util::{Stream, StreamExt, stream};
-use matrix_sdk::{
-    Room,
-    ruma::{
-        RoomId,
-        api::{client::state::get_state_event_for_key, error::ErrorKind},
-        events::{
-            AnySyncTimelineEvent, EmptyStateKey, StateEventType, StaticEventContent,
-            SyncStateEvent, macros::EventContent,
-        },
-        serde::Raw,
+use matrix_sdk::ruma::{
+    RoomId,
+    api::{client::state::get_state_event_for_key, error::ErrorKind},
+    events::{
+        AnySyncTimelineEvent, EmptyStateKey, StateEventType, StaticEventContent,
+        macros::EventContent,
     },
+    serde::Raw,
 };
 use rand::distr::{Alphanumeric, SampleString};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use url::Url;
 
-use crate::{Error, Result, Session, timeline::send_message};
+use crate::{Error, LinkKind, Result, RoomLink, Session, Topic, timeline::send_message};
 
 /// A call service, for starting calls.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -171,7 +167,7 @@ fn is_google_meet(url: &Url) -> bool {
     url.host_str() == Some("meet.google.com") && url.path().len() > 1
 }
 
-/// A room's standing call link.
+/// A room's standing call link, before calls moved into the topic.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, EventContent)]
 #[ruma_event(type = "org.mtrx.call_link", kind = State, state_key_type = EmptyStateKey)]
 struct CallLinkEventContent {
@@ -202,63 +198,52 @@ struct CallServiceEventContent {
 }
 
 impl Session {
-    /// The room's call link, if set.
-    pub async fn call_link(&self, room_id: &RoomId) -> Result<Option<Url>> {
+    /// Move the room's old standing call link (`org.mtrx.call_link`) into
+    /// its topic as its call, then remove it; if we may change both.
+    pub async fn move_call_link_to_topic(&self, room_id: &RoomId) -> Result<()> {
         let content = fetch_state::<CallLinkEventContent>(self, room_id).await?;
-        Ok(content.and_then(|c| Url::parse(c.url.as_deref()?).ok()))
+        let Some(url) = content.and_then(|c| Url::parse(c.url.as_deref()?).ok()) else {
+            return Ok(());
+        };
+        if !(self.can_change_topic(room_id).await?
+            && self
+                .can_send_state(room_id, CallLinkEventContent::TYPE)
+                .await?)
+        {
+            return Ok(());
+        }
+        let room = self.room(room_id)?;
+        let mut topic = Topic::parse(&room.topic().unwrap_or_default());
+        if !topic.links.iter().any(|link| link.url == url) {
+            topic.links.insert(
+                0,
+                RoomLink {
+                    kind: LinkKind::Call { passcode: None },
+                    title: None,
+                    url,
+                },
+            );
+            self.set_room_topic(room_id, &topic.to_topic()).await?;
+        }
+        room.send_state_event(CallLinkEventContent { url: None })
+            .await?;
+        Ok(())
     }
 
-    /// The room's call link, then every change.
-    pub async fn call_link_updates(
-        &self,
-        room_id: &RoomId,
-    ) -> Result<impl Stream<Item = Option<Url>> + use<>> {
-        // Subscribe before reading, so no change in between is missed.
-        let observer = self
-            .client
-            .observe_room_events::<SyncStateEvent<CallLinkEventContent>, Room>(room_id);
-        let events = observer.subscribe();
-        let current = self.call_link(room_id).await?;
-        // The event handler stays registered only while `observer` lives.
-        let changes = stream::unfold((observer, events), |(observer, mut events)| async move {
-            let (event, _) = events.next().await?;
-            let url = match event {
-                SyncStateEvent::Original(e) => e.content.url.and_then(|u| Url::parse(&u).ok()),
-                SyncStateEvent::Redacted(_) => None,
-            };
-            Some((url, (observer, events)))
-        });
-        Ok(stream::once(async { current }).chain(changes))
-    }
-
-    /// Set or remove the room's call link.
-    pub async fn set_call_link(&self, room_id: &RoomId, url: Option<&Url>) -> Result<()> {
+    /// Set the room's old standing call link, as older versions did.
+    #[cfg(feature = "test-support")]
+    pub async fn set_old_call_link(&self, room_id: &RoomId, url: &Url) -> Result<()> {
         self.room(room_id)?
             .send_state_event(CallLinkEventContent {
-                url: url.map(|u| u.to_string()),
+                url: Some(url.to_string()),
             })
             .await?;
         Ok(())
     }
 
-    /// Post the room's call link as a message, for people whose clients
-    /// do not show call links.
-    pub async fn announce_call_link(&self, room_id: &RoomId, url: &Url) -> Result<()> {
-        send_message(
-            &self.room(room_id)?,
-            &self.send_lock,
-            &format!("Call link for this room: {url}"),
-            Vec::new(),
-            None,
-        )
-        .await?;
-        Ok(())
-    }
-
-    /// Whether we may change the room's call link.
-    pub async fn can_set_call_link(&self, room_id: &RoomId) -> Result<bool> {
-        self.can_send_state(room_id, CallLinkEventContent::TYPE)
-            .await
+    /// Whether we may change the room's topic, and so its calls and links.
+    pub async fn can_change_topic(&self, room_id: &RoomId) -> Result<bool> {
+        self.can_send_state(room_id, "m.room.topic").await
     }
 
     /// The call service set for a space.

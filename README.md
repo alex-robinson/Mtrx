@@ -50,10 +50,15 @@ or `mtrx watch` runs. One whose time passed while neither ran is held as
 overdue until you send or cancel it.
 
 Rooms and spaces created with Mtrx trust their members: anyone may invite,
-rename, change the topic and picture, pin messages and set the call link.
-Removing people, deleting others' messages and changing permissions stay with
+rename, change the topic (with the room's calls and links) and picture, and pin
+messages. Removing people, deleting others' messages and changing permissions stay with
 admins. `--moderated` gives the usual Matrix rules instead, and
 `let-everyone-edit ROOM_OR_SPACE` opens existing rooms (needs admin rights).
+
+A room's calls and links are lines at the end of its topic, so other apps
+show them too: `[call] URL`, `[call Weekly passcode 123] URL`, `[link] URL`,
+`[link Paper draft] URL`. The first call is the one the header's Join button
+opens; the others, and the links, are in the menu beside it.
 
 Presence (online, idle, offline, last active, a status message) is read
 from the server, about once a minute for the people shown, as sync does

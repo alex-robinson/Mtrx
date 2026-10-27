@@ -589,8 +589,9 @@ fn arranged<'a>(view: &RoomListView<'a>) -> Vec<Element<'a, Message>> {
     elements
 }
 
-/// "Show 4 of 6": the button opening the menu of which of a space's
-/// sections are expanded, the others shown collapsed.
+/// "Show 4 of 6": the button across two thirds of the room list, opening
+/// the menu of which of a space's sections are expanded, the others shown
+/// collapsed.
 fn show_menu<'a>(view: &RoomListView<'a>, space: &OwnedRoomId) -> Element<'a, Message> {
     let arrange = view.arrange;
     let layout = arrange.categories.layout(Some(space));
@@ -602,29 +603,36 @@ fn show_menu<'a>(view: &RoomListView<'a>, space: &OwnedRoomId) -> Element<'a, Me
     let open = arrange.show_menu;
     // While open, a click on it closes the menu as any outside click.
     let toggle = button(
-        row![
-            text(format!("Show {expanded} of {}", sections.len())).size(12),
-            icons::chevron(10.0, true, |theme| {
-                theme
-                    .extended_palette()
-                    .background
-                    .base
-                    .text
-                    .scale_alpha(0.7)
-            }),
-        ]
-        .spacing(4)
-        .align_y(Alignment::Center),
+        container(
+            row![
+                text(format!("Show {expanded} of {}", sections.len())).size(12),
+                icons::chevron(10.0, true, |theme| {
+                    theme
+                        .extended_palette()
+                        .background
+                        .base
+                        .text
+                        .scale_alpha(0.7)
+                }),
+            ]
+            .spacing(4)
+            .align_y(Alignment::Center),
+        )
+        .center_x(Length::Fill),
     )
+    .width(Length::FillPortion(4))
     .padding([2, 8])
     .style(style::secondary_button)
     .on_press_maybe((!open).then(|| arrange_message(arrange::Message::ShowMenu(true))));
     let notes = view.notes.is_some();
     let menu = open.then(|| show_menu_panel(arrange, Some(space), layout, sections, notes));
-    container(
+    let margin = || iced::widget::space().width(Length::FillPortion(1));
+    container(row![
+        margin(),
         popover(toggle, menu, Side::Below, Edge::Left)
             .on_dismiss(arrange_message(arrange::Message::ShowMenu(false))),
-    )
+        margin(),
+    ])
     .padding(Padding::new(0.0).top(2).bottom(4))
     .into()
 }
@@ -646,7 +654,7 @@ fn show_menu_panel<'a>(
     let mut menu = column![];
     for (at, section) in sections.iter().enumerate() {
         let ticked = !layout.is_collapsed(section);
-        let toggle = arrange_message(tick(arrange.modifiers, &sections, section));
+        let toggle = arrange_message(arrange::Message::ToggleCollapsed(section.clone()));
         let name = section_name(arrange, space, section).to_owned();
         let line = row![
             checkbox(ticked).on_toggle({
@@ -701,8 +709,7 @@ fn show_menu_panel<'a>(
                 footer("Hide all").on_press(collapse(&|_| true))
             ]
             .spacing(4),
-        )
-        .push(note(ONLY_ONE));
+        );
     if notes {
         menu = menu.push(note(NOTES_PINNED));
     }
@@ -761,16 +768,6 @@ fn drop_line<'a>(active: bool) -> Element<'a, Message> {
         .into()
 }
 
-/// Ticking or unticking `section` in the Show menu, one of `sections`;
-/// with ⌥ (Alt) held, only it is expanded.
-fn tick(modifiers: Modifiers, sections: &[Section], section: &Section) -> arrange::Message {
-    if modifiers.alt() {
-        collapse_sections(sections, &|other| other != section)
-    } else {
-        arrange::Message::ToggleCollapsed(section.clone())
-    }
-}
-
 /// Collapse the `sections` for which `collapsed` holds, expand the others.
 fn collapse_sections(
     sections: &[Section],
@@ -781,13 +778,6 @@ fn collapse_sections(
         .collect();
     arrange::Message::Collapse(sections)
 }
-
-/// How to show only one section, below the Show menu.
-const ONLY_ONE: &str = if cfg!(target_os = "macos") {
-    "⌥-click to show only one"
-} else {
-    "Alt+click to show only one"
-};
 
 /// Where the Notes pinned at the top are set, below the Show menu.
 const NOTES_PINNED: &str = "Notes at the top: in Settings";
@@ -1918,28 +1908,6 @@ mod tests {
         // While searching, what it found.
         let found = list(&rooms, None, "o", &arrange, &avatars, &presences);
         assert_eq!(ids(&found), ["!bob:x", "!loose:x", "!notes:x"]);
-    }
-
-    #[test]
-    fn alt_ticks_only_one_section() {
-        let sections = [Section::People, Section::Rooms, Section::LowPriority];
-        assert!(matches!(
-            tick(Modifiers::empty(), &sections, &Section::Rooms),
-            arrange::Message::ToggleCollapsed(Section::Rooms)
-        ));
-        let arrange::Message::Collapse(collapsed) =
-            tick(Modifiers::ALT, &sections, &Section::Rooms)
-        else {
-            panic!("not a collapse");
-        };
-        assert_eq!(
-            collapsed,
-            [
-                (Section::People, true),
-                (Section::Rooms, false),
-                (Section::LowPriority, true),
-            ]
-        );
     }
 
     #[test]

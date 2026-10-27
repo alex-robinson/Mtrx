@@ -144,10 +144,14 @@ impl<'a> Row<'a> {
                 }
                 parts
             }
-            Row::State(events) => vec![line(
-                format!("{}/state", events[0].id),
-                room::state_summary(events),
-            )],
+            Row::State(events) => {
+                let summary = room::state_summary(events);
+                // None for nothing worth a line, e.g. a topic set again.
+                (!summary.is_empty())
+                    .then(|| line(format!("{}/state", events[0].id), summary))
+                    .into_iter()
+                    .collect()
+            }
             Row::Day(day) => {
                 let since = day
                     .duration_since(SystemTime::UNIX_EPOCH)

@@ -20,7 +20,7 @@ use iced::{
 use mtrx_core::{
     CallService, Event, EventContent, EventKey, Media, Member, MembershipChange, MessageKind,
     MxcUri, OwnedEventId, OwnedRoomId, OwnedUserId, RoomKind, RoomSummary, RoomTimeline,
-    ScheduledMessage, SendState, TimelineEntry, UserId,
+    ScheduledMessage, SendState, TimelineEntry, Topic, UserId, describe_change,
 };
 
 use crate::{
@@ -56,6 +56,7 @@ use crate::{
         self, GUTTER_SPACING, HEADER_AVATAR, MESSAGE_PADDING, SENDER_AVATAR, TEXT_MARGIN,
         TIMELINE_PADDING, TOOLBAR_HEIGHT,
     },
+    topic,
 };
 
 /// Entries rendered when a room opens; laying out every loaded entry gets
@@ -91,6 +92,9 @@ pub struct Room {
     pub attachments: Vec<Attached>,
     pub later: SendLater,
     pub calls: RoomCalls,
+    /// The header's panel with the topic and links; closed when the room
+    /// opens.
+    pub topic: topic::Panel,
     pub compose: Compose,
     /// A sent or scheduled message being edited in place.
     pub editing: Option<InlineEdit>,
@@ -162,6 +166,7 @@ impl Room {
         let entries = timeline.current();
         Self {
             calls: RoomCalls::new(id.clone()),
+            topic: topic::Panel::default(),
             compose: Compose::New,
             editing: None,
             picker: None,
@@ -940,7 +945,9 @@ impl Room {
         column![header, body].into()
     }
 
-    /// Picture, name and topic, the call controls, and their panel when open.
+    /// Picture, name and topic, the call controls, and their menu when
+    /// open; below, the topic in full and its links while the caret beside
+    /// the name opens them.
     fn header<'a>(
         &'a self,
         summary: Option<&'a RoomSummary>,
@@ -948,12 +955,39 @@ impl Room {
     ) -> Element<'a, Message> {
         let avatars = look.avatars;
         let name = summary.map_or("", |s| s.name.as_str());
+        let topic = Topic::parse(self.topic.shown(summary.and_then(|s| s.topic.as_deref())));
+        let can_edit = self.topic.can_edit == Some(true);
         // A direct chat's person, as long as their presence is known.
         let presence = summary
             .filter(|s| s.kind == RoomKind::Direct && !s.is_notes(look.own_user))
             .and_then(|s| s.direct_user.as_ref())
             .and_then(|user| look.presences.get(user));
-        let mut title = column![ellipsis(name).size(16).font(fonts::SEMIBOLD)];
+        let mut name_line = row![ellipsis(name).size(16).font(fonts::SEMIBOLD)]
+            .spacing(4)
+            .align_y(Alignment::Center);
+        if summary.is_some() && (!topic.text.is_empty() || !topic.links.is_empty() || can_edit) {
+            let open = self.topic.open;
+            name_line = name_line.push(hint(
+                button(icons::chevron(10.0, open, |theme| {
+                    theme
+                        .extended_palette()
+                        .background
+                        .base
+                        .text
+                        .scale_alpha(0.7)
+                }))
+                .padding([4, 4])
+                .style(style::text_button)
+                .on_press(Message::Topic(self.id.clone(), topic::Message::Toggle)),
+                if open {
+                    "Hide the topic and links"
+                } else {
+                    "Show the topic and links in full"
+                },
+                Position::Bottom,
+            ));
+        }
+        let mut title = column![name_line];
         if let Some(line) = presence.and_then(|p| presence::line(p, look.now)) {
             title = title.push(ellipsis(line).size(12).style(text::secondary));
         }
@@ -965,11 +999,8 @@ impl Room {
                     .style(text::secondary),
             );
         }
-        if let Some(topic) = summary
-            .and_then(|s| s.topic.as_deref())
-            .and_then(|t| t.lines().next())
-        {
-            title = title.push(ellipsis(topic).size(12).style(text::secondary));
+        if let Some(first) = topic.text.lines().next() {
+            title = title.push(ellipsis(first.to_owned()).size(12).style(text::secondary));
         }
         let avatar = avatars.view(
             self.id.as_str(),
@@ -999,10 +1030,11 @@ impl Room {
         } else {
             "Show who is in the room"
         };
-        column![
+        let mut header = column![
             row![
                 hint(about, about_tip, Position::Bottom),
-                self.calls.header_controls(look.call_services),
+                self.calls
+                    .header_controls(&topic, look.call_services, can_edit),
                 hint(
                     button(text("Members").size(13))
                         .padding([5, 10])
@@ -1030,9 +1062,23 @@ impl Room {
             .spacing(10)
             .align_y(Alignment::Center)
             .padding([8.0, TIMELINE_PADDING + MESSAGE_PADDING]),
-            rule::horizontal(1).style(style::separator),
-        ]
-        .into()
+        ];
+        if self.topic.open {
+            header = header
+                .push(rule::horizontal(1).style(style::separator))
+                .push(
+                    container(self.topic.view(&self.id, &topic, look.call_services))
+                        .width(Length::Fill)
+                        .padding(
+                            Padding::new(10.0)
+                                .left(TIMELINE_PADDING + MESSAGE_PADDING + HEADER_AVATAR + 10.0)
+                                .right(TIMELINE_PADDING + MESSAGE_PADDING),
+                        ),
+                );
+        }
+        header
+            .push(rule::horizontal(1).style(style::separator))
+            .into()
     }
 }
 
@@ -1265,6 +1311,7 @@ fn event_view<'a>(
         EventContent::Membership { .. }
         | EventContent::DisplayNameChange { .. }
         | EventContent::CallLink { .. }
+        | EventContent::Topic { .. }
         | EventContent::OtherState { .. } => return space().into(),
     };
 
@@ -1917,7 +1964,19 @@ pub fn state_summary(events: &[&Event]) -> String {
                 format!("{name} created and configured the room")
             }
             // Initial settings belong to "created and configured".
-            EventContent::OtherState { .. } if creators.contains(&event.sender) => continue,
+            EventContent::OtherState { .. } | EventContent::Topic { .. }
+                if creators.contains(&event.sender) =>
+            {
+                continue;
+            }
+            EventContent::Topic { old, new } => {
+                match describe_change(old.as_deref().unwrap_or_default(), new) {
+                    Some(change) => format!("{name} {change}"),
+                    // Set again as it was.
+                    None if old.is_some() => continue,
+                    None => format!("{name} changed the topic"),
+                }
+            }
             EventContent::OtherState { event_type } => match event_type.as_str() {
                 "m.room.name" => format!("{name} renamed the room"),
                 "m.room.topic" => format!("{name} changed the topic"),
@@ -1999,6 +2058,26 @@ mod tests {
         assert_eq!(
             state_summary(&[&set, &removed]),
             "alice changed the call link to https://meet.jit.si/ice · alice removed the call link"
+        );
+    }
+
+    #[test]
+    fn summarises_topic_changes() {
+        let alice: mtrx_core::OwnedUserId = "@alice:x".try_into().unwrap();
+        let change = |id: &str, old: Option<&str>, new: &str| Event {
+            content: EventContent::Topic {
+                old: old.map(Into::into),
+                new: new.into(),
+            },
+            ..Event::test_message(id, alice.clone(), "")
+        };
+        let call = "[call] https://zoom.us/j/1";
+        let text = change("$a", None, "Weekly");
+        let added = change("$b", Some("Weekly"), &format!("Weekly\n{call}"));
+        let same = change("$c", Some(call), call);
+        assert_eq!(
+            state_summary(&[&text, &added, &same]),
+            "alice changed the topic · alice added the call Zoom"
         );
     }
 

@@ -156,6 +156,50 @@ impl<M> canvas::Program<M> for Camera {
     }
 }
 
+/// Two chain links across: a link to open.
+pub fn link<'a, M: 'a>(size: f32, color: fn(&Theme) -> Color) -> Element<'a, M> {
+    canvas::Canvas::new(Link { color })
+        .width(size)
+        .height(size)
+        .into()
+}
+
+struct Link {
+    color: fn(&Theme) -> Color,
+}
+
+impl<M> canvas::Program<M> for Link {
+    type State = ();
+
+    fn draw(
+        &self,
+        _state: &(),
+        renderer: &Renderer,
+        theme: &Theme,
+        bounds: Rectangle,
+        _cursor: mouse::Cursor,
+    ) -> Vec<Geometry> {
+        let mut frame = Frame::new(renderer, bounds.size());
+        let s = bounds.width;
+        let stroke = Stroke::default()
+            .with_color((self.color)(theme))
+            .with_width((s / 9.0).max(1.0));
+        // Two rounded links overlapping along the diagonal.
+        let (w, h) = (s * 0.5, s * 0.3);
+        frame.translate(Vector::new(s / 2.0, s / 2.0));
+        frame.rotate(-std::f32::consts::FRAC_PI_4);
+        for x in [-s * 0.4, s * 0.4 - w] {
+            let link = Path::rounded_rectangle(
+                iced::Point::new(x, -h / 2.0),
+                iced::Size::new(w, h),
+                (h / 2.0).into(),
+            );
+            frame.stroke(&link, stroke);
+        }
+        vec![frame.into_geometry()]
+    }
+}
+
 /// A page with its top right corner folded.
 pub fn file<'a, M: 'a>(size: f32, color: fn(&Theme) -> Color) -> Element<'a, M> {
     canvas::Canvas::new(File { color })

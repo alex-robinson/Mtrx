@@ -544,24 +544,42 @@ async fn call_links_and_space_services() -> Result<()> {
     })
     .await?;
 
-    let mut links = std::pin::pin!(s.call_link_updates(&room).await?);
-    assert_eq!(timeout("initial", links.next()).await?, Some(None));
+    // An old standing call link moves into the topic, first, once.
     let url = mtrx_core::Url::parse("https://meet.jit.si/mtrx-test")?;
-    assert!(s.can_set_call_link(&room).await?);
-    s.set_call_link(&room, Some(&url)).await?;
-    assert_eq!(
-        timeout("update", links.next()).await?,
-        Some(Some(url.clone()))
-    );
-    assert_eq!(s.call_link(&room).await?, Some(url.clone()));
-    s.announce_call_link(&room, &url).await?;
-    let timeline = s.timeline(&room).await?;
-    wait_for("link posted", timeline.updates(), |e| {
-        has_message(e, &format!("Call link for this room: {url}"))
-    })
+    assert!(s.can_change_topic(&room).await?);
+    s.set_room_topic(&room, "Meetings\n[link] https://example.org/")
+        .await?;
+    s.set_old_call_link(&room, &url).await?;
+    s.move_call_link_to_topic(&room).await?;
+    let moved = "Meetings\n[call] https://meet.jit.si/mtrx-test\n[link] https://example.org/";
+    wait_for(
+        "call in the topic",
+        s.room_list().await?.updates(),
+        |state| (state.rooms.iter()).any(|r| r.id == room && r.topic.as_deref() == Some(moved)),
+    )
     .await?;
-    s.set_call_link(&room, None).await?;
-    assert_eq!(timeout("removed", links.next()).await?, Some(None));
+    // Removed once moved: the topic keeps a change made since.
+    s.set_room_topic(&room, "Meetings").await?;
+    let topic_is = |topic: &'static str| {
+        let room = &room;
+        move |state: &mtrx_core::RoomListState| {
+            (state.rooms.iter()).any(|r| r.id == *room && r.topic.as_deref() == Some(topic))
+        }
+    };
+    wait_for(
+        "topic changed",
+        s.room_list().await?.updates(),
+        topic_is("Meetings"),
+    )
+    .await?;
+    s.move_call_link_to_topic(&room).await?;
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    wait_for(
+        "topic kept",
+        s.room_list().await?.updates(),
+        topic_is("Meetings"),
+    )
+    .await?;
 
     let service = CallService::jitsi("Lab Jitsi", "https://video.lab.example")?;
     s.set_space_call_service(&space, Some(service.clone()))
@@ -586,7 +604,7 @@ async fn call_links_and_space_services() -> Result<()> {
     // Power levels arrive with the joined room's state, after the join.
     let can_set = timeout("power levels synced", async {
         loop {
-            match bob.session.can_set_call_link(&room).await {
+            match bob.session.can_change_topic(&room).await {
                 Ok(can_set) => return can_set,
                 Err(_) => tokio::time::sleep(Duration::from_millis(100)).await,
             }
@@ -642,7 +660,7 @@ async fn everyone_can_edit() -> Result<()> {
         .await?;
     join_synced(&bob, &open, "open").await?;
     assert_eq!(bob.session.permissions(&open).await?, Permissions::Everyone);
-    assert!(bob.session.can_set_call_link(&open).await?);
+    assert!(bob.session.can_change_topic(&open).await?);
     assert!(!bob.session.can_change_permissions(&open).await?);
     bob.session.invite(&open, &carol.session.user_id()).await?;
 
@@ -659,7 +677,7 @@ async fn everyone_can_edit() -> Result<()> {
         bob.session.permissions(&room).await?,
         Permissions::Moderators
     );
-    assert!(!bob.session.can_set_call_link(&room).await?);
+    assert!(!bob.session.can_change_topic(&room).await?);
     wait_for("space synced", s.room_list().await?.updates(), |state| {
         state
             .rooms
@@ -682,7 +700,7 @@ async fn everyone_can_edit() -> Result<()> {
         }
     })
     .await?;
-    assert!(bob.session.can_set_call_link(&room).await?);
+    assert!(bob.session.can_change_topic(&room).await?);
     assert!(!bob.session.can_change_permissions(&room).await?);
     Ok(())
 }

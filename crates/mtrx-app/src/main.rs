@@ -43,6 +43,7 @@ mod pdf_viewer;
 mod placement;
 mod popover;
 mod presence;
+mod reorder;
 mod room;
 mod rows;
 mod selectable;
@@ -54,6 +55,7 @@ mod sidebar;
 mod style;
 mod text_size;
 mod tint;
+mod topic;
 mod update;
 #[cfg(windows)]
 mod windows;
