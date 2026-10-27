@@ -60,7 +60,9 @@ pub fn ancestors(rooms: &[RoomSummary], room: &OwnedRoomId) -> Vec<OwnedRoomId> 
 }
 
 /// Whether anything `space` lists (Home for `None`) is unread: its dot in
-/// the space bar.
+/// the space bar. Direct chats light only Home's: a space lists the chats
+/// with its members, and one message would light every space shared with
+/// its sender (#45).
 fn unread(
     rooms: &[RoomSummary],
     space: Option<&OwnedRoomId>,
@@ -70,6 +72,7 @@ fn unread(
     arrange
         .listed(rooms, space, grouping)
         .iter()
+        .filter(|r| space.is_none() || r.kind != RoomKind::Direct)
         .any(|r| r.unread_messages > 0)
 }
 
@@ -1640,24 +1643,25 @@ mod tests {
     }
 
     #[test]
-    fn an_unread_direct_chat_with_a_member_lights_the_space() {
+    fn an_unread_direct_chat_lights_only_home() {
         let mut rooms = rooms();
         unread_in(&mut rooms, "!bob:x");
         let mut arrange = Arrange::default();
-        // Before its members are known the space lists no direct chats.
-        assert!(!unread(
-            &rooms,
-            Some(&space()),
-            &arrange,
-            &Grouping::default()
-        ));
         // Loaded for every top-level space, selected or not.
         assert_eq!(arrange.space_members.due(&rooms), [(space(), 0)]);
         let bob: OwnedUserId = "@bob:x".try_into().unwrap();
         arrange
             .space_members
             .loaded(space(), 0, HashSet::from([bob]));
-        assert!(unread(
+        // The space lists the chat with its member, unread, but its dot
+        // stays off.
+        let listed = arrange.listed(&rooms, Some(&space()), &Grouping::default());
+        assert!(
+            listed
+                .iter()
+                .any(|r| r.id == "!bob:x" && r.unread_messages > 0)
+        );
+        assert!(!unread(
             &rooms,
             Some(&space()),
             &arrange,
