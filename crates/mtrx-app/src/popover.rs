@@ -41,6 +41,7 @@ pub struct Popover<'a, Message> {
     edge: Edge,
     on_dismiss: Option<Message>,
     click_through: bool,
+    full_width: bool,
 }
 
 /// `anchor`, with `panel` floating on `side` of it, lined up with its
@@ -59,6 +60,7 @@ pub fn popover<'a, Message: Clone + 'a>(
         edge,
         on_dismiss: None,
         click_through: false,
+        full_width: false,
     }
 }
 
@@ -72,6 +74,13 @@ impl<Message> Popover<'_, Message> {
     /// Clicks and the cursor outside the panel still reach what is there.
     pub fn click_through(mut self) -> Self {
         self.click_through = true;
+        self
+    }
+
+    /// The panel as wide as the anchor, and no taller than the window has
+    /// room for on its side.
+    pub fn full_width(mut self) -> Self {
+        self.full_width = true;
         self
     }
 }
@@ -191,15 +200,17 @@ impl<'a, Message: Clone + 'a> Widget<Message, Theme, Renderer> for Popover<'a, M
             translation,
         );
         let panel = self.open.then(|| {
-            floating(
-                &mut self.panel,
-                panel_tree,
-                layout.bounds() + translation,
-                self.side,
-                self.edge,
-                self.on_dismiss.clone(),
-                self.click_through,
-            )
+            overlay::Element::new(Box::new(Panel {
+                panel: &mut self.panel,
+                tree: panel_tree,
+                anchor: layout.bounds() + translation,
+                side: self.side,
+                edge: self.edge,
+                on_dismiss: self.on_dismiss.clone(),
+                click_through: self.click_through,
+                full_width: self.full_width,
+                window: Size::ZERO,
+            }))
         });
         let overlays: Vec<_> = nested.into_iter().chain(panel).collect();
         (!overlays.is_empty()).then(|| overlay::Group::with_children(overlays).overlay())
@@ -226,6 +237,7 @@ pub fn floating<'a, 'b, Message: Clone + 'a>(
         edge,
         on_dismiss,
         click_through,
+        full_width: false,
         window: Size::ZERO,
     }))
 }
@@ -238,6 +250,8 @@ struct Panel<'a, 'b, Message> {
     edge: Edge,
     on_dismiss: Option<Message>,
     click_through: bool,
+    /// As wide as the anchor, within the window below or above it.
+    full_width: bool,
     /// The window's size, as of the last layout.
     window: Size,
 }
@@ -245,11 +259,22 @@ struct Panel<'a, 'b, Message> {
 impl<Message: Clone> overlay::Overlay<Message, Theme, Renderer> for Panel<'_, '_, Message> {
     fn layout(&mut self, renderer: &Renderer, bounds: Size) -> Node {
         self.window = bounds;
-        let node = self.panel.as_widget_mut().layout(
-            self.tree,
-            renderer,
-            &Limits::new(Size::ZERO, bounds),
-        );
+        let limits = if self.full_width {
+            let room = match self.side {
+                Side::Above => self.anchor.y - GAP,
+                Side::Below => bounds.height - (self.anchor.y + self.anchor.height + GAP),
+            };
+            Limits::new(
+                Size::new(self.anchor.width, 0.0),
+                Size::new(self.anchor.width, room.max(0.0)),
+            )
+        } else {
+            Limits::new(Size::ZERO, bounds)
+        };
+        let node = self
+            .panel
+            .as_widget_mut()
+            .layout(self.tree, renderer, &limits);
         let size = node.size();
         let x = match self.edge {
             Edge::Left => self.anchor.x,

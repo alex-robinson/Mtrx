@@ -962,45 +962,60 @@ impl Room {
             .filter(|s| s.kind == RoomKind::Direct && !s.is_notes(look.own_user))
             .and_then(|s| s.direct_user.as_ref())
             .and_then(|user| look.presences.get(user));
-        let mut name_line = row![ellipsis(name).size(16).font(fonts::SEMIBOLD)]
-            .spacing(4)
-            .align_y(Alignment::Center);
-        if summary.is_some() && (!topic.text.is_empty() || !topic.links.is_empty() || can_edit) {
-            let open = self.topic.open;
-            name_line = name_line.push(hint(
-                button(icons::chevron(10.0, open, |theme| {
-                    theme
-                        .extended_palette()
-                        .background
-                        .base
-                        .text
-                        .scale_alpha(0.7)
-                }))
-                .padding([4, 4])
-                .style(style::text_button)
-                .on_press(Message::Topic(self.id.clone(), topic::Message::Toggle)),
-                if open {
-                    "Hide the topic and links"
-                } else {
-                    "Show the topic and links in full"
-                },
+        // The name (and the person's presence) and picture open the room's
+        // info card.
+        let info = summary.map_or(info::Target::Room(self.id.clone()), info::target_of);
+        let about_tip = match summary.map(|s| s.kind) {
+            Some(RoomKind::Direct) => "Who this is",
+            _ => "Room settings and address",
+        };
+        let opens_info = |content: Element<'a, Message>| {
+            hint(
+                mouse_area(content)
+                    .interaction(mouse::Interaction::Pointer)
+                    .on_press(Message::ShowInfo(info.clone())),
+                about_tip,
                 Position::Bottom,
-            ));
-        }
-        let mut title = column![name_line];
+            )
+        };
+        let mut about = column![ellipsis(name).size(16).font(fonts::SEMIBOLD)];
         if let Some(line) = presence.and_then(|p| presence::line(p, look.now)) {
-            title = title.push(ellipsis(line).size(12).style(text::secondary));
+            about = about.push(ellipsis(line).size(12).style(text::secondary));
         }
         // A room just created or joined is listed once sync delivers it.
         if summary.is_none() {
-            title = title.push(
+            about = about.push(
                 text("Setting up the room… it appears in the list in a moment.")
                     .size(12)
                     .style(text::secondary),
             );
         }
-        if let Some(first) = topic.text.lines().next() {
-            title = title.push(ellipsis(first.to_owned()).size(12).style(text::secondary));
+        let mut title = column![opens_info(about.into())];
+        // The caret, then the topic's first line while closed: open or
+        // close the panel below the header. While it is open, a click here
+        // is outside it and closes it.
+        if summary.is_some() && (!topic.text.is_empty() || !topic.links.is_empty() || can_edit) {
+            let open = self.topic.open;
+            let mut line = row![icons::chevron(10.0, open, |theme| {
+                theme
+                    .extended_palette()
+                    .background
+                    .base
+                    .text
+                    .scale_alpha(0.7)
+            })]
+            .spacing(6)
+            .align_y(Alignment::Center);
+            if !open {
+                // Without text, what the caret opens.
+                let first = topic.text.lines().next().unwrap_or("Header");
+                line = line.push(ellipsis(first.to_owned()).size(12).style(text::secondary));
+            }
+            title = title.push(
+                mouse_area(line)
+                    .interaction(mouse::Interaction::Pointer)
+                    .on_press(Message::Topic(self.id.clone(), topic::Message::Toggle)),
+            );
         }
         let avatar = avatars.view(
             self.id.as_str(),
@@ -1012,27 +1027,17 @@ impl Room {
         let avatar = presence::with_dot(avatar, presence, HEADER_AVATAR, |theme| {
             theme.extended_palette().background.base.color
         });
-        // The name and picture open the room's info card.
-        let info = summary.map_or(info::Target::Room(self.id.clone()), info::target_of);
-        let about = mouse_area(
-            row![avatar, title.width(Length::Fill)]
-                .spacing(10)
-                .align_y(Alignment::Center),
-        )
-        .interaction(mouse::Interaction::Pointer)
-        .on_press(Message::ShowInfo(info));
-        let about_tip = match summary.map(|s| s.kind) {
-            Some(RoomKind::Direct) => "Who this is",
-            _ => "Room settings and address",
-        };
+        let about = row![opens_info(avatar), title.width(Length::Fill)]
+            .spacing(10)
+            .align_y(Alignment::Center);
         let members_tip = if look.show_members {
             "Hide the member list"
         } else {
             "Show who is in the room"
         };
-        let mut header = column![
+        let header = column![
             row![
-                hint(about, about_tip, Position::Bottom),
+                about,
                 self.calls
                     .header_controls(&topic, look.call_services, can_edit),
                 hint(
@@ -1063,21 +1068,27 @@ impl Room {
             .align_y(Alignment::Center)
             .padding([8.0, TIMELINE_PADDING + MESSAGE_PADDING]),
         ];
-        if self.topic.open {
-            header = header
-                .push(rule::horizontal(1).style(style::separator))
-                .push(
-                    container(self.topic.view(&self.id, &topic, look.call_services))
-                        .width(Length::Fill)
-                        .padding(
-                            Padding::new(10.0)
-                                .left(TIMELINE_PADDING + MESSAGE_PADDING + HEADER_AVATAR + 10.0)
-                                .right(TIMELINE_PADDING + MESSAGE_PADDING),
-                        ),
-                );
-        }
-        header
-            .push(rule::horizontal(1).style(style::separator))
+        let header = header.push(rule::horizontal(1).style(style::separator));
+        // The topic in full and its links, or their editor, dropping over
+        // the timeline.
+        let panel = self.topic.open.then(|| {
+            container(
+                scrollable(
+                    container(self.topic.view(&self.id, &topic, look.call_services)).padding(
+                        Padding::new(10.0)
+                            .left(TIMELINE_PADDING + MESSAGE_PADDING + HEADER_AVATAR + 10.0)
+                            .right(TIMELINE_PADDING + MESSAGE_PADDING),
+                    ),
+                )
+                .height(Length::Shrink),
+            )
+            .width(Length::Fill)
+            .style(style::toolbar)
+            .into()
+        });
+        popover(header, panel, Side::Below, Edge::Left)
+            .full_width()
+            .on_dismiss(Message::Topic(self.id.clone(), topic::Message::Dismiss))
             .into()
     }
 }

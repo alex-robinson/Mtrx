@@ -310,6 +310,27 @@ pub fn list_item(selected: bool) -> impl Fn(&Theme, button::Status) -> button::S
     }
 }
 
+/// `base`, ringed in the primary colour while `on`: buttons asking to be
+/// pressed, as Cancel and Save after a click outside an editor.
+pub fn ringed(
+    base: fn(&Theme, button::Status) -> button::Style,
+    on: bool,
+) -> impl Fn(&Theme, button::Status) -> button::Style {
+    move |theme, status| {
+        let style = base(theme, status);
+        if !on {
+            return style;
+        }
+        button::Style {
+            border: style
+                .border
+                .width(2)
+                .color(theme.extended_palette().primary.strong.color),
+            ..style
+        }
+    }
+}
+
 /// The `left` or right half of a split button: `base` with rounded
 /// corners on that side only.
 pub fn split_button(

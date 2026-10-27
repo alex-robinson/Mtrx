@@ -1013,10 +1013,12 @@ async fn main_screen_with_math() {
             }
         }
         // A click elsewhere closes the call menu (dark) or the list of
-        // readers (light), and does nothing else: what is behind neither
-        // lights up under the cursor nor takes the click.
+        // readers and the header's panel (light), and does nothing else:
+        // what is behind neither lights up under the cursor nor takes the
+        // click.
         let mut ui = Simulator::with_size(fonts::settings(), Size::new(1200.0, 800.0), app.view());
-        ui.point_at(iced::Point::new(400.0, 130.0));
+        // Below the header's panel, on the timeline.
+        ui.point_at(iced::Point::new(400.0, 450.0));
         ui.simulate(iced_test::simulator::click());
         let messages: Vec<_> = ui.into_messages().collect();
         assert!(
@@ -1030,6 +1032,7 @@ async fn main_screen_with_math() {
             messages.iter().all(|m| matches!(
                 m,
                 Message::Calls(_, calls::Message::Close)
+                    | Message::Topic(_, topic::Message::Dismiss)
                     | Message::Act(actions::Message::CloseReaders | actions::Message::ClosePicker)
             )),
             "{messages:?}"

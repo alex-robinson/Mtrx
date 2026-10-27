@@ -6,7 +6,7 @@
 use std::time::{Duration, Instant};
 
 use iced::{
-    Alignment, Color, Element, Font, Length, Theme,
+    Alignment, Color, Element, Font, Length, Task, Theme,
     widget::{button, column, row, space, text, text_editor, text_input, toggler},
 };
 use mtrx_core::{CallService, LinkKind, OwnedRoomId, RoomLink, Topic, Url};
@@ -25,11 +25,18 @@ use crate::{
 /// How long a saved topic shows before the room list has it (sync lags
 /// behind the server's answer).
 const TOPIC_SYNC: Duration = Duration::from_secs(10);
+/// How long Cancel and Save stand out after a click outside the editor.
+const NUDGE: Duration = Duration::from_millis(1500);
 
 #[derive(Debug, Clone)]
 pub enum Message {
-    /// Open or close the panel: the caret beside the room's name.
+    /// Open or close the panel: the caret below the room's name.
     Toggle,
+    /// A click outside the open panel: closes it, unless changes are being
+    /// edited, which Cancel and Save then point out.
+    Dismiss,
+    /// The nudge of this number is over.
+    Settle(u32),
     /// Edit the topic in the panel, opening it.
     Edit,
     Editor(Edit),
@@ -50,6 +57,8 @@ pub struct Panel {
     pub saving: bool,
     pub error: Option<String>,
     saved: Option<(String, Instant)>,
+    /// Cancel and Save stand out, after the click outside numbered so.
+    nudge: (u32, bool),
 }
 
 impl Panel {
@@ -70,12 +79,28 @@ impl Panel {
         self.saved = Some((topic, Instant::now()));
     }
 
-    pub fn update(&mut self, message: Message, topic: &str) {
+    pub fn update(&mut self, message: Message, topic: &str) -> Task<Message> {
         match message {
             Message::Toggle => {
                 self.open = !self.open;
                 self.editor = None;
                 self.error = None;
+            }
+            Message::Dismiss => {
+                if self.editor.as_ref().is_some_and(|e| e.changed(Some(topic))) {
+                    let nudge = self.nudge.0 + 1;
+                    self.nudge = (nudge, true);
+                    let settle = async { tokio::time::sleep(NUDGE).await };
+                    return Task::perform(settle, move |()| Message::Settle(nudge));
+                }
+                self.open = false;
+                self.editor = None;
+                self.error = None;
+            }
+            Message::Settle(nudge) => {
+                if nudge == self.nudge.0 {
+                    self.nudge.1 = false;
+                }
             }
             Message::Edit => {
                 self.open = true;
@@ -104,10 +129,11 @@ impl Panel {
             // The app saves.
             Message::Save => {}
         }
+        Task::none()
     }
 
     /// The topic in full and its links, or the editor, across the room
-    /// below the header's row.
+    /// below the header.
     pub fn view<'a>(
         &'a self,
         room: &OwnedRoomId,
@@ -121,15 +147,16 @@ impl Panel {
         let mut panel = match &self.editor {
             Some(editor) => {
                 let edit = message.clone();
+                let nudged = self.nudge.1;
                 let actions = row![
                     space::horizontal(),
                     button(text("Cancel").size(13))
                         .padding([4, 10])
-                        .style(style::text_button)
+                        .style(style::ringed(style::text_button, nudged))
                         .on_press(message(Message::Cancel)),
                     button(text("Save").size(13))
                         .padding([4, 12])
-                        .style(style::primary_button)
+                        .style(style::ringed(style::primary_button, nudged))
                         .on_press_maybe(
                             (editor.valid() && !self.saving).then(|| message(Message::Save))
                         ),
@@ -719,7 +746,33 @@ mod tests {
         panel.save("new".into());
         assert_eq!(panel.shown(Some("old")), "new");
         assert_eq!(panel.shown(Some("new")), "new");
-        panel.update(Message::Saved(Err("no".into())), "old");
+        let _ = panel.update(Message::Saved(Err("no".into())), "old");
         assert_eq!(panel.shown(Some("old")), "old");
+    }
+
+    #[test]
+    fn a_click_outside_closes_unless_changes_are_edited() {
+        let mut panel = Panel::default();
+        let _ = panel.update(Message::Toggle, "About.");
+        let _ = panel.update(Message::Dismiss, "About.");
+        assert!(!panel.open);
+        // Editing, unchanged.
+        let _ = panel.update(Message::Edit, "About.");
+        let _ = panel.update(Message::Dismiss, "About.");
+        assert!(!panel.open && panel.editor.is_none());
+        // Changed: Cancel and Save stand out until the last nudge settles.
+        let _ = panel.update(Message::Edit, "About.");
+        let _ = panel.update(Message::Editor(Edit::Add(false)), "About.");
+        let _ = panel.update(
+            Message::Editor(Edit::Url(0, "overleaf.com".into())),
+            "About.",
+        );
+        let _ = panel.update(Message::Dismiss, "About.");
+        let _ = panel.update(Message::Dismiss, "About.");
+        assert!(panel.open && panel.editor.is_some() && panel.nudge == (2, true));
+        let _ = panel.update(Message::Settle(1), "About.");
+        assert!(panel.nudge.1);
+        let _ = panel.update(Message::Settle(2), "About.");
+        assert!(!panel.nudge.1);
     }
 }

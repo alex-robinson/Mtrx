@@ -2731,8 +2731,9 @@ impl App {
             .find(|r| r.id == room_id)
             .and_then(|r| r.topic.as_deref());
         let shown = room.topic.shown(synced).to_owned();
-        room.topic.update(message, &shown);
-        Task::none()
+        room.topic
+            .update(message, &shown)
+            .map(move |message| Message::Topic(room_id.clone(), message))
     }
 
     /// Save `topic` as the open room's, shown until the room list has it.
