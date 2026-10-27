@@ -1,5 +1,5 @@
-//! The emoji the user reacts with, most used first. Kept in account data
-//! under Element's key, so both apps suggest the same ones.
+//! The emoji the user reacts with and sends, most used first. Kept in
+//! account data under Element's key, so both apps suggest the same ones.
 
 use matrix_sdk::ruma::events::macros::EventContent;
 use serde::{Deserialize, Serialize};
@@ -37,7 +37,7 @@ impl RecentEmojiEventContent {
 }
 
 impl Session {
-    /// The emoji the user reacts with, most used first.
+    /// The emoji the user reacts with and sends, most used first.
     pub async fn frequent_emoji(&self) -> Vec<String> {
         match self
             .client
@@ -54,16 +54,18 @@ impl Session {
         }
     }
 
-    /// Count a use of `emoji`. Reads the server's list first, so uses from
-    /// other devices are kept.
-    pub async fn record_emoji(&self, emoji: &str) -> Result<()> {
+    /// Count the uses of `used`, in order, one for each. Reads the
+    /// server's list first, so uses from other devices are kept.
+    pub async fn record_emoji(&self, used: &[String]) -> Result<()> {
         let account = self.client.account();
         let mut content = account
             .fetch_account_data_static::<RecentEmojiEventContent>()
             .await?
             .and_then(|raw| raw.deserialize().ok())
             .unwrap_or_default();
-        content.record(emoji);
+        for emoji in used {
+            content.record(emoji);
+        }
         account.set_account_data(content).await?;
         Ok(())
     }

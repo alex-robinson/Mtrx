@@ -1175,9 +1175,10 @@ impl App {
                     .collect();
                 room.error = None;
                 let (id, timeline) = (room.id.clone(), room.timeline.clone());
+                let used = emoji::used(&text);
                 // Queue only: the local echo shows the send state. Queued
                 // first, so it shows before the server hears of anything.
-                Task::perform(
+                let send = Task::perform(
                     async move {
                         let sent = timeline
                             .send(text.trim_end(), files, compose.reply_to().map(|id| &**id))
@@ -1187,7 +1188,8 @@ impl App {
                         sent
                     },
                     move |result| Message::Sent(id.clone(), result.map_err(|e| e.to_string())),
-                )
+                );
+                Task::batch([send, used_emoji(main, used)])
             }
             Message::SendingSlow(id, row) => {
                 if let Screen::Main(main) = &mut self.screen
@@ -1372,10 +1374,8 @@ impl App {
                 };
                 emoji::insert(&mut room.composer, &emoji);
                 room.update_completion();
-                Task::batch([
-                    iced::widget::operation::focus(room::COMPOSER),
-                    used_emoji(main, emoji),
-                ])
+                // Counted as used once sent.
+                iced::widget::operation::focus(room::COMPOSER)
             }
             Message::FrequentEmoji(emoji) => {
                 if let Screen::Main(main) = &mut self.screen {
@@ -2838,7 +2838,7 @@ impl App {
                     },
                     done,
                 );
-                Task::batch([react, used_emoji(main, emoji)])
+                Task::batch([react, used_emoji(main, vec![emoji])])
             }
             Act::EditEmoji(message) => {
                 let Some(edit) = &mut room.editing else {
@@ -2868,7 +2868,8 @@ impl App {
                 if let Some(edit) = &mut room.editing {
                     edit.insert_emoji(&emoji);
                 }
-                Task::batch([InlineEdit::focus(), used_emoji(main, emoji)])
+                // Counted as used once saved.
+                InlineEdit::focus()
             }
             Act::OpenMenu(id, at) => {
                 room.menu = Some((id, at));
@@ -3032,7 +3033,8 @@ impl App {
                 }
                 let session = main.session.clone();
                 let target = edit.target.clone();
-                Task::perform(
+                let added = edit.added_emoji();
+                let save = Task::perform(
                     async move {
                         match target {
                             Editing::Sent(key) => timeline.edit_markdown(&key, &text).await,
@@ -3040,7 +3042,8 @@ impl App {
                         }
                     },
                     |result| Message::Act(Act::EditSaved(result.map_err(|e| e.to_string()))),
-                )
+                );
+                Task::batch([save, used_emoji(main, added)])
             }
             Act::EditSaved(Ok(())) | Act::CancelEdit => {
                 room.editing = None;
@@ -4258,14 +4261,19 @@ fn load_frequent_emoji(session: &Arc<Session>) -> Task<Message> {
     )
 }
 
-/// Count a use of `emoji`: first among the most used here at once, and in
-/// account data (shared with Element).
-fn used_emoji(main: &mut Main, emoji: String) -> Task<Message> {
-    main.frequent_emoji.retain(|e| *e != emoji);
-    main.frequent_emoji.insert(0, emoji.clone());
+/// Count the uses of `used` (reacted with, sent): first among the most
+/// used here at once, and in account data (shared with Element).
+fn used_emoji(main: &mut Main, used: Vec<String>) -> Task<Message> {
+    if used.is_empty() {
+        return Task::none();
+    }
+    for emoji in &used {
+        main.frequent_emoji.retain(|e| e != emoji);
+        main.frequent_emoji.insert(0, emoji.clone());
+    }
     let session = main.session.clone();
     Task::future(async move {
-        if let Err(e) = session.record_emoji(&emoji).await {
+        if let Err(e) = session.record_emoji(&used).await {
             tracing::warn!("could not record the emoji used: {e}");
         }
     })

@@ -210,6 +210,8 @@ const EDITOR: &str = "inline-edit";
 pub struct InlineEdit {
     pub target: Editing,
     content: text_editor::Content,
+    /// The text before editing.
+    original: String,
     /// Its emoji panel, while shown.
     pub emoji: Option<emoji::Panel>,
     /// Its menu (right-click) is open.
@@ -230,6 +232,7 @@ impl InlineEdit {
         Self {
             target,
             content,
+            original: text.to_owned(),
             emoji: None,
             menu: false,
         }
@@ -237,6 +240,11 @@ impl InlineEdit {
 
     pub fn insert_emoji(&mut self, emoji: &str) {
         emoji::insert(&mut self.content, emoji);
+    }
+
+    /// The emoji the edit adds, one for each use.
+    pub fn added_emoji(&self) -> Vec<String> {
+        emoji::added(&self.original, &self.text())
     }
 
     /// Put the cursor into the editor.
