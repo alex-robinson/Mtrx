@@ -1004,8 +1004,9 @@ impl Room {
         let pinned = summary.map_or(&[][..], |s| &s.pinned);
         if summary.is_some() && (preview.is_some() || !pinned.is_empty()) {
             let open = self.topic.open;
-            // Level with the middle of lowercase text, below the line's.
-            let caret = container(icons::chevron(10.0, open, |theme| {
+            // As the section headers' caret, between the middle of the
+            // capitals and that of the lowercase letters.
+            let caret = container(icons::chevron(12.0, open, |theme| {
                 theme
                     .extended_palette()
                     .background
@@ -1013,8 +1014,8 @@ impl Room {
                     .text
                     .scale_alpha(0.7)
             }))
-            .padding(Padding::ZERO.top(2));
-            let mut line = row![caret].spacing(6).align_y(Alignment::Center);
+            .padding(Padding::ZERO.top(1));
+            let mut line = row![caret].spacing(5).align_y(Alignment::Center);
             if !open && !pinned.is_empty() {
                 line = line.push(
                     row![
