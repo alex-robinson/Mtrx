@@ -19,6 +19,7 @@ mod drag_scroll;
 mod edit_menu;
 mod ellipsis;
 mod emoji;
+mod feedback;
 mod find;
 mod fonts;
 mod hint;
