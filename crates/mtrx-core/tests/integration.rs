@@ -18,9 +18,9 @@ use std::{
 use anyhow::{Context, Result, bail};
 use futures_util::{Stream, StreamExt};
 use mtrx_core::{
-    Access, Attachment, CallService, Connection, EventContent, MembershipChange, NewRoom,
-    NotifyMode, Permissions, PinsChange, PresenceState, Profile, RecoveryStatus, RoomKind,
-    SecretStore, Session, TimelineEntry, VerificationState,
+    Access, Attachment, CallService, Connection, DirectoryKind, EventContent, JoinAccess,
+    Membership, MembershipChange, NewRoom, NotifyMode, Permissions, PinsChange, PresenceState,
+    Profile, RecoveryStatus, RoomKind, SecretStore, Session, TimelineEntry, VerificationState,
     test_support::{self, PASSWORD, homeserver, unique_name},
 };
 use mtrx_format::{Block, Inline, Style};
@@ -183,7 +183,7 @@ async fn encrypted_messages_between_users() -> Result<()> {
     })
     .await?;
     bob.session
-        .join(<&mtrx_core::RoomOrAliasId>::from(&*room))
+        .join(<&mtrx_core::RoomOrAliasId>::from(&*room), &[])
         .await?;
 
     // Alice must see bob joined, otherwise the room key is not shared with him.
@@ -268,7 +268,7 @@ async fn avatars_in_room_list_and_timeline() -> Result<()> {
     })
     .await?;
     bob.session
-        .join(<&mtrx_core::RoomOrAliasId>::from(&*room))
+        .join(<&mtrx_core::RoomOrAliasId>::from(&*room), &[])
         .await?;
     let bob_timeline = bob.session.timeline(&room).await?;
     timeout("send", bob_timeline.send_markdown("hi", None).await?.sent()).await??;
@@ -649,7 +649,7 @@ async fn call_links_and_space_services() -> Result<()> {
     })
     .await?;
     bob.session
-        .join(<&mtrx_core::RoomOrAliasId>::from(&*room))
+        .join(<&mtrx_core::RoomOrAliasId>::from(&*room), &[])
         .await?;
     wait_for("bob joined", bob_list.updates(), |s| {
         s.rooms
@@ -679,7 +679,7 @@ async fn join_synced(user: &Device, room: &mtrx_core::OwnedRoomId, name: &str) -
     })
     .await?;
     user.session
-        .join(<&mtrx_core::RoomOrAliasId>::from(&**room))
+        .join(<&mtrx_core::RoomOrAliasId>::from(&**room), &[])
         .await?;
     wait_for("joined", list.updates(), |s| {
         s.rooms
@@ -812,7 +812,7 @@ async fn room_management() -> Result<()> {
     // The directory lists people sharing a room with us, once both joined;
     // it updates in the background.
     bob.session
-        .join(<&mtrx_core::RoomOrAliasId>::from(&*dm))
+        .join(<&mtrx_core::RoomOrAliasId>::from(&*dm), &[])
         .await?;
     timeout("bob in the user directory", async {
         loop {
@@ -830,6 +830,72 @@ async fn room_management() -> Result<()> {
         !state.rooms.iter().any(|r| r.id == room)
     })
     .await?;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs local Synapse (testserver/run.sh)"]
+async fn browse_and_join_space_rooms() -> Result<()> {
+    let (_, alice) = new_user("browse").await?;
+    let (_, bob) = new_user("browse").await?;
+    let s = &alice.session;
+    let space = s
+        .create_room(NewRoom {
+            name: Some("Institute".into()),
+            space: true,
+            ..Default::default()
+        })
+        .await?;
+    let open = s
+        .create_room(NewRoom {
+            name: Some("coffee".into()),
+            parent: Some(space.clone()),
+            ..Default::default()
+        })
+        .await?;
+    let list = s.room_list().await?;
+    wait_for("room in space", list.updates(), |state| {
+        state
+            .rooms
+            .iter()
+            .any(|r| r.id == open && r.parents.contains(&space))
+    })
+    .await?;
+    s.set_room_access(&open, Access::SpaceMembers).await?;
+    s.invite(&space, &bob.session.user_id()).await?;
+    join_synced(&bob, &space, "Institute").await?;
+
+    let b = &bob.session;
+    let children = b.space_children(&space).await?;
+    let coffee = children
+        .iter()
+        .find(|r| r.id == open)
+        .context("coffee listed")?;
+    assert_eq!(coffee.access, JoinAccess::SpaceMembers);
+    assert_eq!(coffee.membership, None);
+    assert!(!coffee.via.is_empty());
+    let preview = b.preview(&open.clone().into(), coffee.via.clone()).await?;
+    assert_eq!(preview.name, "coffee");
+    assert_eq!(preview.membership, None);
+
+    b.join(<&mtrx_core::RoomOrAliasId>::from(&*open), &coffee.via)
+        .await?;
+    timeout("membership synced", async {
+        loop {
+            let children = b.space_children(&space).await?;
+            if children
+                .iter()
+                .any(|r| r.id == open && r.membership == Some(Membership::Joined))
+            {
+                return anyhow::Ok(());
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    })
+    .await??;
+
+    // Our own server's directory: nothing published, but it answers.
+    b.public_rooms(None, "", DirectoryKind::All, None).await?;
     Ok(())
 }
 
@@ -1288,7 +1354,7 @@ async fn notifications_for_rooms_never_opened() -> Result<()> {
             })
             .await?;
         bob.session
-            .join(<&mtrx_core::RoomOrAliasId>::from(&*room))
+            .join(<&mtrx_core::RoomOrAliasId>::from(&*room), &[])
             .await?;
         others.push(room);
     }
@@ -1923,7 +1989,7 @@ async fn someone_elses_public_room_is_public() -> Result<()> {
     public("public for its creator", &bob).await?;
     alice
         .session
-        .join(<&mtrx_core::RoomOrAliasId>::from(&*room))
+        .join(<&mtrx_core::RoomOrAliasId>::from(&*room), &[])
         .await?;
     public("public once joined", &alice).await?;
     // And on a device that first sees it already joined.

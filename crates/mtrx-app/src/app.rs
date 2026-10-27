@@ -1676,7 +1676,10 @@ impl App {
                         let id = id.clone();
                         async move {
                             if accept {
-                                session.join(<&RoomOrAliasId>::from(&*id)).await.map(|_| ())
+                                session
+                                    .join(<&RoomOrAliasId>::from(&*id), &[])
+                                    .await
+                                    .map(|_| ())
                             } else {
                                 session.leave(&id).await
                             }
@@ -4022,7 +4025,7 @@ async fn run_request(
             Request::Join(address) => {
                 let address = <&RoomOrAliasId>::try_from(address.as_str())
                     .map_err(|_| mtrx_core::Error::RoomNotFound(address.clone()))?;
-                Opened::Room(session.join(address).await?)
+                Opened::Room(session.join(address, &[]).await?)
             }
             Request::Invite(room, people) => {
                 for person in &people {

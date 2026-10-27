@@ -299,7 +299,7 @@ async fn main() -> Result<()> {
                 .as_str()
                 .try_into()
                 .context("expected a room ID or alias")?;
-            println!("{}", session.join(room).await?);
+            println!("{}", session.join(room, &[]).await?);
         }
         Command::LetEveryoneEdit { room } => {
             let (session, list) = synced(profile).await?;

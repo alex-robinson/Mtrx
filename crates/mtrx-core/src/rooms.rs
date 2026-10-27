@@ -439,11 +439,12 @@ impl Session {
         vec![self.user_id().server_name().to_owned()]
     }
 
-    /// Join by room ID or alias, or accept an invite.
-    pub async fn join(&self, room: &RoomOrAliasId) -> Result<OwnedRoomId> {
+    /// Join by room ID or alias, or accept an invite; through `via`, the
+    /// servers a space, directory or link names for it.
+    pub async fn join(&self, room: &RoomOrAliasId, via: &[OwnedServerName]) -> Result<OwnedRoomId> {
         Ok(self
             .client
-            .join_room_by_id_or_alias(room, &[])
+            .join_room_by_id_or_alias(room, via)
             .await?
             .room_id()
             .to_owned())

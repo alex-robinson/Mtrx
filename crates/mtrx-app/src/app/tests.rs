@@ -527,7 +527,10 @@ async fn accept_invite(session: &Session, room: &OwnedRoomId) {
     })
     .await
     .unwrap();
-    session.join(<&RoomOrAliasId>::from(&**room)).await.unwrap();
+    session
+        .join(<&RoomOrAliasId>::from(&**room), &[])
+        .await
+        .unwrap();
 }
 
 /// Send and wait until the server has it.

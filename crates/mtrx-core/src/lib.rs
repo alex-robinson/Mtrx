@@ -10,6 +10,7 @@ mod account_data;
 mod calls;
 mod categories;
 mod connection;
+mod directory;
 mod emoji;
 mod encryption;
 mod error;
@@ -41,6 +42,10 @@ pub mod test_support;
 pub use calls::{CallService, ServiceKind, recognize_call_link};
 pub use categories::{AtHome, Category, Grouping, Layout, RoomCategories, RoomTag, Section, Sort};
 pub use connection::Connection;
+pub use directory::{
+    DirectoryKind, DirectoryPage, DirectoryRoom, DirectoryServers, JoinAccess, Membership,
+    parse_address,
+};
 pub use encryption::{
     DeviceInfo, EncryptionState, RecoveryStatus, RecoveryStep, Verification, VerificationEmoji,
     VerificationState,
@@ -78,8 +83,8 @@ pub use url::Url;
 
 /// Matrix identifier types used in this crate's API.
 pub use matrix_sdk::ruma::{
-    MxcUri, OwnedDeviceId, OwnedEventId, OwnedMxcUri, OwnedRoomId, OwnedRoomOrAliasId, OwnedUserId,
-    RoomOrAliasId, UserId,
+    MxcUri, OwnedDeviceId, OwnedEventId, OwnedMxcUri, OwnedRoomAliasId, OwnedRoomId,
+    OwnedRoomOrAliasId, OwnedServerName, OwnedUserId, RoomOrAliasId, ServerName, UserId,
 };
 
 pub(crate) fn system_time(

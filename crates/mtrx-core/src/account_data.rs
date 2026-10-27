@@ -1,5 +1,6 @@
 //! Personal settings stored as account data, so they sync to the user's
-//! devices and nobody else sees them: room categories, room list colours.
+//! devices and nobody else sees them: room categories, room list colours,
+//! browsed directory servers.
 //!
 //! Changes show at once: [`Synced::change`] publishes the new value before
 //! saving it on the server, and values synced from other devices replace it

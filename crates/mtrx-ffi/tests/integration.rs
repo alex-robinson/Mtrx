@@ -660,11 +660,11 @@ fn rooms_by_space_with_direct_chats_and_invites() {
             .unwrap();
         let loose = a.create_room(make("Loose", false, None)).await.unwrap();
         a.invite(&team, &b.user_id()).await.unwrap();
-        b.join(<&mtrx_core::RoomOrAliasId>::from(&*team))
+        b.join(<&mtrx_core::RoomOrAliasId>::from(&*team), &[])
             .await
             .unwrap();
         let with_bob = a.direct_chat(&b.user_id()).await.unwrap();
-        b.join(<&mtrx_core::RoomOrAliasId>::from(&*with_bob))
+        b.join(<&mtrx_core::RoomOrAliasId>::from(&*with_bob), &[])
             .await
             .unwrap();
         let offer = b
@@ -878,7 +878,7 @@ fn room_like(
             .unwrap();
         for other in &sessions[1..] {
             other
-                .join(<&mtrx_core::RoomOrAliasId>::from(&*room))
+                .join(<&mtrx_core::RoomOrAliasId>::from(&*room), &[])
                 .await
                 .unwrap();
         }
