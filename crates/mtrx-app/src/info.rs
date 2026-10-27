@@ -1,11 +1,11 @@
 //! Cards: who someone is, with their address to copy; a room's settings.
 //! Opened by clicking a name or from the room and member lists.
 
-use std::time::SystemTime;
+use std::{fmt, time::SystemTime};
 
 use iced::{
-    Alignment, Element, Length,
-    widget::{button, checkbox, column, container, row, scrollable, text, text_input, toggler},
+    Alignment, Element, Length, Theme,
+    widget::{button, column, container, pick_list, row, scrollable, text, text_input, toggler},
 };
 use mtrx_core::{
     Access, CallService, MxcUri, NotifyMode, OwnedMxcUri, OwnedRoomId, OwnedUserId, RoomKind,
@@ -17,6 +17,8 @@ use crate::{
     avatar::{Avatars, Shape},
     dialog::Kind,
     fonts, frame,
+    hint::{Position, hint},
+    icons,
     presence::{self, Presences},
     selectable::selectable_text,
     settings::{self, Preference},
@@ -395,52 +397,50 @@ impl Card {
             .push(labelled("Topic", topic));
 
         if let Some(settings) = settings {
-            // The chosen one stays enabled to look chosen, not greyed.
-            let choice = |label, chosen: bool, message: Message| {
-                button(text(label).size(13).center().width(Length::Fill))
-                    .width(Length::Fill)
-                    .padding([4, 8])
-                    .style(move |theme, status| {
-                        if chosen {
-                            style::primary_button(theme, status)
-                        } else {
-                            style::secondary_button(theme, status)
-                        }
-                    })
-                    .on_press_maybe((!self.saving).then_some(app::Message::Info(message)))
-            };
-            let notify =
-                |label, mode| choice(label, settings.notify == mode, Message::Notify(mode));
-            card = card.push(labelled(
+            card = card.push(settings::option(
                 "Notifications",
-                row![
-                    notify("All messages", NotifyMode::All),
-                    notify("Mentions", NotifyMode::Mentions),
-                    notify("Mute", NotifyMode::Mute),
-                ]
-                .spacing(4),
+                match settings.notify {
+                    NotifyMode::All => "Every message notifies you.",
+                    NotifyMode::Mentions => "Only mentions of you and your keywords notify you.",
+                    NotifyMode::Mute => "Nothing here notifies you.",
+                },
+                pick_list(
+                    Notify::ALL,
+                    Some(Notify(settings.notify)),
+                    |Notify(mode)| app::Message::Info(Message::Notify(mode)),
+                )
+                .text_size(13)
+                .padding(6)
+                .into(),
             ));
             if settings.can_change_access && room.kind != RoomKind::Direct {
-                let access = |label, access| {
-                    choice(label, settings.access == access, Message::Access(access))
-                };
-                let mut choices = row![access("Invited people", Access::Invite)].spacing(4);
                 // Space members only for a room in a space.
-                if !room.parents.is_empty() || settings.access == Access::SpaceMembers {
-                    choices = choices.push(access("Space members", Access::SpaceMembers));
-                }
-                card = card.push(labelled(
+                let choices: Vec<Join> = [Access::Invite, Access::SpaceMembers, Access::Public]
+                    .into_iter()
+                    .filter(|&access| {
+                        access != Access::SpaceMembers
+                            || !room.parents.is_empty()
+                            || settings.access == access
+                    })
+                    .map(Join)
+                    .collect();
+                card = card.push(settings::option(
                     "Who can join",
-                    choices.push(access("Anyone", Access::Public)),
+                    access_description(settings.access, &parent_names(room, rooms)),
+                    pick_list(choices, Some(Join(settings.access)), |Join(access)| {
+                        app::Message::Info(Message::Access(access))
+                    })
+                    .text_size(13)
+                    .padding(6)
+                    .into(),
                 ));
             }
         }
         let low_priority = room.tag == RoomTag::LowPriority;
-        card = card.push(
-            checkbox(low_priority)
-                .label("Low priority")
-                .size(16)
-                .text_size(13)
+        card = card.push(settings::option(
+            "Low priority",
+            "Listed after your other rooms, when the room list groups them.",
+            toggler(low_priority)
                 .on_toggle(|on| {
                     app::Message::Arrange(arrange::Message::Tag(
                         room.id.clone(),
@@ -450,8 +450,9 @@ impl Card {
                             RoomTag::None
                         },
                     ))
-                }),
-        );
+                })
+                .into(),
+        ));
 
         let address = room.alias.clone().unwrap_or_else(|| room.id.to_string());
         card = card
@@ -503,12 +504,7 @@ impl Card {
                 .size(13)
                 .style(text::secondary),
         );
-        let parents: Vec<&str> = room
-            .parents
-            .iter()
-            .filter_map(|p| rooms.iter().find(|r| &r.id == p))
-            .map(|r| r.name.as_str())
-            .collect();
+        let parents = parent_names(room, rooms);
         if !parents.is_empty() {
             card = card.push(
                 selectable_text(format!("In {}", parents.join(", ")))
@@ -567,10 +563,27 @@ impl Card {
                 .width(Length::Fill)
                 .padding([4, 8])
                 .style(style::code_block),
-                button(text(if copied { "Copied" } else { "Copy" }).size(12))
-                    .padding([4, 10])
-                    .style(style::secondary_button)
+                hint(
+                    button(if copied {
+                        icons::check(16.0, |theme: &Theme| {
+                            theme.extended_palette().success.base.color
+                        })
+                    } else {
+                        icons::copy(16.0, |theme: &Theme| {
+                            theme
+                                .extended_palette()
+                                .background
+                                .base
+                                .text
+                                .scale_alpha(0.7)
+                        })
+                    })
+                    .padding(6)
+                    .style(style::list_item(false))
                     .on_press(app::Message::Info(Message::Copy(value))),
+                    if copied { "Copied" } else { "Copy" },
+                    Position::Left,
+                ),
             ]
             .spacing(8)
             .align_y(Alignment::Center),
@@ -640,6 +653,62 @@ fn shared_view<'a>(shared: &[OwnedRoomId], rooms: &'a [RoomSummary]) -> Element<
     ]
     .spacing(4)
     .into()
+}
+
+/// The names of the joined spaces that list `room`.
+fn parent_names<'a>(room: &RoomSummary, rooms: &'a [RoomSummary]) -> Vec<&'a str> {
+    room.parents
+        .iter()
+        .filter_map(|p| rooms.iter().find(|r| &r.id == p))
+        .map(|r| r.name.as_str())
+        .collect()
+}
+
+fn access_description(access: Access, spaces: &[&str]) -> String {
+    match access {
+        Access::Invite => "Only people invited can join.".into(),
+        Access::SpaceMembers if spaces.is_empty() => {
+            "Members of the room's spaces can find and join it.".into()
+        }
+        Access::SpaceMembers => format!("Members of {} can find and join it.", spaces.join(", ")),
+        Access::Public => "Anyone can find and join it.".into(),
+    }
+}
+
+/// A room's notifications, as its menu names them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Notify(NotifyMode);
+
+impl Notify {
+    const ALL: [Self; 3] = [
+        Self(NotifyMode::All),
+        Self(NotifyMode::Mentions),
+        Self(NotifyMode::Mute),
+    ];
+}
+
+impl fmt::Display for Notify {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self.0 {
+            NotifyMode::All => "All messages",
+            NotifyMode::Mentions => "Mentions",
+            NotifyMode::Mute => "Mute",
+        })
+    }
+}
+
+/// Who can join a room, as its menu names them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Join(Access);
+
+impl fmt::Display for Join {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self.0 {
+            Access::Invite => "Invited people",
+            Access::SpaceMembers => "Space members",
+            Access::Public => "Anyone",
+        })
+    }
 }
 
 /// A card target for a room in the list: the person for a direct chat.
