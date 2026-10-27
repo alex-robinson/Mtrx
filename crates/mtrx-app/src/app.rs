@@ -20,9 +20,9 @@ use iced::{
 };
 use mtrx_core::{
     CallService, Connection, Contact, Google, Media, MediaRef, Member, Notification, OwnedEventId,
-    OwnedMxcUri, OwnedRoomId, OwnedUserId, PresenceState, Profile, RecoveryStep, RoomKind,
-    RoomList, RoomListColours, RoomListState, RoomOrAliasId, RoomTag, RoomTimeline,
-    ScheduledMessage, SecretStore, ServiceKind, Session, TimelineEntry, Topic, Url,
+    OwnedMxcUri, OwnedRoomId, OwnedRoomOrAliasId, OwnedUserId, PresenceState, Profile,
+    RecoveryStep, RoomKind, RoomList, RoomListColours, RoomListState, RoomOrAliasId, RoomTag,
+    RoomTimeline, ScheduledMessage, SecretStore, ServiceKind, Session, TimelineEntry, Topic, Url,
 };
 
 use crate::{
@@ -36,7 +36,7 @@ use crate::{
     edit_menu, emoji,
     find::{self, Find},
     hint::{Position, hint},
-    info,
+    info, join,
     last_view::LastView,
     login::{self, Login},
     math::{self, Math, Rendered},
@@ -132,6 +132,9 @@ pub enum Message {
     CheckForUpdates,
     AddMenu(bool),
     OpenDialog(dialog::Kind),
+    /// Join a space or room from elsewhere.
+    OpenJoin,
+    Join(join::Message),
     Dialog(dialog::Message),
     /// Accept (`true`) or decline an invite.
     AnswerInvite(OwnedRoomId, bool),
@@ -336,6 +339,11 @@ struct Main {
     error: Option<String>,
     avatars: Avatars,
     dialog: Option<Dialog>,
+    /// The dialog for joining a space or room from elsewhere.
+    join: Option<join::Join>,
+    /// A space just joined, whose overview shows once it is in the room
+    /// list.
+    joined_space: Option<OwnedRoomId>,
     /// A dialog closed while its request runs: notices for success and failure.
     background: Option<(String, String)>,
     /// The room list's "+" menu is open.
@@ -425,6 +433,8 @@ impl Main {
             error: None,
             avatars: Avatars::new(),
             dialog: None,
+            join: None,
+            joined_space: None,
             background: None,
             add_menu: false,
             invite: None,
@@ -447,6 +457,9 @@ impl Main {
         wanted.extend(self.info.as_ref().and_then(|c| c.avatar(rooms)));
         if let Some(overview) = self.info.as_ref().and_then(|c| c.overview.as_ref()) {
             wanted.extend(overview.avatars());
+        }
+        if let Some(join) = &self.join {
+            wanted.extend(join.avatars());
         }
         if let Some(room) = &self.room {
             wanted.extend(room.avatars(
@@ -903,11 +916,18 @@ impl App {
                 };
                 main.rooms = state;
                 main.arrange.rooms_updated(&mut main.rooms.rooms);
+                let joined = main
+                    .joined_space
+                    .take_if(|space| main.rooms.rooms.iter().any(|r| r.id == *space))
+                    .map_or(Task::none(), |space| {
+                        Task::done(Message::ShowSpace(space, overview::Tab::Rooms))
+                    });
                 let members = main
                     .arrange
                     .load_space_members(&main.session, &main.rooms.rooms);
                 Task::batch([
                     members,
+                    joined,
                     self.load_pinned(),
                     self.load_avatars(),
                     self.restore_view(),
@@ -1448,6 +1468,50 @@ impl App {
                 Task::none()
             }
             Message::ShowInfo(target) => self.show_card(target, overview::Tab::Rooms),
+            Message::OpenJoin => {
+                let Screen::Main(main) = &mut self.screen else {
+                    return Task::none();
+                };
+                main.add_menu = false;
+                main.info = None;
+                let session = main.session.clone();
+                let (join, action) = join::Join::new(
+                    session.user_id().server_name().to_owned(),
+                    &session.directory_servers().servers,
+                );
+                main.join = Some(join);
+                Task::batch([
+                    self.join_action(action),
+                    iced::widget::operation::focus(join::SEARCH),
+                ])
+            }
+            Message::Join(message) => {
+                let Screen::Main(main) = &mut self.screen else {
+                    return Task::none();
+                };
+                let Some(join) = &mut main.join else {
+                    return Task::none();
+                };
+                // A server whose directory answered is remembered.
+                let remember = match &message {
+                    join::Message::Found(search, Ok(_)) => search.server.clone().map(|server| {
+                        let session = main.session.clone();
+                        Task::future(async move {
+                            if let Err(e) = session.remember_directory_server(&server).await {
+                                tracing::warn!("could not remember {server}: {e}");
+                            }
+                        })
+                        .discard()
+                    }),
+                    _ => None,
+                };
+                let action = join.update(message);
+                Task::batch([
+                    remember.unwrap_or_else(Task::none),
+                    self.join_action(action),
+                    self.load_avatars(),
+                ])
+            }
             Message::ShowSpace(space, tab) => self.show_card(info::Target::Room(space), tab),
             Message::Info(message) => {
                 let Screen::Main(main) = &mut self.screen else {
@@ -1741,10 +1805,13 @@ impl App {
                     self.settings_panel = None;
                     return Task::none();
                 }
-                if let Screen::Main(main) = &self.screen
-                    && main.dialog.is_some()
-                {
-                    return Task::done(Message::Dialog(dialog::Message::Cancel));
+                if let Screen::Main(main) = &self.screen {
+                    if main.dialog.is_some() {
+                        return Task::done(Message::Dialog(dialog::Message::Cancel));
+                    }
+                    if main.join.is_some() {
+                        return Task::done(Message::Join(join::Message::Close));
+                    }
                 }
                 if let Screen::Main(main) = &mut self.screen {
                     if let Some(viewer) = main.viewer.as_mut().filter(|v| v.menu) {
@@ -2840,6 +2907,7 @@ impl App {
         };
         self.settings_panel.is_some()
             || main.dialog.is_some()
+            || main.join.is_some()
             || main.info.is_some()
             || main.viewer.is_some()
             || main.pdf.is_some()
@@ -3461,6 +3529,118 @@ impl App {
     }
 
     /// Request the pictures on screen.
+    /// Run what the join dialog asks for.
+    fn join_action(&mut self, action: join::Action) -> Task<Message> {
+        let Screen::Main(main) = &mut self.screen else {
+            return Task::none();
+        };
+        let session = main.session.clone();
+        let done = |room: OwnedRoomOrAliasId| {
+            move |result: mtrx_core::Result<join::Joined>| {
+                Message::Join(join::Message::Done(
+                    room.clone(),
+                    result.map_err(|e| e.to_string()),
+                ))
+            }
+        };
+        match action {
+            join::Action::None => Task::none(),
+            join::Action::Close => {
+                main.join = None;
+                Task::none()
+            }
+            join::Action::Search(search) => {
+                let (task, handle) = Task::perform(
+                    {
+                        let search = search.clone();
+                        async move {
+                            session
+                                .public_rooms(
+                                    search.server.as_deref(),
+                                    &search.query,
+                                    search.kind,
+                                    search.page,
+                                )
+                                .await
+                        }
+                    },
+                    move |result| {
+                        Message::Join(join::Message::Found(
+                            search.clone(),
+                            result.map_err(|e| e.to_string()),
+                        ))
+                    },
+                )
+                .abortable();
+                if let Some(join) = &mut main.join
+                    && let Some(old) = join.request.replace(handle)
+                {
+                    old.abort();
+                }
+                task
+            }
+            join::Action::Preview(address, via) => {
+                let (task, handle) = Task::perform(
+                    {
+                        let address = address.clone();
+                        async move { session.preview(&address, via).await }
+                    },
+                    move |result| {
+                        Message::Join(join::Message::Previewed(
+                            address.to_string(),
+                            result.map_err(|e| e.to_string()),
+                        ))
+                    },
+                )
+                .abortable();
+                if let Some(join) = &mut main.join
+                    && let Some(old) = join.request.replace(handle)
+                {
+                    old.abort();
+                }
+                task
+            }
+            join::Action::Join(room, via, space) => Task::perform(
+                {
+                    let room = room.clone();
+                    async move {
+                        let id = session.join(&room, &via).await?;
+                        Ok(if space {
+                            join::Joined::Space(id)
+                        } else {
+                            join::Joined::Room
+                        })
+                    }
+                },
+                done(room),
+            ),
+            join::Action::Knock(room, via) => Task::perform(
+                {
+                    let room = room.clone();
+                    async move { Ok(join::Joined::Asked(session.knock(&room, via).await?)) }
+                },
+                done(room),
+            ),
+            join::Action::ShowSpace(space) => {
+                main.join = None;
+                main.joined_space = Some(space.clone());
+                let shown = main.rooms.rooms.iter().any(|r| r.id == space);
+                let select = self.update(Message::SelectSpace(Some(space.clone())));
+                if shown {
+                    if let Screen::Main(main) = &mut self.screen {
+                        main.joined_space = None;
+                    }
+                    Task::batch([
+                        select,
+                        Task::done(Message::ShowSpace(space, overview::Tab::Rooms)),
+                    ])
+                } else {
+                    select
+                }
+            }
+        }
+    }
+
     /// Show the card of a person or room; a space's opens on `tab`.
     fn show_card(&mut self, target: info::Target, tab: overview::Tab) -> Task<Message> {
         let Screen::Main(main) = &mut self.screen else {
@@ -3704,6 +3884,11 @@ impl App {
                     (
                         dialog.view(&main.rooms.rooms, &main.arrange, &self.settings.room_list),
                         Message::Dialog(dialog::Message::Cancel),
+                    )
+                } else if let Some(join) = &main.join {
+                    (
+                        join.view(&main.rooms.rooms, &main.avatars),
+                        Message::Join(join::Message::Close),
                     )
                 } else if let Some(card) = &main.info {
                     (
@@ -4084,11 +4269,6 @@ async fn run_request(
             Request::CreateRoom(new) => Opened::Room(session.create_room(new).await?),
             Request::CreateSpace(new) => Opened::Space(session.create_room(new).await?),
             Request::DirectChat(user) => Opened::Room(session.direct_chat(&user).await?),
-            Request::Join(address) => {
-                let address = <&RoomOrAliasId>::try_from(address.as_str())
-                    .map_err(|_| mtrx_core::Error::RoomNotFound(address.clone()))?;
-                Opened::Room(session.join(address, &[]).await?)
-            }
             Request::Invite(room, people) => {
                 for person in &people {
                     session.invite(&room, person).await?;
@@ -4353,7 +4533,7 @@ fn overview_task(
         Action::Knock(room, via) => Task::perform(
             {
                 let room = room.clone();
-                async move { session.knock(&room.into(), via).await }
+                async move { session.knock(&room.into(), via).await.map(|_| ()) }
             },
             move |result| {
                 done(Overview::Done(

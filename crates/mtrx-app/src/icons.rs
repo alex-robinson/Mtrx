@@ -1201,32 +1201,6 @@ pub fn door<'a, M: 'a>(size: f32, color: fn(&Theme) -> Color) -> Element<'a, M> 
     })
 }
 
-/// Four tiles: a space.
-pub fn tiles<'a, M: 'a>(size: f32, color: fn(&Theme) -> Color) -> Element<'a, M> {
-    sketch(size, color, |frame, s, stroke| {
-        let side = 0.3 * s;
-        for (x, y) in [(0.16, 0.16), (0.54, 0.16), (0.16, 0.54), (0.54, 0.54)] {
-            frame.stroke(
-                &Path::rounded_rectangle(
-                    iced::Point::new(x * s, y * s),
-                    iced::Size::new(side, side),
-                    (0.06 * s).into(),
-                ),
-                stroke,
-            );
-        }
-    })
-}
-
-/// A magnifying glass: searches.
-pub fn search<'a, M: 'a>(size: f32, color: fn(&Theme) -> Color) -> Element<'a, M> {
-    sketch(size, color, |frame, s, stroke| {
-        let p = |x: f32, y: f32| iced::Point::new(x * s, y * s);
-        frame.stroke(&Path::circle(p(0.43, 0.43), 0.26 * s), stroke);
-        frame.stroke(&Path::line(p(0.62, 0.62), p(0.84, 0.84)), stroke);
-    })
-}
-
 /// An icon of round-capped strokes, drawn by `draw` on a square of side
 /// `s` (the size).
 fn sketch<'a, M: 'a>(

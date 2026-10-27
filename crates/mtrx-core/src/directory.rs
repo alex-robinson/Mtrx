@@ -327,9 +327,17 @@ impl Session {
     }
 
     /// Ask to join a room that takes requests.
-    pub async fn knock(&self, room: &OwnedRoomOrAliasId, via: Vec<OwnedServerName>) -> Result<()> {
-        self.client.knock(room.clone(), None, via).await?;
-        Ok(())
+    pub async fn knock(
+        &self,
+        room: &OwnedRoomOrAliasId,
+        via: Vec<OwnedServerName>,
+    ) -> Result<OwnedRoomId> {
+        Ok(self
+            .client
+            .knock(room.clone(), None, via)
+            .await?
+            .room_id()
+            .to_owned())
     }
 
     pub fn directory_servers(&self) -> DirectoryServers {

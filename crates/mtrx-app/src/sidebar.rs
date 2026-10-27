@@ -1069,7 +1069,7 @@ fn add_menu_view<'a>(space: Option<(OwnedRoomId, String)>) -> Element<'a, Messag
                 room: None,
             },
         ))
-        .push(dialog("Join a room…".into(), Kind::Join));
+        .push(item("Join a space or room…".into(), Message::OpenJoin));
     if let Some((id, name)) = space {
         menu = menu
             .push(dialog(

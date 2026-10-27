@@ -15,6 +15,7 @@ mod calls;
 mod clipboard;
 mod context_menu;
 mod dialog;
+mod directory;
 mod drag_scroll;
 mod edit_menu;
 mod ellipsis;
@@ -26,6 +27,7 @@ mod frame;
 mod hint;
 mod icons;
 mod info;
+mod join;
 mod last_view;
 mod link_status;
 #[cfg(target_os = "linux")]

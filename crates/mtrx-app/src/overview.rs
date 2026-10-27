@@ -4,24 +4,19 @@
 use std::{collections::HashSet, fmt};
 
 use iced::{
-    Alignment, Element, Length, Theme,
+    Alignment, Element, Length,
     widget::{button, column, container, pick_list, row, space, text, text_input},
 };
-use mtrx_core::{
-    DirectoryRoom, JoinAccess, Member, Membership, OwnedRoomId, OwnedServerName, RoomSummary,
-};
+use mtrx_core::{DirectoryRoom, Member, Membership, OwnedRoomId, OwnedServerName, RoomSummary};
 
 use crate::{
     app,
-    avatar::Shape,
     dialog::Kind,
-    ellipsis::ellipsis,
-    fonts,
+    directory,
     hint::{Position, hint},
     icons, info, style,
 };
 
-const ROOM_AVATAR: f32 = 28.0;
 /// Each level of subspaces is indented by this much.
 const INDENT: f32 = 22.0;
 
@@ -191,7 +186,7 @@ impl Overview {
             .iter()
             .filter_map(|(_, rooms)| rooms.as_ref().ok())
             .flatten()
-            .filter_map(|r| Some((r.avatar.as_deref()?, ROOM_AVATAR)));
+            .filter_map(|r| Some((r.avatar.as_deref()?, directory::AVATAR)));
         let members = self
             .members
             .iter()
@@ -200,18 +195,7 @@ impl Overview {
         rooms.chain(members)
     }
 
-    /// Our membership of a listed room: as the room list has it (it
-    /// follows joins from anywhere), else as the server listed it.
-    fn membership(&self, room: &DirectoryRoom, rooms: &[RoomSummary]) -> Option<Membership> {
-        match rooms.iter().find(|r| r.id == room.id) {
-            Some(r) if r.invited => Some(Membership::Invited),
-            Some(_) => Some(Membership::Joined),
-            None if self.asked.contains(&room.id) => Some(Membership::Asked),
-            None => room.membership.filter(|m| *m == Membership::Asked),
-        }
-    }
-
-    /// The space's topic and links (`about`), the tabs, then the chosen
+    /// The space's topic and links    /// The space's topic and links (`about`), the tabs, then the chosen
     /// one's content; `settings` is the room card's, with the topic.
     pub fn view<'a>(
         &'a self,
@@ -222,31 +206,15 @@ impl Overview {
         can_invite: bool,
         settings: Element<'a, app::Message>,
     ) -> Element<'a, app::Message> {
-        let tab = |label: &'a str, tab: Tab| {
-            let chosen = self.tab == tab;
-            let label = text(label)
-                .size(14)
-                .font(if chosen {
-                    fonts::SEMIBOLD
-                } else {
-                    fonts::INTER
-                })
-                .style(if chosen {
-                    text::default
-                } else {
-                    text::secondary
-                });
-            button(label)
-                .padding([4, 10])
-                .style(style::list_item(chosen))
-                .on_press(message(Message::Tab(tab)))
-        };
-        let tabs = row![
-            tab("Rooms", Tab::Rooms),
-            tab("Members", Tab::Members),
-            tab("Settings", Tab::Settings),
-        ]
-        .spacing(4);
+        let tabs = directory::tabs(
+            &[
+                ("Rooms", Tab::Rooms),
+                ("Members", Tab::Members),
+                ("Settings", Tab::Settings),
+            ],
+            self.tab,
+            |tab| message(Message::Tab(tab)),
+        );
         let content = match self.tab {
             Tab::Rooms => self.rooms_view(space, shown, can_add_rooms),
             Tab::Members => self.members_view(space, shown, can_invite),
@@ -309,7 +277,7 @@ impl Overview {
         }
         body.push(
             row![
-                icons::lock(13.0, secondary),
+                icons::lock(13.0, directory::secondary),
                 text("Rooms only invited people can join aren't listed.")
                     .size(12)
                     .style(text::secondary),
@@ -348,7 +316,8 @@ impl Overview {
         let filter = self.filter.trim().to_lowercase();
         let mut any = false;
         for room in rooms {
-            let membership = self.membership(room, shown.rooms);
+            let membership =
+                directory::membership(room, shown.rooms, self.asked.contains(&room.id));
             let joined = membership == Some(Membership::Joined);
             let expanded = room.is_space && self.expanded.contains(&room.id);
             // A subspace stays while open, for its rooms.
@@ -392,7 +361,7 @@ impl Overview {
             button(icons::chevron(
                 12.0,
                 self.expanded.contains(&room.id),
-                secondary,
+                directory::secondary,
             ))
             .padding(4)
             .style(style::list_item(false))
@@ -401,114 +370,15 @@ impl Overview {
         } else {
             space().width(20).into()
         };
-        let picture = shown.avatars.view(
-            room.id.as_str(),
-            &room.name,
-            room.avatar.as_deref(),
-            ROOM_AVATAR,
-            if room.is_space {
-                Shape::RoundedSquare
-            } else {
-                Shape::Circle
-            },
-        );
-        let mut line = String::new();
-        if room.is_space {
-            line.push_str(&match room.children {
-                1 => "Space · 1 room".to_owned(),
-                n => format!("Space · {n} rooms"),
-            });
-        }
-        let members = match room.members {
-            1 => "1 member".to_owned(),
-            n => format!("{n} members"),
-        };
-        for part in [
-            room.topic
-                .as_deref()
-                .and_then(|t| t.lines().find(|l| !l.trim().is_empty()))
-                .map(str::to_owned),
-            Some(members),
-        ]
-        .into_iter()
-        .flatten()
-        {
-            if !line.is_empty() {
-                line.push_str(" · ");
-            }
-            line.push_str(&part);
-        }
-        let mut name = row![ellipsis(&room.name).size(14)]
-            .spacing(6)
-            .align_y(Alignment::Center);
-        if room.suggested {
-            name = name.push(text("suggested").size(11).style(text::secondary));
-        }
-        let details = column![name, ellipsis(line).size(12).style(text::secondary)]
-            .spacing(1)
-            .width(Length::Fill);
-        let (access, access_hint) = access_icon(room.access);
-        row![
-            space().width(indent),
-            expander,
-            picture,
-            details,
-            hint(access, access_hint, Position::Left),
-            self.room_button(room, membership),
-        ]
-        .spacing(8)
-        .padding([3, 4])
-        .align_y(Alignment::Center)
-        .into()
-    }
-
-    /// Join, Ask to join or Open, as the room allows.
-    fn room_button<'a>(
-        &self,
-        room: &'a DirectoryRoom,
-        membership: Option<Membership>,
-    ) -> Element<'a, app::Message> {
-        let quiet = |label: &'a str| -> Element<'a, app::Message> {
-            container(text(label).size(12).style(text::secondary))
-                .padding([4, 10])
-                .into()
-        };
-        if self.busy.contains(&room.id) {
-            return quiet(if room.access == JoinAccess::Knock {
-                "Asking…"
-            } else {
-                "Joining…"
-            });
-        }
-        let act = |label: &'a str, on_press: app::Message| -> Element<'a, app::Message> {
-            button(text(label).size(12))
-                .padding([4, 10])
-                .style(style::secondary_button)
-                .on_press(on_press)
-                .into()
-        };
-        let open = if room.is_space {
-            app::Message::SelectSpace(Some(room.id.clone()))
-        } else {
-            app::Message::OpenRoom(room.id.clone())
-        };
-        match membership {
-            Some(Membership::Joined) => act("Open", open),
-            // Shows the invite, to accept or decline.
-            Some(Membership::Invited) => act("Invited", open),
-            Some(Membership::Asked) => quiet("Asked"),
-            None => match room.access {
-                JoinAccess::Public | JoinAccess::SpaceMembers => act(
-                    "Join",
-                    message(Message::Join(room.id.clone(), room.via.clone())),
-                ),
-                JoinAccess::Knock => act(
-                    "Ask to join",
-                    message(Message::Knock(room.id.clone(), room.via.clone())),
-                ),
-                JoinAccess::Invite => quiet("Invite only"),
-            },
-        }
+        directory::entry(
+            room,
+            membership,
+            self.busy.contains(&room.id),
+            row![space().width(indent), expander].into(),
+            shown.avatars,
+            message(Message::Join(room.id.clone(), room.via.clone())),
+            message(Message::Knock(room.id.clone(), room.via.clone())),
+        )
     }
 
     fn members_view<'a>(
@@ -550,26 +420,6 @@ impl Overview {
         .spacing(8)
         .into()
     }
-}
-
-/// Who can join, as an icon and its hint.
-fn access_icon<'a>(access: JoinAccess) -> (Element<'a, app::Message>, &'static str) {
-    const SIZE: f32 = 15.0;
-    match access {
-        JoinAccess::Public => (icons::globe(SIZE, secondary), "Anyone can join"),
-        JoinAccess::SpaceMembers => (icons::people(SIZE, secondary), "Space members can join"),
-        JoinAccess::Knock => (icons::door(SIZE, secondary), "Ask to join"),
-        JoinAccess::Invite => (icons::lock(SIZE, secondary), "Invited people only"),
-    }
-}
-
-fn secondary(theme: &Theme) -> iced::Color {
-    theme
-        .extended_palette()
-        .background
-        .base
-        .text
-        .scale_alpha(0.6)
 }
 
 fn message(message: Message) -> app::Message {

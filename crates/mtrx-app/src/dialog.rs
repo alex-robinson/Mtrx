@@ -1,6 +1,6 @@
 //! Dialogs for managing rooms: create a room, space, direct chat or
-//! category, choose a category's rooms, join, invite, add rooms to a space,
-//! leave.
+//! category, choose a category's rooms, invite, add rooms to a space,
+//! leave. Joining has its own dialog ([`crate::join`]).
 
 use std::time::{Duration, Instant};
 
@@ -31,7 +31,6 @@ pub enum Kind {
     },
     NewSpace,
     DirectChat,
-    Join,
     Invite {
         room: OwnedRoomId,
         name: String,
@@ -60,7 +59,6 @@ pub enum Message {
     Topic(String),
     Encrypted(bool),
     Moderated(bool),
-    Address(String),
     /// The people search field changed.
     Query(String),
     /// People the user shares spaces, rooms or chats with.
@@ -106,7 +104,6 @@ pub enum Request {
     CreateRoom(NewRoom),
     CreateSpace(NewRoom),
     DirectChat(OwnedUserId),
-    Join(String),
     Invite(OwnedRoomId, Vec<OwnedUserId>),
     AddToSpace(OwnedRoomId, Vec<OwnedRoomId>),
     Leave(OwnedRoomId),
@@ -119,7 +116,6 @@ pub struct Dialog {
     topic: String,
     encrypted: bool,
     moderated: bool,
-    address: String,
     query: String,
     /// People the user knows, closest first.
     contacts: Vec<Contact>,
@@ -152,7 +148,6 @@ impl Dialog {
             topic: String::new(),
             encrypted: true,
             moderated: false,
-            address: String::new(),
             query: String::new(),
             contacts: Vec::new(),
             near: Vec::new(),
@@ -281,10 +276,6 @@ impl Dialog {
                 "The direct chat is ready.".into(),
                 "Could not start the direct chat".into(),
             ),
-            Kind::Join => (
-                format!("Joined {}.", self.address.trim()),
-                format!("Could not join {}", self.address.trim()),
-            ),
             Kind::Invite { name, .. } => (
                 format!("Invites to {name} sent."),
                 format!("Could not invite everyone to {name}"),
@@ -309,7 +300,6 @@ impl Dialog {
             Kind::NewRoom { .. } => "Creating the room on the server…",
             Kind::NewSpace => "Creating the space on the server…",
             Kind::DirectChat => "Starting the chat…",
-            Kind::Join => "Joining…",
             Kind::Invite { .. } => "Sending the invites…",
             Kind::AddExisting { .. } => "Adding the rooms…",
             Kind::Leave { .. } => "Leaving…",
@@ -345,7 +335,6 @@ impl Dialog {
             Message::Topic(v) => self.topic = v,
             Message::Encrypted(v) => self.encrypted = v,
             Message::Moderated(v) => self.moderated = v,
-            Message::Address(v) => self.address = v,
             Message::Query(query) => {
                 self.query = query.clone();
                 if let Some(search) = self.search.take() {
@@ -443,7 +432,6 @@ impl Dialog {
                 ..Default::default()
             }),
             Kind::DirectChat => Request::DirectChat(self.person()?),
-            Kind::Join => Request::Join(optional(self.address.trim())?),
             Kind::Invite { room, .. } => {
                 let mut people = people();
                 if people.is_empty() {
@@ -503,7 +491,6 @@ impl Dialog {
             Kind::NewRoom { space: None } => ("New room".into(), "Create"),
             Kind::NewSpace => ("New space".into(), "Create"),
             Kind::DirectChat => ("New direct chat".into(), "Start chat"),
-            Kind::Join => ("Join a room".into(), "Join"),
             Kind::Invite { name, .. } => (format!("Invite to {name}"), "Invite"),
             Kind::AddExisting { name, .. } => (format!("Add your rooms to {name}"), "Add"),
             Kind::Leave { name, .. } => (format!("Leave {name}?"), "Leave"),
@@ -537,19 +524,6 @@ impl Dialog {
             }
             Kind::DirectChat => body.push(self.people_view("Name or @user:server")),
             Kind::Invite { .. } => body.push(self.people_view("Name or @user:server")),
-            Kind::Join => body.push(
-                column![
-                    self.field(
-                        "#room:server or !id:server",
-                        &self.address,
-                        Message::Address
-                    ),
-                    text("Rooms you are invited to are in the room list.")
-                        .size(12)
-                        .style(text::secondary),
-                ]
-                .spacing(4),
-            ),
             Kind::AddExisting { space, .. } => body.push(self.rooms_view(space, rooms)),
             Kind::Category { space, .. } => body
                 .push(self.field("Name", &self.name, Message::Name))
