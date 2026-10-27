@@ -382,8 +382,10 @@ async fn keys_scroll_the_timeline() {
 
 /// Offsets, to within rounding.
 #[track_caller]
+/// Within a pixel: the timeline rounds its scroll offset to whole pixels,
+/// the one an expectation starts from too.
 fn assert_near(offset: f32, expected: f32) {
-    assert!((offset - expected).abs() < 0.5, "{offset}, not {expected}");
+    assert!((offset - expected).abs() <= 1.0, "{offset}, not {expected}");
 }
 
 /// The keys going to another room do so also while a field has them.

@@ -4,7 +4,7 @@ use std::{
     collections::HashMap,
     rc::Rc,
     sync::Arc,
-    time::{Duration, SystemTime},
+    time::{Duration, Instant, SystemTime},
 };
 
 use iced::{
@@ -20,7 +20,7 @@ use iced::{
 use mtrx_core::{
     CallService, Event, EventContent, EventKey, Media, Member, MembershipChange, MessageKind,
     MxcUri, OwnedEventId, OwnedRoomId, OwnedUserId, RoomKind, RoomSummary, RoomTimeline,
-    ScheduledMessage, SendState, TimelineEntry, Topic, UserId, describe_change,
+    ScheduledMessage, SendState, TimelineEntry, Topic, Upload, UserId, describe_change,
 };
 
 use crate::{
@@ -53,6 +53,7 @@ use crate::{
     selection::{self, Bounds, Point, Pos, Selection, Shown, Step},
     send_later::{self, SendLater},
     sidebar,
+    status::{self, Status},
     style::{
         self, GUTTER_SPACING, HEADER_AVATAR, MESSAGE_PADDING, SENDER_AVATAR, TEXT_MARGIN,
         TIMELINE_PADDING, TOOLBAR_HEIGHT,
@@ -70,6 +71,8 @@ const WINDOW_STEP: usize = 50;
 /// scroll up for more.
 const FILL: usize = 40;
 
+/// Uploads quicker than this do not show in the status pill.
+const UPLOAD_SHOWN_AFTER: Duration = Duration::from_millis(500);
 /// The message field, focused again after inserting an emoji.
 pub const COMPOSER: &str = "composer";
 /// Right padding of the composer's text, clear of its paperclip and smiley.
@@ -144,7 +147,11 @@ pub struct Room {
     pub paginating: bool,
     /// A new timeline is being loaded (⌘R).
     pub reloading: bool,
+    /// Shown in the status pill until dismissed.
     pub error: Option<String>,
+    /// Files of messages being sent, uploading, and since when.
+    uploads: Vec<Upload>,
+    uploading_since: Option<Instant>,
     /// [`Event::id`] of the message under the cursor.
     hovered: Option<String>,
     /// [`Event::id`] of the message just gone to, e.g. a reply's original.
@@ -201,6 +208,8 @@ impl Room {
             paginating: false,
             reloading: false,
             error: None,
+            uploads: Vec::new(),
+            uploading_since: None,
             hovered: None,
             marked: None,
             seeking: None,
@@ -671,6 +680,56 @@ impl Room {
         })
     }
 
+    /// The files being uploaded now.
+    pub fn set_uploads(&mut self, uploads: Vec<Upload>) {
+        self.uploading_since = match (uploads.is_empty(), self.uploading_since) {
+            (true, _) => None,
+            (false, None) => Some(Instant::now()),
+            (false, since) => since,
+        };
+        self.uploads = uploads;
+    }
+
+    /// What the status pill says, if anything: a problem first, then
+    /// looking for a message, then uploads taking longer than a moment.
+    fn status(&self) -> Option<Status> {
+        if let Some(error) = &self.error {
+            return Some(Status::Problem(error.clone()));
+        }
+        if self.seeking.is_some() {
+            let back_to = self.entries.iter().find_map(|entry| match entry {
+                TimelineEntry::Event(event) => Some(event.timestamp),
+                _ => None,
+            });
+            return Some(Status::Seeking { back_to });
+        }
+        let since = self.uploading_since?;
+        if since.elapsed() < UPLOAD_SHOWN_AFTER {
+            return None;
+        }
+        let first = self.uploads.first()?;
+        let name = (self.entries.iter())
+            .find_map(|entry| match entry {
+                TimelineEntry::Event(event) if event.key == first.message => match &event.content {
+                    EventContent::Message(m) => m.media.as_ref().map(|f| f.filename.clone()),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .unwrap_or_else(|| "a file".to_owned());
+        let (sent, total) =
+            (self.uploads.iter()).fold((0, 0), |(sent, total), u| (sent + u.sent, total + u.total));
+        Some(Status::Uploading {
+            name,
+            files: self.uploads.len(),
+            done: if total == 0 {
+                0.0
+            } else {
+                sent as f32 / total as f32
+            },
+        })
+    }
+
     pub fn view<'a>(
         &'a self,
         summary: Option<&'a RoomSummary>,
@@ -916,14 +975,9 @@ impl Room {
         if let Some(bar) = self.compose.bar() {
             above = above.push(bar);
         }
-        let mut below = column![];
-        if let Some(error) = &self.error {
-            below = below.push(text(error).size(12).style(text::danger));
-        }
         let bottom = column![
             above,
             row![composer, send].spacing(8).align_y(Alignment::End),
-            below,
         ]
         .spacing(6)
         .padding([8.0, TIMELINE_PADDING + MESSAGE_PADDING]);
@@ -934,6 +988,19 @@ impl Room {
             find_bar = find_bar.push(find.view(Message::Find));
             find_bar = find_bar.push(rule::horizontal(1));
         }
+        // What the room waits on, or what failed, over the timeline's
+        // bottom left.
+        let timeline: Element<'a, Message> = match self.status() {
+            Some(status) => stack![
+                timeline,
+                container(status::view(&status))
+                    .align_left(Length::Fill)
+                    .align_bottom(Length::Fill)
+                    .padding(Padding::new(8.0).left(TIMELINE_PADDING + MESSAGE_PADDING)),
+            ]
+            .into(),
+            None => timeline.into(),
+        };
         let main = column![find_bar, timeline, bottom].width(Length::Fill);
         // The member list comes after, so it does not move the composer.
         let mut body = row![main];

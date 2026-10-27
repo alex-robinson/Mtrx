@@ -168,6 +168,12 @@ pub enum Message {
     /// The open room's topic and links, in its topic panel.
     Topic(OwnedRoomId, topic::Message),
     Pins(OwnedRoomId, pins::Message),
+    /// The files of messages being sent, uploading now.
+    Uploads(OwnedRoomId, Vec<mtrx_core::Upload>),
+    /// Close the problem the status pill shows.
+    DismissError,
+    /// Stop loading older messages to find the one gone to.
+    StopSeeking,
     RecoveryKey(String),
     Recover,
     RecoveryProgress(RecoveryStep),
@@ -1314,6 +1320,25 @@ impl App {
             }
             Message::Calls(room, message) => self.calls(room, message),
             Message::Topic(room, message) => self.room_topic(room, message),
+            Message::Uploads(room_id, uploads) => {
+                if let Screen::Main(main) = &mut self.screen
+                    && let Some(room) = main.room.as_mut().filter(|r| r.id == room_id)
+                {
+                    room.set_uploads(uploads);
+                }
+                Task::none()
+            }
+            Message::DismissError | Message::StopSeeking => {
+                if let Screen::Main(main) = &mut self.screen
+                    && let Some(room) = main.room.as_mut()
+                {
+                    match message {
+                        Message::DismissError => room.error = None,
+                        _ => room.seeking = None,
+                    }
+                }
+                Task::none()
+            }
             Message::Pins(room_id, message) => {
                 let Screen::Main(main) = &mut self.screen else {
                     return Task::none();
@@ -3561,6 +3586,16 @@ impl App {
                     t.0.updates()
                         .map(move |entries| Message::Timeline(id.clone(), entries))
                 }));
+                subscriptions.push(Subscription::run_with(
+                    (Shared(room.timeline.clone()), "uploads"),
+                    |(t, _)| {
+                        let (timeline, id) = (t.0.clone(), t.0.room_id().clone());
+                        iced::futures::stream::once(async move { timeline.uploads().await })
+                            .filter_map(|uploads| async move { uploads.ok() })
+                            .flatten()
+                            .map(move |uploads| Message::Uploads(id.clone(), uploads))
+                    },
+                ));
                 if let Some(pinned) = &room.pins.timeline {
                     subscriptions.push(Subscription::run_with(Shared(pinned.clone()), |t| {
                         let id = t.0.room_id().clone();
@@ -3865,7 +3900,7 @@ fn offline_bar<'a>() -> Element<'a, Message> {
                 .width(Length::Fill),
             button(text("Retry now").size(13))
                 .padding([3, 10])
-                .style(style::secondary_button)
+                .style(style::problem_button)
                 .on_press(Message::Reconnect),
         ]
         .spacing(10)
@@ -3890,7 +3925,7 @@ fn signed_out_bar<'a>() -> Element<'a, Message> {
             hint(
                 button(text("Sign in again").size(13))
                     .padding([3, 10])
-                    .style(style::primary_button)
+                    .style(style::problem_button)
                     .on_press(Message::SignInAgain),
                 "Remove this device's data and log in again (your recovery key unlocks older messages)",
                 Position::Top,

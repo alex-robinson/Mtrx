@@ -1675,6 +1675,21 @@ async fn room_management_screens() {
         }),
         "menus",
     );
+    // The status pill: looking for a message gone to, and a problem.
+    snapshot(
+        &main_with(&|main| {
+            let room = main.room.as_mut().unwrap();
+            room.seeking = Some(("$gone:localhost".try_into().unwrap(), 3));
+        }),
+        "status-seeking",
+    );
+    snapshot(
+        &main_with(&|main| {
+            main.room.as_mut().unwrap().error =
+                Some("The original message was not found in the room's history".into());
+        }),
+        "status-problem",
+    );
     snapshot(
         &main_with(&|main| main.connection = Connection::Offline),
         "offline",

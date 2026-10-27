@@ -54,6 +54,7 @@ mod selection;
 mod send_later;
 mod settings;
 mod sidebar;
+mod status;
 mod style;
 mod text_size;
 mod tint;
