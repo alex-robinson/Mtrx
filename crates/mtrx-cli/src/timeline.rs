@@ -77,6 +77,7 @@ pub fn event_line(event: &Event) -> String {
                 None => format!("{who} changed the topic"),
             }
         }
+        EventContent::Pins(change) => format!("{who} {}", change.describe()),
         EventContent::OtherState { event_type } => format!("{who} changed {event_type}"),
         EventContent::Other { description } => format!("{who}: [{description}]"),
     };

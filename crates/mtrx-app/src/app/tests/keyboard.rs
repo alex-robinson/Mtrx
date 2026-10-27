@@ -432,6 +432,7 @@ fn summary(id: &OwnedRoomId, name: &str) -> mtrx_core::RoomSummary {
         direct_user: None,
         alias: None,
         joined_members: 1,
+        pinned: Vec::new(),
     }
 }
 

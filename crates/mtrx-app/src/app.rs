@@ -41,7 +41,7 @@ use crate::{
     login::{self, Login},
     math::{self, Math, Rendered},
     media::{self, Previews, Viewer},
-    members, mention, message, pdf_viewer,
+    members, mention, message, pdf_viewer, pins,
     placement::{self, Frame, Placement},
     presence::{self, Activity, Presences},
     room::{self, Look, Older, Room},
@@ -167,6 +167,7 @@ pub enum Message {
     Calls(OwnedRoomId, calls::Message),
     /// The open room's topic and links, in its topic panel.
     Topic(OwnedRoomId, topic::Message),
+    Pins(OwnedRoomId, pins::Message),
     RecoveryKey(String),
     Recover,
     RecoveryProgress(RecoveryStep),
@@ -890,7 +891,12 @@ impl App {
                 let members = main
                     .arrange
                     .load_space_members(&main.session, &main.rooms.rooms);
-                Task::batch([members, self.load_avatars(), self.restore_view()])
+                Task::batch([
+                    members,
+                    self.load_pinned(),
+                    self.load_avatars(),
+                    self.restore_view(),
+                ])
             }
             Message::SelectSpace(space) => {
                 let Screen::Main(main) = &mut self.screen else {
@@ -982,6 +988,7 @@ impl App {
                             self.load_avatars(),
                             self.load_previews(),
                             self.load_room_calls(&id),
+                            self.load_pinned(),
                         ])
                     }
                     Err(e) => {
@@ -1307,6 +1314,20 @@ impl App {
             }
             Message::Calls(room, message) => self.calls(room, message),
             Message::Topic(room, message) => self.room_topic(room, message),
+            Message::Pins(room_id, message) => {
+                let Screen::Main(main) = &mut self.screen else {
+                    return Task::none();
+                };
+                let Some(room) = main.room.as_mut().filter(|r| r.id == room_id) else {
+                    return Task::none();
+                };
+                if let pins::Message::GoTo(event) = message {
+                    room.topic.open = false;
+                    return Task::done(Message::GoTo(event));
+                }
+                room.pins.update(message);
+                Task::none()
+            }
             Message::AddMenu(open) => {
                 if let Screen::Main(main) = &mut self.screen {
                     main.add_menu = open;
@@ -2801,6 +2822,13 @@ impl App {
             })
             .discard()
         };
+        let can_pin = {
+            let (session, room, reply) = (session.clone(), room.clone(), room.clone());
+            Task::perform(
+                async move { session.can_pin(&room).await.ok() },
+                move |can| Message::Pins(reply.clone(), pins::Message::CanPin(can)),
+            )
+        };
         let space_service = Task::perform(
             async move {
                 for space in spaces {
@@ -2812,7 +2840,32 @@ impl App {
             },
             move |service| Message::Calls(room.clone(), calls::Message::SpaceService(service)),
         );
-        Task::batch([can_edit, old_link, space_service])
+        Task::batch([can_edit, can_pin, old_link, space_service])
+    }
+
+    /// Make the open room's pinned messages' timeline, once it has pins.
+    fn load_pinned(&mut self) -> Task<Message> {
+        let Screen::Main(main) = &mut self.screen else {
+            return Task::none();
+        };
+        let Some(room) = main.room.as_mut() else {
+            return Task::none();
+        };
+        let pinned = (main.rooms.rooms.iter())
+            .find(|r| r.id == room.id)
+            .map_or(&[][..], |r| &r.pinned);
+        if !room.pins.request(pinned) {
+            return Task::none();
+        }
+        let (session, id, reply) = (main.session.clone(), room.id.clone(), room.id.clone());
+        Task::perform(
+            async move {
+                (session.pinned_timeline(&id).await)
+                    .map(|t| Shared(Arc::new(t)))
+                    .map_err(|e| e.to_string())
+            },
+            move |result| Message::Pins(reply.clone(), pins::Message::Loaded(result)),
+        )
     }
 
     fn act(&mut self, message: actions::Message) -> Task<Message> {
@@ -2828,6 +2881,13 @@ impl App {
             Message::Act(Act::Done(result.map_err(|e| e.to_string())))
         };
         match message {
+            Act::Pin(event, pin) => {
+                let (session, room_id) = (main.session.clone(), room.id.clone());
+                Task::perform(
+                    async move { session.set_pinned(&room_id, &event, pin).await },
+                    done,
+                )
+            }
             Act::React(key, emoji) => {
                 room.picker = None;
                 room.emoji = None;
@@ -3501,6 +3561,14 @@ impl App {
                     t.0.updates()
                         .map(move |entries| Message::Timeline(id.clone(), entries))
                 }));
+                if let Some(pinned) = &room.pins.timeline {
+                    subscriptions.push(Subscription::run_with(Shared(pinned.clone()), |t| {
+                        let id = t.0.room_id().clone();
+                        t.0.updates().map(move |entries| {
+                            Message::Pins(id.clone(), pins::Message::Updated(entries))
+                        })
+                    }));
+                }
                 subscriptions.push(media::dropped_files());
             }
         }

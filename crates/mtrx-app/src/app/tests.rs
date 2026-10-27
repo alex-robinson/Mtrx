@@ -794,10 +794,22 @@ async fn main_screen_with_math() {
         open.entries = entries.clone();
         with_start(&mut open.entries);
         open.hover(hovered.clone(), true);
-        // The room's calls and links, in its topic.
+        // The room's calls and links, in its topic; its first message
+        // pinned.
+        let first = (entries.iter())
+            .find_map(|e| match e {
+                TimelineEntry::Event(ev) if matches!(ev.content, EventContent::Message(_)) => {
+                    ev.event_id.clone()
+                }
+                _ => None,
+            })
+            .unwrap();
         if let Some(summary) = main.rooms.rooms.iter_mut().find(|r| r.id == room) {
             summary.topic = Some(TOPIC.into());
+            summary.pinned = vec![first];
         }
+        open.pins.update(pins::Message::CanPin(Some(true)));
+        open.pins.update(pins::Message::Updated(entries.clone()));
         open.calls.space_service =
             Some(CallService::jitsi("Lab Jitsi", "https://video.lab.example").unwrap());
         // The call menu and reaction picker in one shot, the topic's editor

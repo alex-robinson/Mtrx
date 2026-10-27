@@ -10,7 +10,8 @@ use std::{
 use eyeball_im::Vector;
 use futures_util::{Stream, StreamExt, stream};
 use matrix_sdk::ruma::{
-    EventId, OwnedEventId, OwnedMxcUri, OwnedRoomId, OwnedTransactionId, OwnedUserId, UInt, UserId,
+    EventId, OwnedEventId, OwnedMxcUri, OwnedRoomId, OwnedTransactionId, OwnedUserId, RoomId, UInt,
+    UserId,
     api::client::receipt::create_receipt::v3::ReceiptType,
     events::{
         Mentions,
@@ -42,9 +43,9 @@ use tokio_stream::wrappers::{BroadcastStream, WatchStream};
 use tracing::warn;
 
 use crate::{
-    Error, Result, Session, calls,
+    Error, PinsChange, Result, Session, calls,
     media::{self, MediaRef},
-    room_links, system_time,
+    pins, room_links, system_time,
 };
 use mtrx_format::{Document, Mention, MentionTarget, markdown_to_matrix};
 
@@ -177,6 +178,7 @@ impl Event {
                 | EventContent::DisplayNameChange { .. }
                 | EventContent::CallLink { .. }
                 | EventContent::Topic { .. }
+                | EventContent::Pins(_)
                 | EventContent::OtherState { .. }
         )
     }
@@ -248,7 +250,9 @@ pub enum EventContent {
         old: Option<String>,
         new: String,
     },
-    /// A state event we do not render in detail, e.g. `m.room.topic`.
+    /// Messages were pinned or unpinned.
+    Pins(PinsChange),
+    /// A state event we do not render in detail, e.g. `m.room.name`.
     OtherState {
         event_type: String,
     },
@@ -771,12 +775,23 @@ impl Session {
                 (self.client.clone(), self.room_keys.clone(), room_id.clone());
             tokio::spawn(async move { keys.download(&client, &room).await });
         }
-        let timeline = Arc::new(
-            self.room(room_id)?
-                .timeline()
-                .await
-                .map_err(timeline_error)?,
-        );
+        // The open room is subscribed: sync then brings all of its state,
+        // its pinned messages too, which the room list leaves out.
+        (self.sync.room_list_service())
+            .set_room_subscriptions(&[room_id])
+            .await;
+        let timeline = self
+            .room(room_id)?
+            .timeline()
+            .await
+            .map_err(timeline_error)?;
+        Ok(self.room_timeline(room_id, timeline).await)
+    }
+
+    /// `timeline` of the room `room_id`, its items converted to entries as
+    /// they come.
+    pub(crate) async fn room_timeline(&self, room_id: &RoomId, timeline: Timeline) -> RoomTimeline {
+        let timeline = Arc::new(timeline);
         let (items, stream) = timeline.subscribe().await;
         // Convert each item once, when it is added or changed, by mirroring
         // the SDK's diffs onto converted entries.
@@ -852,13 +867,13 @@ impl Session {
                 }
             }
         });
-        Ok(RoomTimeline {
-            room_id: room_id.clone(),
+        RoomTimeline {
+            room_id: room_id.to_owned(),
             timeline,
             send_lock: self.send_lock.clone(),
             entries,
             task,
-        })
+        }
     }
 }
 
@@ -894,7 +909,7 @@ fn send_handle(item: &EventTimelineItem) -> Result<SendHandle> {
         .ok_or_else(|| Error::Timeline("not a message being sent".into()))
 }
 
-fn timeline_error(e: impl std::fmt::Display) -> Error {
+pub(crate) fn timeline_error(e: impl std::fmt::Display) -> Error {
     Error::Timeline(e.to_string())
 }
 
@@ -1030,6 +1045,8 @@ impl Converter {
                     EventContent::CallLink { url }
                 } else if let Some((old, new)) = room_links::topic_change(&event_type, raw) {
                     EventContent::Topic { old, new }
+                } else if let Some(change) = pins::pins_change(&event_type, raw) {
+                    EventContent::Pins(change)
                 } else {
                     EventContent::OtherState {
                         event_type: event_type.to_string(),

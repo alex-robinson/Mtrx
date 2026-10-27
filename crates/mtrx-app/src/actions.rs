@@ -53,6 +53,8 @@ const TYPING_HEIGHT: f32 = 12.0 * 1.3;
 #[derive(Debug, Clone)]
 pub enum Message {
     React(EventKey, String),
+    /// Pin the message, or unpin it (`false`).
+    Pin(OwnedEventId, bool),
     /// Open or close the reaction window of a timeline row, there.
     TogglePicker(String, PickerAt),
     ClosePicker,

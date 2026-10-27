@@ -41,6 +41,7 @@ mod message;
 mod message_menu;
 mod pdf;
 mod pdf_viewer;
+mod pins;
 mod placement;
 mod popover;
 mod presence;

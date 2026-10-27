@@ -216,6 +216,7 @@ mod tests {
             direct_user: None,
             alias: None,
             joined_members: 0,
+            pinned: Vec::new(),
         }
     }
 

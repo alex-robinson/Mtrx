@@ -19,8 +19,8 @@ use anyhow::{Context, Result, bail};
 use futures_util::{Stream, StreamExt};
 use mtrx_core::{
     Access, Attachment, CallService, Connection, EventContent, MembershipChange, NewRoom,
-    NotifyMode, Permissions, PresenceState, Profile, RecoveryStatus, RoomKind, SecretStore,
-    Session, TimelineEntry, VerificationState,
+    NotifyMode, Permissions, PinsChange, PresenceState, Profile, RecoveryStatus, RoomKind,
+    SecretStore, Session, TimelineEntry, VerificationState,
     test_support::{self, PASSWORD, homeserver, unique_name},
 };
 use mtrx_format::{Block, Inline, Style};
@@ -512,6 +512,62 @@ async fn scheduled_messages() -> Result<()> {
     let file = find_media(&entries, "late.txt").unwrap();
     assert_eq!(session.media_content(&file.source).await?, b"sent late");
     assert!(session.scheduled().is_empty());
+    Ok(())
+}
+
+/// A pinned message shows in the room list, in a timeline of its own and
+/// as a notice; unpinning takes it out again.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs local Synapse (testserver/run.sh)"]
+async fn pinned_messages() -> Result<()> {
+    let (_, alice) = new_user("pins").await?;
+    let s = &alice.session;
+    let room = s
+        .create_room(NewRoom {
+            name: Some("pins".into()),
+            encrypted: true,
+            ..Default::default()
+        })
+        .await?;
+    let timeline = s.timeline(&room).await?;
+    let plan = timeout(
+        "send",
+        timeline.send_markdown("The plan", None).await?.sent(),
+    )
+    .await??;
+    assert!(s.can_pin(&room).await?);
+    s.set_pinned(&room, &plan, true).await?;
+    wait_for(
+        "pinned in the list",
+        s.room_list().await?.updates(),
+        |state| (state.rooms.iter()).any(|r| r.id == room && r.pinned == [plan.clone()]),
+    )
+    .await?;
+    let pinned = s.pinned_timeline(&room).await?;
+    wait_for("pinned message loaded", pinned.updates(), |entries| {
+        has_message(entries, "The plan")
+    })
+    .await?;
+    let notice = EventContent::Pins(PinsChange {
+        pinned: 1,
+        unpinned: 0,
+    });
+    wait_for("notice", timeline.updates(), |entries| {
+        entries
+            .iter()
+            .any(|e| matches!(e, TimelineEntry::Event(ev) if ev.content == notice))
+    })
+    .await?;
+
+    s.set_pinned(&room, &plan, false).await?;
+    wait_for("unpinned", s.room_list().await?.updates(), |state| {
+        (state.rooms.iter()).any(|r| r.id == room && r.pinned.is_empty())
+    })
+    .await?;
+    wait_for("gone from the pinned", pinned.updates(), |entries| {
+        !has_message(entries, "The plan")
+    })
+    .await?;
     Ok(())
 }
 

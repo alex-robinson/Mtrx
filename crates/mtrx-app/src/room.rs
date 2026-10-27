@@ -44,6 +44,7 @@ use crate::{
     mention::{self, Candidate, Completion},
     message,
     message_menu::{self, MenuAt},
+    pins,
     popover::{Edge, Side, popover},
     presence::{self, Presences},
     rows::{self, Part, Row, display_name, time},
@@ -95,6 +96,8 @@ pub struct Room {
     /// The topic panel, below the room header; closed when the room
     /// opens.
     pub topic: topic::Panel,
+    /// Its pinned messages.
+    pub pins: pins::Pins,
     pub compose: Compose,
     /// A sent or scheduled message being edited in place.
     pub editing: Option<InlineEdit>,
@@ -167,6 +170,7 @@ impl Room {
         Self {
             calls: RoomCalls::new(id.clone()),
             topic: topic::Panel::default(),
+            pins: pins::Pins::default(),
             compose: Compose::New,
             editing: None,
             picker: None,
@@ -708,6 +712,8 @@ impl Room {
             frequent_emoji: look.frequent_emoji,
             confirm_delete: self.confirm_delete.as_deref(),
             editing: self.editing.as_ref(),
+            pinned: summary.map_or(&[], |s| &s.pinned),
+            can_pin: self.pins.can_pin == Some(true),
         };
 
         let mut timeline = column![].padding([8.0, TIMELINE_PADDING]);
@@ -991,11 +997,12 @@ impl Room {
             );
         }
         let mut title = column![opens_info(about.into())];
-        // The caret, then a preview of the topic while closed: open or
-        // close the topic panel. While it is open, a click here is outside
-        // it and closes it.
+        // The caret, then a preview of the topic and how many messages are
+        // pinned while closed: open or close the topic panel. While it is
+        // open, a click here is outside it and closes it.
         let preview = topic::preview(&topic, look.call_services, can_edit);
-        if summary.is_some() && preview.is_some() {
+        let pinned = summary.map_or(&[][..], |s| &s.pinned);
+        if summary.is_some() && (preview.is_some() || !pinned.is_empty()) {
             let open = self.topic.open;
             // Level with the middle of lowercase text, below the line's.
             let caret = container(icons::chevron(10.0, open, |theme| {
@@ -1008,6 +1015,25 @@ impl Room {
             }))
             .padding(Padding::ZERO.top(2));
             let mut line = row![caret].spacing(6).align_y(Alignment::Center);
+            if !open && !pinned.is_empty() {
+                line = line.push(
+                    row![
+                        icons::pin(11.0, |theme| {
+                            theme
+                                .extended_palette()
+                                .background
+                                .base
+                                .text
+                                .scale_alpha(0.55)
+                        }),
+                        text(pinned.len().to_string())
+                            .size(12)
+                            .style(text::secondary),
+                    ]
+                    .spacing(2)
+                    .align_y(Alignment::Center),
+                );
+            }
             if !open && let Some(preview) = preview {
                 line = line.push(ellipsis(preview).size(12).style(text::secondary));
             }
@@ -1072,15 +1098,16 @@ impl Room {
         // The topic in full and its links, or their editor, dropping over
         // the timeline below the room's picture.
         let panel = self.topic.open.then(|| {
-            container(
-                scrollable(
-                    container(self.topic.view(&self.id, &topic, look.call_services)).padding(14),
-                )
-                .height(Length::Shrink),
-            )
-            .width(Length::Fill)
-            .style(style::toolbar)
-            .into()
+            let mut content =
+                column![self.topic.view(&self.id, &topic, look.call_services)].spacing(14);
+            // Not while the topic is edited.
+            if self.topic.editor.is_none() {
+                content = content.push(self.pins.view(&self.id, pinned));
+            }
+            container(scrollable(container(content).padding(14)).height(Length::Shrink))
+                .width(Length::Fill)
+                .style(style::toolbar)
+                .into()
         });
         popover(header, panel, Side::Below, Edge::Left)
             .share_of_anchor(2.0 / 3.0, TIMELINE_PADDING + MESSAGE_PADDING)
@@ -1149,6 +1176,9 @@ struct Context<'a, 'b> {
     confirm_delete: Option<&'b str>,
     /// The message being edited in place, if any.
     editing: Option<&'a InlineEdit>,
+    /// The room's pinned messages, and whether we may pin.
+    pinned: &'b [OwnedEventId],
+    can_pin: bool,
 }
 
 impl<'a> Context<'a, '_> {
@@ -1319,6 +1349,7 @@ fn event_view<'a>(
         | EventContent::DisplayNameChange { .. }
         | EventContent::CallLink { .. }
         | EventContent::Topic { .. }
+        | EventContent::Pins(_)
         | EventContent::OtherState { .. } => return space().into(),
     };
 
@@ -1345,8 +1376,15 @@ fn event_view<'a>(
             .get(event.id.as_str())
             .is_some_and(|&i| bounds.in_message(i).is_some())
     });
+    let pin = (event.event_id.as_ref())
+        .filter(|_| context.can_pin)
+        .map(|id| pins::menu_item(id, context.pinned.contains(id)));
     let menu_items = message
-        .map(|m| message_menu::items(m, math_shown, in_selection))
+        .map(|m| {
+            let mut items = message_menu::items(m, math_shown, in_selection);
+            items.extend(pin);
+            items
+        })
         .filter(|items| !items.is_empty());
     let menu_view = |at| match menu_at {
         Some(MenuAt::Link(url)) if at == MenuAt::Cursor => {
@@ -1984,6 +2022,7 @@ pub fn state_summary(events: &[&Event]) -> String {
                     None => format!("{name} changed the topic"),
                 }
             }
+            EventContent::Pins(change) => format!("{name} {}", change.describe()),
             EventContent::OtherState { event_type } => match event_type.as_str() {
                 "m.room.name" => format!("{name} renamed the room"),
                 "m.room.topic" => format!("{name} changed the topic"),
