@@ -66,10 +66,11 @@ pub fn with_bar<'a>(
             let scrolled: Element<'a, app::Message> = match status {
                 Some(status) => stack![
                     scrolled,
+                    // Clear of the scrollbar.
                     container(status)
                         .align_right(Length::Fill)
                         .align_bottom(Length::Fill)
-                        .padding(10),
+                        .padding(iced::Padding::new(10.0).right(24.0)),
                 ]
                 .into(),
                 None => scrolled.into(),
