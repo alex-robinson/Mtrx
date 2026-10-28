@@ -98,7 +98,8 @@ struct SpaceOverviewPage: View {
         // Below the list, which ends above it: the last row stays clear.
         .safeAreaInset(edge: .bottom, alignment: .trailing) {
             if tab == .rooms {
-                UpdatePill(model: overview, server: Self.server(of: space.id))
+                // Our server lists the space's rooms, as on the desktop.
+                UpdatePill(model: overview, server: session.serverName)
             }
         }
         .task { await overview.load() }
@@ -112,11 +113,6 @@ struct SpaceOverviewPage: View {
         } message: {
             Text(overview.error ?? "")
         }
-    }
-
-    /// The server of a room ID: "example.org" of "!abc:example.org".
-    static func server(of id: String) -> String {
-        id.split(separator: ":", maxSplits: 1).last.map(String.init) ?? id
     }
 
     private var header: some View {
