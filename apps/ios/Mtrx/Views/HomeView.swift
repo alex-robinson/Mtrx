@@ -1,23 +1,28 @@
 import MtrxFFI
 import SwiftUI
 
-/// Three tabs: Chats and Spaces, each a list that opens rooms over it (the
-/// tab bar hidden then), and Settings. A verification shows over any of
-/// them.
+/// Four tabs: Chats (direct chats), Spaces (the spaces, each with its
+/// rooms), Rooms (the last room, over the rooms opened lately) and Settings.
+/// Rooms open over their list, without the tab bar. A verification and an
+/// invite to answer show over any of them.
 struct HomeView: View {
     @EnvironmentObject private var app: AppModel
     @EnvironmentObject private var session: SessionModel
     @EnvironmentObject private var presence: PresenceModel
-    @State private var tab = HomeTab.chats
 
     var body: some View {
-        TabView(selection: $tab) {
+        TabView(selection: Binding(get: { session.tab }, set: session.select)) {
             ChatsTab(openSettings: openSettings)
                 .tabItem { Label("Chats", systemImage: "bubble.left.and.bubble.right") }
                 .tag(HomeTab.chats)
             SpacesTab(openSettings: openSettings)
                 .tabItem { Label("Spaces", systemImage: "square.stack.3d.up") }
+                .badge(session.spacesBadge)
                 .tag(HomeTab.spaces)
+            RoomsTab()
+                .tabItem { Label("Rooms", systemImage: "number") }
+                .badge(session.roomsBadge)
+                .tag(HomeTab.rooms)
             SettingsView()
                 .tabItem { Label("Settings", systemImage: "gearshape") }
                 .tag(HomeTab.settings)
@@ -28,6 +33,13 @@ struct HomeView: View {
         .sheet(item: verification) { model in
             VerificationView(model: model)
                 .environmentObject(session)
+        }
+        .sheet(item: $session.invite) { invite in
+            if let room = session.room(invite.id) {
+                InviteView(room: room)
+                    .environmentObject(session)
+                    .environmentObject(session.images)
+            }
         }
         .alert("Signed out", isPresented: signedOutElsewhere) {
             Button("Sign in again") {
@@ -45,7 +57,7 @@ struct HomeView: View {
 
     /// The encryption banner leads to Settings.
     private func openSettings() {
-        tab = .settings
+        session.tab = .settings
     }
 
     private var verification: Binding<VerificationModel?> {
@@ -61,12 +73,6 @@ struct HomeView: View {
     }
 }
 
-enum HomeTab: Hashable {
-    case chats
-    case spaces
-    case settings
-}
-
 /// The direct chats, most recently active first, with their people's
 /// presence.
 struct ChatsTab: View {
@@ -76,7 +82,7 @@ struct ChatsTab: View {
     @State private var search = ""
 
     var body: some View {
-        NavigationStack {
+        NavigationStack(path: $session.chatsPath) {
             RoomList(sections: [RoomSection(title: nil, rooms: RoomLists.search(session.lists.chats, search))],
                      searching: !search.isEmpty, openSettings: openSettings,
                      presence: presence.presence(of:)) {
@@ -84,59 +90,116 @@ struct ChatsTab: View {
             }
             .navigationTitle("Chats")
             .searchable(text: $search, prompt: "Search chats")
-            .opensRooms()
+            .navigationDestination(for: String.self) { id in
+                OpenRoom(id: id)
+                    .toolbar(.hidden, for: .tabBar)
+            }
         }
     }
 }
 
-/// The spaces on the left page, the selected space's rooms on the right,
-/// like the desktop's two columns.
+/// What the Spaces and Rooms tabs open over themselves.
+enum SpacesSheet: Identifiable {
+    case newSpace
+    /// A new room in the space (ID and name), if any.
+    case newRoom(parent: String?, name: String?)
+    case join
+
+    var id: String {
+        switch self {
+        case .newSpace: return "new space"
+        case .newRoom(let parent, _): return "new room \(parent ?? "")"
+        case .join: return "join"
+        }
+    }
+}
+
+/// The spaces, then Other rooms; a tap shows the entry's rooms, with the
+/// space's name on top (a tap on it shows its overview). A room opens in
+/// the Rooms tab.
 struct SpacesTab: View {
     @EnvironmentObject private var session: SessionModel
     let openSettings: () -> Void
     @State private var search = ""
-
-    private var space: SpaceItem? {
-        session.selectedSpace.flatMap(session.lists.space)
-    }
+    @State private var sheet: SpacesSheet?
 
     var body: some View {
-        NavigationStack {
-            TabView(selection: $session.roomsPage) {
-                SpacesPage(search: search, openSettings: openSettings)
-                    .tag(RoomsPage.spaces)
-                SpaceRoomsPage(space: space, search: search, sort: session.roomSort, openSettings: openSettings)
-                    .tag(RoomsPage.rooms)
-            }
-            .tabViewStyle(.page(indexDisplayMode: .never))
-            .navigationTitle(session.roomsPage == .spaces ? "Spaces" : space?.name ?? "Rooms")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                if session.roomsPage == .rooms {
-                    ToolbarItem(placement: .navigationBarLeading) {
-                        Button {
-                            withAnimation { session.roomsPage = .spaces }
-                        } label: {
-                            Label("Spaces", systemImage: "chevron.left")
-                                .labelStyle(.titleAndIcon)
-                        }
-                    }
-                }
-                if session.roomsPage == .rooms {
+        NavigationStack(path: $session.spacesPath) {
+            SpacesList(search: search, openSettings: openSettings)
+                .navigationTitle("Spaces")
+                .searchable(text: $search, prompt: "Search spaces")
+                .toolbar {
                     ToolbarItem(placement: .navigationBarTrailing) {
-                        SortMenu()
+                        AddMenu(space: nil, sheet: $sheet)
                     }
                 }
+                .navigationDestination(for: SpaceEntry.self) { entry in
+                    SpaceRoomsPage(entry: entry, sheet: $sheet, openSettings: openSettings)
+                }
+        }
+        .sheet(item: $sheet) { sheet in
+            SpacesSheetView(sheet: sheet)
+                .environmentObject(session)
+                .environmentObject(session.images)
+        }
+    }
+}
+
+/// The `+` of the Spaces tab: New space…, Join a space or room…, and in a
+/// space New room in it….
+private struct AddMenu: View {
+    /// The space shown, if any.
+    let space: RoomSummary?
+    @Binding var sheet: SpacesSheet?
+
+    var body: some View {
+        Menu {
+            if let space {
+                Button {
+                    sheet = .newRoom(parent: space.id, name: space.name)
+                } label: {
+                    Label("New room in \(space.name)…", systemImage: "plus.bubble")
+                }
             }
-            .searchable(text: $search, prompt: session.roomsPage == .spaces ? "Search spaces" : "Search rooms")
-            .onChange(of: session.roomsPage) { _ in search = "" }
-            .opensRooms()
+            Button {
+                sheet = .newSpace
+            } label: {
+                Label("New space…", systemImage: "square.stack.3d.up")
+            }
+            Button {
+                sheet = .join
+            } label: {
+                Label("Join a space or room…", systemImage: "magnifyingglass")
+            }
+        } label: {
+            Image(systemName: "plus")
+        }
+        .accessibilityLabel("Add")
+    }
+}
+
+/// A sheet of the Spaces tab, with what it made or joined opened after.
+private struct SpacesSheetView: View {
+    @EnvironmentObject private var session: SessionModel
+    let sheet: SpacesSheet
+
+    var body: some View {
+        switch sheet {
+        case .newSpace:
+            NewRoomView(model: NewRoomModel(session: session.session, space: true))
+        case .newRoom(let parent, let name):
+            NewRoomView(
+                model: NewRoomModel(
+                    session: session.session, space: false,
+                    parent: parent.flatMap { id in name.map { (id: id, name: $0) } }))
+        case .join:
+            JoinView(model: JoinModel(session: session.session, ownServer: session.serverName))
         }
     }
 }
 
 /// The top-level spaces, then Other rooms; a tap shows the entry's rooms.
-private struct SpacesPage: View {
+struct SpacesList: View {
     @EnvironmentObject private var session: SessionModel
     let search: String
     let openSettings: () -> Void
@@ -147,12 +210,10 @@ private struct SpacesPage: View {
                 EncryptionBannerRow(open: openSettings)
             }
             ForEach(RoomLists.search(session.lists.spaces, search)) { item in
-                Button {
-                    withAnimation { session.selectSpace(item.entry) }
-                } label: {
+                NavigationLink(value: item.entry) {
                     SpaceRow(item: item)
                 }
-                .listRowBackground(item.entry == session.selectedSpace ? Color.accentColor.opacity(0.12) : nil)
+                .compactRow()
             }
         }
         .listStyle(.plain)
@@ -165,24 +226,62 @@ private struct SpacesPage: View {
     }
 }
 
-/// The selected space's rooms, then its direct chats, in the chosen order.
-private struct SpaceRoomsPage: View {
+/// A space's members' direct messages, then its rooms, in the chosen order,
+/// with the space's name on top: a tap on it shows the space's overview.
+struct SpaceRoomsPage: View {
     @EnvironmentObject private var session: SessionModel
-    let space: SpaceItem?
-    let search: String
-    let sort: RoomSort
+    let entry: SpaceEntry
+    @Binding var sheet: SpacesSheet?
     let openSettings: () -> Void
+    @State private var search = ""
+    @State private var overview = false
+
+    private var item: SpaceItem? { session.lists.space(entry) }
 
     var body: some View {
-        RoomList(sections: RoomLists.sections(space?.rooms ?? [], sort: sort, search: search),
-                 searching: !search.isEmpty, openSettings: openSettings) {
-            if space != nil {
+        RoomList(sections: RoomLists.sections(item?.rooms ?? [], sort: session.roomSort, search: search),
+                 searching: !search.isEmpty, openSettings: openSettings, opensInRooms: true) {
+            if item != nil {
                 Text("No rooms in this space").foregroundStyle(.secondary)
-            } else if session.selectedSpace != nil && !session.loaded {
-                // The remembered space may come with sync.
-                ProgressView("Loading…")
             } else {
-                Text("Choose a space").foregroundStyle(.secondary)
+                // A remembered or new space may come with sync.
+                ProgressView("Loading…")
+            }
+        }
+        .searchable(text: $search, prompt: "Search rooms")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .principal) {
+                if let space = item?.space {
+                    Button {
+                        overview = true
+                    } label: {
+                        HStack(spacing: 6) {
+                            AvatarView(name: space.name, uri: space.avatarUrl, size: 22, shape: .square)
+                            Text(space.name)
+                                .font(.headline)
+                                .foregroundColor(.primary)
+                                .lineLimit(1)
+                            Image(systemName: "chevron.right")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .accessibilityHint("Shows the space's overview")
+                } else {
+                    Text(item?.name ?? "").font(.headline)
+                }
+            }
+            ToolbarItemGroup(placement: .navigationBarTrailing) {
+                SortMenu()
+                AddMenu(space: item?.space, sheet: $sheet)
+            }
+        }
+        .fullScreenCover(isPresented: $overview) {
+            if let space = item?.space {
+                SpaceOverviewView(space: space)
+                    .environmentObject(session)
+                    .environmentObject(session.images)
             }
         }
     }
@@ -194,15 +293,15 @@ private struct SpaceRow: View {
     let item: SpaceItem
 
     var body: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: 10) {
             if let space = item.space {
-                AvatarView(name: space.name, uri: space.avatarUrl, size: 44, shape: .square)
+                AvatarView(name: space.name, uri: space.avatarUrl, size: RoomRow.avatarSize, shape: .square)
             } else {
                 Image(systemName: "tray.full")
-                    .font(.title3)
+                    .font(.body)
                     .foregroundStyle(.secondary)
-                    .frame(width: 44, height: 44)
-                    .background(Color.secondary.opacity(0.15), in: RoundedRectangle(cornerRadius: 10))
+                    .frame(width: RoomRow.avatarSize, height: RoomRow.avatarSize)
+                    .background(Color.secondary.opacity(0.15), in: RoundedRectangle(cornerRadius: 8))
             }
             Text(item.name)
                 .fontWeight(item.unread ? .semibold : .regular)
@@ -212,11 +311,10 @@ private struct SpaceRow: View {
             if item.unread {
                 Circle()
                     .fill(Color.accentColor)
-                    .frame(width: 10, height: 10)
+                    .frame(width: 9, height: 9)
                     .accessibilityLabel("Unread")
             }
         }
-        .padding(.vertical, 4)
         .contentShape(Rectangle())
     }
 }
@@ -240,15 +338,71 @@ private struct SortMenu: View {
     }
 }
 
-/// Rooms or chats, in sections with their titles, that open on a tap;
-/// invites, answered on the desktop, do not. The encryption banner above
+/// The Rooms tab: the last room, over Recent; back (or a tap on the tab)
+/// goes to Recent.
+struct RoomsTab: View {
+    @EnvironmentObject private var session: SessionModel
+
+    var body: some View {
+        NavigationStack(path: $session.roomsPath) {
+            RecentView()
+                .navigationTitle("Recent")
+                .navigationDestination(for: String.self) { id in
+                    OpenRoom(id: id)
+                        .backWithUnread(session.backBadge(besides: id)) {
+                            session.roomsPath.removeAll { $0 == id }
+                        }
+                        .toolbar(.hidden, for: .tabBar)
+                }
+        }
+    }
+}
+
+/// The rooms opened lately, across all spaces, newest first: each with its
+/// space and unread count.
+struct RecentView: View {
+    @EnvironmentObject private var session: SessionModel
+
+    var body: some View {
+        let rooms = session.recent.rooms(in: session.lists)
+        List {
+            ForEach(rooms, id: \.id) { room in
+                NavigationLink(value: room.id) {
+                    RoomRow(room: room, detail: session.lists.spaceName(of: room))
+                }
+                .compactRow()
+            }
+        }
+        .listStyle(.plain)
+        .overlay {
+            if rooms.isEmpty {
+                VStack(spacing: 12) {
+                    Text("Rooms you open show here")
+                        .foregroundStyle(.secondary)
+                    Button("Browse spaces") {
+                        session.tab = .spaces
+                    }
+                    .buttonStyle(.bordered)
+                }
+            }
+        }
+        .safeAreaInset(edge: .bottom) { OfflineBanner() }
+    }
+}
+
+/// Rooms or chats, in sections with their titles, that open on a tap (in
+/// their tabs if `opensInRooms`: rooms in Rooms, chats in Chats; else over
+/// the list); an invite opens its answer. The encryption banner above
 /// them, unless searching.
 struct RoomList<Empty: View>: View {
+    @EnvironmentObject private var session: SessionModel
     let sections: [RoomSection]
     let searching: Bool
     let openSettings: () -> Void
     /// The presence to show on a room's picture (Chats).
     var presence: (RoomSummary) -> Presence? = { _ in nil }
+    /// Rooms open in their tabs (from a space's list).
+    var opensInRooms = false
     @ViewBuilder let empty: () -> Empty
 
     var body: some View {
@@ -275,19 +429,34 @@ struct RoomList<Empty: View>: View {
 
     private func rows(_ rooms: [RoomSummary]) -> some View {
         ForEach(rooms, id: \.id) { room in
-            if room.invited {
-                RoomRow(room: room, presence: presence(room))
-            } else {
-                NavigationLink(value: room.id) {
-                    RoomRow(room: room, presence: presence(room))
+            Group {
+                if room.invited {
+                    Button {
+                        session.invite = RoomRef(id: room.id)
+                    } label: {
+                        RoomRow(room: room, presence: presence(room))
+                    }
+                    .foregroundColor(.primary)
+                } else if opensInRooms {
+                    Button {
+                        session.open(room.id)
+                    } label: {
+                        RoomRow(room: room, presence: presence(room))
+                    }
+                    .foregroundColor(.primary)
+                } else {
+                    NavigationLink(value: room.id) {
+                        RoomRow(room: room, presence: presence(room))
+                    }
                 }
             }
+            .compactRow()
         }
     }
 }
 
 /// Before the room list loads, or when a loaded list is empty.
-private struct ListPlaceholder: View {
+struct ListPlaceholder: View {
     let loaded: Bool
     let empty: String
 
@@ -301,25 +470,65 @@ private struct ListPlaceholder: View {
 }
 
 extension View {
-    /// Rooms open over the list, by ID, without the tab bar; the back
-    /// gesture returns to the list as it was.
-    func opensRooms() -> some View {
-        navigationDestination(for: String.self) { id in
-            OpenRoom(id: id)
-                .toolbar(.hidden, for: .tabBar)
-        }
+    /// A list row with less space around it than the default.
+    func compactRow() -> some View {
+        listRowInsets(EdgeInsets(top: 5, leading: 14, bottom: 5, trailing: 14))
+    }
+
+    /// A back button with a number: unread messages elsewhere.
+    func backWithUnread(_ count: Int, back: @escaping () -> Void) -> some View {
+        modifier(BackWithUnread(count: count, back: back))
     }
 }
 
-private struct OpenRoom: View {
+/// The back button of a room in the Rooms tab: a chevron and the unread
+/// messages in the other recent rooms. Swiping from the edge still goes
+/// back (`UINavigationController` extension).
+private struct BackWithUnread: ViewModifier {
+    let count: Int
+    let back: () -> Void
+
+    func body(content: Content) -> some View {
+        content
+            .navigationBarBackButtonHidden(true)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarLeading) {
+                    Button(action: back) {
+                        HStack(spacing: 4) {
+                            Image(systemName: "chevron.left")
+                                .font(.body.weight(.semibold))
+                            if count > 0 {
+                                Text(count > 999 ? "999+" : String(count))
+                                    .font(.caption.weight(.semibold))
+                                    .monospacedDigit()
+                                    .foregroundColor(.white)
+                                    .padding(.horizontal, 6)
+                                    .padding(.vertical, 1)
+                                    .background(Color.accentColor, in: Capsule())
+                            }
+                        }
+                    }
+                    .accessibilityLabel(count > 0 ? "Recent, \(count) unread" : "Recent")
+                }
+            }
+    }
+}
+
+/// A room by ID: its invite to answer, its timeline, or a word while it is
+/// coming (just made or joined) or gone.
+struct OpenRoom: View {
     @EnvironmentObject private var session: SessionModel
     let id: String
 
     var body: some View {
-        if let room = session.room(id) {
-            RoomView(room: room, model: session.timeline(for: room))
+        if let room = session.room(id), !room.invited {
+            RoomView(room: room, model: session.timeline(for: room), info: session.info(for: room))
+        } else if let room = session.room(id) {
+            InviteView(room: room)
+        } else if session.expecting.contains(id) || !session.loaded {
+            ProgressView("Loading…")
         } else {
-            Text("The room is no longer in the room list.")
+            Text("This room is not in your list.")
                 .foregroundStyle(.secondary)
         }
     }

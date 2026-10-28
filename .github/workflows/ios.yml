@@ -1,6 +1,6 @@
 # iOS app: built on the Rust library for the simulator, unit-tested there,
-# started there once (screenshot), and the simulator app (Mtrx.app, zipped)
-# uploaded. Signed ad hoc (the simulator's default): the Keychain refuses an
+# its key screens drawn with made-up data (ios-screenshots), started there
+# once (screenshot), and the simulator app (Mtrx.app, zipped) uploaded. Signed ad hoc (the simulator's default): the Keychain refuses an
 # unsigned app.
 name: iOS
 
@@ -66,7 +66,20 @@ jobs:
         working-directory: apps/ios
         run: |
           xcodebuild test -project Mtrx.xcodeproj -scheme Mtrx \
-            -destination "platform=iOS Simulator,id=$DEVICE" -derivedDataPath build -quiet
+            -destination "platform=iOS Simulator,id=$DEVICE" -derivedDataPath build -quiet \
+            -skip-testing:MtrxTests/ScreenshotTests
+      - name: Screenshots
+        if: env.WARM != 'true'
+        # The key screens with made-up data, as PNGs (artifact ios-screenshots);
+        # the test runner gets SCREENSHOTS_DIR.
+        working-directory: apps/ios
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/target/screenshots"
+          TEST_RUNNER_SCREENSHOTS_DIR="$GITHUB_WORKSPACE/target/screenshots" \
+            xcodebuild test -project Mtrx.xcodeproj -scheme Mtrx \
+            -destination "platform=iOS Simulator,id=$DEVICE" -derivedDataPath build -quiet \
+            -only-testing:MtrxTests/ScreenshotTests
+          ls "$GITHUB_WORKSPACE/target/screenshots"
       - name: Start the app in the simulator
         if: env.WARM != 'true'
         # The Release app runs for 15 s without crashing; screenshot as an
@@ -105,4 +118,10 @@ jobs:
         with:
           name: ios-smoke
           path: target/smoke
+          if-no-files-found: ignore
+      - uses: actions/upload-artifact@v4
+        if: always() && env.WARM != 'true'
+        with:
+          name: ios-screenshots
+          path: target/screenshots
           if-no-files-found: ignore
