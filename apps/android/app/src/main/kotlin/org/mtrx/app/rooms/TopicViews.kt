@@ -14,6 +14,7 @@ import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -114,6 +115,7 @@ fun TopicEditor(initial: Topic, onSave: (Topic) -> Unit, onCancel: () -> Unit, m
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun LinkEditor(link: LinkDraft, onChange: (LinkDraft) -> Unit, onRemove: () -> Unit) {
     Column(

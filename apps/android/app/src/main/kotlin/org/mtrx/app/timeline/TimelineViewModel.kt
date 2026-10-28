@@ -204,7 +204,8 @@ class TimelineViewModel(
                 pinnedSubscription = opened.subscribe(object : TimelineListener {
                     // On a library thread.
                     override fun onUpdate(items: List<TimelineItem>) {
-                        _pinned.value = timelineRows(items).filterIsInstance<EventRow>()
+                        // None yet: still loading (the panel asks only where some are pinned).
+                        _pinned.value = timelineRows(items).filterIsInstance<EventRow>().ifEmpty { null }
                     }
                 })
             } catch (e: MtrxException) {
