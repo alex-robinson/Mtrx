@@ -20,7 +20,8 @@ use futures_util::{Stream, StreamExt};
 use mtrx_core::{
     Access, Attachment, CallService, Connection, DirectoryKind, EventContent, JoinAccess,
     Membership, MembershipChange, NewRoom, NotifyMode, Permissions, PinsChange, PresenceState,
-    Profile, RecoveryStatus, RoomKind, SecretStore, Session, TimelineEntry, VerificationState,
+    Profile, RecoveryStatus, Role, RoomKind, SecretStore, Session, TimelineEntry,
+    VerificationState,
     test_support::{self, PASSWORD, homeserver, unique_name},
 };
 use mtrx_format::{Block, Inline, Style};
@@ -914,6 +915,29 @@ async fn browse_and_join_space_rooms() -> Result<()> {
     })
     .await??;
 
+    // The admin may manage bob, who may manage no one.
+    let bob_id = b.user_id();
+    let found = timeout("bob in coffee", async {
+        loop {
+            let members = s.members(&open).await?;
+            if let Some(bob) = members.into_iter().find(|m| m.id == bob_id && !m.invited) {
+                return anyhow::Ok(bob);
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    })
+    .await??;
+    assert!(found.manage.remove && found.manage.ban);
+    assert_eq!(found.manage.roles, [Role::Admin, Role::Moderator]);
+    assert!(
+        b.members(&open)
+            .await?
+            .iter()
+            .all(|m| m.manage == Default::default())
+    );
+    s.set_role(&open, &bob_id, Role::Moderator).await?;
+    s.remove_member(&open, &bob_id, Some("tidying up"), false)
+        .await?;
     // Our own server's directory: nothing published, but it answers.
     b.public_rooms(None, "", DirectoryKind::All, None).await?;
     Ok(())

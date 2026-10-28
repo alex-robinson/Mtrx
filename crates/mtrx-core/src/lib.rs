@@ -53,7 +53,7 @@ pub use encryption::{
 pub use error::{Error, Result};
 pub use google::{Google, GoogleClient};
 pub use media::MediaRef;
-pub use members::{Member, Role};
+pub use members::{Manage, Member, Role};
 pub use notes::notes_markdown;
 pub use notifications::Notification;
 pub use people::{Contact, UserInfo};
