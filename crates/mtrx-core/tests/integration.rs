@@ -928,14 +928,19 @@ async fn browse_and_join_space_rooms() -> Result<()> {
     })
     .await??;
     assert!(found.manage.remove && found.manage.ban);
-    assert_eq!(found.manage.roles, [Role::Admin, Role::Moderator]);
+    // Rooms are created at version 12: their creator is above all levels,
+    // gives any and keeps theirs.
+    assert_eq!(found.manage.up_to, Some(9007199254740991));
+    let us = s.members(&open).await?;
+    let us = us.iter().find(|m| m.id == s.user_id()).unwrap();
+    assert_eq!((us.level, us.manage.up_to), (None, None));
     assert!(
         b.members(&open)
             .await?
             .iter()
             .all(|m| m.manage == Default::default())
     );
-    s.set_role(&open, &bob_id, Role::Moderator).await?;
+    s.set_level(&open, &bob_id, Role::Moderator.level(0)).await?;
     s.remove_member(&open, &bob_id, Some("tidying up"), false)
         .await?;
     // Our own server's directory: nothing published, but it answers.
