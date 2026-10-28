@@ -12,6 +12,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import org.mtrx.app.rooms.SpaceChildrenCache
 import uniffi.mtrx.ConnectionListener
 import uniffi.mtrx.ConnectionState
 import uniffi.mtrx.DeviceInfo
@@ -63,7 +64,9 @@ sealed interface BrowserLogin {
  * told when a session opens and before it closes; [notifications] are
  * cleared as rooms are opened or read. Each session's [PresenceModel] reads
  * the direct chats' presence and sets ours around sync, as [sharePresence]
- * says; [clock] counts milliseconds, for idling.
+ * says; [clock] counts milliseconds, for idling. The rooms opened lately
+ * are kept in [recentStore], and each room's draft in [drafts], until
+ * sign-out.
  */
 class Account(
     private val mtrx: MtrxInterface,
@@ -73,6 +76,7 @@ class Account(
     private val push: PushRegistration,
     private val notifications: RoomNotifications,
     sharePresenceStore: SharePresenceStore,
+    recentStore: RecentStore,
     private val clock: () -> Long = { System.nanoTime() / 1_000_000 },
 ) {
     private val _state = MutableStateFlow<AccountState>(AccountState.Loading)
@@ -89,6 +93,15 @@ class Account(
 
     /** "Share my presence". */
     val sharePresence = SharePresence(sharePresenceStore, scope)
+
+    /** The rooms opened lately on the Rooms tab; the first is the last room. */
+    val recent = RecentRooms(recentStore, scope)
+
+    /** The composer's text per room. */
+    val drafts = Drafts()
+
+    /** The last list of each space's rooms, for its overview. */
+    val spaceChildren = SpaceChildrenCache()
 
     private val _connection = MutableStateFlow(ConnectionState.ONLINE)
     val connection: StateFlow<ConnectionState> = _connection.asStateFlow()
@@ -207,6 +220,42 @@ class Account(
     /** The navigation opened the requested room. */
     fun roomRequestHandled() {
         _roomRequest.value = null
+    }
+
+    /**
+     * Join [roomId], or accept its invite; [onDone] says whether it worked
+     * (errors go to [messages]).
+     */
+    fun accept(roomId: String, name: String, onDone: (Boolean) -> Unit = {}): Job = membership(onDone) {
+        try {
+            it.join(roomId, emptyList())
+            null
+        } catch (e: MtrxException) {
+            "Could not join $name: ${describe(e)}"
+        }
+    }
+
+    /**
+     * Leave [roomId], or decline its invite: it is no longer recent, and its
+     * draft goes. [onDone] says whether it worked (errors go to [messages]).
+     */
+    fun leave(roomId: String, name: String, onDone: (Boolean) -> Unit = {}): Job = membership(onDone) {
+        try {
+            it.leave(roomId)
+            recent.remove(roomId)
+            drafts[roomId] = ""
+            null
+        } catch (e: MtrxException) {
+            "Could not leave $name: ${describe(e)}"
+        }
+    }
+
+    // [change] returns its error, if any.
+    private fun membership(onDone: (Boolean) -> Unit, change: suspend (Session) -> String?): Job = scope.launch {
+        val current = session ?: return@launch
+        val error = change(current)
+        if (error != null) _messages.tryEmit(error)
+        onDone(error == null)
     }
 
     /** Throws [MtrxException]. */
@@ -478,6 +527,9 @@ class Account(
         _rooms.value = NO_ROOMS
         _connection.value = ConnectionState.ONLINE
         spaceSelection.clear()
+        recent.clear()
+        drafts.clear()
+        spaceChildren.clear()
         _roomRequest.value = null
         notifications.clearAll()
     }

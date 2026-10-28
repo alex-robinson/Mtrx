@@ -11,6 +11,7 @@ import org.mtrx.app.model.Distributors
 import org.mtrx.app.model.GatewayDiscovery
 import org.mtrx.app.model.PushRegistration
 import org.mtrx.app.model.PushStore
+import org.mtrx.app.model.RecentStore
 import org.mtrx.app.model.PusherDevice
 import org.mtrx.app.model.RoomNotifications
 import org.mtrx.app.model.RoomSort
@@ -20,7 +21,24 @@ import org.mtrx.app.model.SharePresenceStore
 import org.mtrx.app.model.SpaceEntry
 import org.mtrx.app.model.originGateway
 import org.mtrx.app.push.MessageNotifier
+import uniffi.mtrx.Access
+import uniffi.mtrx.Address
+import uniffi.mtrx.Banned
 import uniffi.mtrx.ConnectionListener
+import uniffi.mtrx.DirectoryKind
+import uniffi.mtrx.DirectoryPage
+import uniffi.mtrx.DirectoryRoom
+import uniffi.mtrx.History
+import uniffi.mtrx.JoinAccess
+import uniffi.mtrx.Manage
+import uniffi.mtrx.Member
+import uniffi.mtrx.Membership
+import uniffi.mtrx.NewRoom
+import uniffi.mtrx.NotifyMode
+import uniffi.mtrx.Permissions
+import uniffi.mtrx.Role
+import uniffi.mtrx.RoomSettings
+import uniffi.mtrx.SpaceLink
 import uniffi.mtrx.ConnectionState
 import uniffi.mtrx.DeviceInfo
 import uniffi.mtrx.EncryptionState
@@ -264,10 +282,219 @@ class FakeSession : Session(NoHandle) {
         return FakeHandle().also { handles += it }
     }
 
+    // Rooms, their settings and people, and the directory: the calls made,
+    // in order ("join !a:x", "level @b:x 50"); each change fails with
+    // [roomError] if set, after [roomGate] if set.
+    val roomCalls = mutableListOf<String>()
+    var roomError: MtrxException? = null
+    var roomGate: CompletableDeferred<Unit>? = null
+    var settings: RoomSettings = roomSettings()
+    var settingsReads = 0
+    var memberList: List<Member> = emptyList()
+    var pinAllowed = false
+    var pinnedRoomTimeline: FakeTimeline = FakeTimeline()
+    var pinnedOpened = 0
+
+    /** A space's rooms by space ID; [childrenError] fails the call, after [childrenGate] if set. */
+    val children = mutableMapOf<String, List<DirectoryRoom>>()
+    var childrenError: MtrxException? = null
+    var childrenGate: CompletableDeferred<Unit>? = null
+
+    /** Directory pages by listOf(server, query, kind, page); empty without. */
+    val directory = mutableMapOf<List<Any?>, DirectoryPage>()
+    var directoryError: MtrxException? = null
+    val previews = mutableMapOf<String, DirectoryRoom>()
+    val browsedServers = mutableListOf<String>()
+    var ownersOffered = false
+    val created = mutableListOf<NewRoom>()
+
+    private suspend fun call(record: String) {
+        roomCalls += record
+        roomGate?.await()
+        roomError?.let { throw it }
+    }
+
+    override suspend fun roomSettings(roomId: String): RoomSettings {
+        settingsReads++
+        return settings
+    }
+
+    override suspend fun canPin(roomId: String): Boolean = pinAllowed
+
+    override suspend fun pinnedTimeline(roomId: String): Timeline {
+        pinnedOpened++
+        return pinnedRoomTimeline
+    }
+
+    override suspend fun setPinned(roomId: String, eventId: String, pin: Boolean) = call("${if (pin) "pin" else "unpin"} $eventId")
+
+    override suspend fun setRoomTopic(roomId: String, topic: String) = call("topic $topic")
+
+    override suspend fun setRoomName(roomId: String, name: String) = call("name $name")
+
+    override suspend fun setNotifyMode(roomId: String, mode: NotifyMode) = call("notify $mode")
+
+    override suspend fun setRoomAccess(roomId: String, access: Access) = call("access $access")
+
+    override suspend fun setListed(roomId: String, listed: Boolean) = call("listed $listed")
+
+    override suspend fun setHistory(roomId: String, history: History) = call("history $history")
+
+    override suspend fun setPermissions(roomId: String, permissions: Permissions) = call("permissions $permissions")
+
+    override suspend fun encryptRoom(roomId: String) = call("encrypt")
+
+    override suspend fun setAddress(roomId: String, name: String?) = call("address $name")
+
+    override suspend fun setSuggested(spaceId: String, roomId: String, suggested: Boolean) = call("suggested $spaceId $suggested")
+
+    override suspend fun addToSpace(spaceId: String, roomId: String) = call("add $spaceId")
+
+    override suspend fun removeFromSpace(spaceId: String, roomId: String) = call("take out $spaceId")
+
+    override suspend fun members(roomId: String): List<Member> = memberList
+
+    override suspend fun setLevel(roomId: String, userId: String, level: Long) = call("level $userId $level")
+
+    override suspend fun removeMember(roomId: String, userId: String, reason: String?, ban: Boolean) =
+        call("${if (ban) "ban" else "remove"} $userId $reason")
+
+    override suspend fun unban(roomId: String, userId: String) = call("unban $userId")
+
+    override suspend fun spaceChildren(spaceId: String): List<DirectoryRoom> {
+        childrenGate?.await()
+        childrenError?.let { throw it }
+        return children[spaceId].orEmpty()
+    }
+
+    override suspend fun publicRooms(server: String?, query: String, kind: DirectoryKind, page: String?): DirectoryPage {
+        roomCalls += "directory $server '$query' $kind $page"
+        directoryError?.let { throw it }
+        return directory[listOf(server, query, kind, page)] ?: DirectoryPage(rooms = emptyList(), next = null)
+    }
+
+    override suspend fun preview(address: Address): DirectoryRoom {
+        roomCalls += "preview ${address.room}"
+        directoryError?.let { throw it }
+        return previews[address.room] ?: throw MtrxException.RoomNotFound(address.room)
+    }
+
+    override suspend fun join(room: String, via: List<String>): String {
+        call("join $room")
+        return room
+    }
+
+    override suspend fun knock(room: String, via: List<String>): String {
+        call("knock $room")
+        return room
+    }
+
+    override suspend fun leave(roomId: String) = call("leave $roomId")
+
+    override fun directoryServers(): List<String> = browsedServers.toList()
+
+    override suspend fun rememberDirectoryServer(server: String) {
+        browsedServers.remove(server)
+        browsedServers.add(0, server)
+    }
+
+    override suspend fun offersOwners(): Boolean = ownersOffered
+
+    override suspend fun createRoom(new: NewRoom): String {
+        call("create ${new.name}")
+        created += new
+        return "!new:example.org"
+    }
+
     companion object {
         const val USER_ID = "@me:example.org"
     }
 }
+
+/** A room's settings, all ours to change unless [may] is false. */
+fun roomSettings(
+    may: Boolean = true,
+    access: Access = Access.INVITE,
+    encrypted: Boolean = false,
+    spaces: List<SpaceLink> = emptyList(),
+    canAddTo: List<String> = emptyList(),
+    banned: List<Banned> = emptyList(),
+    address: String? = null,
+    listed: Boolean? = false,
+): RoomSettings = RoomSettings(
+    canRename = may,
+    canChangeTopic = may,
+    canChangePicture = may,
+    canInvite = may,
+    notify = NotifyMode.ALL,
+    access = access,
+    canChangeAccess = may,
+    canAddRooms = may,
+    address = address,
+    canChangeAddress = may,
+    listed = listed,
+    history = History.JOINED,
+    canChangeHistory = may,
+    permissions = Permissions.EVERYONE,
+    canChangePermissions = may,
+    encrypted = encrypted,
+    canEncrypt = may && !encrypted,
+    version = "12",
+    spaces = spaces,
+    canAddTo = canAddTo,
+    banned = banned,
+    canUnban = may,
+)
+
+/** A member at [level] (null for an owner), and what we may do to them. */
+fun member(
+    userId: String,
+    name: String? = null,
+    level: Long? = 0,
+    upTo: Long? = null,
+    remove: Boolean = false,
+    ban: Boolean = false,
+    invited: Boolean = false,
+    defaultLevel: Long = 0,
+): Member = Member(
+    userId = userId,
+    name = name,
+    avatarUrl = null,
+    role = when (level) {
+        100L -> Role.ADMIN
+        50L -> Role.MODERATOR
+        else -> Role.MEMBER
+    },
+    level = level,
+    invited = invited,
+    manage = Manage(remove = remove, ban = ban, upTo = upTo, defaultLevel = defaultLevel),
+)
+
+/** A listed room or space. */
+fun directoryRoom(
+    id: String,
+    name: String = id.removePrefix("!").substringBefore(':').replaceFirstChar { it.uppercase() },
+    access: JoinAccess = JoinAccess.PUBLIC,
+    membership: Membership? = null,
+    members: Long = 3,
+    topic: String? = null,
+    space: Boolean = false,
+    role: Role? = null,
+): DirectoryRoom = DirectoryRoom(
+    id = id,
+    alias = null,
+    name = name,
+    topic = topic,
+    avatarUrl = null,
+    members = members.toULong(),
+    isSpace = space,
+    children = if (space) 4uL else 0uL,
+    access = access,
+    membership = membership,
+    role = role,
+    via = listOf("x"),
+    suggested = false,
+)
 
 /** A verification with another device of [otherUser]; the test drives [listener]. */
 class FakeVerification(private val otherUser: String) : Verification(NoHandle) {
@@ -324,6 +551,15 @@ class FakeSpaceStore(var saved: SpaceEntry? = null) : SelectedSpaceStore {
     }
 }
 
+/** The recent rooms, in memory: one instance across "launches". */
+class FakeRecentStore(var saved: List<String>? = null) : RecentStore {
+    override suspend fun load(): List<String>? = saved
+
+    override suspend fun save(ids: List<String>) {
+        saved = ids
+    }
+}
+
 /** The order of the spaces' rooms, in memory: one instance across "launches". */
 class FakeSortStore(var saved: RoomSort? = null) : RoomSortStore {
     /** When set, [load] reads the saved order, then waits for it to return. */
@@ -354,21 +590,27 @@ fun summary(
     directUserId: String? = null,
     name: String = id.removePrefix("!").substringBefore(':'),
     lastActivity: Instant? = null,
+    topic: String? = null,
+    parents: List<String> = emptyList(),
+    pinned: List<String> = emptyList(),
+    mentions: Long = 0,
 ): RoomSummary = RoomSummary(
     id = id,
     name = name,
     avatarUrl = null,
-    topic = null,
+    topic = topic,
     kind = kind,
     invited = invited,
     encrypted = false,
     unreadMessages = unread.toULong(),
-    unreadMentions = 0uL,
+    unreadMentions = mentions.toULong(),
     unreadNotifications = unread.toULong(),
     lastActivity = lastActivity,
     directUserId = directUserId,
     alias = null,
     joinedMembers = 2uL,
+    parents = parents,
+    pinned = pinned,
 )
 
 class FakeMtrx(private val restored: Session?) : MtrxInterface {
@@ -715,4 +957,5 @@ fun testAccount(
     push: PushRegistration = pushRegistration(scope),
     notifications: RoomNotifications = FakeNotifier(),
     sharePresence: SharePresenceStore = FakeSharePresenceStore(),
-): Account = Account(mtrx, scope, spaces, sort, push, notifications, sharePresence, testClock(scope))
+    recent: RecentStore = FakeRecentStore(),
+): Account = Account(mtrx, scope, spaces, sort, push, notifications, sharePresence, recent, testClock(scope))

@@ -49,18 +49,18 @@ import uniffi.mtrx.Reader
 
 /**
  * Holding a message: the common reactions (ours marked) and "+" for the
- * full picker, then the other [EventRow.actions].
+ * full picker, then the other [actions] (from [menuActions]).
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MessageMenu(
     row: EventRow,
+    actions: Set<MessageAction>,
     onDismiss: () -> Unit,
     onReact: (String) -> Unit,
     onMoreReactions: () -> Unit,
     onAction: (MessageAction) -> Unit,
 ) {
-    val actions = row.actions
     ModalBottomSheet(onDismissRequest = onDismiss, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) {
         if (MessageAction.REACT in actions) {
             val ours = row.reactions.filter { it.byUs }.map { it.key }.toSet()

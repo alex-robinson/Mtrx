@@ -78,3 +78,24 @@ class DataStoreSharePresence(private val preferences: DataStore<Preferences>) : 
         val SHARE_PRESENCE = booleanPreferencesKey("share_presence")
     }
 }
+
+/** The recent rooms in [preferences], their IDs one per line. */
+class DataStoreRecent(private val preferences: DataStore<Preferences>) : RecentStore {
+    override suspend fun load(): List<String>? = try {
+        preferences.data.first()[RECENT_ROOMS]?.split('\n')?.filter { it.isNotEmpty() }
+    } catch (e: IOException) {
+        null
+    }
+
+    override suspend fun save(ids: List<String>) {
+        try {
+            preferences.edit { it[RECENT_ROOMS] = ids.joinToString("\n") }
+        } catch (e: IOException) {
+            // Not remembered; the app works without it.
+        }
+    }
+
+    private companion object {
+        val RECENT_ROOMS = stringPreferencesKey("recent_rooms")
+    }
+}

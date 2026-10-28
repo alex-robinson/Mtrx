@@ -2,41 +2,33 @@ package org.mtrx.app.ui
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.ExperimentalFoundationApi
-import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.LazyListState
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.automirrored.filled.List
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Lock
-import androidx.compose.material.icons.filled.Person
-import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material3.Badge
-import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.ListItem
-import androidx.compose.material3.ListItemDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
@@ -58,10 +50,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.semantics.contentDescription
-import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -75,37 +63,37 @@ import org.mtrx.app.model.RoomSort
 import org.mtrx.app.model.SpaceEntry
 import org.mtrx.app.model.directPerson
 import org.mtrx.app.model.showsEncryptionBanner
-import org.mtrx.app.rooms.SpaceRow
 import org.mtrx.app.rooms.SpaceSections
 import org.mtrx.app.rooms.chats
+import org.mtrx.app.rooms.lastRoom
+import org.mtrx.app.rooms.recentRows
+import org.mtrx.app.rooms.recentUnread
 import org.mtrx.app.rooms.sectionsOf
 import org.mtrx.app.rooms.spaceRows
-import org.mtrx.app.rooms.unreadBadge
+import org.mtrx.app.rooms.spacesUnread
 import org.mtrx.app.settings.SessionInfo
 import org.mtrx.app.settings.SettingsContent
 import uniffi.mtrx.ConnectionState
-import uniffi.mtrx.Presence
-import uniffi.mtrx.RoomKind
 import uniffi.mtrx.RoomSummary
 
-/** The tabs of the bottom bar. */
-enum class HomeTab(val label: String, val icon: ImageVector) {
-    Chats("Chats", Icons.Filled.Person),
-    Spaces("Spaces", MtrxIcons.Spaces),
-    Settings("Settings", Icons.Filled.Settings),
-}
+/** What the home's other screens open: from the Spaces tab's + menu and a space's name. */
+class HomeRoutes(
+    val openOverview: (String) -> Unit,
+    val newSpace: () -> Unit,
+    val newRoom: (parent: String) -> Unit,
+    val join: () -> Unit,
+)
 
 /**
- * The signed-in home, in three tabs: Chats, the direct chats; Spaces, a
- * pager of the spaces (left) and the selected space's rooms and people
- * (right), as the desktop's two columns; and Settings. Tab, page and scroll
- * positions are kept while a room or another screen is open (the screen's
- * saved state); the selected space and the order of its rooms are the
- * account's ([Account.spaceSelection], [Account.roomSort]). Banners for the
- * connection over all tabs, and for encryption over Chats and Spaces. Chats
- * shows the people's [presence] on their avatars.
+ * The signed-in home, in four tabs ([nav]): Chats, the direct chats (one
+ * opens in the tab); Spaces, a pager of the spaces and the selected space's
+ * rooms and people, whose name opens its overview, with + for new spaces,
+ * rooms and joining; Rooms, the last room ([roomPane]) or Recent; and
+ * Settings. Spaces' badge counts unread messages in rooms that are not
+ * recent, Rooms' those in recent ones. Banners for the connection over all
+ * tabs, and for encryption over the lists.
  */
-@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun HomeScreen(
     account: Account,
@@ -113,9 +101,11 @@ fun HomeScreen(
     info: SessionInfo,
     images: Images,
     presence: PresenceModel,
-    onOpenRoom: (String) -> Unit,
+    nav: HomeNav,
+    routes: HomeRoutes,
     onEnterRecoveryKey: () -> Unit,
     onVerify: () -> Unit,
+    roomPane: @Composable (roomId: String, backCount: Long, onBack: () -> Unit) -> Unit,
 ) {
     val list by account.rooms.collectAsStateWithLifecycle()
     val presences by presence.presences.collectAsStateWithLifecycle()
@@ -123,7 +113,7 @@ fun HomeScreen(
     val encryption by account.encryption.collectAsStateWithLifecycle()
     val selected by account.spaceSelection.selected.collectAsStateWithLifecycle()
     val sort by account.roomSort.sort.collectAsStateWithLifecycle()
-    var tab by rememberSaveable { mutableStateOf(HomeTab.Chats) }
+    val recentIds by account.recent.ids.collectAsStateWithLifecycle()
     val snackbar = remember { SnackbarHostState() }
     LaunchedEffect(account) { account.messages.collect { snackbar.showSnackbar(it) } }
     val today = remember(list) { LocalDate.now() }
@@ -132,12 +122,20 @@ fun HomeScreen(
     val sections = remember(list, selected, sort) {
         selected?.let { sectionsOf(list, it, sort) } ?: SpaceSections(emptyList(), emptyList())
     }
+    val recent = remember(list, recentIds) { recentRows(list, recentIds) }
+    val last = lastRoom(list, recentIds, nav.opening)
+    val badges = mapOf(
+        HomeTab.Spaces to spacesUnread(list, recentIds),
+        HomeTab.Rooms to recentUnread(list, recentIds),
+    )
+    val open: (RoomSummary) -> Unit = { room -> nav.open(room.id, room, account.recent) }
 
     val scope = rememberCoroutineScope()
     // The selected space's rooms are the second page; without one there is none.
     val pager = rememberPagerState { if (selected != null) 2 else 1 }
     val chatsList = rememberLazyListState()
     val spacesList = rememberLazyListState()
+    val recentList = rememberLazyListState()
     val spaceRoomsList = rememberSaveable(selected?.key, saver = LazyListState.Saver) { LazyListState() }
     val showSpaces: () -> Unit = { scope.launch { pager.animateScrollToPage(0) } }
 
@@ -151,90 +149,204 @@ fun HomeScreen(
         pagedTo = entry?.key
         when {
             entry == null -> pager.scrollToPage(0)
-            tab == HomeTab.Spaces -> pager.animateScrollToPage(1)
+            nav.tab == HomeTab.Spaces -> pager.animateScrollToPage(1)
             else -> pager.scrollToPage(1)
         }
     }
-    val onSpaceRooms = tab == HomeTab.Spaces && pager.currentPage == 1 && selected != null
+    val onSpaceRooms = nav.tab == HomeTab.Spaces && pager.currentPage == 1 && selected != null
     BackHandler(enabled = onSpaceRooms, onBack = showSpaces)
 
+    val chat = nav.chat.takeIf { nav.tab == HomeTab.Chats }
+    val room = last.takeIf { nav.tab == HomeTab.Rooms && nav.inRoom }
+    BackHandler(enabled = chat != null) { nav.chat = null }
+    BackHandler(enabled = room != null) { nav.inRoom = false }
+
+    val selectedSpace = spaceEntries.firstOrNull { it.entry == selected }
+    val selectedSpaceId = (selected as? SpaceEntry.Space)?.id
+    val title: @Composable () -> Unit = {
+        when {
+            onSpaceRooms -> SpaceTitle(
+                selectedSpace?.name.orEmpty(),
+                onClick = selectedSpaceId?.let { id -> { routes.openOverview(id) } },
+            )
+            nav.tab == HomeTab.Rooms -> Text("Recent")
+            else -> Text(nav.tab.label)
+        }
+    }
+    HomeFrame(
+        tab = nav.tab,
+        badges = badges,
+        onTab = nav::tapTab,
+        snackbar = snackbar,
+        // A room shows its own header.
+        showTopBar = chat == null && room == null,
+        title = title,
+        navigationIcon = {
+            if (onSpaceRooms) {
+                IconButton(onClick = showSpaces) {
+                    Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Spaces")
+                }
+            }
+        },
+        actions = {
+            if (nav.tab == HomeTab.Spaces) {
+                if (onSpaceRooms) SortMenu(sort, onSort = account.roomSort::choose)
+                val space = (selected as? SpaceEntry.Space)?.id?.takeIf { onSpaceRooms }
+                AddMenu(
+                    spaceName = selectedSpace?.name.takeIf { space != null },
+                    onNewSpace = routes.newSpace,
+                    onJoin = routes.join,
+                    onNewRoom = space?.let { { routes.newRoom(it) } },
+                )
+            }
+        },
+    ) {
+        ConnectionBanner(connection, onSignInAgain = { account.forget() })
+        val listShown = nav.tab != HomeTab.Settings && chat == null && room == null
+        // Settings says the same in its Encryption section.
+        if (listShown && showsEncryptionBanner(encryption)) {
+            EncryptionBanner(onClick = { nav.tab = HomeTab.Settings })
+        }
+        when (nav.tab) {
+            HomeTab.Chats -> if (chat != null) {
+                roomPane(chat, 0L) { nav.chat = null }
+            } else {
+                ChatList(
+                    chatRooms,
+                    list.loaded,
+                    images,
+                    today,
+                    onOpenRoom = open,
+                    presenceOf = { directPerson(it, info.userId)?.let { person -> presences[person] } },
+                    state = chatsList,
+                )
+            }
+            HomeTab.Spaces -> HorizontalPager(pager, Modifier.fillMaxSize()) { page ->
+                if (page == 0) {
+                    SpaceList(spaceEntries, selected, list.loaded, images, state = spacesList, onSelect = { entry ->
+                        if (entry == selected) {
+                            scope.launch { pager.animateScrollToPage(1) }
+                        } else {
+                            account.spaceSelection.select(entry)
+                        }
+                    })
+                } else {
+                    SpaceRoomsList(sections, list.loaded, images, today, onOpenRoom = open, state = spaceRoomsList)
+                }
+            }
+            HomeTab.Rooms -> if (room != null) {
+                roomPane(room, recentUnread(list, recentIds, except = room)) { nav.inRoom = false }
+            } else {
+                RecentList(
+                    recent,
+                    images,
+                    today,
+                    onOpenRoom = open,
+                    onBrowseSpaces = {
+                        nav.tab = HomeTab.Spaces
+                        showSpaces()
+                    },
+                    state = recentList,
+                )
+            }
+            HomeTab.Settings -> SettingsContent(account, push, presence, info, onEnterRecoveryKey, onVerify)
+        }
+    }
+}
+
+/**
+ * The home's frame: the top bar (left out while a room shows its own),
+ * the content, and the tabs with their unread [badges].
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun HomeFrame(
+    tab: HomeTab,
+    badges: Map<HomeTab, Long>,
+    onTab: (HomeTab) -> Unit,
+    snackbar: SnackbarHostState = remember { SnackbarHostState() },
+    showTopBar: Boolean = true,
+    title: @Composable () -> Unit = { Text(tab.label) },
+    navigationIcon: @Composable () -> Unit = {},
+    actions: @Composable () -> Unit = {},
+    content: @Composable () -> Unit,
+) {
     Scaffold(
         topBar = {
-            TopAppBar(
-                title = {
-                    val title = if (onSpaceRooms) {
-                        spaceEntries.firstOrNull { it.entry == selected }?.name.orEmpty()
-                    } else {
-                        tab.label
-                    }
-                    Text(title, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                },
-                navigationIcon = {
-                    if (onSpaceRooms) {
-                        IconButton(onClick = showSpaces) {
-                            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Spaces")
-                        }
-                    }
-                },
-                actions = {
-                    if (onSpaceRooms) SortMenu(sort, onSort = account.roomSort::choose)
-                },
-            )
+            if (showTopBar) {
+                TopAppBar(title = title, navigationIcon = navigationIcon, actions = { actions() })
+            }
         },
         bottomBar = {
             NavigationBar {
                 HomeTab.entries.forEach {
+                    val count = badges[it] ?: 0L
                     NavigationBarItem(
                         selected = tab == it,
-                        onClick = {
-                            // Spaces again: back to the spaces.
-                            if (tab == it && it == HomeTab.Spaces) showSpaces()
-                            tab = it
+                        onClick = { onTab(it) },
+                        icon = {
+                            BadgedBox(badge = { if (count > 0) UnreadBadge(count) }) {
+                                Icon(it.icon, contentDescription = null)
+                            }
                         },
-                        icon = { Icon(it.icon, contentDescription = null) },
                         label = { Text(it.label) },
                     )
                 }
             }
         },
         snackbarHost = { SnackbarHost(snackbar) },
+        // The top bar and the tabs take the system bars; a room's header the status bar.
+        contentWindowInsets = WindowInsets(0, 0, 0, 0),
     ) { padding ->
         Column(
             Modifier
                 .padding(padding)
+                .consumeWindowInsets(padding)
                 .fillMaxSize(),
         ) {
-            ConnectionBanner(connection, onSignInAgain = { account.forget() })
-            // Settings says the same in its Encryption section.
-            if (tab != HomeTab.Settings && showsEncryptionBanner(encryption)) {
-                EncryptionBanner(onClick = { tab = HomeTab.Settings })
+            content()
+        }
+    }
+}
+
+/** The space's name over its rooms, tapped for its overview (none for Other rooms). */
+@Composable
+fun SpaceTitle(name: String, onClick: (() -> Unit)?) {
+    Row(
+        Modifier
+            .clip(RoundedCornerShape(8.dp))
+            .let { if (onClick != null) it.clickable(onClick = onClick) else it }
+            .padding(end = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(name, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
+        if (onClick != null) Icon(Icons.Filled.KeyboardArrowDown, contentDescription = "Space overview")
+    }
+}
+
+/** +: New space…, Join a space or room…, and inside a space New room in it…. */
+@Composable
+private fun AddMenu(spaceName: String?, onNewSpace: () -> Unit, onJoin: () -> Unit, onNewRoom: (() -> Unit)?) {
+    var open by remember { mutableStateOf(false) }
+    Box {
+        IconButton(onClick = { open = true }) {
+            Icon(Icons.Filled.Add, contentDescription = "New or join")
+        }
+        DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+            if (onNewRoom != null && spaceName != null) {
+                DropdownMenuItem(text = { Text("New room in $spaceName…") }, onClick = {
+                    open = false
+                    onNewRoom()
+                })
             }
-            when (tab) {
-                HomeTab.Chats -> RoomColumn(
-                    chatRooms,
-                    list.loaded,
-                    "No chats",
-                    chatsList,
-                    images,
-                    today,
-                    onOpenRoom,
-                    presenceOf = { room -> directPerson(room, info.userId)?.let { presences[it] } },
-                )
-                HomeTab.Spaces -> HorizontalPager(pager, Modifier.fillMaxSize()) { page ->
-                    if (page == 0) {
-                        SpaceColumn(spaceEntries, selected, list.loaded, spacesList, images) { entry ->
-                            if (entry == selected) {
-                                scope.launch { pager.animateScrollToPage(1) }
-                            } else {
-                                account.spaceSelection.select(entry)
-                            }
-                        }
-                    } else {
-                        SectionColumn(sections, list.loaded, spaceRoomsList, images, today, onOpenRoom)
-                    }
-                }
-                HomeTab.Settings -> SettingsContent(account, push, presence, info, onEnterRecoveryKey, onVerify)
-            }
+            DropdownMenuItem(text = { Text("New space…") }, onClick = {
+                open = false
+                onNewSpace()
+            })
+            DropdownMenuItem(text = { Text("Join a space or room…") }, onClick = {
+                open = false
+                onJoin()
+            })
         }
     }
 }
@@ -263,160 +375,6 @@ private fun SortMenu(sort: RoomSort, onSort: (RoomSort) -> Unit) {
                 )
             }
         }
-    }
-}
-
-/** [rooms], or a spinner until the list is loaded, or [empty]; the dots of [presenceOf]. */
-@Composable
-private fun RoomColumn(
-    rooms: List<RoomSummary>,
-    loaded: Boolean,
-    empty: String,
-    state: LazyListState,
-    images: Images,
-    today: LocalDate,
-    onOpenRoom: (String) -> Unit,
-    presenceOf: (RoomSummary) -> Presence?,
-) {
-    when {
-        rooms.isEmpty() && !loaded -> Loading()
-        rooms.isEmpty() -> Empty(empty)
-        else -> LazyColumn(Modifier.fillMaxSize(), state = state) {
-            items(rooms, key = { it.id }) { room ->
-                RoomRow(room, images, today, onClick = { onOpenRoom(room.id) }, presence = presenceOf(room))
-            }
-        }
-    }
-}
-
-/** A space's rooms page: Rooms, then People, each left out while empty. */
-@Composable
-private fun SectionColumn(
-    sections: SpaceSections,
-    loaded: Boolean,
-    state: LazyListState,
-    images: Images,
-    today: LocalDate,
-    onOpenRoom: (String) -> Unit,
-) {
-    val empty = sections.rooms.isEmpty() && sections.people.isEmpty()
-    when {
-        empty && !loaded -> Loading()
-        empty -> Empty("No rooms")
-        else -> LazyColumn(Modifier.fillMaxSize(), state = state) {
-            section("Rooms", sections.rooms, images, today, onOpenRoom)
-            section("People", sections.people, images, today, onOpenRoom)
-        }
-    }
-}
-
-private fun LazyListScope.section(
-    title: String,
-    rooms: List<RoomSummary>,
-    images: Images,
-    today: LocalDate,
-    onOpenRoom: (String) -> Unit,
-) {
-    if (rooms.isEmpty()) return
-    // Room IDs start with "!": no clash with the rows' keys.
-    item(key = "section:$title", contentType = "section") {
-        Text(
-            title,
-            Modifier.padding(start = 16.dp, end = 16.dp, top = 16.dp, bottom = 4.dp),
-            style = MaterialTheme.typography.titleSmall,
-            color = MaterialTheme.colorScheme.primary,
-        )
-    }
-    items(rooms, key = { it.id }, contentType = { "room" }) { room ->
-        RoomRow(room, images, today, onClick = { onOpenRoom(room.id) })
-    }
-}
-
-/** The spaces page: [rows], [selected] highlighted. */
-@Composable
-private fun SpaceColumn(
-    rows: List<SpaceRow>,
-    selected: SpaceEntry?,
-    loaded: Boolean,
-    state: LazyListState,
-    images: Images,
-    onSelect: (SpaceEntry) -> Unit,
-) {
-    when {
-        rows.isEmpty() && !loaded -> Loading()
-        rows.isEmpty() -> Empty("No rooms")
-        else -> LazyColumn(Modifier.fillMaxSize(), state = state) {
-            items(rows, key = { it.entry.key }) { row ->
-                SpaceRowItem(row, row.entry == selected, images, onClick = { onSelect(row.entry) })
-            }
-        }
-    }
-}
-
-@Composable
-private fun SpaceRowItem(row: SpaceRow, selected: Boolean, images: Images, onClick: () -> Unit) {
-    val shape = RoundedCornerShape(10.dp)
-    ListItem(
-        modifier = Modifier.clickable(onClick = onClick),
-        colors = if (selected) {
-            ListItemDefaults.colors(containerColor = MaterialTheme.colorScheme.secondaryContainer)
-        } else {
-            ListItemDefaults.colors()
-        },
-        leadingContent = {
-            val space = row.space
-            if (space != null) {
-                // Spaces are squares, as on the desktop.
-                Avatar(space.name, space.avatarUrl, space.id, images, size = 44.dp, shape = shape)
-            } else {
-                Box(
-                    Modifier
-                        .size(44.dp)
-                        .clip(shape)
-                        .background(MaterialTheme.colorScheme.surfaceVariant),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Icon(
-                        Icons.AutoMirrored.Filled.List,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-            }
-        },
-        headlineContent = {
-            Text(
-                row.name,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                fontWeight = if (row.unread) FontWeight.SemiBold else FontWeight.Normal,
-            )
-        },
-        trailingContent = if (row.unread) {
-            {
-                Box(
-                    Modifier
-                        .size(10.dp)
-                        .clip(CircleShape)
-                        .background(MaterialTheme.colorScheme.primary)
-                        .semantics { contentDescription = "Unread" },
-                )
-            }
-        } else {
-            null
-        },
-    )
-}
-
-@Composable
-private fun Loading() {
-    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
-}
-
-@Composable
-private fun Empty(text: String) {
-    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-        Text(text, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
 
@@ -469,63 +427,4 @@ private fun EncryptionBanner(onClick: () -> Unit) {
             )
         }
     }
-}
-
-@Composable
-private fun RoomRow(room: RoomSummary, images: Images, today: LocalDate, onClick: () -> Unit, presence: Presence? = null) {
-    val badge = unreadBadge(room)
-    val unread = room.unreadMessages > 0uL
-    val activity = room.lastActivity
-    val subtitle = when {
-        room.invited -> "Invited"
-        room.kind == RoomKind.SPACE -> "Space"
-        else -> room.topic?.lineSequence()?.firstOrNull() ?: room.alias
-    }
-    ListItem(
-        modifier = Modifier.clickable(onClick = onClick),
-        leadingContent = {
-            WithPresenceDot(presence, avatarSize = 44.dp, dotSize = 12.dp, ring = MaterialTheme.colorScheme.surface) {
-                Avatar(
-                    name = room.name,
-                    mxcUri = room.avatarUrl,
-                    seed = room.directUserId ?: room.id,
-                    images = images,
-                    size = 44.dp,
-                    // Spaces are squares, as on the desktop.
-                    shape = if (room.kind == RoomKind.SPACE) RoundedCornerShape(10.dp) else CircleShape,
-                )
-            }
-        },
-        headlineContent = {
-            Text(
-                room.name,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                fontWeight = if (unread) FontWeight.SemiBold else FontWeight.Normal,
-            )
-        },
-        supportingContent = if (subtitle != null) {
-            { Text(subtitle, maxLines = 1, overflow = TextOverflow.Ellipsis) }
-        } else {
-            null
-        },
-        trailingContent = {
-            Column(horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                if (activity != null) {
-                    Text(
-                        lastActivity(activity, today),
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-                if (badge != null) {
-                    val (count, mentions) = badge
-                    Badge(
-                        containerColor = if (mentions) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
-                        contentColor = if (mentions) MaterialTheme.colorScheme.onError else MaterialTheme.colorScheme.onPrimary,
-                    ) { Text(if (count > 99) "99+" else count.toString()) }
-                }
-            }
-        },
-    )
 }
