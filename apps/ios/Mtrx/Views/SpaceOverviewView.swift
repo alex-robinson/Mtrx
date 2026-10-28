@@ -95,14 +95,10 @@ struct SpaceOverviewPage: View {
                 Button("Done", action: close)
             }
         }
-        .overlay(alignment: .bottom) {
-            if overview.updating && !overview.unknown && tab == .rooms {
-                Label("Updating…", systemImage: "arrow.triangle.2.circlepath")
-                    .font(.footnote)
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 8)
-                    .background(.regularMaterial, in: Capsule())
-                    .padding(.bottom, 12)
+        // Below the list, which ends above it: the last row stays clear.
+        .safeAreaInset(edge: .bottom, alignment: .trailing) {
+            if tab == .rooms {
+                UpdatePill(model: overview, server: Self.server(of: space.id))
             }
         }
         .task { await overview.load() }
@@ -116,6 +112,11 @@ struct SpaceOverviewPage: View {
         } message: {
             Text(overview.error ?? "")
         }
+    }
+
+    /// The server of a room ID: "example.org" of "!abc:example.org".
+    static func server(of id: String) -> String {
+        id.split(separator: ":", maxSplits: 1).last.map(String.init) ?? id
     }
 
     private var header: some View {
@@ -140,6 +141,47 @@ struct SpaceOverviewPage: View {
     }
 }
 
+/// While a space's rooms shown are read again, at the lower right, clear of
+/// the scrollbar: "Updating…", or "<server> didn't answer · Try again".
+private struct UpdatePill: View {
+    @ObservedObject var model: SpaceOverviewModel
+    let server: String
+
+    var body: some View {
+        Group {
+            if model.unknown {
+                // Nothing shown yet: the list itself says so.
+                EmptyView()
+            } else if model.updating {
+                HStack(spacing: 6) {
+                    ProgressView().controlSize(.small)
+                    Text("Updating…")
+                }
+                .pill()
+            } else if model.failed {
+                Button {
+                    Task { await model.load() }
+                } label: {
+                    Text("\(server) didn't answer · ").foregroundColor(.secondary) + Text("Try again")
+                }
+                .pill()
+            }
+        }
+        .padding(.trailing, 20)
+        .padding(.bottom, 8)
+    }
+}
+
+private extension View {
+    func pill() -> some View {
+        font(.footnote)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 7)
+            .background(.regularMaterial, in: Capsule())
+            .overlay(Capsule().strokeBorder(Color.secondary.opacity(0.2), lineWidth: 0.5))
+    }
+}
+
 /// A space's rooms: a filter, the rooms as last listed with Join, Ask to
 /// join or Open, and the state of reading them again.
 private struct SpaceRoomsSection: View {
@@ -153,7 +195,7 @@ private struct SpaceRoomsSection: View {
             TextField("Filter rooms", text: $model.filter)
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
-            if model.failed {
+            if model.failed && model.unknown {
                 HStack {
                     Text("Couldn't list the rooms.")
                         .foregroundStyle(.secondary)

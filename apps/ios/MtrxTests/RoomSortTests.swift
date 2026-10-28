@@ -2,7 +2,8 @@ import MtrxFFI
 import XCTest
 @testable import Mtrx
 
-/// A space's rooms in two sections, Rooms and People, in the order chosen.
+/// A space's rooms in two sections, Direct messages and Rooms, in the order
+/// chosen.
 final class RoomSortTests: XCTestCase {
     private static let now = Date(timeIntervalSince1970: 1_700_000_000)
 
@@ -22,26 +23,26 @@ final class RoomSortTests: XCTestCase {
         return Dictionary(uniqueKeysWithValues: sections.map { ($0.title ?? "", $0.rooms.map(\.id)) })
     }
 
-    func testRoomsThenPeople() {
+    func testDirectMessagesThenRooms() {
         let sections = RoomLists.sections(rooms, sort: .listOrder, search: "")
-        XCTAssertEqual(sections.map(\.title), ["Rooms", "People"])
+        XCTAssertEqual(sections.map(\.title), ["Direct messages", "Rooms"])
     }
 
     func testDefaultKeepsTheListsOrder() {
         XCTAssertEqual(sections(.listOrder)["Rooms"], ["!lab", "!field", "!General", "!offer"])
-        XCTAssertEqual(sections(.listOrder)["People"], ["!anna", "!bob", "!cleo"])
+        XCTAssertEqual(sections(.listOrder)["Direct messages"], ["!anna", "!bob", "!cleo"])
     }
 
     func testAToZAndZToAIgnoreCase() {
         XCTAssertEqual(sections(.aToZ)["Rooms"], ["!field", "!General", "!lab", "!offer"])
-        XCTAssertEqual(sections(.aToZ)["People"], ["!anna", "!bob", "!cleo"])
+        XCTAssertEqual(sections(.aToZ)["Direct messages"], ["!anna", "!bob", "!cleo"])
         XCTAssertEqual(sections(.zToA)["Rooms"], ["!offer", "!lab", "!General", "!field"])
-        XCTAssertEqual(sections(.zToA)["People"], ["!cleo", "!bob", "!anna"])
+        XCTAssertEqual(sections(.zToA)["Direct messages"], ["!cleo", "!bob", "!anna"])
     }
 
     func testMostRecentFirstWithoutActivityLast() {
         XCTAssertEqual(sections(.mostRecent)["Rooms"], ["!General", "!offer", "!field", "!lab"])
-        XCTAssertEqual(sections(.mostRecent)["People"], ["!anna", "!cleo", "!bob"])
+        XCTAssertEqual(sections(.mostRecent)["Direct messages"], ["!anna", "!cleo", "!bob"])
     }
 
     func testEqualActivityKeepsTheListsOrder() {
@@ -63,7 +64,7 @@ final class RoomSortTests: XCTestCase {
     func testSearchingOrdersAsTheSearchDoes() {
         // Names starting with the text first, whatever the sort.
         XCTAssertEqual(sections(.zToA, search: "l")["Rooms"], ["!lab", "!field", "!General"])
-        XCTAssertEqual(sections(.zToA, search: "l")["People"], ["!cleo"])
+        XCTAssertEqual(sections(.zToA, search: "l")["Direct messages"], ["!cleo"])
     }
 }
 

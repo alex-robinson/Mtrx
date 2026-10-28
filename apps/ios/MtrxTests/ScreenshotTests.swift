@@ -132,6 +132,13 @@ final class ScreenshotTests: XCTestCase {
         try await snap("09-space-overview", SpaceOverviewView(space: Screens.polar))
     }
 
+    /// The last list, its server not answering.
+    func testSpaceOverviewNotAnswering() async throws {
+        model.spaceChildren["!polar"] = Screens.children
+        session.children = .failure(MtrxError.Other(reason: "timed out"))
+        try await snap("09b-space-overview-failed", SpaceOverviewView(space: Screens.polar))
+    }
+
     func testJoin() async throws {
         session.directory = .success(DirectoryPage(rooms: Screens.directory, next: "2"))
         let join = JoinModel(session: session, ownServer: model.serverName)
@@ -235,7 +242,7 @@ private enum Screens {
         ],
         loaded: true,
         spaces: [
-            SpaceRooms(spaceId: "!polar", roomIds: ["!ice", "!sea", "!models"]),
+            SpaceRooms(spaceId: "!polar", roomIds: ["!ice", "!sea", "!ann", "!models"]),
             SpaceRooms(spaceId: "!teach", roomIds: ["!notes"]),
         ],
         roomsOutsideSpaces: ["!party"])

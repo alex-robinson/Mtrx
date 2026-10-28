@@ -94,14 +94,14 @@ struct RoomLists: Equatable {
         search(spaces, filter, name: \.name)
     }
 
-    /// A space's rooms in two sections, Rooms and People (its direct
-    /// chats), each in `sort`'s order, or while searching in the search's;
-    /// empty sections left out.
+    /// A space's rooms in two sections, as the desktop lists them: Direct
+    /// messages (its members' direct chats), then Rooms, each in `sort`'s
+    /// order, or while searching in the search's; empty sections left out.
     static func sections(_ rooms: [RoomSummary], sort: RoomSort, search filter: String) -> [RoomSection] {
         let shown = filter.trimmingCharacters(in: .whitespaces).isEmpty ? sort.apply(rooms) : search(rooms, filter)
         return [
+            RoomSection(title: "Direct messages", rooms: shown.filter { $0.kind == .direct }),
             RoomSection(title: "Rooms", rooms: shown.filter { $0.kind != .direct }),
-            RoomSection(title: "People", rooms: shown.filter { $0.kind == .direct }),
         ].filter { !$0.rooms.isEmpty }
     }
 

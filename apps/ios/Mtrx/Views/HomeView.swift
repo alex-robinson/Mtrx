@@ -226,8 +226,8 @@ struct SpacesList: View {
     }
 }
 
-/// A space's rooms, then its direct chats, in the chosen order, with the
-/// space's name on top: a tap on it shows the space's overview.
+/// A space's members' direct messages, then its rooms, in the chosen order,
+/// with the space's name on top: a tap on it shows the space's overview.
 struct SpaceRoomsPage: View {
     @EnvironmentObject private var session: SessionModel
     let entry: SpaceEntry
