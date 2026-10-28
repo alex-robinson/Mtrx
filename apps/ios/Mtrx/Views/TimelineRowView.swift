@@ -77,7 +77,6 @@ struct MessageView: View {
     let highlighted: Bool
     let actions: RowActions
     @State private var swipe = SwipeToReply()
-    @EnvironmentObject private var images: ImageCache
 
     static let avatarSize: CGFloat = 32
     private static let avatarSpacing: CGFloat = 8

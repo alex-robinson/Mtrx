@@ -391,8 +391,9 @@ struct RecentView: View {
 }
 
 /// Rooms or chats, in sections with their titles, that open on a tap (in
-/// the Rooms tab if `opensInRooms`, else over the list); an invite opens
-/// its answer. The encryption banner above them, unless searching.
+/// their tabs if `opensInRooms`: rooms in Rooms, chats in Chats; else over
+/// the list); an invite opens its answer. The encryption banner above
+/// them, unless searching.
 struct RoomList<Empty: View>: View {
     @EnvironmentObject private var session: SessionModel
     let sections: [RoomSection]
@@ -400,7 +401,7 @@ struct RoomList<Empty: View>: View {
     let openSettings: () -> Void
     /// The presence to show on a room's picture (Chats).
     var presence: (RoomSummary) -> Presence? = { _ in nil }
-    /// Rooms open in the Rooms tab (from a space's list).
+    /// Rooms open in their tabs (from a space's list).
     var opensInRooms = false
     @ViewBuilder let empty: () -> Empty
 
@@ -436,7 +437,7 @@ struct RoomList<Empty: View>: View {
                         RoomRow(room: room, presence: presence(room))
                     }
                     .foregroundColor(.primary)
-                } else if opensInRooms && room.kind != .direct {
+                } else if opensInRooms {
                     Button {
                         session.open(room.id)
                     } label: {

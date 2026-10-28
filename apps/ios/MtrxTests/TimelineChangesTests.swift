@@ -71,17 +71,20 @@ final class TimelineChangesTests: XCTestCase {
         XCTAssertEqual(timeline.reactions.map(\.key), ["👍"])
         // The library's own, once it has it.
         let alice = Make.reader("alice")
-        await show([bobsMessage(reactions: [Reaction(key: "👍", count: 2, byUs: true, senders: [alice])])])
-        XCTAssertEqual(reactions(), [Reaction(key: "👍", count: 2, byUs: true, senders: [alice])])
+        timeline.listener?.onUpdate(
+            items: [bobsMessage(reactions: [Reaction(key: "👍", count: 2, byUs: true, senders: [alice])])])
+        await eventually { self.reactions() == [Reaction(key: "👍", count: 2, byUs: true, senders: [alice])] }
     }
 
     func testTakingOursAwayShowsAtOnce() async {
         await show([bobsMessage(reactions: [Reaction(key: "👍", count: 2, byUs: true, senders: [])])])
         model.react("b", key: "👍")
         XCTAssertEqual(reactions(), [Reaction(key: "👍", count: 1, byUs: false, senders: [])])
-        // Until the library shows it, its stale state is not shown.
-        await show([bobsMessage(reactions: [Reaction(key: "👍", count: 2, byUs: true, senders: [])])])
-        XCTAssertEqual(reactions().first?.byUs, false)
+        // Until the library shows it, its stale state is not shown: the
+        // reaction of someone else, added meanwhile, is.
+        timeline.listener?.onUpdate(
+            items: [bobsMessage(reactions: [Reaction(key: "👍", count: 3, byUs: true, senders: [])])])
+        await eventually { self.reactions() == [Reaction(key: "👍", count: 2, byUs: false, senders: [])] }
     }
 
     func testAFailedReactionIsTakenBack() async {
