@@ -68,13 +68,20 @@ fun TopicLinks(links: List<RoomLink>, onOpen: (String) -> Unit, modifier: Modifi
 }
 
 /**
- * The topic editor: the text, and the links (each a call or a link, with
- * a title, URL and a call's passcode); [onSave] with the topic to save.
+ * The topic editor: Cancel and Save on top, always in reach; the text, and
+ * the links (each a call or a link, with a title, URL and a call's
+ * passcode); [onSave] with the topic to save.
  */
 @Composable
 fun TopicEditor(initial: Topic, onSave: (Topic) -> Unit, onCancel: () -> Unit, modifier: Modifier = Modifier) {
     var draft by remember(initial) { mutableStateOf(TopicDraft.of(initial)) }
     Column(modifier, verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Text("Edit topic", Modifier.weight(1f), style = MaterialTheme.typography.titleSmall)
+            TextButton(onClick = onCancel) { Text("Cancel") }
+            Spacer(Modifier.width(4.dp))
+            FilledTonalButton(onClick = { onSave(draft.toTopic()) }) { Text("Save") }
+        }
         OutlinedTextField(
             value = draft.text,
             onValueChange = { draft = draft.copy(text = it) },
@@ -105,12 +112,6 @@ fun TopicEditor(initial: Topic, onSave: (Topic) -> Unit, onCancel: () -> Unit, m
                 Spacer(Modifier.width(6.dp))
                 Text("Add link")
             }
-            Spacer(Modifier.weight(1f))
-        }
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-            TextButton(onClick = onCancel) { Text("Cancel") }
-            Spacer(Modifier.width(8.dp))
-            FilledTonalButton(onClick = { onSave(draft.toTopic()) }) { Text("Save") }
         }
     }
 }

@@ -3,6 +3,8 @@ package org.mtrx.app.rooms
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -265,15 +267,18 @@ fun DirectoryRow(room: DirectoryRoom, action: RowAction, pending: Boolean, image
                 }
                 when {
                     pending -> CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
-                    action == RowAction.JOIN -> Button(onClick = { actions.join(room) }) { Text(action.label) }
-                    action == RowAction.ASK -> Button(onClick = { actions.knock(room) }) { Text(action.label) }
-                    action == RowAction.OPEN -> OutlinedButton(onClick = { actions.open(room) }) { Text(action.label) }
+                    action == RowAction.JOIN -> Button(onClick = { actions.join(room) }, Modifier.height(32.dp), contentPadding = ROW_BUTTON) { Text(action.label) }
+                    action == RowAction.ASK -> Button(onClick = { actions.knock(room) }, Modifier.height(32.dp), contentPadding = ROW_BUTTON) { Text(action.label) }
+                    action == RowAction.OPEN -> OutlinedButton(onClick = { actions.open(room) }, Modifier.height(32.dp), contentPadding = ROW_BUTTON) { Text(action.label) }
                     else -> Text(action.label, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
         },
     )
 }
+
+/** Buttons in compact rows. */
+private val ROW_BUTTON = PaddingValues(horizontal = 14.dp, vertical = 0.dp)
 
 /** A room's picture, else an icon of who may join: # anyone, spaces' squares, a lock otherwise. */
 @Composable

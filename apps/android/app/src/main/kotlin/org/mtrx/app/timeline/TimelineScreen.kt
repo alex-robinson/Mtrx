@@ -4,7 +4,6 @@ import android.graphics.Bitmap
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
-import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
 import kotlinx.coroutines.flow.Flow
 import org.mtrx.app.rooms.topicPreview
@@ -120,6 +119,7 @@ import kotlinx.coroutines.launch
 import org.mtrx.app.model.Images
 import org.mtrx.app.ui.Avatar
 import org.mtrx.app.ui.MtrxIcons
+import org.mtrx.app.ui.UnreadBadge
 import org.mtrx.app.ui.PresenceLine
 import org.mtrx.app.ui.WithPresenceDot
 import org.mtrx.app.ui.dayLabel
@@ -367,7 +367,7 @@ fun TimelineContent(
                         IconButton(onClick = onBack) {
                             BadgedBox(
                                 badge = {
-                                    if (backCount > 0) Badge { Text(if (backCount > 99) "99+" else backCount.toString()) }
+                                    if (backCount > 0) UnreadBadge(backCount)
                                 },
                             ) {
                                 Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
