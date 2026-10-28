@@ -19,7 +19,9 @@ use mtrx_core::{
 use crate::{
     app,
     arrange::{self, Arrange, CategoryEdit},
-    fonts, frame, sidebar, style,
+    fonts, frame,
+    hint::{Position, hint},
+    sidebar, style,
 };
 
 /// Which dialog is open.
@@ -129,6 +131,10 @@ pub enum Message {
     ToggleRoom(OwnedRoomId),
     /// Tick all of these rooms.
     TickAll(Vec<OwnedRoomId>),
+    /// Whether the server gives new rooms co-owners.
+    OwnersOffered(bool),
+    /// An invited person co-owns the new room, or not.
+    CoOwner(OwnedUserId, bool),
     Submit,
     Cancel,
     /// The request finished; on success, possibly with a room to show.
@@ -195,6 +201,9 @@ pub struct Dialog {
     directory: Vec<UserSummary>,
     people: Vec<UserSummary>,
     rooms: Vec<OwnedRoomId>,
+    /// Invited people who co-own the new room, where the server offers it.
+    co_owners: Vec<OwnedUserId>,
+    owners_offered: bool,
     /// The running user search; replaced by each new query.
     pub search: Option<Handle>,
     /// When the request was sent, while it runs.
@@ -225,6 +234,8 @@ impl Dialog {
             directory: Vec::new(),
             people: Vec::new(),
             rooms: Vec::new(),
+            co_owners: Vec::new(),
+            owners_offered: false,
             search: None,
             busy: None,
             now: Instant::now(),
@@ -233,6 +244,11 @@ impl Dialog {
     }
 
     /// The dialog picks people.
+    /// It creates a room or space, which may get co-owners.
+    pub fn creates_room(&self) -> bool {
+        matches!(self.kind, Kind::NewRoom { .. } | Kind::NewSpace)
+    }
+
     pub fn picks_people(&self) -> bool {
         matches!(
             self.kind,
@@ -460,7 +476,15 @@ impl Dialog {
                 self.directory.clear();
             }
             Message::Unpick(index) if index < self.people.len() => {
-                self.people.remove(index);
+                let person = self.people.remove(index);
+                self.co_owners.retain(|id| *id != person.id);
+            }
+            Message::OwnersOffered(offered) => self.owners_offered = offered,
+            Message::CoOwner(user, on) => {
+                self.co_owners.retain(|id| *id != user);
+                if on {
+                    self.co_owners.push(user);
+                }
             }
             Message::Unpick(_) => {}
             Message::ToggleRoom(room) => match self.rooms.iter().position(|r| *r == room) {
@@ -517,6 +541,7 @@ impl Dialog {
                 topic: optional(topic),
                 encrypted: self.encrypted,
                 invite: people(),
+                co_owners: self.co_owners.clone(),
                 permissions,
                 parent: space.as_ref().map(|(id, _)| id.clone()),
                 ..Default::default()
@@ -526,6 +551,7 @@ impl Dialog {
                 topic: optional(topic),
                 space: true,
                 invite: people(),
+                co_owners: self.co_owners.clone(),
                 permissions,
                 ..Default::default()
             }),
@@ -813,14 +839,32 @@ impl Dialog {
     fn people_view<'a>(&'a self, placeholder: &'a str) -> Element<'a, app::Message> {
         let mut section = column![].spacing(6);
         if !self.people.is_empty() {
+            // A new room's invited people may co-own it.
+            let owners = self.owners_offered && self.creates_room();
             let chips = self.people.iter().enumerate().map(|(i, person)| {
-                button(text(format!("{} ×", label(person))).size(13))
+                let name = button(text(format!("{} ×", label(person))).size(13))
                     .padding([3, 8])
                     .style(style::secondary_button)
-                    .on_press(message(Message::Unpick(i)))
+                    .on_press(message(Message::Unpick(i)));
+                if !owners {
+                    return name.into();
+                }
+                let id = person.id.clone();
+                let owner = hint(
+                    checkbox(self.co_owners.contains(&person.id))
+                        .label("Co-owner")
+                        .text_size(12)
+                        .size(14)
+                        .on_toggle(move |on| message(Message::CoOwner(id.clone(), on))),
+                    "Owns the room as you do: nobody can demote them, and they can't step down.",
+                    Position::Bottom,
+                );
+                row![name, owner]
+                    .spacing(6)
+                    .align_y(Alignment::Center)
                     .into()
             });
-            section = section.push(row(chips).spacing(6).wrap());
+            section = section.push(row(chips).spacing(12).wrap());
         }
         let single = matches!(self.kind, Kind::DirectChat) && !self.people.is_empty();
         if !single {

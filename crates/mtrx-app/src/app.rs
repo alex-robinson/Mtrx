@@ -1456,13 +1456,25 @@ impl App {
                 }
                 dialog.prefer_spaces(near);
                 dialog.offer_self(main.own_user.clone());
+                let new_room = dialog.creates_room();
                 dialog.update(dialog::Message::Contacts(main.contacts.clone()));
                 main.dialog = Some(dialog);
                 let session = main.session.clone();
-                Task::perform(
-                    async move { session.contacts().await.unwrap_or_default() },
-                    Message::ContactsLoaded,
-                )
+                let owners = if new_room {
+                    let session = session.clone();
+                    Task::perform(async move { session.offers_owners().await }, |offered| {
+                        Message::Dialog(dialog::Message::OwnersOffered(offered))
+                    })
+                } else {
+                    Task::none()
+                };
+                Task::batch([
+                    Task::perform(
+                        async move { session.contacts().await.unwrap_or_default() },
+                        Message::ContactsLoaded,
+                    ),
+                    owners,
+                ])
             }
             Message::ComposerEmoji(message) => {
                 let Screen::Main(main) = &mut self.screen else {

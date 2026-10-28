@@ -1714,6 +1714,22 @@ async fn room_management_screens() {
     );
     snapshot(
         &main_with(&|main| {
+            let mut dialog = Dialog::new(dialog::Kind::NewRoom { space: None });
+            dialog.update(dialog::Message::Name("model runs".into()));
+            dialog.update(dialog::Message::OwnersOffered(true));
+            let nils = OwnedUserId::try_from("@nils:example.org").unwrap();
+            dialog.update(dialog::Message::Pick(mtrx_core::UserSummary {
+                id: nils.clone(),
+                name: Some("Nils".into()),
+                avatar: None,
+            }));
+            dialog.update(dialog::Message::CoOwner(nils, true));
+            main.dialog = Some(dialog);
+        }),
+        "new-room-owners",
+    );
+    snapshot(
+        &main_with(&|main| {
             let mut dialog = Dialog::new(dialog::Kind::NewRoom {
                 space: Some((space.clone(), "Climate".into())),
             });
