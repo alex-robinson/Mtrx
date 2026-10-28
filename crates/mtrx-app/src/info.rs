@@ -5,10 +5,7 @@ use std::{fmt, time::SystemTime};
 
 use iced::{
     Alignment, Element, Length, Theme,
-    widget::{
-        button, column, container, pick_list, row, scrollable, space, stack, text, text_input,
-        toggler,
-    },
+    widget::{button, column, container, pick_list, row, space, stack, text, text_input, toggler},
 };
 use mtrx_core::{
     Access, CallService, History, MxcUri, NotifyMode, OwnedMxcUri, OwnedRoomId, OwnedUserId,
@@ -527,7 +524,7 @@ impl Card {
         // A space: its rooms, members and these settings, in tabs. The
         // topic stays above them, scrolling itself if long.
         let bar = column![
-            container(scrollable(about).height(Length::Shrink)).max_height(ABOUT_HEIGHT),
+            container(frame::scroll(about).height(Length::Shrink)).max_height(ABOUT_HEIGHT),
             overview.tabs(),
         ]
         .spacing(12);
@@ -1058,7 +1055,7 @@ fn shared_view<'a>(shared: &[OwnedRoomId], rooms: &'a [RoomSummary]) -> Element<
         .collect();
     known.sort_by_key(|r| r.kind != RoomKind::Space);
     let title = format!("Shared spaces and rooms ({})", known.len());
-    let mut list = column![].spacing(2).padding(iced::Padding::ZERO.right(10));
+    let mut list = column![].spacing(2);
     for room in known {
         let target = match room.kind {
             RoomKind::Space => app::Message::SelectSpace(Some(room.id.clone())),
@@ -1077,7 +1074,7 @@ fn shared_view<'a>(shared: &[OwnedRoomId], rooms: &'a [RoomSummary]) -> Element<
             .size(11)
             .font(fonts::SEMIBOLD)
             .style(text::secondary),
-        container(scrollable(list).height(Length::Shrink)).max_height(SHARED_HEIGHT),
+        container(frame::scroll(list).height(Length::Shrink)).max_height(SHARED_HEIGHT),
     ]
     .spacing(4)
     .into()

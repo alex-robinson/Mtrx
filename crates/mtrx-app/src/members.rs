@@ -2,7 +2,7 @@
 
 use iced::{
     Alignment, Element, Length,
-    widget::{button, column, container, hover, row, scrollable, space, text},
+    widget::{button, column, container, hover, row, space, text},
 };
 use mtrx_core::{Member, OwnedRoomId, OwnedUserId};
 
@@ -12,7 +12,7 @@ use crate::{
     context_menu,
     dialog::{Kind, LevelChange},
     ellipsis::ellipsis,
-    fonts,
+    fonts, frame,
     hint::{Position, hint},
     icons,
     popover::{Edge, Side, popover},
@@ -78,7 +78,7 @@ pub fn view<'a>(
     ]
     .spacing(2)
     .padding(8);
-    container(scrollable(panel.push(rows(list, shown))))
+    container(frame::scroll(panel.push(rows(list, shown))))
         .width(WIDTH)
         .height(Length::Fill)
         .style(style::panel)

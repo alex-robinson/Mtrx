@@ -41,12 +41,7 @@ pub fn with_bar<'a>(
     }
     header = header.push(close_button(close));
     let top = container(header).padding(iced::Padding::new(12.0).left(20.0));
-    // The scrollbar beside the content, not over it.
-    let scrolling = |padding| {
-        scrollable(container(body).padding(padding)).direction(scrollable::Direction::Vertical(
-            scrollable::Scrollbar::new().spacing(4),
-        ))
-    };
+    let scrolling = |padding| scroll(container(body).padding(padding));
     let frame = match bar {
         None => column![
             top,
@@ -70,6 +65,13 @@ pub fn with_bar<'a>(
         .max_height(MAX_HEIGHT)
         .style(style::dialog)
         .into()
+}
+
+/// `content` scrolling, its scrollbar beside it rather than over it.
+pub fn scroll<'a, M: 'a>(content: impl Into<Element<'a, M>>) -> iced::widget::Scrollable<'a, M> {
+    scrollable(content).direction(scrollable::Direction::Vertical(
+        scrollable::Scrollbar::new().spacing(4),
+    ))
 }
 
 /// A plain title for [`frame`].

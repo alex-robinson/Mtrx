@@ -7,7 +7,7 @@ use std::{collections::HashSet, fmt};
 use iced::{
     Alignment, Element, Length,
     task::Handle,
-    widget::{button, column, container, pick_list, row, scrollable, text, text_input},
+    widget::{button, column, container, pick_list, row, text, text_input},
 };
 use mtrx_core::{
     DirectoryKind, DirectoryPage, DirectoryRoom, OwnedRoomId, OwnedRoomOrAliasId, OwnedServerName,
@@ -374,7 +374,7 @@ impl Join {
                         .on_press(message(Message::More)),
                 );
             }
-            body = body.push(scrollable(list).height(Length::Shrink));
+            body = body.push(frame::scroll(list).height(Length::Shrink));
         }
         if let Some(error) = &self.error {
             body = body.push(text(error).size(12).style(text::danger));

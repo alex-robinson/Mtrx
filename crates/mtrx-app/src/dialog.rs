@@ -7,9 +7,7 @@ use std::time::{Duration, Instant};
 use iced::{
     Alignment, Element, Length,
     task::Handle,
-    widget::{
-        button, checkbox, column, container, row, scrollable, space, text, text_input, toggler,
-    },
+    widget::{button, checkbox, column, container, row, space, text, text_input, toggler},
 };
 use mtrx_core::{
     Contact, Grouping, NewRoom, OwnedRoomId, OwnedUserId, Permissions, RoomCategories, RoomKind,
@@ -904,7 +902,7 @@ impl Dialog {
                 avatar: None,
             }));
         }
-        section = section.push(scrollable(list).height(Length::Shrink));
+        section = section.push(frame::scroll(list).height(Length::Shrink));
         section.into()
     }
 
@@ -963,7 +961,7 @@ impl Dialog {
         column![
             self.field("Search your rooms", &self.query, Message::Query),
             text(chosen).size(12).style(text::secondary),
-            scrollable(column(list).spacing(2)).height(300),
+            frame::scroll(column(list).spacing(2)).height(300),
         ]
         .spacing(8)
         .into()
@@ -1049,7 +1047,7 @@ impl Dialog {
             ]
             .spacing(8)
             .align_y(Alignment::Center),
-            scrollable(column(list).spacing(2)).height(260),
+            frame::scroll(column(list).spacing(2)).height(260),
         ]
         .spacing(8)
         .into()
