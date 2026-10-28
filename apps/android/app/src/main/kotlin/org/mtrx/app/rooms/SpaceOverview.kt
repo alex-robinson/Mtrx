@@ -14,6 +14,8 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListScope
+import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -107,8 +109,10 @@ fun SpaceOverviewContent(
     onLeave: () -> Unit,
     onOpenLink: (String) -> Unit,
     initialTab: OverviewTab = OverviewTab.ROOMS,
+    listState: LazyListState = rememberLazyListState(),
 ) {
     var tab by rememberSaveable { mutableStateOf(initialTab) }
+    val pill = if (tab == OverviewTab.ROOMS) statusPill(rooms) else null
     var filter by rememberSaveable { mutableStateOf("") }
     val snackbar = remember { SnackbarHostState() }
     LaunchedEffect(error) {
@@ -132,7 +136,12 @@ fun SpaceOverviewContent(
                 .padding(padding)
                 .fillMaxSize(),
         ) {
-            LazyColumn(Modifier.fillMaxSize()) {
+            // While the pill shows, room below the last row to scroll it clear.
+            LazyColumn(
+                Modifier.fillMaxSize(),
+                state = listState,
+                contentPadding = PaddingValues(bottom = if (pill != null) PILL_HEIGHT + PILL_MARGIN * 2 else 0.dp),
+            ) {
                 item(key = "header") { InfoHeader(header, settings, images, busy, infoActions, onLeave) }
                 item(key = "topic") {
                     TopicBox(header.topic, settings?.canChangeTopic == true, infoActions::setTopic, onOpenLink)
@@ -162,21 +171,61 @@ fun SpaceOverviewContent(
                     }
                 }
             }
-            // Updating behind the list shown, without moving it.
-            if (tab == OverviewTab.ROOMS && rooms.updating && rooms.rooms != null) {
-                Surface(
-                    Modifier
-                        .align(Alignment.BottomStart)
-                        .padding(16.dp),
-                    shape = RoundedCornerShape(50),
-                    color = MaterialTheme.colorScheme.primaryContainer,
-                ) {
-                    Row(Modifier.padding(horizontal = 12.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-                        CircularProgressIndicator(Modifier.size(12.dp), strokeWidth = 2.dp)
-                        Spacer(Modifier.width(8.dp))
-                        Text("Updating…", style = MaterialTheme.typography.labelMedium)
-                    }
+            // Over the list's bottom right, which scrolls clear of it.
+            if (pill != null) {
+                StatusPill(
+                    pill,
+                    server = serverOf(ownUserId),
+                    onRetry = rowActions.retry,
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .padding(PILL_MARGIN),
+                )
+            }
+        }
+    }
+}
+
+/** What the Rooms tab's pill says: the list updates behind, or the server didn't answer. */
+enum class OverviewPill { UPDATING, NO_ANSWER }
+
+/** The pill while the rooms update behind a list shown, or after the server didn't answer; else none. */
+fun statusPill(rooms: OverviewRooms): OverviewPill? = when {
+    rooms.updating && rooms.rooms != null -> OverviewPill.UPDATING
+    rooms.failed && !rooms.updating -> OverviewPill.NO_ANSWER
+    else -> null
+}
+
+private val PILL_HEIGHT = 32.dp
+private val PILL_MARGIN = 16.dp
+
+/**
+ * The status pill, as the desktop's: light blue while updating, light pink
+ * when [server] didn't answer, with Try again.
+ */
+@Composable
+private fun StatusPill(pill: OverviewPill, server: String, onRetry: () -> Unit, modifier: Modifier = Modifier) {
+    val problem = pill == OverviewPill.NO_ANSWER
+    Surface(
+        modifier.height(PILL_HEIGHT),
+        shape = RoundedCornerShape(50),
+        color = if (problem) MaterialTheme.colorScheme.errorContainer else MaterialTheme.colorScheme.primaryContainer,
+        contentColor = if (problem) MaterialTheme.colorScheme.onErrorContainer else MaterialTheme.colorScheme.onPrimaryContainer,
+        shadowElevation = 2.dp,
+    ) {
+        Row(
+            Modifier.padding(start = 12.dp, end = if (problem) 4.dp else 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            if (problem) {
+                Text("$server didn't answer", style = MaterialTheme.typography.labelMedium)
+                TextButton(onClick = onRetry, contentPadding = PaddingValues(horizontal = 8.dp)) {
+                    Text("Try again", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.error)
                 }
+            } else {
+                CircularProgressIndicator(Modifier.size(12.dp), strokeWidth = 2.dp)
+                Spacer(Modifier.width(8.dp))
+                Text("Updating…", style = MaterialTheme.typography.labelMedium)
             }
         }
     }
@@ -201,24 +250,6 @@ private fun LazyListScope.roomsTab(
             placeholder = { Text("Filter rooms") },
             leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
         )
-    }
-    if (rooms.failed) {
-        item(key = "failed") {
-            Row(
-                Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 4.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(
-                    "Couldn't list the rooms.",
-                    Modifier.weight(1f),
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.error,
-                )
-                TextButton(onClick = actions.retry) { Text("Try again") }
-            }
-        }
     }
     val list = rooms.rooms
     if (list == null) {

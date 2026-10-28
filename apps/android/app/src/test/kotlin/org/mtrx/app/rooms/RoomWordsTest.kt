@@ -128,6 +128,19 @@ class RoomWordsTest {
     }
 
     @Test
+    fun thePillShowsWhileUpdatingAShownListOrAfterNoAnswer() {
+        fun pill(rooms: List<uniffi.mtrx.DirectoryRoom>?, updating: Boolean, failed: Boolean) =
+            statusPill(OverviewRooms(rooms, updating, failed, emptySet(), emptySet()))
+        val list = listOf(directoryRoom("!a:x"))
+        assertEquals(OverviewPill.UPDATING, pill(list, updating = true, failed = false))
+        // The first listing shows a spinner instead.
+        assertNull(pill(null, updating = true, failed = false))
+        assertEquals(OverviewPill.NO_ANSWER, pill(list, updating = false, failed = true))
+        assertEquals(OverviewPill.NO_ANSWER, pill(null, updating = false, failed = true))
+        assertNull(pill(list, updating = false, failed = false))
+    }
+
+    @Test
     fun userIdsAreAtNameColonServer() {
         assertEquals("@b:x", userIdOf(" @b:x "))
         assertNull(userIdOf("bob"))

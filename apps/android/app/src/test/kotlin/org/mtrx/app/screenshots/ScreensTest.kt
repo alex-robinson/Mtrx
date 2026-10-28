@@ -1,6 +1,7 @@
 package org.mtrx.app.screenshots
 
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -173,6 +174,37 @@ class ScreensTest {
             onOpenLink = {},
         )
     }
+
+    // A list long enough to scroll, at its end: the last row clear of the pill.
+    @Composable
+    private fun OverviewAtEnd(updating: Boolean, failed: Boolean) {
+        val long = teamChildren + (1..12).map { org.mtrx.app.directoryRoom("!extra$it:example.org", "Project $it", members = it.toLong()) } +
+            org.mtrx.app.directoryRoom("!last:example.org", "Last room", members = 2, topic = "The list's last row")
+        SpaceOverviewContent(
+            teamHeader,
+            OverviewRooms(long, updating = updating, failed = failed, pending = emptySet(), joined = setOf(ICE)),
+            iceSettings,
+            iceMembers,
+            busy = null,
+            error = null,
+            ownUserId = ME,
+            spaceNames = mapOf(TEAM to "Ice team", OUTREACH to "Outreach"),
+            images = images,
+            rowActions = noRowActions,
+            infoActions = NoRoomInfoActions,
+            onBack = {},
+            onLeave = {},
+            onOpenLink = {},
+            // Past the end: the list stops at its last item.
+            listState = rememberLazyListState(initialFirstVisibleItemIndex = long.size + 10),
+        )
+    }
+
+    @Test
+    fun spaceOverviewUpdatingAtEnd() = snap("space-overview-updating-end") { OverviewAtEnd(updating = true, failed = false) }
+
+    @Test
+    fun spaceOverviewNoAnswerAtEnd() = snap("space-overview-no-answer-end") { OverviewAtEnd(updating = false, failed = true) }
 
     @Test
     fun join() = snap("join") {
