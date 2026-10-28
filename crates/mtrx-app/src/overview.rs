@@ -421,9 +421,13 @@ impl Overview {
             None => frame::loading(),
             Some(_) => crate::members::rows(
                 self.members.as_ref(),
-                shown.own_user,
-                shown.avatars,
-                shown.presences,
+                crate::members::Shown {
+                    room: &space.id,
+                    own: shown.own_user,
+                    avatars: shown.avatars,
+                    presences: shown.presences,
+                    menu: shown.member_menu,
+                },
             ),
         };
         // Names and roles close together, not across the whole card.

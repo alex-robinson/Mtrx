@@ -12,8 +12,8 @@ use iced::{
     },
 };
 use mtrx_core::{
-    Contact, Grouping, NewRoom, OwnedRoomId, OwnedUserId, Permissions, RoomCategories, RoomKind,
-    RoomSummary, UserId, UserSummary,
+    Contact, Grouping, NewRoom, OwnedRoomId, OwnedUserId, Permissions, Role, RoomCategories,
+    RoomKind, RoomSummary, UserId, UserSummary,
 };
 
 use crate::{
@@ -43,6 +43,19 @@ pub enum Kind {
         room: OwnedRoomId,
         name: String,
     },
+    /// Remove someone (`name`) from a room, or ban them.
+    RemoveMember {
+        room: OwnedRoomId,
+        user: OwnedUserId,
+        name: String,
+        ban: bool,
+    },
+    /// Make someone an admin: not to be undone.
+    MakeAdmin {
+        room: OwnedRoomId,
+        user: OwnedUserId,
+        name: String,
+    },
     SignOut,
     /// A new category of `space` (Home for `None`), with `room` in it if
     /// given, or the rooms of an existing one.
@@ -57,6 +70,8 @@ pub enum Kind {
 pub enum Message {
     Name(String),
     Topic(String),
+    /// Why someone is removed, for them to see.
+    Reason(String),
     Encrypted(bool),
     Moderated(bool),
     /// The people search field changed.
@@ -83,6 +98,8 @@ pub enum Opened {
     Room(OwnedRoomId),
     Space(OwnedRoomId),
     Left(OwnedRoomId),
+    /// A room's members changed.
+    Members(OwnedRoomId),
     SignedOut,
 }
 
@@ -107,6 +124,8 @@ pub enum Request {
     Invite(OwnedRoomId, Vec<OwnedUserId>),
     AddToSpace(OwnedRoomId, Vec<OwnedRoomId>),
     Leave(OwnedRoomId),
+    RemoveMember(OwnedRoomId, OwnedUserId, Option<String>, bool),
+    SetRole(OwnedRoomId, OwnedUserId, Role),
     SignOut,
 }
 
@@ -114,6 +133,7 @@ pub struct Dialog {
     kind: Kind,
     name: String,
     topic: String,
+    reason: String,
     encrypted: bool,
     moderated: bool,
     query: String,
@@ -146,6 +166,7 @@ impl Dialog {
             kind,
             name: String::new(),
             topic: String::new(),
+            reason: String::new(),
             encrypted: true,
             moderated: false,
             query: String::new(),
@@ -284,6 +305,14 @@ impl Dialog {
                 format!("Rooms added to {name}."),
                 format!("Could not add all rooms to {name}"),
             ),
+            Kind::RemoveMember { name, ban, .. } => (
+                format!("{name} was {}.", if *ban { "banned" } else { "removed" }),
+                format!("Could not {} {name}", if *ban { "ban" } else { "remove" }),
+            ),
+            Kind::MakeAdmin { name, .. } => (
+                format!("{name} is an admin now."),
+                format!("Could not make {name} an admin"),
+            ),
             Kind::Leave { name, .. } => {
                 (format!("Left {name}."), format!("Could not leave {name}"))
             }
@@ -303,6 +332,9 @@ impl Dialog {
             Kind::Invite { .. } => "Sending the invites…",
             Kind::AddExisting { .. } => "Adding the rooms…",
             Kind::Leave { .. } => "Leaving…",
+            Kind::RemoveMember { ban: true, .. } => "Banning…",
+            Kind::RemoveMember { .. } => "Removing…",
+            Kind::MakeAdmin { .. } => "Making them an admin…",
             Kind::SignOut => "Signing out…",
             Kind::Category { .. } => "Saving…",
         };
@@ -333,6 +365,7 @@ impl Dialog {
         match message {
             Message::Name(v) => self.name = v,
             Message::Topic(v) => self.topic = v,
+            Message::Reason(v) => self.reason = v,
             Message::Encrypted(v) => self.encrypted = v,
             Message::Moderated(v) => self.moderated = v,
             Message::Query(query) => {
@@ -444,6 +477,17 @@ impl Dialog {
             }
             Kind::AddExisting { .. } => return None,
             Kind::Leave { room, .. } => Request::Leave(room.clone()),
+            Kind::RemoveMember {
+                room, user, ban, ..
+            } => Request::RemoveMember(
+                room.clone(),
+                user.clone(),
+                optional(self.reason.trim()),
+                *ban,
+            ),
+            Kind::MakeAdmin { room, user, .. } => {
+                Request::SetRole(room.clone(), user.clone(), Role::Admin)
+            }
             Kind::SignOut => Request::SignOut,
             // Not for the server: see `category_edit`.
             Kind::Category { .. } => return None,
@@ -494,6 +538,11 @@ impl Dialog {
             Kind::Invite { name, .. } => (format!("Invite to {name}"), "Invite"),
             Kind::AddExisting { name, .. } => (format!("Add your rooms to {name}"), "Add"),
             Kind::Leave { name, .. } => (format!("Leave {name}?"), "Leave"),
+            Kind::RemoveMember {
+                name, ban: false, ..
+            } => (format!("Remove {name}?"), "Remove"),
+            Kind::RemoveMember { name, .. } => (format!("Ban {name}?"), "Ban"),
+            Kind::MakeAdmin { name, .. } => (format!("Make {name} an admin?"), "Make admin"),
             Kind::SignOut => ("Sign out?".into(), "Sign out"),
             Kind::Category { category: None, .. } => ("New category".into(), "Create"),
             Kind::Category { .. } => ("Edit category".into(), "Save"),
@@ -532,6 +581,27 @@ impl Dialog {
                 text("You can only come back if the room is public or someone invites you.")
                     .size(13),
             ),
+            Kind::RemoveMember { ban, .. } => body
+                .push(
+                    text(if *ban {
+                        "They can't come back until someone lifts the ban."
+                    } else {
+                        "They can come back if the room lets them join or someone invites them."
+                    })
+                    .size(13),
+                )
+                .push(self.field(
+                    "Reason (optional, they see it)",
+                    &self.reason,
+                    Message::Reason,
+                )),
+            Kind::MakeAdmin { .. } => body.push(
+                text(
+                    "Admins can do everything you can, including changing the room and its \
+                     people. You can't take it back: an admin can't demote another admin.",
+                )
+                .size(13),
+            ),
             Kind::SignOut => body.push(
                 text(
                     "This device's data, including its message keys, is deleted. To read \
@@ -551,7 +621,10 @@ impl Dialog {
         let submit_message = ready.then(|| message(Message::Submit));
         // A confirmation is short: its answer below the question, as in
         // system alerts. A form's action stays in the header.
-        let action = if matches!(self.kind, Kind::Leave { .. } | Kind::SignOut) {
+        let action = if matches!(
+            self.kind,
+            Kind::Leave { .. } | Kind::SignOut | Kind::RemoveMember { .. } | Kind::MakeAdmin { .. }
+        ) {
             body = body.push(
                 row![
                     space::horizontal(),

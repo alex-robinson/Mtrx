@@ -49,6 +49,8 @@ pub struct Shown<'a> {
     pub call_services: &'a [CallService],
     /// Rooms show their pictures, as the room list does.
     pub room_pictures: bool,
+    /// The member whose menu is open, and in which room.
+    pub member_menu: Option<&'a (OwnedRoomId, OwnedUserId)>,
 }
 
 /// What to show a card for.

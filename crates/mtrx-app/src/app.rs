@@ -162,6 +162,11 @@ pub enum Message {
     ToggleMembers,
     /// Open the room with its members shown (where Invite is).
     ShowMembers(OwnedRoomId),
+    MemberMenu(Option<(OwnedRoomId, OwnedUserId)>),
+    /// Make a member a moderator or a plain member.
+    SetRole(OwnedRoomId, OwnedUserId, mtrx_core::Role),
+    /// A room's members were changed by us, or not.
+    MembersChanged(OwnedRoomId, Result<(), String>),
     /// A space's card, on one of its tabs.
     ShowSpace(OwnedRoomId, overview::Tab),
     /// A room's members, and whether we may mention everyone (`@room`).
@@ -360,6 +365,8 @@ struct Main {
     space_menu: Option<sidebar::SpaceMenu>,
     /// The rooms of our spaces, for the room search.
     space_rooms: directory::SpaceRooms,
+    /// The member whose menu is open, and in which room.
+    member_menu: Option<(OwnedRoomId, OwnedUserId)>,
     /// The invite shown instead of a room, and whether it is being answered.
     invite: Option<(OwnedRoomId, bool)>,
     /// A room being opened (its timeline loads).
@@ -451,6 +458,7 @@ impl Main {
             add_menu: false,
             space_menu: None,
             space_rooms: Default::default(),
+            member_menu: None,
             invite: None,
             opening: None,
             notice: None,
@@ -766,6 +774,12 @@ impl App {
             )
         {
             main.space_menu = None;
+        }
+        if let Screen::Main(main) = &mut self.screen
+            && main.member_menu.is_some()
+            && matches!(message, Message::OpenDialog(_) | Message::ShowInfo(_))
+        {
+            main.member_menu = None;
         }
         let remember = matches!(message, Message::OpenRoom(_) | Message::SelectSpace(_));
         let task = self.handle(message);
@@ -1989,6 +2003,38 @@ impl App {
                 };
                 submit.map_or_else(Task::none, Task::done)
             }
+            Message::MemberMenu(menu) => {
+                if let Screen::Main(main) = &mut self.screen {
+                    main.member_menu = menu;
+                }
+                Task::none()
+            }
+            Message::SetRole(room, user, role) => {
+                let Screen::Main(main) = &mut self.screen else {
+                    return Task::none();
+                };
+                main.member_menu = None;
+                let session = main.session.clone();
+                Task::perform(
+                    {
+                        let room = room.clone();
+                        async move { session.set_role(&room, &user, role).await }
+                    },
+                    move |result| {
+                        Message::MembersChanged(room.clone(), result.map_err(|e| e.to_string()))
+                    },
+                )
+            }
+            Message::MembersChanged(room, result) => {
+                if let (Err(e), Screen::Main(main)) = (&result, &mut self.screen) {
+                    main.notice = Some(Notice {
+                        text: format!("Could not change the members: {e}"),
+                        room: None,
+                        error: true,
+                    });
+                }
+                self.refresh_members(&room)
+            }
             Message::ShowMembers(id) => {
                 let Screen::Main(main) = &mut self.screen else {
                     return Task::none();
@@ -2594,6 +2640,7 @@ impl App {
                 main.dialog = None;
                 match opened {
                     dialog::Opened::Nothing => Task::none(),
+                    dialog::Opened::Members(room) => self.refresh_members(&room),
                     dialog::Opened::Room(id) => self.update(Message::OpenRoom(id)),
                     dialog::Opened::Space(id) => self.update(Message::SelectSpace(Some(id))),
                     dialog::Opened::Left(id) => {
@@ -3626,6 +3673,27 @@ impl App {
     }
 
     /// Request the pictures on screen.
+    /// Show a room's members anew where they are listed: beside the open
+    /// room, or in its space's overview.
+    fn refresh_members(&mut self, room: &OwnedRoomId) -> Task<Message> {
+        let Screen::Main(main) = &mut self.screen else {
+            return Task::none();
+        };
+        let beside = match main.room.as_mut() {
+            Some(open) if open.id == *room && main.show_members => {
+                load_members(&main.session, open)
+            }
+            _ => Task::none(),
+        };
+        let overview = match main.info.as_ref().and_then(|c| c.overview.as_ref()) {
+            Some(overview) if overview.space == *room => {
+                overview_task(&main.session, room, overview::Action::LoadMembers)
+            }
+            _ => Task::none(),
+        };
+        Task::batch([beside, overview])
+    }
+
     /// Run what the join dialog asks for.
     fn join_action(&mut self, action: join::Action) -> Task<Message> {
         let Screen::Main(main) = &mut self.screen else {
@@ -4002,6 +4070,7 @@ impl App {
                             pinned_notes: self.settings.pinned_notes,
                             call_services: &self.settings.call_services,
                             room_pictures: self.settings.room_pictures,
+                            member_menu: main.member_menu.as_ref(),
                         }),
                         Message::Info(info::Message::Close),
                     )
@@ -4073,11 +4142,14 @@ impl App {
                         opening,
                         members::view(
                             None,
-                            id,
                             name,
-                            &main.own_user,
-                            &main.avatars,
-                            &main.presences,
+                            members::Shown {
+                                room: id,
+                                own: &main.own_user,
+                                avatars: &main.avatars,
+                                presences: &main.presences,
+                                menu: main.member_menu.as_ref(),
+                            },
                         )
                     ]
                     .into()
@@ -4106,6 +4178,7 @@ impl App {
                     previews: &main.previews,
                     frequent_emoji: &main.frequent_emoji,
                     show_members: main.show_members,
+                    member_menu: main.member_menu.as_ref(),
                     presences: &main.presences,
                     now: main.now,
                 };
@@ -4387,6 +4460,16 @@ async fn run_request(
             Request::Leave(room) => {
                 session.leave(&room).await?;
                 Opened::Left(room)
+            }
+            Request::RemoveMember(room, user, reason, ban) => {
+                session
+                    .remove_member(&room, &user, reason.as_deref(), ban)
+                    .await?;
+                Opened::Members(room)
+            }
+            Request::SetRole(room, user, role) => {
+                session.set_role(&room, &user, role).await?;
+                Opened::Members(room)
             }
             Request::SignOut => {
                 // Others see us offline now, not once the server forgets us.

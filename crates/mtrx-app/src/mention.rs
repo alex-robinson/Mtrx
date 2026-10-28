@@ -345,6 +345,7 @@ mod tests {
             avatar: None,
             role: Role::Member,
             invited: false,
+            manage: Default::default(),
         }
     }
 

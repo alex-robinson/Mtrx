@@ -59,6 +59,7 @@ fn person(id: &str, name: &str, role: mtrx_core::Role) -> Member {
         avatar: None,
         role,
         invited: false,
+        manage: Default::default(),
     }
 }
 

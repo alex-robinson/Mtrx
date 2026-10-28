@@ -1008,11 +1008,14 @@ impl Room {
             let name = summary.map_or("", |s| s.name.as_str());
             body = body.push(members::view(
                 self.member_list.as_ref(),
-                &self.id,
                 name,
-                look.own_user,
-                look.avatars,
-                look.presences,
+                members::Shown {
+                    room: &self.id,
+                    own: look.own_user,
+                    avatars: look.avatars,
+                    presences: look.presences,
+                    menu: look.member_menu,
+                },
             ));
         }
         column![header, body].into()
@@ -1200,6 +1203,8 @@ pub struct Look<'a> {
     pub frequent_emoji: &'a [String],
     /// The member list is shown beside the room.
     pub show_members: bool,
+    /// The member whose menu is open, and in which room.
+    pub member_menu: Option<&'a (OwnedRoomId, OwnedUserId)>,
     /// People's presence, in the member list and a direct chat's header.
     pub presences: &'a Presences,
     /// For how long ago people were last active.
@@ -2260,6 +2265,7 @@ mod tests {
             avatar: Some("mxc://x/nils".into()),
             role: mtrx_core::Role::Member,
             invited: false,
+            manage: Default::default(),
         };
         let card = |members: Option<&[Member]>, entries: &[TimelineEntry]| match mentioned(
             nils.clone(),
