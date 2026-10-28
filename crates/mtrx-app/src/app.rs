@@ -20,9 +20,10 @@ use iced::{
 };
 use mtrx_core::{
     CallService, Connection, Contact, Google, Media, MediaRef, Member, Notification, OwnedEventId,
-    OwnedMxcUri, OwnedRoomId, OwnedRoomOrAliasId, OwnedUserId, PresenceState, Profile,
-    RecoveryStep, RoomKind, RoomList, RoomListColours, RoomListState, RoomOrAliasId, RoomTag,
-    RoomTimeline, ScheduledMessage, SecretStore, ServiceKind, Session, TimelineEntry, Topic, Url,
+    OwnedMxcUri, OwnedRoomId, OwnedRoomOrAliasId, OwnedServerName, OwnedUserId, PresenceState,
+    Profile, RecoveryStep, RoomKind, RoomList, RoomListColours, RoomListState, RoomOrAliasId,
+    RoomTag, RoomTimeline, ScheduledMessage, SecretStore, ServiceKind, Session, TimelineEntry,
+    Topic, Url,
 };
 
 use crate::{
@@ -33,7 +34,7 @@ use crate::{
     calls,
     clipboard::{self, Copied, Field, Pasted},
     dialog::{self, Dialog},
-    edit_menu, emoji,
+    directory, edit_menu, emoji,
     find::{self, Find},
     hint::{Position, hint},
     info, join,
@@ -148,6 +149,12 @@ pub enum Message {
     OpenFirstMatch,
     /// Open the room above or below in the room list, or one by its row.
     GoToRoom(sidebar::Go),
+    /// The rooms of our spaces, as their servers list them.
+    SpaceRoomsLoaded(Vec<(OwnedRoomId, Vec<mtrx_core::DirectoryRoom>)>),
+    /// Join a room the search found in our spaces, or ask to (`true`).
+    JoinFound(OwnedRoomId, Vec<OwnedServerName>, bool),
+    /// Joined it (or asked to, `true`), or not.
+    FoundJoined(OwnedRoomId, bool, Result<(), String>),
     FocusSearch,
     Escape,
     /// ⌘↩: the open dialog's main action, or saving the card's changes.
@@ -351,6 +358,8 @@ struct Main {
     add_menu: bool,
     /// The space bar's "+" menu, or a space's, is open.
     space_menu: Option<sidebar::SpaceMenu>,
+    /// The rooms of our spaces, for the room search.
+    space_rooms: directory::SpaceRooms,
     /// The invite shown instead of a room, and whether it is being answered.
     invite: Option<(OwnedRoomId, bool)>,
     /// A room being opened (its timeline loads).
@@ -441,6 +450,7 @@ impl Main {
             background: None,
             add_menu: false,
             space_menu: None,
+            space_rooms: Default::default(),
             invite: None,
             opening: None,
             notice: None,
@@ -501,6 +511,7 @@ impl Main {
             room_pictures: settings.room_pictures,
             notes: self.pinned_notes(settings),
             presences: &self.presences,
+            space_rooms: &self.space_rooms,
         }
     }
 
@@ -1783,10 +1794,69 @@ impl App {
                 }
             }
             Message::RoomFilter(filter) => {
+                let Screen::Main(main) = &mut self.screen else {
+                    return Task::none();
+                };
+                // A search starting looks through our spaces' rooms anew.
+                let load = if main.filter.trim().is_empty() && !filter.trim().is_empty() {
+                    load_space_rooms(main)
+                } else {
+                    Task::none()
+                };
+                main.filter = filter;
+                Task::batch([load, self.load_avatars()])
+            }
+            Message::SpaceRoomsLoaded(spaces) => {
                 if let Screen::Main(main) = &mut self.screen {
-                    main.filter = filter;
+                    main.space_rooms.loaded(spaces);
                 }
                 self.load_avatars()
+            }
+            Message::JoinFound(room, via, knock) => {
+                let Screen::Main(main) = &mut self.screen else {
+                    return Task::none();
+                };
+                main.space_rooms.busy.insert(room.clone());
+                let session = main.session.clone();
+                Task::perform(
+                    {
+                        let room = room.clone();
+                        async move {
+                            if knock {
+                                session.knock(&room.into(), via).await.map(|_| ())
+                            } else {
+                                session
+                                    .join(<&RoomOrAliasId>::from(&*room), &via)
+                                    .await
+                                    .map(|_| ())
+                            }
+                        }
+                    },
+                    move |result| {
+                        Message::FoundJoined(room.clone(), knock, result.map_err(|e| e.to_string()))
+                    },
+                )
+            }
+            Message::FoundJoined(room, knock, result) => {
+                let Screen::Main(main) = &mut self.screen else {
+                    return Task::none();
+                };
+                main.space_rooms.busy.remove(&room);
+                match result {
+                    Ok(()) if knock => {
+                        main.space_rooms.asked.insert(room);
+                        Task::none()
+                    }
+                    Ok(()) => self.update(Message::OpenRoom(room)),
+                    Err(e) => {
+                        main.notice = Some(Notice {
+                            text: format!("Could not join: {e}"),
+                            room: None,
+                            error: true,
+                        });
+                        Task::none()
+                    }
+                }
             }
             Message::OpenFirstMatch => {
                 let Screen::Main(main) = &mut self.screen else {
@@ -4512,6 +4582,27 @@ fn attach(room: OwnedRoomId, paths: Vec<PathBuf>) -> Task<Message> {
 
 /// Load the room's members, for its member list and mentions, and whether
 /// we may mention everyone.
+/// Load the rooms of all our spaces, for the room search.
+fn load_space_rooms(main: &mut Main) -> Task<Message> {
+    let spaces = directory::searched_spaces(&main.rooms.rooms, None);
+    if spaces.is_empty() || main.space_rooms.loading {
+        return Task::none();
+    }
+    main.space_rooms.loading = true;
+    let session = main.session.clone();
+    Task::perform(
+        futures_util::future::join_all(spaces.into_iter().map(move |space| {
+            let session = session.clone();
+            async move {
+                // A space its server won't list is left out.
+                let rooms = session.space_children(&space).await.unwrap_or_default();
+                (space, rooms)
+            }
+        })),
+        Message::SpaceRoomsLoaded,
+    )
+}
+
 /// Load or join what a space's overview needs.
 fn overview_task(
     session: &Arc<Session>,

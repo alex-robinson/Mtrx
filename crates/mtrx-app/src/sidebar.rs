@@ -13,8 +13,8 @@ use iced::{
     },
 };
 use mtrx_core::{
-    Grouping, Layout, MxcUri, OwnedRoomId, OwnedUserId, RoomKind, RoomSummary, RoomTag,
-    ScheduledMessage, Section, Sort, UserId, top_level_spaces,
+    DirectoryRoom, Grouping, Layout, MxcUri, OwnedRoomId, OwnedUserId, RoomKind, RoomSummary,
+    RoomTag, ScheduledMessage, Section, Sort, UserId, top_level_spaces,
 };
 
 use crate::{
@@ -23,6 +23,7 @@ use crate::{
     avatar::{Avatars, Shape},
     context_menu::{self, context_menu},
     dialog::Kind,
+    directory,
     ellipsis::{ellipsis, followed_by},
     fonts,
     hint::{Position, hint, shortcut},
@@ -183,6 +184,13 @@ fn listed<'a>(view: &RoomListView<'a>) -> Vec<&'a RoomSummary> {
     }
 }
 
+/// Rooms of our spaces (the selected one's, or all at Home) not joined yet
+/// that the search finds.
+fn not_joined<'a>(view: &RoomListView<'a>, filter: &str) -> Vec<&'a DirectoryRoom> {
+    let spaces = directory::searched_spaces(view.rooms, view.selected_space);
+    view.space_rooms.found(&spaces, view.rooms, filter)
+}
+
 /// The rooms with a row in the room list, in its order: the pinned Notes,
 /// then each section's, or what the search found.
 fn rows<'a>(view: &RoomListView<'a>) -> Vec<&'a RoomSummary> {
@@ -269,7 +277,16 @@ pub fn avatars<'a>(view: &RoomListView<'a>) -> Vec<(&'a MxcUri, f32)> {
         .into_iter()
         .filter(|r| view.room_pictures || r.kind != RoomKind::Room)
         .filter_map(|r| Some((r.avatar.as_deref()?, ROOM_AVATAR)));
-    spaces.chain(listed).collect()
+    let filter = view.filter.trim().to_lowercase();
+    let unjoined = if filter.is_empty() {
+        Vec::new()
+    } else {
+        not_joined(view, &filter)
+    };
+    let unjoined = unjoined
+        .into_iter()
+        .filter_map(|r| Some((r.avatar.as_deref()?, directory::AVATAR)));
+    spaces.chain(listed).chain(unjoined).collect()
 }
 
 /// The people of the direct chats the room list shows, in its order,
@@ -447,6 +464,8 @@ pub struct RoomListView<'a> {
     pub notes: Option<Notes<'a>>,
     /// Dots on the pictures of direct chats.
     pub presences: &'a Presences,
+    /// The rooms of our spaces, for the search to find those not joined.
+    pub space_rooms: &'a directory::SpaceRooms,
 }
 
 /// The Notes to self at the top of the room list.
@@ -530,20 +549,49 @@ pub fn room_list<'a>(view: RoomListView<'a>) -> Element<'a, Message> {
         list = list.extend(arranged(&view));
     } else {
         let found = search(rooms, selected_space, view.arrange, &view.grouping, &filter);
-        if found.is_empty() {
+        let unjoined = not_joined(&view, &filter);
+        let space_rooms = view.space_rooms;
+        if found.is_empty() && unjoined.is_empty() && !space_rooms.loading {
             let none = if selected_space.is_some() {
                 "No rooms or chats in this space match."
             } else {
                 "No rooms or chats at Home match."
             };
             list = list.push(container(text(none).size(12).style(text::secondary)).padding([8, 8]));
-        } else {
+        } else if !found.is_empty() {
             list = list.push(
                 container(section_title("Results")).padding(Padding::new(8.0).top(14).bottom(4)),
             );
         }
         for room in found {
             list = list.push(view.room_entry(room));
+        }
+        if !unjoined.is_empty() {
+            list = list.push(
+                container(section_title("Not joined")).padding(Padding::new(8.0).top(14).bottom(4)),
+            );
+        } else if space_rooms.loading {
+            list = list.push(
+                container(
+                    text("Looking in your spaces…")
+                        .size(12)
+                        .style(text::secondary),
+                )
+                .padding([8, 8]),
+            );
+        }
+        for room in unjoined {
+            let membership =
+                directory::membership(room, rooms, space_rooms.asked.contains(&room.id));
+            list = list.push(directory::entry(
+                room,
+                membership,
+                space_rooms.busy.contains(&room.id),
+                space().width(0).into(),
+                view.avatars,
+                Message::JoinFound(room.id.clone(), room.via.clone(), false),
+                Message::JoinFound(room.id.clone(), room.via.clone(), true),
+            ));
         }
     }
     if !view.loaded {
@@ -1878,6 +1926,7 @@ mod tests {
             room_pictures: false,
             notes: None,
             presences,
+            space_rooms: Box::leak(Box::default()),
         }
     }
 

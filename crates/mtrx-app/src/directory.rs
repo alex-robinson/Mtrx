@@ -2,11 +2,13 @@
 //! them: a picture, the name, what it is about, who can join, and Join, Ask
 //! to join or Open.
 
+use std::collections::{HashMap, HashSet};
+
 use iced::{
     Alignment, Element, Length, Theme,
     widget::{button, column, container, row, text},
 };
-use mtrx_core::{DirectoryRoom, JoinAccess, Membership, RoomSummary};
+use mtrx_core::{DirectoryRoom, JoinAccess, Membership, OwnedRoomId, RoomKind, RoomSummary};
 
 use crate::{
     app,
@@ -188,4 +190,138 @@ pub fn secondary(theme: &Theme) -> iced::Color {
         .base
         .text
         .scale_alpha(0.6)
+}
+
+/// The rooms of the user's spaces as their servers list them, for the room
+/// search to find those not joined yet. Loaded as a search starts.
+#[derive(Default)]
+pub struct SpaceRooms {
+    by_space: HashMap<OwnedRoomId, Vec<DirectoryRoom>>,
+    pub loading: bool,
+    /// Joining or asking to join.
+    pub busy: HashSet<OwnedRoomId>,
+    pub asked: HashSet<OwnedRoomId>,
+}
+
+impl SpaceRooms {
+    pub fn loaded(&mut self, spaces: Vec<(OwnedRoomId, Vec<DirectoryRoom>)>) {
+        self.loading = false;
+        self.by_space = spaces.into_iter().collect();
+    }
+
+    /// Rooms of `spaces` not in `rooms` (not joined, nor invited) whose
+    /// name contains `filter` (lower case), names starting with it first;
+    /// each once.
+    pub fn found<'a>(
+        &'a self,
+        spaces: &[OwnedRoomId],
+        rooms: &[RoomSummary],
+        filter: &str,
+    ) -> Vec<&'a DirectoryRoom> {
+        let mut seen = HashSet::new();
+        let mut found: Vec<_> = spaces
+            .iter()
+            .filter_map(|space| self.by_space.get(space))
+            .flatten()
+            .filter(|r| !rooms.iter().any(|known| known.id == r.id))
+            .filter(|r| seen.insert(&r.id))
+            .filter_map(|r| {
+                let name = r.name.to_lowercase();
+                name.find(filter).map(|at| (at > 0, r))
+            })
+            .collect();
+        found.sort_by_key(|(later, r)| (*later, r.name.to_lowercase()));
+        found.into_iter().map(|(_, r)| r).collect()
+    }
+}
+
+/// The joined spaces whose rooms the search looks through: those in the
+/// selected space (and it), or all at Home.
+pub fn searched_spaces(rooms: &[RoomSummary], selected: Option<&OwnedRoomId>) -> Vec<OwnedRoomId> {
+    let is_space = |r: &&RoomSummary| r.kind == RoomKind::Space && !r.invited;
+    match selected {
+        Some(space) => {
+            let below = mtrx_core::descendants(rooms, space);
+            std::iter::once(space.clone())
+                .chain(
+                    rooms
+                        .iter()
+                        .filter(is_space)
+                        .filter(|r| below.contains(&r.id))
+                        .map(|r| r.id.clone()),
+                )
+                .collect()
+        }
+        None => rooms
+            .iter()
+            .filter(is_space)
+            .map(|r| r.id.clone())
+            .collect(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn listed(id: &str, name: &str) -> DirectoryRoom {
+        DirectoryRoom {
+            id: format!("!{id}:x").try_into().unwrap(),
+            alias: None,
+            name: name.into(),
+            topic: None,
+            avatar: None,
+            members: 3,
+            is_space: false,
+            children: 0,
+            access: JoinAccess::Public,
+            membership: None,
+            via: Vec::new(),
+            suggested: false,
+        }
+    }
+
+    #[test]
+    fn finds_rooms_not_joined_once_best_first() {
+        let space: OwnedRoomId = "!space:x".try_into().unwrap();
+        let other: OwnedRoomId = "!other:x".try_into().unwrap();
+        let mut found = SpaceRooms::default();
+        found.loaded(vec![
+            (
+                space.clone(),
+                vec![
+                    listed("a", "Ice sheets"),
+                    listed("b", "Sea ice"),
+                    listed("c", "Joined ice"),
+                ],
+            ),
+            (other.clone(), vec![listed("b", "Sea ice")]),
+        ]);
+        let joined = RoomSummary {
+            id: "!c:x".try_into().unwrap(),
+            name: "Joined ice".into(),
+            avatar: None,
+            topic: None,
+            kind: RoomKind::Room,
+            invited: false,
+            encrypted: false,
+            public: false,
+            unread_messages: 0,
+            unread_mentions: 0,
+            unread_notifications: 0,
+            last_activity: None,
+            parents: Vec::new(),
+            tag: mtrx_core::RoomTag::None,
+            direct_user: None,
+            alias: None,
+            joined_members: 0,
+            pinned: Vec::new(),
+        };
+        let names: Vec<_> = found
+            .found(&[space, other], &[joined], "ice")
+            .iter()
+            .map(|r| r.name.as_str())
+            .collect();
+        assert_eq!(names, ["Ice sheets", "Sea ice"]);
+    }
 }
