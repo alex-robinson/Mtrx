@@ -46,13 +46,19 @@ struct RoomLists: Equatable {
     /// The Spaces tab's spaces page: the top-level spaces, then Other rooms
     /// while it has any.
     var spaces: [SpaceItem] = []
+    /// The joined rooms (not chats or spaces), in the list's order.
+    var rooms: [RoomSummary] = []
+    /// Every room, chat and space by ID.
+    var byId: [String: RoomSummary] = [:]
 
     init() {}
 
     init(_ state: RoomListState) {
         let byId = Dictionary(state.rooms.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        self.byId = byId
         let summaries = { (ids: [String]) in ids.compactMap { byId[$0] } }
         chats = state.rooms.filter { $0.kind == .direct }
+        rooms = state.rooms.filter { $0.kind == .room && !$0.invited }
         spaces = state.spaces.compactMap { space in
             guard let summary = byId[space.spaceId] else { return nil }
             return SpaceItem(entry: .space(space.spaceId), space: summary, rooms: summaries(space.roomIds))
@@ -70,6 +76,11 @@ struct RoomLists: Equatable {
 
     func space(_ entry: SpaceEntry) -> SpaceItem? {
         spaces.first { $0.entry == entry }
+    }
+
+    /// The name of the (first) space that lists `room`, if any.
+    func spaceName(of room: RoomSummary) -> String? {
+        room.parents.lazy.compactMap { self.byId[$0]?.name }.first
     }
 
     /// The rooms whose name contains `filter`, those starting with it

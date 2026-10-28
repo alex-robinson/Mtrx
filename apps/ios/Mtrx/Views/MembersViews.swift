@@ -1,0 +1,216 @@
+import MtrxFFI
+import SwiftUI
+
+/// A room's members (joined, then invited): picture, name and role; a tap on
+/// one we may manage opens their menu (in the navigation stack it is in).
+struct MembersSection: View {
+    let room: RoomSummary
+    @ObservedObject var model: RoomInfoModel
+
+    var body: some View {
+        if let members = model.members {
+            let joined = members.filter { !$0.invited }
+            let invited = members.filter(\.invited)
+            Section("Joined · \(joined.count)") {
+                rows(joined)
+            }
+            if !invited.isEmpty {
+                Section("Invited · \(invited.count)") {
+                    rows(invited)
+                }
+            }
+        } else if model.loadError == nil {
+            Section("Members") {
+                ProgressView().frame(maxWidth: .infinity)
+            }
+        }
+    }
+
+    private func rows(_ members: [Member]) -> some View {
+        ForEach(members, id: \.userId) { member in
+            if MemberRoles.manageable(member) {
+                NavigationLink {
+                    MemberMenu(member: member, model: model)
+                } label: {
+                    MemberRow(member: member)
+                }
+            } else {
+                MemberRow(member: member)
+            }
+        }
+    }
+}
+
+/// A member: picture, name (else ID) and role.
+struct MemberRow: View {
+    let member: Member
+
+    var body: some View {
+        HStack(spacing: 10) {
+            AvatarView(name: member.shownName, uri: member.avatarUrl, size: 30)
+            VStack(alignment: .leading, spacing: 0) {
+                Text(member.shownName)
+                    .lineLimit(1)
+                if member.name != nil {
+                    Text(member.userId)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+            }
+            Spacer(minLength: 8)
+            if let role = MemberRoles.label(member) {
+                Text(role)
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .contentShape(Rectangle())
+    }
+}
+
+extension Member {
+    /// Their name, else their user ID.
+    var shownName: String { name ?? userId }
+}
+
+/// What we may do to a member: the levels we may give them (theirs
+/// ticked), a custom level, Remove… and Ban…. Asks first where a change
+/// can't be undone.
+struct MemberMenu: View {
+    let member: Member
+    @ObservedObject var model: RoomInfoModel
+    @Environment(\.dismiss) private var dismiss
+    @State private var confirming: (level: Int64, confirmation: MemberRoles.Confirmation)?
+    @State private var customLevel = false
+    @State private var typed = ""
+    @State private var removing: Bool?
+    @State private var reason = ""
+
+    private var own: Bool { member.userId == model.userId }
+    private var name: String { member.shownName }
+
+    var body: some View {
+        List {
+            Section {
+                HStack(spacing: 12) {
+                    AvatarView(name: name, uri: member.avatarUrl, size: 44)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(name).font(.headline)
+                        Text(member.userId)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                    }
+                }
+                .listRowBackground(Color.clear)
+            }
+            if let upTo = member.manage.upTo {
+                Section("Role") {
+                    ForEach(MemberRoles.choices(for: member)) { choice in
+                        Button {
+                            give(choice.level)
+                        } label: {
+                            HStack {
+                                Image(systemName: "checkmark")
+                                    .font(.footnote.weight(.semibold))
+                                    .opacity(choice.current ? 1 : 0)
+                                Text(choice.title)
+                                    .foregroundColor(.primary)
+                                Spacer()
+                                Text(String(choice.level))
+                                    .foregroundStyle(.secondary)
+                                    .monospacedDigit()
+                            }
+                        }
+                        .disabled(choice.current || choice.level > upTo)
+                    }
+                    Button("Custom level…") {
+                        typed = member.level.map(String.init) ?? ""
+                        customLevel = true
+                    }
+                }
+            }
+            if member.manage.remove || member.manage.ban {
+                Section {
+                    if member.manage.remove {
+                        Button("Remove…", role: .destructive) { remove(ban: false) }
+                    }
+                    if member.manage.ban {
+                        Button("Ban…", role: .destructive) { remove(ban: true) }
+                    }
+                }
+            }
+        }
+        .navigationTitle(name)
+        .navigationBarTitleDisplayMode(.inline)
+        .alert(
+            confirming?.confirmation.title ?? "",
+            isPresented: Binding(get: { confirming != nil }, set: { if !$0 { confirming = nil } }),
+            presenting: confirming
+        ) { confirming in
+            Button(confirming.confirmation.button, role: .destructive) {
+                model.setLevel(confirming.level, of: member.userId)
+                dismiss()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: { confirming in
+            Text(confirming.confirmation.message)
+        }
+        .alert(own ? "Your power level" : "Power level for \(name)", isPresented: $customLevel) {
+            TextField("Level", text: $typed)
+                .keyboardType(.numbersAndPunctuation)
+            Button("Set") {
+                if let upTo = member.manage.upTo, let level = MemberRoles.level(typed: typed, upTo: upTo) {
+                    give(level)
+                }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text(levelsHint)
+        }
+        .alert(
+            removing == true ? "Ban \(name)?" : "Remove \(name)?",
+            isPresented: Binding(get: { removing != nil }, set: { if !$0 { removing = nil } })
+        ) {
+            TextField("Reason (optional, they see it)", text: $reason)
+            Button(removing == true ? "Ban" : "Remove", role: .destructive) {
+                model.remove(member.userId, reason: reason, ban: removing == true)
+                dismiss()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text(
+                removing == true
+                    ? "They can't come back until someone lifts the ban."
+                    : "They can come back if the room lets them join or someone invites them.")
+        }
+    }
+
+    /// "Admin 100 · Moderator 50 · Member 0 · at most 50".
+    private var levelsHint: String {
+        var hint = "Admin 100 · Moderator 50 · Member \(member.manage.defaultLevel)"
+        if let upTo = member.manage.upTo, upTo < 100 {
+            hint += " · at most \(upTo)"
+        }
+        return hint
+    }
+
+    /// Give `level`, asking first where it can't be undone.
+    private func give(_ level: Int64) {
+        guard level != member.level else { return }
+        if let confirmation = MemberRoles.confirmation(
+            level: level, for: member, name: name, own: own, alone: model.alone)
+        {
+            confirming = (level, confirmation)
+        } else {
+            model.setLevel(level, of: member.userId)
+            dismiss()
+        }
+    }
+
+    private func remove(ban: Bool) {
+        reason = ""
+        removing = ban
+    }
+}

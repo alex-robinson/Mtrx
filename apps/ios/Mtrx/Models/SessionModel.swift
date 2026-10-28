@@ -21,11 +21,24 @@ final class SessionModel: ObservableObject {
     @Published private(set) var loaded = false
     /// The chats, and the rooms by space.
     @Published private(set) var lists = RoomLists()
-    /// The Spaces tab's selected space, remembered across launches (until
-    /// sign-out).
+    /// The Spaces tab's selected space, whose rooms it shows, remembered
+    /// across launches (until sign-out).
     @Published private(set) var selectedSpace: SpaceEntry?
-    /// The Spaces tab's page: the spaces, or the selected space's rooms.
-    @Published var roomsPage = RoomsPage.spaces
+    /// The tab shown.
+    @Published var tab = HomeTab.chats
+    /// The chats opened over the Chats tab's list.
+    @Published var chatsPath: [String] = []
+    /// The rooms opened over the Rooms tab's Recent list: at launch, the
+    /// last room.
+    @Published var roomsPath: [String] = []
+    /// The rooms opened lately, remembered across launches (until
+    /// sign-out).
+    @Published private(set) var recent: RecentRooms
+    /// An invite to answer, while its sheet shows.
+    @Published var invite: RoomRef?
+    /// Rooms and spaces just made or joined here, not in the room list
+    /// yet: shown as coming rather than gone.
+    @Published private(set) var expecting: Set<String> = []
     /// The order of every space's rooms (not of the chats), remembered
     /// across launches.
     @Published private(set) var roomSort: RoomSort
@@ -45,6 +58,11 @@ final class SessionModel: ObservableObject {
     /// Why asking another device to verify failed.
     @Published var verificationError: String?
     private(set) lazy var recovery = RecoveryModel(session: session)
+    /// What was typed in each room and not sent.
+    let drafts = Drafts()
+    /// The spaces' rooms as their servers last listed them, for the
+    /// overview to show at once.
+    let spaceChildren = SpaceChildrenCache()
 
     private let subscriptions = Subscriptions()
     /// The app is in the foreground: sync runs.
@@ -57,6 +75,7 @@ final class SessionModel: ObservableObject {
     private let defaults: UserDefaults
     private static let selectedSpaceKey = "selectedSpace"
     private static let roomSortKey = "roomSort"
+    private static let recentKey = "recentRooms"
 
     init(session: Session, defaults: UserDefaults = .standard, idleTime: TimeInterval = PresenceModel.idleTime) {
         self.session = session
@@ -70,8 +89,10 @@ final class SessionModel: ObservableObject {
         // Opens on the space's rooms, until the room list says it is gone.
         if let saved = defaults.string(forKey: Self.selectedSpaceKey) {
             selectedSpace = SpaceEntry(saved: saved)
-            roomsPage = .rooms
         }
+        recent = RecentRooms(defaults.stringArray(forKey: Self.recentKey) ?? [])
+        // The Rooms tab reopens the last room.
+        roomsPath = recent.last.map { [$0] } ?? []
     }
 
     /// Follow the connection, the room list, the encryption state and
@@ -110,13 +131,21 @@ final class SessionModel: ObservableObject {
         rooms = state.rooms
         loaded = state.loaded
         lists = RoomLists(state)
-        if state.loaded {
-            presence.follow(lists.chats)
-        }
-        // The first states may be a cache: the space may come with sync.
-        if let selectedSpace, state.loaded, lists.space(selectedSpace) == nil {
+        expecting = expecting.filter { lists.byId[$0]?.invited ?? true }
+        guard state.loaded else { return }
+        // The first states may be a cache: rooms may come with sync.
+        presence.follow(lists.chats)
+        if let selectedSpace, lists.space(selectedSpace) == nil, !isExpected(selectedSpace) {
             selectSpace(nil)
         }
+        var kept = recent
+        kept.keep(Set(lists.byId.keys).union(expecting))
+        setRecent(kept)
+    }
+
+    private func isExpected(_ entry: SpaceEntry) -> Bool {
+        if case .space(let id) = entry { return expecting.contains(id) }
+        return false
     }
 
     func room(_ id: String) -> RoomSummary? {
@@ -215,12 +244,113 @@ final class SessionModel: ObservableObject {
     /// selected.
     func selectSpace(_ entry: SpaceEntry?) {
         selectedSpace = entry
-        roomsPage = entry == nil ? .spaces : .rooms
         if let entry {
             defaults.set(entry.saved, forKey: Self.selectedSpaceKey)
         } else {
             defaults.removeObject(forKey: Self.selectedSpaceKey)
         }
+    }
+
+    /// The Spaces tab's pages over its list: the selected space's rooms.
+    var spacesPath: [SpaceEntry] {
+        get { selectedSpace.map { [$0] } ?? [] }
+        set { selectSpace(newValue.last) }
+    }
+
+    /// A tab was tapped; tapped again, it goes back to its list (the Rooms
+    /// tab: to Recent).
+    func select(_ tab: HomeTab) {
+        guard tab == self.tab else {
+            self.tab = tab
+            return
+        }
+        switch tab {
+        case .chats: chatsPath = []
+        case .spaces: selectSpace(nil)
+        case .rooms: roomsPath = []
+        case .settings: break
+        }
+    }
+
+    /// Open a room (or a direct chat) where it belongs: a room in the Rooms
+    /// tab, over Recent; a chat in the Chats tab; a space's rooms in the
+    /// Spaces tab. `kind` for one not in the room list yet.
+    func open(_ id: String, kind: RoomKind? = nil) {
+        switch kind ?? lists.byId[id]?.kind {
+        case .direct:
+            chatsPath = [id]
+            tab = .chats
+        case .space:
+            selectSpace(.space(id))
+            tab = .spaces
+        case .room, nil:
+            roomsPath = [id]
+            tab = .rooms
+        }
+    }
+
+    /// A room was opened (shown): it is the last room now, first in Recent.
+    /// Not chats or spaces.
+    func opened(_ room: RoomSummary) {
+        guard room.kind == .room, !room.invited else { return }
+        var opened = recent
+        opened.opened(room.id)
+        setRecent(opened)
+    }
+
+    /// We left a room, or declined an invite: it goes from where it shows.
+    func left(_ id: String) {
+        var kept = recent
+        kept.remove(id)
+        setRecent(kept)
+        roomsPath.removeAll { $0 == id }
+        chatsPath.removeAll { $0 == id }
+        if selectedSpace == .space(id) {
+            selectSpace(nil)
+        }
+        expecting.remove(id)
+    }
+
+    /// A room or space made or joined here: shown as coming until the room
+    /// list has it.
+    func expect(_ id: String) {
+        expecting.insert(id)
+    }
+
+    private func setRecent(_ recent: RecentRooms) {
+        guard recent != self.recent else { return }
+        self.recent = recent
+        defaults.set(recent.ids, forKey: Self.recentKey)
+    }
+
+    /// Accept an invite: join, then open what we joined.
+    func accept(_ room: RoomSummary) async throws {
+        _ = try await session.join(room: room.id, via: [])
+        expect(room.id)
+        open(room.id)
+    }
+
+    /// Decline an invite.
+    func decline(_ room: RoomSummary) async throws {
+        try await session.leave(roomId: room.id)
+        left(room.id)
+    }
+
+    /// Our server's name, as in our user ID: "example.org".
+    var serverName: String {
+        userId.split(separator: ":", maxSplits: 1).last.map(String.init) ?? homeserver
+    }
+
+    /// The Rooms tab's badge: unread messages in the recent rooms.
+    var roomsBadge: Int { recent.unread(in: lists) }
+
+    /// The Spaces tab's badge: unread messages in the other rooms.
+    var spacesBadge: Int { recent.unreadElsewhere(in: lists) }
+
+    /// The number on a room's back button: unread messages in the other
+    /// recent rooms.
+    func backBadge(besides id: String) -> Int {
+        recent.unread(in: lists, besides: id)
     }
 
     /// Order the spaces' rooms by `sort`, from now on.
@@ -230,7 +360,11 @@ final class SessionModel: ObservableObject {
     }
 
     func timeline(for room: RoomSummary) -> TimelineModel {
-        TimelineModel(session: session, room: room, keysArriving: keysArriving)
+        TimelineModel(session: session, room: room, keysArriving: keysArriving, drafts: drafts)
+    }
+
+    func info(for room: RoomSummary) -> RoomInfoModel {
+        RoomInfoModel(session: session, roomId: room.id, userId: userId)
     }
 
     /// Message keys are arriving from the backup, now and on every change:
@@ -245,7 +379,7 @@ final class SessionModel: ObservableObject {
         verification = nil
         await presence.signOut()?.value
         try await session.logout()
-        defaults.removeObject(forKey: Self.selectedSpaceKey)
+        forgetPlaces()
     }
 
     /// Delete the data of a session the server no longer accepts.
@@ -255,14 +389,41 @@ final class SessionModel: ObservableObject {
         // The server no longer accepts the session: nothing to set.
         presence.forget()
         try await session.forget()
+        forgetPlaces()
+    }
+
+    /// The selected space and the recent rooms are the account's.
+    private func forgetPlaces() {
         defaults.removeObject(forKey: Self.selectedSpaceKey)
+        defaults.removeObject(forKey: Self.recentKey)
     }
 }
 
-/// The pages of the Spaces tab, left to right.
-enum RoomsPage: Hashable {
+/// The tabs at the bottom.
+enum HomeTab: Hashable {
+    /// Direct chats.
+    case chats
+    /// The spaces and their rooms.
     case spaces
+    /// The last room, over the rooms opened lately.
     case rooms
+    case settings
+}
+
+/// A room by ID, to present a sheet for.
+struct RoomRef: Identifiable, Hashable {
+    let id: String
+}
+
+/// The spaces' rooms as their servers last listed them, by space ID.
+@MainActor
+final class SpaceChildrenCache {
+    private var rooms: [String: [DirectoryRoom]] = [:]
+
+    subscript(spaceId: String) -> [DirectoryRoom]? {
+        get { rooms[spaceId] }
+        set { rooms[spaceId] = newValue }
+    }
 }
 
 /// Time iOS grants to finish work after the app went to the background.

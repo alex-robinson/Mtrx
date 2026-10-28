@@ -2,7 +2,7 @@ import MtrxFFI
 import XCTest
 @testable import Mtrx
 
-/// The Rooms tab's selected space, remembered across launches until
+/// The Spaces tab's selected space, remembered across launches until
 /// sign-out.
 @MainActor
 final class SelectedSpaceTests: XCTestCase {
@@ -36,21 +36,21 @@ final class SelectedSpaceTests: XCTestCase {
     func testOpensOnTheSpacesWithoutASavedSpace() async {
         let model = await launch()
         XCTAssertNil(model.selectedSpace)
-        XCTAssertEqual(model.roomsPage, .spaces)
+        XCTAssertEqual(model.spacesPath, [])
     }
 
     func testTheSelectedSpaceIsRestoredOnTheRoomsPage() async {
         let first = await launch()
         await send(Make.roomsBySpace(), to: first)
         first.selectSpace(.space("!team"))
-        XCTAssertEqual(first.roomsPage, .rooms)
+        XCTAssertEqual(first.spacesPath, [.space("!team")])
 
         let next = await launch()
         XCTAssertEqual(next.selectedSpace, .space("!team"))
-        XCTAssertEqual(next.roomsPage, .rooms)
+        XCTAssertEqual(next.spacesPath, [.space("!team")])
         await send(Make.roomsBySpace(), to: next)
         XCTAssertEqual(next.selectedSpace, .space("!team"))
-        XCTAssertEqual(next.roomsPage, .rooms)
+        XCTAssertEqual(next.spacesPath, [.space("!team")])
     }
 
     func testOtherRoomsIsRestoredToo() async {
@@ -69,11 +69,11 @@ final class SelectedSpaceTests: XCTestCase {
         // A cache: the space may come with sync.
         await send(Make.roomsBySpace(loaded: false), to: model)
         XCTAssertEqual(model.selectedSpace, .space("!left"))
-        XCTAssertEqual(model.roomsPage, .rooms)
+        XCTAssertEqual(model.spacesPath, [.space("!left")])
 
         await send(Make.roomsBySpace(), to: model)
         XCTAssertNil(model.selectedSpace)
-        XCTAssertEqual(model.roomsPage, .spaces)
+        XCTAssertEqual(model.spacesPath, [])
         XCTAssertNil(defaults.string(forKey: "selectedSpace"))
     }
 
@@ -86,7 +86,7 @@ final class SelectedSpaceTests: XCTestCase {
         state.roomsOutsideSpaces = []
         await send(state, to: model)
         XCTAssertNil(model.selectedSpace)
-        XCTAssertEqual(model.roomsPage, .spaces)
+        XCTAssertEqual(model.spacesPath, [])
     }
 
     func testSigningOutForgetsTheSpace() async throws {
