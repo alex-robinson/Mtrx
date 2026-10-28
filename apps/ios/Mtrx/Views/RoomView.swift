@@ -391,8 +391,8 @@ private struct TracksBottom: ViewModifier {
     func body(content: Content) -> some View {
         if #available(iOS 18, *) {
             content.onScrollGeometryChange(for: CGFloat.self) { geometry in
-                geometry.contentSize.height + geometry.contentInsets.bottom
-                    - geometry.contentOffset.y - geometry.containerSize.height
+                // Short content sits at the bottom: nothing below is hidden.
+                geometry.contentSize.height - geometry.visibleRect.maxY
             } action: { _, distance in
                 model.scrolled(distanceFromBottom: distance)
             }

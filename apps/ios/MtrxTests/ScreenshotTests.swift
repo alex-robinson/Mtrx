@@ -97,10 +97,18 @@ final class ScreenshotTests: XCTestCase {
         let info = model.info(for: Screens.ice)
         await info.load()
         try await snap(
-            "07b-room-settings-members",
+            "07b-room-settings",
             NavigationStack {
                 List {
                     RoomSettingsSections(room: Screens.ice, model: info)
+                }
+                .navigationTitle("Room info")
+                .navigationBarTitleDisplayMode(.inline)
+            })
+        try await snap(
+            "07c-room-members",
+            NavigationStack {
+                List {
                     MembersSection(room: Screens.ice, model: info)
                 }
                 .navigationTitle("Room info")

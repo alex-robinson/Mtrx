@@ -119,7 +119,7 @@ struct MemberMenu: View {
                                     .foregroundColor(.primary)
                                 Spacer()
                                 Text(String(choice.level))
-                                    .foregroundStyle(.secondary)
+                                    .foregroundColor(.secondary)
                                     .monospacedDigit()
                             }
                         }
