@@ -96,8 +96,21 @@ fn open_up(content: &mut RoomPowerLevelsEventContent) {
     content.invite = Int::from(0);
 }
 
+/// Leave inviting and editing to moderators, as Matrix does by default;
+/// messages stay open to all.
+fn close_down(content: &mut RoomPowerLevelsEventContent) {
+    let moderator = int!(50);
+    for event_type in MEMBER_STATE {
+        content
+            .events
+            .insert(TimelineEventType::from(event_type), moderator);
+    }
+    content.state_default = moderator;
+    content.invite = moderator;
+}
+
 /// Whether a member without special rights may invite and edit.
-fn everyone_can_edit(levels: &RoomPowerLevels) -> bool {
+pub(crate) fn everyone_can_edit(levels: &RoomPowerLevels) -> bool {
     let member = levels.users_default;
     levels.invite <= member
         && MEMBER_STATE
@@ -146,6 +159,20 @@ impl Session {
         open_up(&mut content);
         room.send_state_event(content).await?;
         Ok(())
+    }
+
+    /// Let every member edit the room, or only moderators.
+    pub async fn set_permissions(&self, room_id: &RoomId, permissions: Permissions) -> Result<()> {
+        match permissions {
+            Permissions::Everyone => self.let_everyone_edit(room_id).await,
+            Permissions::Moderators => {
+                let room = self.room(room_id)?;
+                let mut content = power_levels_content(&room).await?;
+                close_down(&mut content);
+                room.send_state_event(content).await?;
+                Ok(())
+            }
+        }
     }
 
     /// [`Session::let_everyone_edit`] for a space and every room and space
@@ -235,6 +262,9 @@ mod tests {
 
         open_up(&mut content);
         let opened = levels(content.clone());
+        let mut closed = content.clone();
+        close_down(&mut closed);
+        assert!(!everyone_can_edit(&levels(closed)));
         assert!(everyone_can_edit(&opened));
         assert_eq!(opened.invite, int!(0));
         assert_eq!(opened.kick, int!(50));

@@ -18,7 +18,7 @@ use std::{
 use anyhow::{Context, Result, bail};
 use futures_util::{Stream, StreamExt};
 use mtrx_core::{
-    Access, Attachment, CallService, Connection, DirectoryKind, EventContent, JoinAccess,
+    Access, Attachment, CallService, Connection, DirectoryKind, EventContent, History, JoinAccess,
     Membership, MembershipChange, NewRoom, NotifyMode, Permissions, PinsChange, PresenceState,
     Profile, RecoveryStatus, Role, RoomKind, SecretStore, Session, TimelineEntry,
     VerificationState,
@@ -836,6 +836,73 @@ async fn room_management() -> Result<()> {
 
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "needs local Synapse (testserver/run.sh)"]
+async fn room_settings_and_space_links() -> Result<()> {
+    let (_, alice) = new_user("settings").await?;
+    let s = &alice.session;
+    let space = |name: &str| NewRoom {
+        name: Some(name.into()),
+        space: true,
+        ..Default::default()
+    };
+    let first = s.create_room(space("First")).await?;
+    let second = s.create_room(space("Second")).await?;
+    let room = s
+        .create_room(NewRoom {
+            name: Some("moving".into()),
+            parent: Some(first.clone()),
+            ..Default::default()
+        })
+        .await?;
+    // The settings once sync brings back what `done` waits for.
+    let settled = |what: &'static str, done: fn(&mtrx_core::RoomSettings) -> bool| {
+        let room = room.clone();
+        timeout(what, async move {
+            loop {
+                if let Ok(settings) = s.room_settings(&room).await
+                    && done(&settings)
+                {
+                    return anyhow::Ok(settings);
+                }
+                tokio::time::sleep(Duration::from_millis(200)).await;
+            }
+        })
+    };
+    let settings = settled("in the first space", |s| s.spaces.len() == 1).await??;
+    assert_eq!(settings.version.as_deref(), Some("12"));
+    assert_eq!(settings.spaces[0].space, first);
+    assert!(settings.spaces[0].can_change && !settings.spaces[0].suggested);
+    assert_eq!(settings.listed, Some(false));
+    assert_eq!(settings.permissions, Permissions::Everyone);
+
+    s.set_suggested(&first, &room, true).await?;
+    settled("suggested", |s| s.spaces.iter().any(|l| l.suggested)).await??;
+    // Moved: added to the second, out of the first.
+    s.add_to_space(&second, &room).await?;
+    s.remove_from_space(&first, &room).await?;
+    let moved = settled("moved", |s| s.spaces.len() == 1 && s.can_add_to.len() == 1).await??;
+    assert_eq!(
+        (moved.spaces[0].space.clone(), moved.can_add_to),
+        (second, vec![first])
+    );
+
+    let name = unique_name("moving");
+    s.set_address(&room, Some(&name)).await?;
+    let addressed = settled("address", |s| s.address.is_some()).await??;
+    assert_eq!(addressed.address.unwrap().alias(), name);
+    s.set_listed(&room, true).await?;
+    s.set_history(&room, History::Joined).await?;
+    s.set_permissions(&room, Permissions::Moderators).await?;
+    settled("changed", |s| {
+        s.listed == Some(true)
+            && s.history == History::Joined
+            && s.permissions == Permissions::Moderators
+    })
+    .await??;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs local Synapse (testserver/run.sh)"]
 async fn browse_and_join_space_rooms() -> Result<()> {
     let (_, alice) = new_user("browse").await?;
     let (_, bob) = new_user("browse").await?;
@@ -940,7 +1007,8 @@ async fn browse_and_join_space_rooms() -> Result<()> {
             .iter()
             .all(|m| m.manage == Default::default())
     );
-    s.set_level(&open, &bob_id, Role::Moderator.level(0)).await?;
+    s.set_level(&open, &bob_id, Role::Moderator.level(0))
+        .await?;
     s.remove_member(&open, &bob_id, Some("tidying up"), false)
         .await?;
     // Our own server's directory: nothing published, but it answers.

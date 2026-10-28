@@ -9,9 +9,10 @@ use matrix_sdk::{
     deserialized_responses::SyncOrStrippedState,
     ruma::{
         OwnedEventId, OwnedMxcUri, OwnedRoomId, OwnedServerName, OwnedUserId, RoomId,
-        RoomOrAliasId, UserId,
-        api::client::room::create_room::v3::{
-            CreationContent, Request as CreateRoomRequest, RoomPreset,
+        RoomOrAliasId, RoomVersionId, UserId,
+        api::client::{
+            discovery::get_capabilities::v3::RoomVersionStability,
+            room::create_room::v3::{CreationContent, Request as CreateRoomRequest, RoomPreset},
         },
         events::{
             InitialStateEvent, SyncStateEvent,
@@ -352,6 +353,13 @@ impl Session {
         // Direct chats make both people admins anyway.
         if new.permissions == Permissions::Everyone && !new.direct {
             request.power_level_content_override = Some(open_power_levels_raw()?);
+        }
+        // The newest version where the server has it: its creators are
+        // owners, above every admin.
+        if let Ok(versions) = self.client.homeserver_capabilities().room_versions().await
+            && versions.available.get(&RoomVersionId::V12) == Some(&RoomVersionStability::Stable)
+        {
+            request.room_version = Some(RoomVersionId::V12);
         }
         if new.space {
             let mut creation = CreationContent::new();

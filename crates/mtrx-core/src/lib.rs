@@ -64,7 +64,7 @@ pub use profile::Profile;
 pub use push::{HttpPusher, PushNotification, PusherInfo};
 pub use room_colours::RoomListColours;
 pub use room_links::{LinkKind, RoomLink, Topic, describe_change};
-pub use room_settings::{Access, NotifyMode, RoomSettings};
+pub use room_settings::{Access, Banned, History, NotifyMode, RoomSettings, SpaceLink};
 pub use rooms::{NewRoom, RoomKind, RoomList, RoomListState, RoomSummary, UserSummary};
 pub use scheduled::{ScheduledFile, ScheduledMessage};
 pub use secrets::{SecretBackend, SecretStore};
