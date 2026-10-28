@@ -836,6 +836,37 @@ async fn room_management() -> Result<()> {
 
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "needs local Synapse (testserver/run.sh)"]
+async fn co_owners() -> Result<()> {
+    let (_, alice) = new_user("owners").await?;
+    let (_, bob) = new_user("owners").await?;
+    let s = &alice.session;
+    assert!(s.offers_owners().await);
+    let bob_id = bob.session.user_id();
+    let room = s
+        .create_room(NewRoom {
+            name: Some("shared".into()),
+            co_owners: vec![bob_id.clone()],
+            ..Default::default()
+        })
+        .await?;
+    join_synced(&bob, &room, "shared").await?;
+    // Both owners: above every level, neither changed by the other.
+    let members = timeout("bob joined", async {
+        loop {
+            let members = s.members(&room).await?;
+            if members.iter().any(|m| m.id == bob_id && !m.invited) {
+                return anyhow::Ok(members);
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    })
+    .await??;
+    assert!(members.iter().all(|m| m.level.is_none() && m.manage.up_to.is_none()));
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs local Synapse (testserver/run.sh)"]
 async fn room_settings_and_space_links() -> Result<()> {
     let (_, alice) = new_user("settings").await?;
     let s = &alice.session;
