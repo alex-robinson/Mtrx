@@ -861,7 +861,11 @@ async fn co_owners() -> Result<()> {
         }
     })
     .await??;
-    assert!(members.iter().all(|m| m.level.is_none() && m.manage.up_to.is_none()));
+    assert!(
+        members
+            .iter()
+            .all(|m| m.level.is_none() && m.manage.up_to.is_none())
+    );
     Ok(())
 }
 
