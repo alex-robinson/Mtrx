@@ -1,0 +1,294 @@
+import MtrxFFI
+import SwiftUI
+import XCTest
+@testable import Mtrx
+
+/// The key screens drawn with made-up data, as PNGs to look at: in the
+/// folder `SCREENSHOTS_DIR` names (CI: `TEST_RUNNER_SCREENSHOTS_DIR`), else
+/// in a temporary one. Each in a window the size of the simulator's screen,
+/// light, and a few dark too. They check nothing but that drawing works.
+@MainActor
+final class ScreenshotTests: XCTestCase {
+    private var defaults: UserDefaults!
+    private var session: FakeSession!
+    private var model: SessionModel!
+    private var app: AppModel!
+
+    override func setUp() async throws {
+        defaults = UserDefaults(suiteName: "ScreenshotTests")
+        defaults.removePersistentDomain(forName: "ScreenshotTests")
+        defaults.set(["!ice", "!sea", "!notes"], forKey: "recentRooms")
+        session = FakeSession(noHandle: .init())
+        session.encryption = EncryptionState(deviceVerified: true, recovery: .enabled)
+        model = SessionModel(session: session, defaults: defaults)
+        model.start()
+        await eventually { self.session.roomListListener != nil }
+        session.roomListListener?.onUpdate(state: Screens.rooms)
+        await eventually { self.model.loaded }
+        app = AppModel(core: FakeMtrx(noHandle: .init()), browser: FakeBrowser())
+    }
+
+    override func tearDown() async throws {
+        defaults.removePersistentDomain(forName: "ScreenshotTests")
+    }
+
+    // MARK: Tabs
+
+    func testChats() async throws {
+        model.tab = .chats
+        try await snap("01-chats", HomeView())
+    }
+
+    func testSpaces() async throws {
+        model.tab = .spaces
+        model.selectSpace(nil)
+        try await snap("02-spaces", HomeView())
+    }
+
+    func testASpacesRooms() async throws {
+        model.tab = .spaces
+        model.selectSpace(.space("!polar"))
+        try await snap("03-space-rooms", HomeView())
+    }
+
+    func testRecent() async throws {
+        model.tab = .rooms
+        model.roomsPath = []
+        try await snap("04-recent", HomeView())
+        try await snap("04-recent-dark", dark: true, HomeView())
+    }
+
+    func testARoomWithItsTopicLine() async throws {
+        session.fakeTimeline.initialItems = Screens.timeline
+        model.tab = .rooms
+        model.roomsPath = ["!ice"]
+        try await snap("05-room", wait: 2, HomeView())
+        try await snap("05-room-dark", dark: true, wait: 2, HomeView())
+    }
+
+    // MARK: A room's topic and info
+
+    func testTopicPanel() async throws {
+        session.fakePinned.initialItems = Array(Screens.timeline.suffix(2))
+        let info = model.info(for: Screens.ice)
+        await info.loadSettings()
+        let pinned = PinnedModel(session: session, roomId: "!ice")
+        try await snap(
+            "06-topic-panel",
+            TopicPanel(topic: parseTopic(topic: Screens.topic), canEdit: true, info: info, pinned: pinned) { _ in })
+    }
+
+    func testTopicEditor() async throws {
+        let info = model.info(for: Screens.ice)
+        try await snap(
+            "06b-topic-editor",
+            NavigationStack { TopicEditor(draft: TopicDraft(parseTopic(topic: Screens.topic)), info: info) })
+    }
+
+    func testRoomInfo() async throws {
+        session.settings = Screens.settings
+        session.memberList = Screens.members
+        try await snap("07-room-info", RoomInfoView(room: Screens.ice, model: model.info(for: Screens.ice)))
+    }
+
+    func testRoomSettingsAndMembers() async throws {
+        session.settings = Screens.settings
+        session.memberList = Screens.members
+        let info = model.info(for: Screens.ice)
+        await info.load()
+        try await snap(
+            "07b-room-settings-members",
+            NavigationStack {
+                List {
+                    RoomSettingsSections(room: Screens.ice, model: info)
+                    MembersSection(room: Screens.ice, model: info)
+                }
+                .navigationTitle("Room info")
+                .navigationBarTitleDisplayMode(.inline)
+            })
+    }
+
+    func testMemberMenu() async throws {
+        session.memberList = Screens.members
+        let info = model.info(for: Screens.ice)
+        await info.load()
+        try await snap("08-member-menu", NavigationStack { MemberMenu(member: Screens.members[2], model: info) })
+    }
+
+    // MARK: Spaces: overview, joining, making
+
+    func testSpaceOverview() async throws {
+        session.children = .success(Screens.children)
+        session.settings = Make.settings(access: .public, encrypted: false, listed: true)
+        session.memberList = Screens.members
+        try await snap("09-space-overview", SpaceOverviewView(space: Screens.polar))
+    }
+
+    func testJoin() async throws {
+        session.directory = .success(DirectoryPage(rooms: Screens.directory, next: "2"))
+        let join = JoinModel(session: session, ownServer: model.serverName)
+        try await snap("10-join", JoinView(model: join))
+    }
+
+    func testNewRoomWithCoOwners() async throws {
+        session.offersOwnersResult = true
+        let new = NewRoomModel(session: session, space: false, parent: (id: "!polar", name: "Polar lab"))
+        new.name = "Fieldwork"
+        new.topic = "Planning the spring campaign"
+        for person in ["@ann:example.org", "@bob:example.org"] {
+            new.person = person
+            new.addPerson()
+        }
+        new.setCoOwner("@ann:example.org", true)
+        try await snap("11-new-room", NewRoomView(model: new))
+    }
+
+    func testInvite() async throws {
+        let party = model.room("!party")!
+        try await snap("12-invite", NavigationStack { InviteView(room: party) })
+    }
+
+    // MARK: Drawing
+
+    /// Draw `view` in a window the size of the screen, after `wait` seconds
+    /// for its tasks, and save it as `<name>.png`.
+    private func snap<V: View>(_ name: String, dark: Bool = false, wait: Double = 1, _ view: V) async throws {
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        let window = UIWindow(windowScene: scene)
+        window.frame = scene.screen.bounds
+        window.overrideUserInterfaceStyle = dark ? .dark : .light
+        window.rootViewController = UIHostingController(
+            rootView: view
+                .environmentObject(app)
+                .environmentObject(model)
+                .environmentObject(model.images)
+                .environmentObject(model.presence))
+        window.makeKeyAndVisible()
+        defer { window.isHidden = true }
+        try await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000))
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 2
+        let image = UIGraphicsImageRenderer(bounds: window.bounds, format: format).image { _ in
+            _ = window.drawHierarchy(in: window.bounds, afterScreenUpdates: true)
+        }
+        let data = try XCTUnwrap(image.pngData())
+        try data.write(to: Self.folder.appendingPathComponent("\(name).png"))
+    }
+
+    private static var folder: URL {
+        let path = ProcessInfo.processInfo.environment["SCREENSHOTS_DIR"]
+        let folder = path.map { URL(fileURLWithPath: $0) }
+            ?? FileManager.default.temporaryDirectory.appendingPathComponent("ios-screenshots")
+        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        return folder
+    }
+}
+
+/// Made-up rooms, people and messages for the screenshots.
+private enum Screens {
+    static let now = Date()
+
+    static let topic = """
+        Sea ice and ice sheets: models, data and papers.
+        Weekly meeting on Thursdays.
+        [call Weekly passcode 4711] https://meet.example.org/ice
+        [link Drafts] https://overleaf.com/project/ice
+        """
+
+    static let ice = Make.room(
+        "!ice", name: "Ice sheets", unread: 0, lastActivity: now, topic: topic, parents: ["!polar"],
+        pinned: ["$p2"], alias: "#ice:example.org", members: 4)
+    static let polar = Make.room(
+        "!polar", kind: .space, name: "Polar lab", topic: "The polar group: rooms for projects and talk.",
+        members: 12)
+
+    static let rooms = RoomListState(
+        rooms: [
+            ice,
+            Make.room(
+                "!sea", name: "Sea ice", unread: 3, lastActivity: now.addingTimeInterval(-600), parents: ["!polar"]),
+            Make.room(
+                "!ann", kind: .direct, name: "Ann Lindqvist", unread: 2, directUser: "@ann:example.org",
+                lastActivity: now.addingTimeInterval(-1200)),
+            Make.room(
+                "!notes", name: "Reading group", lastActivity: now.addingTimeInterval(-86_400), parents: ["!teach"]),
+            Make.room(
+                "!models", name: "Models", unread: 5, lastActivity: now.addingTimeInterval(-3_600),
+                parents: ["!polar"], mentions: 1),
+            Make.room(
+                "!bob", kind: .direct, name: "Bob Meyer", directUser: "@bob:example.org",
+                lastActivity: now.addingTimeInterval(-7_200)),
+            Make.room("!party", invited: true, name: "Summer party", topic: "Saturday at the lake."),
+            Make.room(
+                "!cy", kind: .direct, name: "Cy Park", directUser: "@cy:example.org",
+                lastActivity: now.addingTimeInterval(-200_000)),
+            Make.room("!teach", kind: .space, name: "Teaching"),
+            polar,
+        ],
+        loaded: true,
+        spaces: [
+            SpaceRooms(spaceId: "!polar", roomIds: ["!ice", "!sea", "!models"]),
+            SpaceRooms(spaceId: "!teach", roomIds: ["!notes"]),
+        ],
+        roomsOutsideSpaces: ["!party"])
+
+    static var timeline: [TimelineItem] {
+        let start = now.addingTimeInterval(-3_600)
+        func at(_ minutes: Double) -> Double { start.timeIntervalSince(Make.start) / 60 + minutes }
+        return [
+            TimelineItem(id: "d", content: .dayDivider(date: start)),
+            Make.item(
+                "1", Make.event("ann", Make.text("Morning! The new ice sheet runs are in."), at: at(0), eventId: "$1")),
+            Make.item(
+                "2",
+                Make.event(
+                    "ann", Make.text("Plots at https://example.org/runs"), at: at(1), eventId: "$2",
+                    readBy: [Make.reader("bob")])),
+            Make.item(
+                "3",
+                Make.event(
+                    "me",
+                    Make.text(
+                        "Great, looking now.",
+                        reactions: [Reaction(key: "👍", count: 2, byUs: false, senders: [])]),
+                    at: at(5), own: true, eventId: "$3")),
+            Make.item(
+                "p1", Make.event("bob", Make.text("Meeting moved to 14:00 on Thursday."), at: at(20), eventId: "$p1")),
+            Make.item(
+                "p2",
+                Make.event(
+                    "me", Make.text("Agenda: runs, the paper, fieldwork."), at: at(22), own: true, eventId: "$p2")),
+        ]
+    }
+
+    static let settings = Make.settings(
+        access: .knock, encrypted: true, listed: false,
+        spaces: [SpaceLink(spaceId: "!polar", suggested: true, canChange: true)], canAddTo: ["!teach"],
+        banned: [Banned(userId: "@spam:example.org", name: "Spammer", reason: "Spam")], address: "#ice:example.org")
+
+    static let members = [
+        Make.member("me", level: 100, upTo: 99),
+        Make.member("ann", level: nil),
+        Make.member("bob", level: 50, upTo: 100, remove: true, ban: true),
+        Make.member("cy", level: 0, upTo: 100, remove: true, ban: true),
+        Make.member("dee", level: 0, upTo: 100, remove: true, invited: true),
+    ]
+
+    static let children = [
+        Make.directoryRoom(
+            "!ice", name: "Ice sheets", membership: .joined, members: 4, topic: "Models, data and papers",
+            role: .admin),
+        Make.directoryRoom("!sea", name: "Sea ice", membership: .joined, members: 9),
+        Make.directoryRoom("!field", name: "Fieldwork", access: .spaceMembers, members: 6, topic: "Spring campaign"),
+        Make.directoryRoom("!data", name: "Data", access: .knock, members: 3),
+        Make.directoryRoom("!seminar", name: "Seminar", access: .knock, membership: .asked, members: 15),
+        Make.directoryRoom("!glacio", name: "Glaciology", space: true, members: 20, children: 4),
+    ]
+
+    static let directory = [
+        Make.directoryRoom("!matrix", name: "Matrix HQ", members: 12_000, topic: "The Matrix protocol"),
+        Make.directoryRoom("!climate", name: "Climate science", space: true, members: 340, children: 12),
+        Make.directoryRoom("!earth", name: "Earth system models", access: .knock, members: 85),
+        Make.directoryRoom("!ice", name: "Ice sheets", membership: .joined, members: 4, role: .admin),
+    ]
+}
