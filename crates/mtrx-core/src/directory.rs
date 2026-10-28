@@ -207,7 +207,11 @@ impl Session {
             let mut request = HierarchyRequest::new(space.to_owned());
             request.max_depth = Some(uint!(1));
             request.from = from.take();
-            let response = self.client.send(request).await?;
+            // Busy servers drop these at times: once more before giving up.
+            let response = match self.client.send(request.clone()).await {
+                Ok(response) => response,
+                Err(_) => self.client.send(request).await?,
+            };
             // The space's own entry carries its children's `via` and
             // `suggested`.
             let children: Vec<HierarchySpaceChildEvent> = response
