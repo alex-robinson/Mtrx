@@ -34,6 +34,7 @@ mod secrets;
 mod send_time;
 mod session;
 mod spaces;
+mod synced;
 mod timeline;
 
 #[cfg(feature = "test-support")]

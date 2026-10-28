@@ -34,7 +34,7 @@ use tracing::warn;
 use crate::{
     Error, Result, RoomTag, Session,
     permissions::{Permissions, open_power_levels_raw},
-    system_time,
+    synced, system_time,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -468,10 +468,8 @@ impl Session {
 
     /// Add `child` to `space` (sends `m.space.child` in the space).
     pub async fn add_to_space(&self, space: &OwnedRoomId, child: &OwnedRoomId) -> Result<()> {
-        self.room(space)?
-            .send_state_event_for_key(child, SpaceChildEventContent::new(self.via()))
-            .await?;
-        Ok(())
+        let content = SpaceChildEventContent::new(self.via());
+        synced::send_state(&self.room(space)?, child, content).await
     }
 
     /// Find a known room by ID, alias or exact display name.

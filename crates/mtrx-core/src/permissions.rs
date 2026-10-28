@@ -15,7 +15,7 @@ use matrix_sdk::{
     ruma::{
         Int, OwnedRoomId, RoomId,
         events::{
-            StateEventType, SyncStateEvent, TimelineEventType,
+            EmptyStateKey, StateEventType, SyncStateEvent, TimelineEventType,
             room::power_levels::{RoomPowerLevels, RoomPowerLevelsEventContent},
         },
         int,
@@ -24,7 +24,7 @@ use matrix_sdk::{
 };
 use serde_json::json;
 
-use crate::{Error, Result, Session, rooms::space_children};
+use crate::{Error, Result, Session, rooms::space_children, synced};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Permissions {
@@ -157,8 +157,7 @@ impl Session {
         let room = self.room(room_id)?;
         let mut content = power_levels_content(&room).await?;
         open_up(&mut content);
-        room.send_state_event(content).await?;
-        Ok(())
+        synced::send_state(&room, &EmptyStateKey, content).await
     }
 
     /// Let every member edit the room, or only moderators.
@@ -169,8 +168,7 @@ impl Session {
                 let room = self.room(room_id)?;
                 let mut content = power_levels_content(&room).await?;
                 close_down(&mut content);
-                room.send_state_event(content).await?;
-                Ok(())
+                synced::send_state(&room, &EmptyStateKey, content).await
             }
         }
     }

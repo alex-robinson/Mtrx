@@ -874,30 +874,34 @@ async fn room_settings_and_space_links() -> Result<()> {
     assert_eq!(settings.listed, Some(false));
     assert_eq!(settings.permissions, Permissions::Everyone);
 
+    // Each change shows in the settings read straight after.
     s.set_suggested(&first, &room, true).await?;
-    settled("suggested", |s| s.spaces.iter().any(|l| l.suggested)).await??;
+    assert!(s.room_settings(&room).await?.spaces[0].suggested);
     // Moved: added to the second, out of the first.
     s.add_to_space(&second, &room).await?;
     s.remove_from_space(&first, &room).await?;
-    let moved = settled("moved", |s| s.spaces.len() == 1 && s.can_add_to.len() == 1).await??;
+    let moved = s.room_settings(&room).await?;
     assert_eq!(
-        (moved.spaces[0].space.clone(), moved.can_add_to),
-        (second, vec![first])
+        (
+            moved.spaces[0].space.clone(),
+            moved.spaces.len(),
+            moved.can_add_to
+        ),
+        (second, 1, vec![first])
     );
 
     let name = unique_name("moving");
     s.set_address(&room, Some(&name)).await?;
-    let addressed = settled("address", |s| s.address.is_some()).await??;
-    assert_eq!(addressed.address.unwrap().alias(), name);
+    let addressed = s.room_settings(&room).await?;
+    assert_eq!(addressed.address.context("address")?.alias(), name);
     s.set_listed(&room, true).await?;
     s.set_history(&room, History::Joined).await?;
     s.set_permissions(&room, Permissions::Moderators).await?;
-    settled("changed", |s| {
-        s.listed == Some(true)
-            && s.history == History::Joined
-            && s.permissions == Permissions::Moderators
-    })
-    .await??;
+    let changed = s.room_settings(&room).await?;
+    assert_eq!(
+        (changed.listed, changed.history, changed.permissions),
+        (Some(true), History::Joined, Permissions::Moderators)
+    );
     Ok(())
 }
 

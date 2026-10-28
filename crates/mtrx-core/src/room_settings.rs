@@ -1,7 +1,7 @@
 //! A room's settings as the user sees them: what they may change, and when
 //! it notifies them.
 
-use std::{path::Path, time::Duration};
+use std::path::Path;
 
 use matrix_sdk::{
     Room, RoomMemberships,
@@ -14,11 +14,12 @@ use matrix_sdk::{
             room::Visibility,
         },
         events::{
-            StateEventType, SyncStateEvent,
+            EmptyStateKey, StateEventType, SyncStateEvent,
             room::{
                 canonical_alias::RoomCanonicalAliasEventContent,
                 history_visibility::{HistoryVisibility, RoomHistoryVisibilityEventContent},
                 join_rules::{AllowRule, JoinRule, RoomJoinRulesEventContent},
+                member::MembershipState,
             },
             space::child::SpaceChildEventContent,
         },
@@ -31,6 +32,7 @@ use crate::{
     media::guess_mimetype,
     permissions::{everyone_can_edit, power_levels},
     rooms::space_children,
+    synced,
 };
 
 /// When a room notifies (push rules, so on all the user's devices).
@@ -138,9 +140,6 @@ pub struct Banned {
     pub name: Option<String>,
     pub reason: Option<String>,
 }
-
-/// How long a changed mode may take to come back through sync.
-const CONFIRM: Duration = Duration::from_secs(10);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RoomSettings {
@@ -309,7 +308,7 @@ impl Session {
             }
         };
         // The server took the change either way.
-        let _ = tokio::time::timeout(CONFIRM, confirmed).await;
+        let _ = tokio::time::timeout(synced::CONFIRM, confirmed).await;
         Ok(())
     }
 
@@ -332,9 +331,7 @@ impl Session {
                 .join_rule
             }
         };
-        room.send_state_event(RoomJoinRulesEventContent::new(rule))
-            .await?;
-        Ok(())
+        synced::send_state(&room, &EmptyStateKey, RoomJoinRulesEventContent::new(rule)).await
     }
 
     /// Give the room the address `#name:our.server`, or none.
@@ -360,8 +357,7 @@ impl Session {
         let mut content = RoomCanonicalAliasEventContent::new();
         content.alias = alias;
         content.alt_aliases = room.alt_aliases();
-        room.send_state_event(content).await?;
-        Ok(())
+        synced::send_state(&room, &EmptyStateKey, content).await
     }
 
     /// List the room in our server's directory, or not.
@@ -381,10 +377,8 @@ impl Session {
     }
 
     pub async fn set_history(&self, room_id: &RoomId, history: History) -> Result<()> {
-        self.room(room_id)?
-            .send_state_event(RoomHistoryVisibilityEventContent::new(history.into()))
-            .await?;
-        Ok(())
+        let content = RoomHistoryVisibilityEventContent::new(history.into());
+        synced::send_state(&self.room(room_id)?, &EmptyStateKey, content).await
     }
 
     /// Encrypt the room's messages from now on; not to be undone.
@@ -394,7 +388,16 @@ impl Session {
     }
 
     pub async fn unban(&self, room_id: &RoomId, user: &UserId) -> Result<()> {
-        self.room(room_id)?.unban_user(user, None).await?;
+        let room = self.room(room_id)?;
+        let updates = self.client.subscribe_to_room_updates(room_id);
+        room.unban_user(user, None).await?;
+        synced::until(updates, || async {
+            !matches!(
+                room.get_member_no_sync(user).await,
+                Ok(Some(member)) if *member.membership() == MembershipState::Ban
+            )
+        })
+        .await;
         Ok(())
     }
 
@@ -410,18 +413,13 @@ impl Session {
             .await
             .ok_or_else(|| Error::RoomNotFound(room_id.to_string()))?;
         content.suggested = suggested;
-        space
-            .send_state_event_for_key(&room_id.to_owned(), content)
-            .await?;
-        Ok(())
+        synced::send_state(&space, room_id, content).await
     }
 
     /// Take the room out of the space: the space no longer lists it.
     pub async fn remove_from_space(&self, space_id: &RoomId, room_id: &RoomId) -> Result<()> {
-        self.room(space_id)?
-            .send_state_event_for_key(&room_id.to_owned(), SpaceChildEventContent::new(Vec::new()))
-            .await?;
-        Ok(())
+        let removed = SpaceChildEventContent::new(Vec::new());
+        synced::send_state(&self.room(space_id)?, room_id, removed).await
     }
 
     /// Joined spaces listing `room_id` as a child.
