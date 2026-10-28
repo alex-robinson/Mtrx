@@ -2,7 +2,7 @@
 
 use iced::{
     Alignment, Element, Length,
-    widget::{button, column, container, hover, row, space, text},
+    widget::{button, column, container, hover, row, space, stack, text},
 };
 use mtrx_core::{Member, OwnedRoomId, OwnedUserId};
 
@@ -178,22 +178,27 @@ fn entry<'a>(member: &'a Member, shown: Shown<'_>, common: Common) -> Element<'a
     ]
     .spacing(8)
     .align_y(Alignment::Center);
+    let menu_of = |menu| (shown.room.clone(), member.id.clone(), menu);
+    let opened = |menu| shown.menu == Some(&menu_of(menu));
+    // An open menu shows alone, without the row's hint.
+    let menu_open = opened(Menu::Role) || opened(Menu::More);
     let who: Element<'a, Message> = if member.id == *shown.own {
         container(line).width(Length::Fill).padding([3, 4]).into()
     } else {
-        hint(
-            button(line)
-                .width(Length::Fill)
-                .padding([3, 4])
-                .style(style::list_item(false))
-                .on_press(Message::ShowInfo(crate::info::sender(
-                    member.id.clone(),
-                    member.name.clone(),
-                    member.avatar.clone(),
-                ))),
-            member.id.to_string(),
-            Position::Left,
-        )
+        let card = button(line)
+            .width(Length::Fill)
+            .padding([3, 4])
+            .style(style::list_item(menu_open))
+            .on_press(Message::ShowInfo(crate::info::sender(
+                member.id.clone(),
+                member.name.clone(),
+                member.avatar.clone(),
+            )));
+        if menu_open {
+            card.into()
+        } else {
+            hint(card, member.id.to_string(), Position::Left)
+        }
     };
     let slot = |content: Element<'a, Message>| -> Element<'a, Message> {
         container(content).center_x(MORE).into()
@@ -206,8 +211,6 @@ fn entry<'a>(member: &'a Member, shown: Shown<'_>, common: Common) -> Element<'a
     if manage.up_to.is_none() && !manage.remove && !manage.ban {
         return base.into();
     }
-    let menu_of = |menu| (shown.room.clone(), member.id.clone(), menu);
-    let opened = |menu| shown.menu == Some(&menu_of(menu));
     let toggle = |menu| Message::MemberMenu((!opened(menu)).then(|| menu_of(menu)));
     let chip: Element<'a, Message> = match manage.up_to {
         Some(up_to) => {
@@ -276,7 +279,13 @@ fn entry<'a>(member: &'a Member, shown: Shown<'_>, common: Common) -> Element<'a
     if common.more {
         top = top.push(slot(more));
     }
-    hover(base, top)
+    // Hovered, the menus' buttons show; one open stays, whatever the
+    // cursor does.
+    if menu_open {
+        stack![base, top].into()
+    } else {
+        hover(base, top)
+    }
 }
 
 /// "Admin", "Mod", "Level 20", or nothing for a plain member.

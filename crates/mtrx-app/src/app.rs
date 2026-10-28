@@ -784,7 +784,14 @@ impl App {
             main.member_menu = None;
         }
         let remember = matches!(message, Message::OpenRoom(_) | Message::SelectSpace(_));
+        let card = self.card_shown();
         let task = self.handle(message);
+        // A member's menu goes with the card it was opened on.
+        if self.card_shown() != card
+            && let Screen::Main(main) = &mut self.screen
+        {
+            main.member_menu = None;
+        }
         if remember {
             self.remember_view();
         }
@@ -3736,6 +3743,16 @@ impl App {
             _ => Task::none(),
         };
         Task::batch([beside, overview, self.reload_card(room)])
+    }
+
+    /// Which card is shown, and on which tab: whether one is, its room, and
+    /// a space's tab.
+    fn card_shown(&self) -> Option<(Option<OwnedRoomId>, Option<overview::Tab>)> {
+        let Screen::Main(main) = &self.screen else {
+            return None;
+        };
+        let card = main.info.as_ref()?;
+        Some((card.room().cloned(), card.overview.as_ref().map(|o| o.tab)))
     }
 
     /// The settings again on `room`'s card, if it is open.
