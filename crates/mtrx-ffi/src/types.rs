@@ -58,6 +58,15 @@ pub struct RoomSummary {
     /// The room's address, e.g. `#ice-sheets:example.org`.
     pub alias: Option<String>,
     pub joined_members: u64,
+    /// The joined spaces that list it.
+    #[uniffi(default)]
+    pub parents: Vec<String>,
+    /// Anyone may join.
+    #[uniffi(default)]
+    pub public: bool,
+    /// Event IDs of its pinned messages, first pinned first.
+    #[uniffi(default)]
+    pub pinned: Vec<String>,
 }
 
 impl From<&core::RoomSummary> for RoomSummary {
@@ -81,6 +90,9 @@ impl From<&core::RoomSummary> for RoomSummary {
             direct_user_id: room.direct_user.as_ref().map(ToString::to_string),
             alias: room.alias.clone(),
             joined_members: room.joined_members,
+            parents: room.parents.iter().map(ToString::to_string).collect(),
+            public: room.public,
+            pinned: room.pinned.iter().map(ToString::to_string).collect(),
         }
     }
 }
