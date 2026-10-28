@@ -1285,9 +1285,9 @@ mod tests {
     fn chooses_the_text_size() {
         let mut settings = Settings::default();
         assert_eq!(settings.text_size, TextSize::Default);
-        let action = change(&mut settings, Preference::TextSize(TextSize::Large));
+        let action = change(&mut settings, Preference::TextSize(TextSize::Smaller));
         assert!(matches!(action, Action::TextSize));
-        assert_eq!(settings.text_size, TextSize::Large);
+        assert_eq!(settings.text_size, TextSize::Smaller);
     }
 
     #[test]

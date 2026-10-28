@@ -238,8 +238,8 @@ fn zoom_steps_the_text_size() {
 
     let mut app = app(Screen::Login(Login::default()), Mode::Light);
     let _ = app.update(Message::Zoom(Zoom::In));
-    assert_eq!(app.settings.text_size, TextSize::Large);
-    assert_eq!(app.scale_factor(), 1.1);
+    assert_eq!(app.settings.text_size, TextSize::Larger);
+    assert_eq!(app.scale_factor(), 1.25);
     for _ in 0..5 {
         let _ = app.update(Message::Zoom(Zoom::In));
     }
@@ -253,8 +253,8 @@ fn zoom_steps_the_text_size() {
     assert_eq!(app.settings.text_size, TextSize::Larger);
     let _ = app.update(Message::Zoom(Zoom::Reset));
     assert_eq!(app.settings.text_size, TextSize::Default);
-    assert_eq!(app.viewport(), Size::new(900.0, 600.0));
-    assert_eq!(app.pixel_scale(), 2.0);
+    assert_eq!(app.viewport(), Size::new(900.0, 600.0) / 1.1);
+    assert_eq!(app.pixel_scale(), 2.0 * 1.1);
 }
 
 /// ⌘F opens the find bar, ⌘G and ⇧⌘G go to the next and previous match,
@@ -338,7 +338,7 @@ fn window_placement_is_saved() {
     let mut app = app(Screen::Login(Login::default()), Mode::Light);
     app.placement_file = Some(file.clone());
     app.scale = 2.0;
-    app.settings.text_size = crate::text_size::TextSize::Large;
+    app.settings.text_size = crate::text_size::TextSize::Default;
     let placed = |maximized| Message::WindowPlaced {
         position: Some(iced::Point::new(1800.0, 200.0)),
         maximized,
