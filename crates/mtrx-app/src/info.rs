@@ -312,13 +312,14 @@ impl Card {
             .spacing(12)
             .align_y(Alignment::Center);
         let mut card = column![self.copyable("User ID", user.id.to_string())].spacing(14);
-        let shared = match &self.shared {
-            None if self.error.is_none() => Some(text("Loading…").size(13).style(text::secondary)),
+        let shared: Option<Element<'a, app::Message>> = match &self.shared {
+            None if self.error.is_none() => Some(frame::loading()),
             None => None,
             Some(shared) if shared.is_empty() => Some(
                 text("You share no rooms or spaces.")
                     .size(13)
-                    .style(text::secondary),
+                    .style(text::secondary)
+                    .into(),
             ),
             Some(_) => None,
         };
@@ -364,6 +365,8 @@ impl Card {
             ..
         } = shown;
         let settings = self.settings.as_ref();
+        // They decide what may be changed: until then, only that it loads.
+        let loading = settings.is_none() && self.error.is_none();
         let allowed = |can: fn(&RoomSettings) -> bool| settings.is_some_and(can) && !self.saving;
         let star = sidebar::star_button(&room.id, room.tag == RoomTag::Favourite);
         let title = heading(
@@ -572,7 +575,11 @@ impl Card {
                 title,
                 actions: self.room_action(room).into_iter().collect(),
                 bar: None,
-                body: card.push(actions.push(leave)).into(),
+                body: if loading {
+                    frame::loading()
+                } else {
+                    card.push(actions.push(leave)).into()
+                },
             };
         };
         // A space: its rooms, members and these settings, in tabs.
@@ -602,7 +609,11 @@ impl Card {
                 about,
                 settings.is_some_and(|s| s.can_add_rooms),
                 can_invite,
-                card.push(leave).into(),
+                if loading {
+                    frame::loading()
+                } else {
+                    card.push(leave).into()
+                },
             ),
         }
     }

@@ -12,11 +12,12 @@ use mtrx_core::{DirectoryRoom, Member, Membership, OwnedRoomId, OwnedServerName,
 use crate::{
     app,
     dialog::Kind,
-    directory,
+    directory, frame,
     hint::{Position, hint},
     icons, info, style,
 };
 
+const MEMBERS_WIDTH: f32 = 460.0;
 /// Each level of subspaces is indented by this much.
 const INDENT: f32 = 22.0;
 
@@ -303,6 +304,7 @@ impl Overview {
     ) -> iced::widget::Column<'a, app::Message> {
         let indent = f32::from(depth) * INDENT;
         let rooms = match self.rooms_of(of) {
+            None if depth == 0 => return list.push(frame::loading()),
             None => {
                 return list.push(
                     container(text("Loading…").size(12).style(text::secondary))
@@ -415,17 +417,20 @@ impl Overview {
                     })),
             );
         }
-        column![
-            top,
-            crate::members::rows(
+        let members: Element<'a, app::Message> = match &self.members {
+            None => frame::loading(),
+            Some(_) => crate::members::rows(
                 self.members.as_ref(),
                 shown.own_user,
                 shown.avatars,
                 shown.presences,
             ),
-        ]
-        .spacing(8)
-        .into()
+        };
+        // Names and roles close together, not across the whole card.
+        column![top, members]
+            .spacing(8)
+            .max_width(MEMBERS_WIDTH)
+            .into()
     }
 }
 

@@ -75,6 +75,17 @@ pub fn primary<'a>(label: &'a str, on_press: Option<app::Message>) -> Element<'a
         .into()
 }
 
+/// What a frame's body shows while its content loads: room for it, so the
+/// frame does not jump, and "Loading…" in the middle.
+pub fn loading<'a, M: 'a>() -> Element<'a, M> {
+    container(text("Loading…").size(15).style(text::secondary))
+        .center_x(Length::Fill)
+        .center_y(LOADING_HEIGHT)
+        .into()
+}
+
+const LOADING_HEIGHT: f32 = 260.0;
+
 /// A cross that closes (also Esc), as in every frame's header.
 pub fn close_button<'a, M: Clone + 'a>(close: M) -> Element<'a, M> {
     let cross = button(icons::cross(14.0, |theme: &Theme| {
