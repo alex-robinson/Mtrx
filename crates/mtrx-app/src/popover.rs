@@ -19,7 +19,7 @@ use iced::{
 /// Space between the widget and the panel.
 const GAP: f32 = 4.0;
 /// The narrowest a panel sized by its anchor gets, room allowing.
-const MIN_SHARED_WIDTH: f32 = 440.0;
+pub const MIN_SHARED_WIDTH: f32 = 440.0;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Side {
@@ -43,8 +43,17 @@ pub struct Popover<'a, Message> {
     edge: Edge,
     on_dismiss: Option<Message>,
     click_through: bool,
-    /// Its share of the anchor's width, and the inset from its edge.
-    share: Option<(f32, f32)>,
+    /// Its width, if set.
+    width: Option<Width>,
+}
+
+/// A panel's width.
+#[derive(Clone, Copy)]
+enum Width {
+    /// A share of the anchor's, and the inset from its edge.
+    Share(f32, f32),
+    /// However wide the anchor is.
+    Fixed(f32),
 }
 
 /// `anchor`, with `panel` floating on `side` of it, lined up with its
@@ -63,7 +72,7 @@ pub fn popover<'a, Message: Clone + 'a>(
         edge,
         on_dismiss: None,
         click_through: false,
-        share: None,
+        width: None,
     }
 }
 
@@ -84,7 +93,14 @@ impl<Message> Popover<'_, Message> {
     /// [`MIN_SHARED_WIDTH`], room allowing), `inset` in from its edge, and
     /// no taller than the window has room for on its side.
     pub fn share_of_anchor(mut self, share: f32, inset: f32) -> Self {
-        self.share = Some((share, inset));
+        self.width = Some(Width::Share(share, inset));
+        self
+    }
+
+    /// The panel `width` wide (room allowing), however wide the anchor, and
+    /// no taller than the window has room for on its side.
+    pub fn width(mut self, width: f32) -> Self {
+        self.width = Some(Width::Fixed(width));
         self
     }
 }
@@ -212,7 +228,7 @@ impl<'a, Message: Clone + 'a> Widget<Message, Theme, Renderer> for Popover<'a, M
                 edge: self.edge,
                 on_dismiss: self.on_dismiss.clone(),
                 click_through: self.click_through,
-                share: self.share,
+                width: self.width,
                 window: Size::ZERO,
             }))
         });
@@ -241,7 +257,7 @@ pub fn floating<'a, 'b, Message: Clone + 'a>(
         edge,
         on_dismiss,
         click_through,
-        share: None,
+        width: None,
         window: Size::ZERO,
     }))
 }
@@ -254,8 +270,8 @@ struct Panel<'a, 'b, Message> {
     edge: Edge,
     on_dismiss: Option<Message>,
     click_through: bool,
-    /// See [`Popover::share_of_anchor`].
-    share: Option<(f32, f32)>,
+    /// See [`Popover::share_of_anchor`] and [`Popover::width`].
+    width: Option<Width>,
     /// The window's size, as of the last layout.
     window: Size,
 }
@@ -263,19 +279,22 @@ struct Panel<'a, 'b, Message> {
 impl<Message: Clone> overlay::Overlay<Message, Theme, Renderer> for Panel<'_, '_, Message> {
     fn layout(&mut self, renderer: &Renderer, bounds: Size) -> Node {
         self.window = bounds;
-        let (limits, inset) = match self.share {
-            Some((share, inset)) => {
-                let room = match self.side {
-                    Side::Above => self.anchor.y - GAP,
-                    Side::Below => bounds.height - (self.anchor.y + self.anchor.height + GAP),
-                };
+        let room = match self.side {
+            Side::Above => self.anchor.y - GAP,
+            Side::Below => bounds.height - (self.anchor.y + self.anchor.height + GAP),
+        };
+        let sized = |width: f32| {
+            let width = width.max(0.0);
+            Limits::new(Size::new(width, 0.0), Size::new(width, room.max(0.0)))
+        };
+        let (limits, inset) = match self.width {
+            Some(Width::Share(share, inset)) => {
                 let width = (self.anchor.width * share)
                     .max(MIN_SHARED_WIDTH)
-                    .min(self.anchor.width - 2.0 * inset)
-                    .max(0.0);
-                let limits = Limits::new(Size::new(width, 0.0), Size::new(width, room.max(0.0)));
-                (limits, inset)
+                    .min(self.anchor.width - 2.0 * inset);
+                (sized(width), inset)
             }
+            Some(Width::Fixed(width)) => (sized(width.min(bounds.width)), 0.0),
             None => (Limits::new(Size::ZERO, bounds), 0.0),
         };
         let node = self

@@ -61,6 +61,9 @@ use crate::{
     topic,
 };
 
+/// The topic panel's share of the room header's width.
+pub const TOPIC_SHARE: f32 = 2.0 / 3.0;
+
 /// Entries rendered when a room opens; laying out every loaded entry gets
 /// slow in big rooms, so only a window at the bottom is drawn.
 const WINDOW: usize = 80;
@@ -1181,7 +1184,7 @@ impl Room {
                 .into()
         });
         popover(header, panel, Side::Below, Edge::Left)
-            .share_of_anchor(2.0 / 3.0, TIMELINE_PADDING + MESSAGE_PADDING)
+            .share_of_anchor(TOPIC_SHARE, TIMELINE_PADDING + MESSAGE_PADDING)
             .on_dismiss(Message::Topic(self.id.clone(), topic::Message::Dismiss))
             .into()
     }

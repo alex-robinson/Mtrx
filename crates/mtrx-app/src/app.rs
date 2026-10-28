@@ -44,6 +44,7 @@ use crate::{
     media::{self, Previews, Viewer},
     members, mention, message, overview, pdf_viewer, pins,
     placement::{self, Frame, Placement},
+    popover,
     presence::{self, Activity, Presences},
     room::{self, Look, Older, Room},
     selection::{self, Selection},
@@ -529,6 +530,7 @@ impl Main {
             space_rooms: &self.space_rooms,
             space_topic: &self.space_topic,
             call_services: &settings.call_services,
+            topic_width: popover::MIN_SHARED_WIDTH,
         }
     }
 
@@ -792,6 +794,7 @@ impl App {
         }
         let remember = matches!(message, Message::OpenRoom(_) | Message::SelectSpace(_));
         let card = self.card_shown();
+        let space = self.selected_space();
         let task = self.handle(message);
         // A member's menu goes with the card it was opened on.
         if self.card_shown() != card
@@ -799,6 +802,21 @@ impl App {
         {
             main.member_menu = None;
         }
+        // Another space, however chosen: its topic, closed, and whether we
+        // may edit it.
+        let topic = match self
+            .selected_space()
+            .filter(|_| self.selected_space() != space)
+        {
+            Some(space) => {
+                if let Screen::Main(main) = &mut self.screen {
+                    main.space_topic = topic::Panel::default();
+                }
+                self.load_can_edit_topic(space)
+            }
+            None => Task::none(),
+        };
+        let task = Task::batch([task, topic]);
         if remember {
             self.remember_view();
         }
@@ -995,26 +1013,11 @@ impl App {
                 let Screen::Main(main) = &mut self.screen else {
                     return Task::none();
                 };
-                let changed = main.space != space;
                 main.space = space;
                 main.info = None;
                 main.restore = None;
                 main.arrange.escape();
-                let topic = match main.space.clone().filter(|_| changed) {
-                    Some(space) => {
-                        main.space_topic = topic::Panel::default();
-                        let session = main.session.clone();
-                        Task::perform(
-                            {
-                                let space = space.clone();
-                                async move { session.can_change_topic(&space).await.ok() }
-                            },
-                            move |can| Message::Topic(space.clone(), topic::Message::CanEdit(can)),
-                        )
-                    }
-                    None => Task::none(),
-                };
-                Task::batch([topic, self.load_avatars()])
+                self.load_avatars()
             }
             Message::Arrange(message) => {
                 let Screen::Main(main) = &mut self.screen else {
@@ -3091,9 +3094,19 @@ impl App {
             return Task::none();
         };
         let shown = panel.shown(synced.as_deref()).to_owned();
-        panel
-            .update(message, &shown)
-            .map(move |message| Message::Topic(room_id.clone(), message))
+        let opening = matches!(message, topic::Message::Toggle) && !panel.open;
+        // Not known when it was asked (the room's permissions not synced yet):
+        // asked again as the panel opens.
+        let ask = opening && panel.can_edit.is_none();
+        let task = panel.update(message, &shown).map({
+            let room_id = room_id.clone();
+            move |message| Message::Topic(room_id.clone(), message)
+        });
+        if ask {
+            Task::batch([task, self.load_can_edit_topic(room_id)])
+        } else {
+            task
+        }
     }
 
     /// Save `topic` as the open room's or selected space's, shown until the
@@ -3142,13 +3155,7 @@ impl App {
         let session = main.session.clone();
         let spaces = sidebar::ancestors(&main.rooms.rooms, room_id);
         let room = room_id.clone();
-        let can_edit = {
-            let (session, room, reply) = (session.clone(), room.clone(), room.clone());
-            Task::perform(
-                async move { session.can_change_topic(&room).await.ok() },
-                move |can| Message::Topic(reply.clone(), topic::Message::CanEdit(can)),
-            )
-        };
+        let can_edit = self.load_can_edit_topic(room.clone());
         let old_link = {
             let (session, room) = (session.clone(), room.clone());
             Task::future(async move {
@@ -3715,14 +3722,15 @@ impl App {
         .save(file);
     }
 
+    /// The width of the open room, right of the room list.
+    fn room_header_width(&self) -> f32 {
+        self.viewport().width - SPACE_BAR_WIDTH - self.settings.room_list_width - RESIZE_HANDLE
+    }
+
     fn math_params(&self) -> math::Params {
         let theme = self.theme();
         let palette = theme.extended_palette();
-        let max_width = self.viewport().width
-            - SPACE_BAR_WIDTH
-            - self.settings.room_list_width
-            - RESIZE_HANDLE
-            - MESSAGE_INSET;
+        let max_width = self.room_header_width() - MESSAGE_INSET;
         math::Params {
             max_width: max_width.max(200.0),
             scale: self.pixel_scale(),
@@ -3771,6 +3779,28 @@ impl App {
             _ => Task::none(),
         };
         Task::batch([beside, overview, self.reload_card(room)])
+    }
+
+    fn selected_space(&self) -> Option<OwnedRoomId> {
+        match &self.screen {
+            Screen::Main(main) => main.space.clone(),
+            _ => None,
+        }
+    }
+
+    /// Whether we may change `room`'s topic, for its topic panel.
+    fn load_can_edit_topic(&self, room: OwnedRoomId) -> Task<Message> {
+        let Screen::Main(main) = &self.screen else {
+            return Task::none();
+        };
+        let session = main.session.clone();
+        Task::perform(
+            {
+                let room = room.clone();
+                async move { session.can_change_topic(&room).await.ok() }
+            },
+            move |can| Message::Topic(room.clone(), topic::Message::CanEdit(can)),
+        )
     }
 
     /// Which card is shown, and on which tab: whether one is, its room, and
@@ -4216,7 +4246,12 @@ impl App {
             main.space_menu.as_ref(),
             self.updater.unseen(&self.settings.updates),
         );
-        let room_list = sidebar::room_list(main.room_list_view(&self.settings));
+        let room_list = sidebar::room_list(sidebar::RoomListView {
+            // As wide as a room's below its name.
+            topic_width: (self.room_header_width() * room::TOPIC_SHARE)
+                .max(popover::MIN_SHARED_WIDTH),
+            ..main.room_list_view(&self.settings)
+        });
 
         // Banners come and go inside a column that is always there, so the
         // room view keeps its place and its widgets their state (the

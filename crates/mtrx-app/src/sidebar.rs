@@ -474,6 +474,8 @@ pub struct RoomListView<'a> {
     pub space_topic: &'a topic::Panel,
     /// Our call services, naming calls in the topic.
     pub call_services: &'a [CallService],
+    /// The topic panel's width: a room's, floating over the room.
+    pub topic_width: f32,
 }
 
 /// Below the space's name, a caret and its topic's first line, opening the
@@ -527,9 +529,8 @@ fn space_topic<'a>(
         .style(style::toolbar)
         .into()
     });
-    // As wide as the room list.
     popover(header, shown, Side::Below, Edge::Left)
-        .share_of_anchor(1.0, 0.0)
+        .width(view.topic_width)
         .on_dismiss(message(topic::Message::Dismiss))
         .into()
 }
@@ -1995,6 +1996,7 @@ mod tests {
             space_rooms: Box::leak(Box::default()),
             space_topic: Box::leak(Box::default()),
             call_services: &[],
+            topic_width: 440.0,
         }
     }
 
