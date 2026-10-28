@@ -1819,6 +1819,70 @@ async fn room_management_screens() {
         }),
         "direct-chat-people",
     );
+
+    // A space's overview and the join dialog, with a room not in the app's
+    // room list (made since), open to everyone.
+    let glaciers = session
+        .create_room(NewRoom {
+            name: Some("glaciers".into()),
+            topic: Some("Mass balance of mountain glaciers".into()),
+            parent: Some(space.clone()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    tokio::time::timeout(TIMEOUT, async {
+        while session
+            .set_room_access(&glaciers, mtrx_core::Access::Public)
+            .await
+            .is_err()
+        {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let children = session.space_children(&space).await.unwrap();
+    let space_settings = session.room_settings(&space).await.unwrap();
+    snapshot(
+        &main_with(&|main| {
+            let mut card = info::Card::new(
+                info::Target::Room(space.clone()),
+                &main.rooms.rooms,
+                overview::Tab::Rooms,
+            );
+            card.update(info::Message::SettingsLoaded(
+                space.clone(),
+                Ok(space_settings.clone()),
+            ));
+            card.update(info::Message::Overview(overview::Message::Loaded(
+                space.clone(),
+                Ok(children.clone()),
+            )));
+            main.info = Some(card);
+        }),
+        "space-overview",
+    );
+    snapshot(
+        &main_with(&|main| {
+            let (mut join, action) = join::Join::new(
+                main.session.user_id().server_name().to_owned(),
+                &["matrix.org".into()],
+            );
+            let join::Action::Search(search) = action else {
+                panic!("no search");
+            };
+            join.update(join::Message::Found(
+                search,
+                Ok(mtrx_core::DirectoryPage {
+                    rooms: children.clone(),
+                    next: None,
+                }),
+            ));
+            main.join = Some(join);
+        }),
+        "join",
+    );
 }
 
 /// Mentions of the viewer and of someone else in a received message.
