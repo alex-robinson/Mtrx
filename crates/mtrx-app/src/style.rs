@@ -445,6 +445,43 @@ pub fn primary_button(theme: &Theme, status: button::Status) -> button::Style {
     rounded_button(button::primary)(theme, status)
 }
 
+/// A small rounded label, as a space a room is in.
+pub fn chip(theme: &Theme) -> container::Style {
+    let palette = theme.extended_palette();
+    container::Style {
+        background: Some(Background::Color(palette.background.weak.color)),
+        border: Border::default().rounded(12),
+        ..Default::default()
+    }
+}
+
+/// The primary colour, lightly: an action that should stand out a little,
+/// as Invite beside Leave.
+pub fn soft_button(theme: &Theme, status: button::Status) -> button::Style {
+    let palette = theme.extended_palette();
+    let tint = palette.primary.base.color;
+    let alpha = match status {
+        button::Status::Hovered => 0.24,
+        button::Status::Pressed => 0.32,
+        _ => 0.16,
+    };
+    let text = if palette.is_dark {
+        palette.primary.weak.color
+    } else {
+        palette.primary.strong.color
+    };
+    button::Style {
+        background: Some(Background::Color(tint.scale_alpha(alpha))),
+        text_color: if status == button::Status::Disabled {
+            text.scale_alpha(0.4)
+        } else {
+            text
+        },
+        border: Border::default().rounded(BUTTON_RADIUS),
+        ..Default::default()
+    }
+}
+
 /// Grey; in light mode a light grey, so the dark text on it stays readable
 /// (iced's is a mid grey there).
 pub fn secondary_button(theme: &Theme, status: button::Status) -> button::Style {

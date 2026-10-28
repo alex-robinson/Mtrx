@@ -1178,7 +1178,7 @@ fn home_options<'a>(at_home: AtHome, grouping: Grouping) -> Element<'a, app::Mes
 
 /// A setting: its name and what it does, beside its control.
 pub fn option<'a>(
-    label: &'a str,
+    label: impl text::IntoFragment<'a>,
     description: impl text::IntoFragment<'a>,
     control: Element<'a, app::Message>,
 ) -> Element<'a, app::Message> {

@@ -52,6 +52,11 @@ pub enum Kind {
     },
     /// A new power level for someone, or ourselves.
     Level(LevelChange),
+    /// Encrypt a room's messages: not to be undone.
+    Encrypt {
+        room: OwnedRoomId,
+        name: String,
+    },
     SignOut,
     /// A new category of `space` (Home for `None`), with `room` in it if
     /// given, or the rooms of an existing one.
@@ -139,6 +144,8 @@ pub enum Opened {
     Left(OwnedRoomId),
     /// A room's members changed.
     Members(OwnedRoomId),
+    /// A room's settings changed.
+    Settings(OwnedRoomId),
     SignedOut,
 }
 
@@ -165,6 +172,7 @@ pub enum Request {
     Leave(OwnedRoomId),
     RemoveMember(OwnedRoomId, OwnedUserId, Option<String>, bool),
     SetLevel(OwnedRoomId, OwnedUserId, i64),
+    Encrypt(OwnedRoomId),
     SignOut,
 }
 
@@ -367,6 +375,10 @@ impl Dialog {
             Kind::Leave { name, .. } => {
                 (format!("Left {name}."), format!("Could not leave {name}"))
             }
+            Kind::Encrypt { name, .. } => (
+                format!("{name} is encrypted now."),
+                format!("Could not encrypt {name}"),
+            ),
             Kind::SignOut => ("Signed out.".into(), "Could not sign out".into()),
             // Saved without waiting, like other changes to the room list.
             Kind::Category { .. } => (String::new(), String::new()),
@@ -386,6 +398,7 @@ impl Dialog {
             Kind::RemoveMember { ban: true, .. } => "Banning…",
             Kind::RemoveMember { .. } => "Removing…",
             Kind::Level(_) => "Changing the level…",
+            Kind::Encrypt { .. } => "Turning encryption on…",
             Kind::SignOut => "Signing out…",
             Kind::Category { .. } => "Saving…",
         };
@@ -537,6 +550,7 @@ impl Dialog {
                 optional(self.reason.trim()),
                 *ban,
             ),
+            Kind::Encrypt { room, .. } => Request::Encrypt(room.clone()),
             Kind::Level(change) => {
                 Request::SetLevel(change.room.clone(), change.user.clone(), self.level()?)
             }
@@ -628,6 +642,7 @@ impl Dialog {
             Kind::Invite { name, .. } => (format!("Invite to {name}"), "Invite"),
             Kind::AddExisting { name, .. } => (format!("Add your rooms to {name}"), "Add"),
             Kind::Leave { name, .. } => (format!("Leave {name}?"), "Leave"),
+            Kind::Encrypt { name, .. } => (format!("Encrypt {name}?"), "Encrypt"),
             Kind::RemoveMember {
                 name, ban: false, ..
             } => (format!("Remove {name}?"), "Remove"),
@@ -677,6 +692,13 @@ impl Dialog {
             Kind::Category { space, .. } => body
                 .push(self.field("Name", &self.name, Message::Name))
                 .push(self.category_rooms_view(space.as_ref(), rooms, arrange, grouping)),
+            Kind::Encrypt { .. } => body.push(
+                text(
+                    "From now on, only members' devices can read new messages; servers and \
+                     bridges can't. Encryption can't be turned off again.",
+                )
+                .size(13),
+            ),
             Kind::Leave { .. } => body.push(
                 text("You can only come back if the room is public or someone invites you.")
                     .size(13),
@@ -743,6 +765,7 @@ impl Dialog {
         let action = if matches!(
             self.kind,
             Kind::Leave { .. }
+                | Kind::Encrypt { .. }
                 | Kind::SignOut
                 | Kind::RemoveMember { .. }
                 | Kind::Level(LevelChange { level: Some(_), .. })

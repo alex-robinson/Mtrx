@@ -401,7 +401,7 @@ impl Overview {
             top = top.push(
                 button(text("Invite…").size(13))
                     .padding([5, 10])
-                    .style(style::secondary_button)
+                    .style(style::soft_button)
                     .on_press(app::Message::OpenDialog(Kind::Invite {
                         room: space.id.clone(),
                         name: space.name.clone(),

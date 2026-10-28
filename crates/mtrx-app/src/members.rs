@@ -63,7 +63,7 @@ pub fn view<'a>(
                 .width(Length::Fill),
             button(text("Invite…").size(12))
                 .padding([2, 8])
-                .style(style::text_button)
+                .style(style::soft_button)
                 .on_press(Message::OpenDialog(Kind::Invite {
                     room: room.clone(),
                     name: room_name.to_owned(),

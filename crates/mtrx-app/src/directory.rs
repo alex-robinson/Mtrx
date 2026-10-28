@@ -23,7 +23,7 @@ use crate::{
 pub const AVATAR: f32 = 28.0;
 /// The buttons' column, so they line up.
 const ACTION_WIDTH: f32 = 96.0;
-const LEAVE_WIDTH: f32 = 64.0;
+const LEAVE_WIDTH: f32 = 72.0;
 const ROLE_WIDTH: f32 = 44.0;
 
 /// Our membership of a listed room: as the room list has it (it follows
@@ -118,17 +118,18 @@ pub fn entry<'a>(
     if !joined {
         return base.into();
     }
-    let leave = button(text("Leave…").size(12))
-        .padding([4, 6])
-        .style(style::text_button)
+    let leave = button(text("Leave…").size(12).center().width(Length::Fill))
+        .width(Length::Fill)
+        .padding([4, 8])
+        .style(style::secondary_button)
         .on_press(app::Message::OpenDialog(Kind::Leave {
             room: room.id.clone(),
             name: room.name.clone(),
         }));
     let top = row![
         space::horizontal(),
-        container(leave).align_right(LEAVE_WIDTH),
-        container(act("Open", false, open)).width(ACTION_WIDTH),
+        container(leave).width(LEAVE_WIDTH),
+        container(act("Open", true, open)).width(ACTION_WIDTH),
     ]
     .spacing(8)
     .padding([3, 4])

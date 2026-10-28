@@ -61,6 +61,8 @@ use crate::{
 const TICK: Duration = Duration::from_secs(20);
 /// How often progress (elapsed seconds) is refreshed while something runs.
 const PROGRESS_TICK: Duration = Duration::from_secs(1);
+/// Where cards, the join dialog and Settings start, below the window's top.
+const PANEL_TOP: f32 = 72.0;
 
 /// An `Arc` that identifies by pointer: lets live core handles be used as
 /// subscription keys and carried in messages.
@@ -1631,6 +1633,35 @@ impl App {
                         async move { session.remove_room_picture(&room).await },
                         saved,
                     ),
+                    (info::Message::Change(change), Some(room)) => {
+                        let change = change.clone();
+                        Task::perform(
+                            async move {
+                                use info::Change;
+                                match change {
+                                    Change::Address(name) => {
+                                        session.set_address(&room, name.as_deref()).await
+                                    }
+                                    Change::Listed(on) => session.set_listed(&room, on).await,
+                                    Change::History(h) => session.set_history(&room, h).await,
+                                    Change::Permissions(p) => {
+                                        session.set_permissions(&room, p).await
+                                    }
+                                    Change::Suggested(space, on) => {
+                                        session.set_suggested(&space, &room, on).await
+                                    }
+                                    Change::AddToSpace(space) => {
+                                        session.add_to_space(&space, &room).await
+                                    }
+                                    Change::RemoveFromSpace(space) => {
+                                        session.remove_from_space(&space, &room).await
+                                    }
+                                    Change::Unban(user) => session.unban(&room, &user).await,
+                                }
+                            },
+                            saved,
+                        )
+                    }
                     // What was saved, or the settings as they are after a failure.
                     (info::Message::Saved(_), Some(room)) => load_settings(&session, &room),
                     _ => Task::none(),
@@ -2641,6 +2672,7 @@ impl App {
                 match opened {
                     dialog::Opened::Nothing => Task::none(),
                     dialog::Opened::Members(room) => self.refresh_members(&room),
+                    dialog::Opened::Settings(room) => self.reload_card(&room),
                     dialog::Opened::Room(id) => self.update(Message::OpenRoom(id)),
                     dialog::Opened::Space(id) => self.update(Message::SelectSpace(Some(id))),
                     dialog::Opened::Left(id) => {
@@ -3691,7 +3723,17 @@ impl App {
             }
             _ => Task::none(),
         };
-        Task::batch([beside, overview])
+        Task::batch([beside, overview, self.reload_card(room)])
+    }
+
+    /// The settings again on `room`'s card, if it is open.
+    fn reload_card(&self, room: &OwnedRoomId) -> Task<Message> {
+        match &self.screen {
+            Screen::Main(main) if main.info.as_ref().and_then(|c| c.room()) == Some(room) => {
+                load_settings(&main.session, room)
+            }
+            _ => Task::none(),
+        }
     }
 
     /// Run what the join dialog asks for.
@@ -4029,7 +4071,9 @@ impl App {
             // and closing what floats over it keeps its widgets' state.
             Screen::Main(main) => {
                 let mut layers = stack![self.main_view(main)];
-                let (panel, close) = if let Some(panel) = &self.settings_panel {
+                // Panels whose content loads and changes keep their top where
+                // it is; dialogs are centred.
+                let (panel, close, anchored) = if let Some(panel) = &self.settings_panel {
                     let spaces = mtrx_core::top_level_spaces(&main.rooms.rooms)
                         .into_iter()
                         .map(|s| (s.id.clone(), s.name.clone()))
@@ -4044,11 +4088,13 @@ impl App {
                             &self.updater,
                         ),
                         Message::ShowSettings(false),
+                        true,
                     )
                 } else if let Some(dialog) = &main.dialog {
                     (
                         dialog.view(&main.rooms.rooms, &main.arrange, &self.settings.room_list),
                         Message::Dialog(dialog::Message::Cancel),
+                        false,
                     )
                 } else if let Some(join) = &main.join {
                     (
@@ -4058,6 +4104,7 @@ impl App {
                             self.settings.room_pictures,
                         ),
                         Message::Join(join::Message::Close),
+                        true,
                     )
                 } else if let Some(card) = &main.info {
                     (
@@ -4073,6 +4120,7 @@ impl App {
                             member_menu: main.member_menu.as_ref(),
                         }),
                         Message::Info(info::Message::Close),
+                        true,
                     )
                 } else if let Some(viewer) = &main.viewer {
                     // Fills the window, with its own backdrop.
@@ -4082,12 +4130,16 @@ impl App {
                 } else {
                     return layers.into();
                 };
-                let backdrop = mouse_area(
+                let placed = if anchored {
                     container(opaque(panel))
-                        .center(Length::Fill)
-                        .style(style::backdrop),
-                )
-                .on_press(close);
+                        .center_x(Length::Fill)
+                        .height(Length::Fill)
+                        .align_top(Length::Fill)
+                        .padding(iced::Padding::new(24.0).top(PANEL_TOP))
+                } else {
+                    container(opaque(panel)).center(Length::Fill)
+                };
+                let backdrop = mouse_area(placed.style(style::backdrop)).on_press(close);
                 layers = layers.push(opaque(backdrop));
                 layers.into()
             }
@@ -4470,6 +4522,10 @@ async fn run_request(
             Request::SetLevel(room, user, level) => {
                 session.set_level(&room, &user, level).await?;
                 Opened::Members(room)
+            }
+            Request::Encrypt(room) => {
+                session.encrypt_room(&room).await?;
+                Opened::Settings(room)
             }
             Request::SignOut => {
                 // Others see us offline now, not once the server forgets us.

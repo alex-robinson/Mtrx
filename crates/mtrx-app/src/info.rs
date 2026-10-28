@@ -11,8 +11,8 @@ use iced::{
     },
 };
 use mtrx_core::{
-    Access, CallService, MxcUri, NotifyMode, OwnedMxcUri, OwnedRoomId, OwnedUserId, RoomKind,
-    RoomSettings, RoomSummary, RoomTag, Topic, UserInfo, UserSummary,
+    Access, CallService, History, MxcUri, NotifyMode, OwnedMxcUri, OwnedRoomId, OwnedUserId,
+    Permissions, RoomKind, RoomSettings, RoomSummary, RoomTag, Topic, UserInfo, UserSummary,
 };
 
 use crate::{
@@ -20,7 +20,7 @@ use crate::{
     avatar::{Avatars, Shape},
     context_menu,
     dialog::Kind,
-    fonts, frame,
+    directory, fonts, frame,
     hint::{Position, hint},
     icons,
     overview::{self, Overview},
@@ -33,7 +33,7 @@ use crate::{
 
 /// The picture in the card's header.
 const AVATAR: f32 = 40.0;
-const WIDTH: f32 = 460.0;
+const WIDTH: f32 = 500.0;
 /// A space's card, with its rooms.
 const OVERVIEW_WIDTH: f32 = 720.0;
 /// A longer topic above a space's tabs scrolls.
@@ -88,8 +88,27 @@ pub enum Message {
     EditTopic,
     /// Stop editing the topic, back to this one.
     CancelTopic(String),
+    /// The address's name, as edited.
+    AddressName(String),
+    Change(Change),
+    /// The menu of spaces to add the room to.
+    SpacesMenu(bool),
     Overview(overview::Message),
     Close,
+}
+
+/// A setting changed on a room's card, saved at once.
+#[derive(Debug, Clone)]
+pub enum Change {
+    /// The address's name; none without.
+    Address(Option<String>),
+    Listed(bool),
+    History(History),
+    Permissions(Permissions),
+    Suggested(OwnedRoomId, bool),
+    AddToSpace(OwnedRoomId),
+    RemoveFromSpace(OwnedRoomId),
+    Unban(OwnedUserId),
 }
 
 /// A card's parts, for its [`frame::frame`].
@@ -120,6 +139,9 @@ pub struct Card {
     /// The picture's menu is open.
     picture_menu: bool,
     editing_topic: bool,
+    /// The address's name, as edited.
+    address: String,
+    spaces_menu: bool,
 }
 
 impl Card {
@@ -132,6 +154,8 @@ impl Card {
         Self {
             picture_menu: false,
             editing_topic: false,
+            address: String::new(),
+            spaces_menu: false,
             overview: room
                 .filter(|r| r.kind == RoomKind::Space)
                 .map(|r| Overview::new(r.id.clone(), tab)),
@@ -195,6 +219,11 @@ impl Card {
             }
             Message::SettingsLoaded(id, Ok(settings)) => {
                 if self.room() == Some(&id) {
+                    // The address as saved, unless it is being edited.
+                    let saved = self.settings.as_ref().map(address_name);
+                    if saved.is_none_or(|saved| saved == self.address) {
+                        self.address = address_name(&settings);
+                    }
                     self.settings = Some(settings);
                 }
             }
@@ -235,6 +264,16 @@ impl Card {
                 self.error = result.err();
             }
             Message::PictureMenu(open) => self.picture_menu = open,
+            Message::SpacesMenu(open) => self.spaces_menu = open,
+            Message::AddressName(name) => self.address = name,
+            Message::Change(change) => {
+                self.spaces_menu = false;
+                self.saving = true;
+                self.error = None;
+                if let Some(settings) = &mut self.settings {
+                    apply(settings, &change);
+                }
+            }
             Message::EditTopic => self.editing_topic = true,
             Message::CancelTopic(topic) => {
                 self.topic = topic::Editor::new(&topic);
@@ -387,11 +426,10 @@ impl Card {
         }
     }
 
-    /// Picture, name and topic (editable where allowed), favourite and low
-    /// priority, notifications, the address, and invite and leave.
+    /// Picture, name (editable where allowed) and address, favourite,
+    /// invite and leave; the topic and settings; a space's tabs.
     fn room_view<'a>(&'a self, room: &'a RoomSummary, shown: Shown<'a>) -> Framed<'a> {
         let Shown {
-            rooms,
             avatars,
             call_services,
             ..
@@ -432,11 +470,93 @@ impl Card {
                 .font(fonts::SEMIBOLD)
                 .into()
         };
-        let title = row![picture, container(name).width(Length::Fill), star]
+        // The address under the name, small, to copy.
+        let mut named = column![name].spacing(0);
+        if let Some(address) = settings
+            .and_then(|s| s.address.as_ref().map(ToString::to_string))
+            .or_else(|| room.alias.clone())
+        {
+            named = named.push(
+                container(selectable_text(address).size(12).style(text::secondary)).padding([0, 6]),
+            );
+        }
+        let title = row![picture, container(named).width(Length::Fill), star]
             .spacing(12)
             .align_y(Alignment::Center)
             .into();
         let about = self.about(room, call_services, allowed(|s| s.can_change_topic));
+        let body = if loading {
+            frame::loading()
+        } else {
+            self.settings_view(room, shown)
+        };
+        // Invite and Leave on every tab; Invite where the people are.
+        let mut actions = Vec::new();
+        if !room.invited {
+            if settings.is_some_and(|s| s.can_invite) {
+                let invite = match &self.overview {
+                    Some(_) => app::Message::Info(Message::Overview(overview::Message::Tab(
+                        overview::Tab::Members,
+                    ))),
+                    None => app::Message::ShowMembers(room.id.clone()),
+                };
+                actions.push(header_button("Invite…", style::soft_button, invite));
+            }
+            actions.push(header_button(
+                "Leave…",
+                style::secondary_button,
+                app::Message::OpenDialog(Kind::Leave {
+                    room: room.id.clone(),
+                    name: room.name.clone(),
+                }),
+            ));
+        }
+        actions.extend(self.room_action(room));
+        let Some(overview) = &self.overview else {
+            return Framed {
+                title,
+                actions,
+                bar: None,
+                body: if loading {
+                    body
+                } else {
+                    column![about, body].spacing(14).into()
+                },
+            };
+        };
+        // A space: its rooms, members and these settings, in tabs. The
+        // topic stays above them, scrolling itself if long.
+        let bar = column![
+            container(scrollable(about).height(Length::Shrink)).max_height(ABOUT_HEIGHT),
+            overview.tabs(),
+        ]
+        .spacing(12);
+        Framed {
+            title,
+            actions,
+            bar: Some(bar.into()),
+            body: overview.view(
+                room,
+                shown,
+                settings.is_some_and(|s| s.can_add_rooms),
+                settings.is_some_and(|s| s.can_invite) && !room.invited,
+                body,
+            ),
+        }
+    }
+
+    /// The settings below the topic: notifications and the room list, who
+    /// can join, find, read and edit it, encryption, its address, the
+    /// spaces it is in, and who is banned.
+    fn settings_view<'a>(
+        &'a self,
+        room: &'a RoomSummary,
+        shown: Shown<'a>,
+    ) -> Element<'a, app::Message> {
+        let rooms = shown.rooms;
+        let settings = self.settings.as_ref();
+        let change = |change| app::Message::Info(Message::Change(change));
+        let enabled = |can: bool| can && !self.saving;
         let mut card = column![].spacing(14);
         if let Some(settings) = settings {
             card = card.push(settings::option(
@@ -455,33 +575,6 @@ impl Card {
                 .padding(6)
                 .into(),
             ));
-            if settings.can_change_access && room.kind != RoomKind::Direct {
-                // Space members only for a room in a space.
-                let choices: Vec<Join> = [
-                    Access::Invite,
-                    Access::Knock,
-                    Access::SpaceMembers,
-                    Access::Public,
-                ]
-                .into_iter()
-                .filter(|&access| {
-                    access != Access::SpaceMembers
-                        || !room.parents.is_empty()
-                        || settings.access == access
-                })
-                .map(Join)
-                .collect();
-                card = card.push(settings::option(
-                    "Who can join",
-                    access_description(settings.access, &parent_names(room, rooms)),
-                    pick_list(choices, Some(Join(settings.access)), |Join(access)| {
-                        app::Message::Info(Message::Access(access))
-                    })
-                    .text_size(13)
-                    .padding(6)
-                    .into(),
-                ));
-            }
         }
         let low_priority = room.tag == RoomTag::LowPriority;
         card = card.push(settings::option(
@@ -500,136 +593,300 @@ impl Card {
                 })
                 .into(),
         ));
-
-        let address = room.alias.clone().unwrap_or_else(|| room.id.to_string());
-        card = card
-            .push(self.copyable(
-                if room.alias.is_some() {
-                    "Address"
-                } else {
-                    "Room ID"
-                },
-                address.clone(),
-            ))
-            .push(self.copyable("Link", format!("https://matrix.to/#/{address}")));
-        let kind = match room.kind {
-            RoomKind::Space => "Space",
-            RoomKind::Direct => "Direct chat",
-            RoomKind::Room => "Room",
+        let Some(settings) = settings else {
+            return card.into();
         };
-        let members = match room.joined_members {
-            1 => "1 member".to_owned(),
-            n => format!("{n} members"),
-        };
-        let encryption = if room.encrypted {
-            "encrypted"
-        } else {
-            "not encrypted"
-        };
-        let mut facts = vec![kind.to_owned()];
-        if room.kind != RoomKind::Direct {
-            let access = settings.map_or(
-                if room.public {
-                    Access::Public
-                } else {
-                    Access::Invite
-                },
-                |s| s.access,
-            );
-            facts.push(
-                match access {
-                    Access::Public => "Public: anyone can join",
-                    Access::SpaceMembers => "Private: space members can join",
-                    Access::Knock => "Private: people ask to join",
-                    Access::Invite => "Private: by invitation",
-                }
-                .to_owned(),
-            );
+        let direct = room.kind == RoomKind::Direct;
+        if settings.can_change_access && !direct {
+            // Space members only for a room in a space.
+            let choices: Vec<Join> = [
+                Access::Invite,
+                Access::Knock,
+                Access::SpaceMembers,
+                Access::Public,
+            ]
+            .into_iter()
+            .filter(|&access| {
+                access != Access::SpaceMembers
+                    || !room.parents.is_empty()
+                    || settings.access == access
+            })
+            .map(Join)
+            .collect();
+            card = card.push(settings::option(
+                "Who can join",
+                access_description(settings.access, &parent_names(room, rooms)),
+                pick_list(choices, Some(Join(settings.access)), |Join(access)| {
+                    app::Message::Info(Message::Access(access))
+                })
+                .text_size(13)
+                .padding(6)
+                .into(),
+            ));
         }
-        facts.extend([members, encryption.to_owned()]);
+        // Listing a room only others may join would only tease.
+        if let Some(listed) = settings.listed
+            && settings.can_change_access
+            && (settings.access == Access::Public || listed)
+        {
+            card = card.push(settings::option(
+                "Listed in the directory",
+                format!(
+                    "Found by people browsing the rooms of {}.",
+                    shown.own_user.server_name()
+                ),
+                toggler(listed)
+                    .on_toggle_maybe(enabled(true).then_some(move |on| change(Change::Listed(on))))
+                    .into(),
+            ));
+        }
+        for link in settings.spaces.iter().filter(|l| l.can_change) {
+            let space = rooms
+                .iter()
+                .find(|r| r.id == link.space)
+                .map_or("the space", |r| r.name.as_str());
+            let id = link.space.clone();
+            card = card.push(settings::option(
+                format!("Suggested in {space}"),
+                "Offered first to the space's members, and to people who join it.",
+                toggler(link.suggested)
+                    .on_toggle_maybe(
+                        enabled(true)
+                            .then_some(move |on| change(Change::Suggested(id.clone(), on))),
+                    )
+                    .into(),
+            ));
+        }
+        if settings.can_change_history && !direct {
+            card = card.push(settings::option(
+                "Who can read the history",
+                match settings.history {
+                    History::Joined => "Members, from when they joined.",
+                    History::Invited => "Members, from when they were invited.",
+                    History::Members => "Members, all of it, also from before they joined.",
+                    History::Anyone => "Anyone, without joining.",
+                },
+                pick_list(
+                    Reading::ALL,
+                    Some(Reading(settings.history)),
+                    move |Reading(history)| change(Change::History(history)),
+                )
+                .text_size(13)
+                .padding(6)
+                .into(),
+            ));
+        }
+        if settings.can_change_permissions && !direct {
+            card = card.push(settings::option(
+                "Who can edit",
+                "Invite, rename, change the topic and picture, and pin messages.",
+                pick_list(
+                    Editing::ALL,
+                    Some(Editing(settings.permissions)),
+                    move |Editing(permissions)| change(Change::Permissions(permissions)),
+                )
+                .text_size(13)
+                .padding(6)
+                .into(),
+            ));
+        }
+        if room.kind != RoomKind::Space {
+            let control: Element<'a, app::Message> = if settings.encrypted {
+                text("On").size(13).style(text::secondary).into()
+            } else if settings.can_encrypt {
+                button(text("Turn on…").size(13))
+                    .padding([4, 10])
+                    .style(style::secondary_button)
+                    .on_press_maybe(enabled(true).then(|| {
+                        app::Message::OpenDialog(Kind::Encrypt {
+                            room: room.id.clone(),
+                            name: room.name.clone(),
+                        })
+                    }))
+                    .into()
+            } else {
+                text("Off").size(13).style(text::secondary).into()
+            };
+            card = card.push(settings::option(
+                "Encryption",
+                if settings.encrypted {
+                    "Only members' devices can read the messages."
+                } else {
+                    "Messages are stored readable on the servers."
+                },
+                control,
+            ));
+        }
+        card = card.push(self.address_view(room, settings, shown));
+        card = card.push(self.spaces_view(room, settings, rooms));
         card = card.push(
-            selectable_text(facts.join(" · "))
+            selectable_text(facts(room, settings))
                 .size(13)
                 .style(text::secondary),
         );
-        let parents = parent_names(room, rooms);
-        if !parents.is_empty() {
-            card = card.push(
-                selectable_text(format!("In {}", parents.join(", ")))
-                    .size(13)
-                    .style(text::secondary),
-            );
+        if !settings.banned.is_empty() {
+            card = card.push(banned_view(settings, enabled(settings.can_unban)));
         }
         if let Some(error) = &self.error {
             card = card.push(text(error).size(12).style(text::danger));
         }
+        card.into()
+    }
 
-        let can_invite = !room.invited && settings.is_some_and(|s| s.can_invite);
-        let leave = button(text("Leave…").size(13))
-            .style(style::text_button)
-            .on_press(app::Message::OpenDialog(Kind::Leave {
-                room: room.id.clone(),
-                name: room.name.clone(),
-            }));
-        let Some(overview) = &self.overview else {
-            // Invite in the members list, where the people are.
-            let mut actions = row![].spacing(4);
-            if can_invite {
-                actions = actions.push(
-                    button(text("Invite…").size(13))
-                        .style(style::text_button)
-                        .on_press(app::Message::ShowMembers(room.id.clone())),
-                );
-            }
-            return Framed {
-                title,
-                actions: self.room_action(room).into_iter().collect(),
-                bar: None,
-                body: if loading {
-                    frame::loading()
-                } else {
-                    column![about, card.push(actions.push(leave))]
-                        .spacing(14)
-                        .into()
-                },
-            };
-        };
-        // A space: its rooms, members and these settings, in tabs.
-        let mut actions = Vec::new();
-        if can_invite && overview.tab != overview::Tab::Members {
-            actions.push(
-                button(text("Invite…").size(13))
-                    .padding([4, 12])
-                    .style(style::secondary_button)
-                    .on_press(app::Message::Info(Message::Overview(
-                        overview::Message::Tab(overview::Tab::Members),
-                    )))
-                    .into(),
+    /// The address, edited where we may (its name, on our server), and the
+    /// link to share.
+    fn address_view<'a>(
+        &'a self,
+        room: &RoomSummary,
+        settings: &RoomSettings,
+        shown: Shown<'a>,
+    ) -> Element<'a, app::Message> {
+        let address = settings
+            .address
+            .as_ref()
+            .map(ToString::to_string)
+            .unwrap_or_else(|| room.id.to_string());
+        let link = self.copyable("Link", format!("https://matrix.to/#/{address}"));
+        if !settings.can_change_address || room.kind == RoomKind::Direct {
+            return column![
+                self.copyable(
+                    if settings.address.is_some() {
+                        "Address"
+                    } else {
+                        "Room ID"
+                    },
+                    address,
+                ),
+                link,
+            ]
+            .spacing(14)
+            .into();
+        }
+        let name = self.address.trim();
+        let changed = name != address_name(settings);
+        let mut line = row![
+            text("#").size(13).font(iced::Font::MONOSPACE),
+            text_input("name", &self.address)
+                .size(13)
+                .font(iced::Font::MONOSPACE)
+                .padding([4, 8])
+                .style(style::input)
+                .on_input(|name| app::Message::Info(Message::AddressName(name)))
+                .on_submit_maybe(changed.then(|| self.save_address())),
+            text(format!(":{}", shown.own_user.server_name()))
+                .size(13)
+                .font(iced::Font::MONOSPACE),
+        ]
+        .spacing(4)
+        .align_y(Alignment::Center);
+        if changed {
+            line = line.push(
+                button(text("Save").size(13))
+                    .padding([4, 10])
+                    .style(style::primary_button)
+                    .on_press_maybe((!self.saving).then(|| self.save_address())),
             );
         }
-        actions.extend(self.room_action(room));
-        // The topic stays above the tabs, scrolling itself if long.
-        let bar = column![
-            container(scrollable(about).height(Length::Shrink)).max_height(ABOUT_HEIGHT),
-            overview.tabs(),
-        ]
-        .spacing(12);
-        Framed {
-            title,
-            actions,
-            bar: Some(bar.into()),
-            body: overview.view(
-                room,
-                shown,
-                settings.is_some_and(|s| s.can_add_rooms),
-                can_invite,
-                if loading {
-                    frame::loading()
-                } else {
-                    card.push(leave).into()
-                },
+        column![
+            labelled(
+                "Address",
+                column![
+                    line,
+                    text("People can join by it, and it names the room in links.")
+                        .size(12)
+                        .style(text::secondary),
+                ]
+                .spacing(4),
             ),
+            link,
+        ]
+        .spacing(14)
+        .into()
+    }
+
+    fn save_address(&self) -> app::Message {
+        let name = self.address.trim();
+        app::Message::Info(Message::Change(Change::Address(
+            (!name.is_empty()).then(|| name.to_owned()),
+        )))
+    }
+
+    /// The spaces the room is in, as chips taken out with ×, and a menu
+    /// adding it to others: moving it is both.
+    fn spaces_view<'a>(
+        &'a self,
+        room: &RoomSummary,
+        settings: &'a RoomSettings,
+        rooms: &'a [RoomSummary],
+    ) -> Element<'a, app::Message> {
+        let name_of = |id: &OwnedRoomId| {
+            rooms
+                .iter()
+                .find(|r| &r.id == id)
+                .map_or_else(|| id.to_string(), |r| r.name.clone())
+        };
+        let change = |change| app::Message::Info(Message::Change(change));
+        let mut chips = row![].spacing(6).align_y(Alignment::Center);
+        for link in &settings.spaces {
+            let mut chip = row![text(name_of(&link.space)).size(13)]
+                .spacing(2)
+                .align_y(Alignment::Center);
+            if link.can_change {
+                chip = chip.push(hint(
+                    button(icons::cross(9.0, directory::secondary))
+                        .padding(4)
+                        .style(style::list_item(false))
+                        .on_press_maybe(
+                            (!self.saving)
+                                .then(|| change(Change::RemoveFromSpace(link.space.clone()))),
+                        ),
+                    "Take it out of this space",
+                    Position::Bottom,
+                ));
+            }
+            chips = chips.push(
+                container(chip)
+                    .padding(
+                        iced::Padding::new(3.0)
+                            .left(10.0)
+                            .right(if link.can_change { 3.0 } else { 10.0 }),
+                    )
+                    .style(style::chip),
+            );
         }
+        let others: Vec<_> = settings
+            .can_add_to
+            .iter()
+            .filter(|space| **space != room.id)
+            .map(|space| (name_of(space), change(Change::AddToSpace(space.clone()))))
+            .collect();
+        if !others.is_empty() {
+            let open = self.spaces_menu;
+            chips = chips.push(
+                popover(
+                    button(text("Add to space…").size(13))
+                        .padding([4, 10])
+                        .style(style::text_button)
+                        .on_press_maybe(
+                            (!self.saving)
+                                .then_some(app::Message::Info(Message::SpacesMenu(!open))),
+                        ),
+                    open.then(|| context_menu::menu(others)),
+                    Side::Below,
+                    Edge::Left,
+                )
+                .on_dismiss(app::Message::Info(Message::SpacesMenu(false))),
+            );
+        }
+        if settings.spaces.is_empty() && settings.can_add_to.is_empty() {
+            return space().into();
+        }
+        let label = if settings.spaces.is_empty() {
+            "In no space"
+        } else {
+            "In"
+        };
+        labelled(label, chips.wrap())
     }
 
     /// The picture, which changes or removes it from a menu.
@@ -826,6 +1083,109 @@ fn shared_view<'a>(shared: &[OwnedRoomId], rooms: &'a [RoomSummary]) -> Element<
     .into()
 }
 
+fn header_button<'a>(
+    label: &'a str,
+    style: fn(&Theme, button::Status) -> button::Style,
+    on_press: app::Message,
+) -> Element<'a, app::Message> {
+    button(text(label).size(13))
+        .padding([4, 12])
+        .style(style)
+        .on_press(on_press)
+        .into()
+}
+
+/// The name of the room's address (`#name:server`), or nothing.
+fn address_name(settings: &RoomSettings) -> String {
+    settings
+        .address
+        .as_ref()
+        .map(|a| a.alias().to_owned())
+        .unwrap_or_default()
+}
+
+/// A change as the card shows it until the settings come back.
+fn apply(settings: &mut RoomSettings, change: &Change) {
+    match change {
+        Change::Address(_) | Change::AddToSpace(_) | Change::RemoveFromSpace(_) => {}
+        Change::Listed(listed) => settings.listed = Some(*listed),
+        Change::History(history) => settings.history = *history,
+        Change::Permissions(permissions) => settings.permissions = *permissions,
+        Change::Suggested(space, suggested) => {
+            if let Some(link) = settings.spaces.iter_mut().find(|l| &l.space == space) {
+                link.suggested = *suggested;
+            }
+        }
+        Change::Unban(user) => settings.banned.retain(|b| &b.id != user),
+    }
+}
+
+/// "Room · Public: anyone can join · 4 members · encrypted · version 12".
+fn facts(room: &RoomSummary, settings: &RoomSettings) -> String {
+    let mut facts = vec![
+        match room.kind {
+            RoomKind::Space => "Space",
+            RoomKind::Direct => "Direct chat",
+            RoomKind::Room => "Room",
+        }
+        .to_owned(),
+    ];
+    if room.kind != RoomKind::Direct {
+        facts.push(
+            match settings.access {
+                Access::Public => "Public: anyone can join",
+                Access::SpaceMembers => "Private: space members can join",
+                Access::Knock => "Private: people ask to join",
+                Access::Invite => "Private: by invitation",
+            }
+            .to_owned(),
+        );
+    }
+    facts.push(match room.joined_members {
+        1 => "1 member".to_owned(),
+        n => format!("{n} members"),
+    });
+    if room.kind != RoomKind::Space {
+        facts.push(
+            if settings.encrypted {
+                "encrypted"
+            } else {
+                "not encrypted"
+            }
+            .to_owned(),
+        );
+    }
+    if let Some(version) = &settings.version {
+        facts.push(format!("room version {version}"));
+    }
+    facts.join(" · ")
+}
+
+/// Who is banned and why, each to let back where we may (`can_unban`).
+fn banned_view(settings: &RoomSettings, can_unban: bool) -> Element<'_, app::Message> {
+    let rows = settings.banned.iter().map(|banned| {
+        let mut who = column![text(banned.name.as_deref().unwrap_or(banned.id.as_str())).size(13)];
+        let detail = match &banned.reason {
+            Some(reason) => format!("{} · {reason}", banned.id),
+            None => banned.id.to_string(),
+        };
+        who = who.push(selectable_text(detail).size(12).style(text::secondary));
+        let mut line = row![who.width(Length::Fill)].align_y(Alignment::Center);
+        if settings.can_unban {
+            line = line.push(
+                button(text("Unban").size(12))
+                    .padding([3, 10])
+                    .style(style::secondary_button)
+                    .on_press_maybe(can_unban.then(|| {
+                        app::Message::Info(Message::Change(Change::Unban(banned.id.clone())))
+                    })),
+            );
+        }
+        line.into()
+    });
+    labelled("Banned", column(rows).spacing(6))
+}
+
 /// The names of the joined spaces that list `room`.
 fn parent_names<'a>(room: &RoomSummary, rooms: &'a [RoomSummary]) -> Vec<&'a str> {
     room.parents
@@ -865,6 +1225,47 @@ impl fmt::Display for Notify {
             NotifyMode::All => "All messages",
             NotifyMode::Mentions => "Mentions",
             NotifyMode::Mute => "Mute",
+        })
+    }
+}
+
+/// Who can read a room's history, as its menu names them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Reading(History);
+
+impl Reading {
+    const ALL: [Self; 4] = [
+        Self(History::Joined),
+        Self(History::Invited),
+        Self(History::Members),
+        Self(History::Anyone),
+    ];
+}
+
+impl fmt::Display for Reading {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self.0 {
+            History::Joined => "Since joining",
+            History::Invited => "Since invited",
+            History::Members => "Members",
+            History::Anyone => "Anyone",
+        })
+    }
+}
+
+/// Who can edit a room, as its menu names them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Editing(Permissions);
+
+impl Editing {
+    const ALL: [Self; 2] = [Self(Permissions::Everyone), Self(Permissions::Moderators)];
+}
+
+impl fmt::Display for Editing {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self.0 {
+            Permissions::Everyone => "Everyone",
+            Permissions::Moderators => "Moderators",
         })
     }
 }
