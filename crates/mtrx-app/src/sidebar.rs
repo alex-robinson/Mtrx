@@ -13,24 +13,32 @@ use iced::{
     },
 };
 use mtrx_core::{
-    Grouping, Layout, MxcUri, OwnedRoomId, OwnedUserId, RoomKind, RoomSummary, RoomTag,
-    ScheduledMessage, Section, Sort, UserId, top_level_spaces,
+    CallService, DirectoryRoom, Grouping, Layout, MxcUri, OwnedRoomId, OwnedUserId, RoomKind,
+    RoomSummary, RoomTag, ScheduledMessage, Section, Sort, Topic, UserId, top_level_spaces,
 };
 
 use crate::{
     app::Message,
     arrange::{self, Arrange, NAME_INPUT},
     avatar::{Avatars, Shape},
+    context_menu::{self, context_menu},
     dialog::Kind,
+    directory,
     ellipsis::{ellipsis, followed_by},
     fonts,
     hint::{Position, hint, shortcut},
-    icons, info,
+    icons, info, overview,
     popover::{Edge, Side, popover},
     presence::{self, Presences},
     style::{self, ROOM_AVATAR, ROOM_ROW, SPACE_AVATAR, SPACE_BAR_WIDTH},
     tint::Tint,
+    topic,
 };
+
+/// The space's topic panel at most; longer, it scrolls.
+const TOPIC_HEIGHT: f32 = 420.0;
+/// The line previewing the space's topic.
+const PREVIEW_HEIGHT: f32 = 18.0;
 
 /// The room search field, focused by ⌘K / Ctrl+K.
 pub const SEARCH: &str = "room-search";
@@ -182,6 +190,13 @@ fn listed<'a>(view: &RoomListView<'a>) -> Vec<&'a RoomSummary> {
     }
 }
 
+/// Rooms of our spaces (the selected one's, or all at Home) not joined yet
+/// that the search finds.
+fn not_joined<'a>(view: &RoomListView<'a>, filter: &str) -> Vec<&'a DirectoryRoom> {
+    let spaces = directory::searched_spaces(view.rooms, view.selected_space);
+    view.space_rooms.found(&spaces, view.rooms, filter)
+}
+
 /// The rooms with a row in the room list, in its order: the pinned Notes,
 /// then each section's, or what the search found.
 fn rows<'a>(view: &RoomListView<'a>) -> Vec<&'a RoomSummary> {
@@ -268,7 +283,16 @@ pub fn avatars<'a>(view: &RoomListView<'a>) -> Vec<(&'a MxcUri, f32)> {
         .into_iter()
         .filter(|r| view.room_pictures || r.kind != RoomKind::Room)
         .filter_map(|r| Some((r.avatar.as_deref()?, ROOM_AVATAR)));
-    spaces.chain(listed).collect()
+    let filter = view.filter.trim().to_lowercase();
+    let unjoined = if filter.is_empty() {
+        Vec::new()
+    } else {
+        not_joined(view, &filter)
+    };
+    let unjoined = unjoined
+        .into_iter()
+        .filter_map(|r| Some((r.avatar.as_deref()?, directory::AVATAR)));
+    spaces.chain(listed).chain(unjoined).collect()
 }
 
 /// The people of the direct chats the room list shows, in its order,
@@ -282,13 +306,22 @@ pub fn direct_users<'a>(view: &RoomListView<'a>, own: &UserId) -> Vec<&'a OwnedU
         .collect()
 }
 
-/// `update`: a newer version not yet seen in Settings, a dot on the gear.
+/// A menu of the space bar: its "+", or a space's (right-click).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SpaceMenu {
+    Add,
+    Of(OwnedRoomId),
+}
+
+/// `menu`: the open one; `update`: a newer version not yet seen in
+/// Settings, a dot on the gear.
 pub fn space_bar<'a>(
     rooms: &[RoomSummary],
     selected: Option<&OwnedRoomId>,
     arrange: &Arrange,
     grouping: &Grouping,
     avatars: &Avatars,
+    menu: Option<&SpaceMenu>,
     update: bool,
 ) -> Element<'a, Message> {
     let entry = |icon: Element<'a, Message>, title: String, target: Option<OwnedRoomId>, unread| {
@@ -304,8 +337,23 @@ pub fn space_bar<'a>(
         let entry_button = button(icon)
             .padding(4)
             .style(style::list_item(is_selected))
-            .on_press(Message::SelectSpace(target));
-        container(with_tooltip(entry_button, title)).center_x(Length::Fill)
+            .on_press(Message::SelectSpace(target.clone()));
+        let entry_button = with_tooltip(entry_button, title.clone());
+        // A space's own menu, on right-click.
+        let entry_button: Element<'a, Message> = match target {
+            Some(space) => {
+                let open = menu == Some(&SpaceMenu::Of(space.clone()));
+                context_menu(
+                    entry_button,
+                    open.then(|| space_menu(space.clone(), title)),
+                    Message::SpaceMenu(Some(SpaceMenu::Of(space))),
+                )
+                .on_dismiss(Message::SpaceMenu(None))
+                .into()
+            }
+            None => entry_button,
+        };
+        container(entry_button).center_x(Length::Fill)
     };
 
     let mut bar = column![entry(
@@ -329,15 +377,29 @@ pub fn space_bar<'a>(
             unread(rooms, Some(&space.id), arrange, grouping),
         ));
     }
-    let new_space = button(
+    let adding = menu == Some(&SpaceMenu::Add);
+    let add = button(
         container(text("+").size(22).font(fonts::SEMIBOLD))
             .center(SPACE_AVATAR)
             .style(style::new_space_tile),
     )
     .padding(4)
-    .style(style::list_item(false))
-    .on_press(Message::OpenDialog(Kind::NewSpace));
-    bar = bar.push(container(with_tooltip(new_space, "New space".into())).center_x(Length::Fill));
+    .style(style::list_item(adding))
+    .on_press(Message::SpaceMenu((!adding).then_some(SpaceMenu::Add)));
+    let add_menu = adding.then(|| {
+        context_menu::menu([
+            ("New space…".to_owned(), Message::OpenDialog(Kind::NewSpace)),
+            ("Join a space or room…".to_owned(), Message::OpenJoin),
+        ])
+    });
+    let add = popover(
+        with_tooltip(add, "New space, or join one".into()),
+        add_menu,
+        Side::Below,
+        Edge::Left,
+    )
+    .on_dismiss(Message::SpaceMenu(None));
+    bar = bar.push(container(add).center_x(Length::Fill));
     let mut gear = stack![icons::gear(20.0, |theme| {
         theme
             .extended_palette()
@@ -408,6 +470,74 @@ pub struct RoomListView<'a> {
     pub notes: Option<Notes<'a>>,
     /// Dots on the pictures of direct chats.
     pub presences: &'a Presences,
+    /// The rooms of our spaces, for the search to find those not joined.
+    pub space_rooms: &'a directory::SpaceRooms,
+    /// The selected space's topic panel.
+    pub space_topic: &'a topic::Panel,
+    /// Our call services, naming calls in the topic.
+    pub call_services: &'a [CallService],
+    /// The topic panel's width: a room's, floating over the room.
+    pub topic_width: f32,
+}
+
+/// Below the space's name, a caret and its topic's first line, opening the
+/// topic in full and its links (or its editor) over the room list, as a
+/// room's below its name.
+fn space_topic<'a>(
+    view: &RoomListView<'a>,
+    space: &OwnedRoomId,
+    top: Element<'a, Message>,
+) -> Element<'a, Message> {
+    let panel = view.space_topic;
+    let synced = (view.rooms.iter())
+        .find(|r| &r.id == space)
+        .and_then(|r| r.topic.as_deref());
+    let parsed = Topic::parse(panel.shown(synced));
+    let can_edit = panel.can_edit == Some(true);
+    let Some(preview) = topic::preview(&parsed, view.call_services, can_edit) else {
+        return top;
+    };
+    let message = |message| Message::Topic(space.clone(), message);
+    let open = panel.open;
+    let mut line = row![icons::chevron(11.0, open, |theme| {
+        theme
+            .extended_palette()
+            .background
+            .base
+            .text
+            .scale_alpha(0.7)
+    })]
+    .spacing(5)
+    // As high with the preview as without (while open), so the list below
+    // stays put.
+    .height(PREVIEW_HEIGHT)
+    .align_y(Alignment::Center);
+    if !open {
+        line = line.push(ellipsis(preview).size(12).style(text::secondary));
+    }
+    let header = column![
+        top,
+        button(line)
+            .width(Length::Fill)
+            .padding([2, 8])
+            .style(style::list_item(false))
+            .on_press(message(topic::Message::Toggle)),
+    ]
+    .spacing(2);
+    let shown = open.then(|| {
+        container(
+            scrollable(container(panel.view(space, &parsed, view.call_services)).padding(14))
+                .height(Length::Shrink),
+        )
+        .width(Length::Fill)
+        .max_height(TOPIC_HEIGHT)
+        .style(style::toolbar)
+        .into()
+    });
+    popover(header, shown, Side::Below, Edge::Left)
+        .width(view.topic_width)
+        .on_dismiss(message(topic::Message::Dismiss))
+        .into()
 }
 
 /// The Notes to self at the top of the room list.
@@ -445,22 +575,24 @@ pub fn room_list<'a>(view: RoomListView<'a>) -> Element<'a, Message> {
             button(ellipsis(title).size(16).font(fonts::SEMIBOLD))
                 .padding([4, 8])
                 .style(style::list_item(false))
-                .on_press(Message::ShowInfo(info::Target::Room(space.clone()))),
-            "Space settings, address and link",
+                .on_press(Message::ShowSpace(space.clone(), overview::Tab::Rooms)),
+            "Rooms, members and settings of the space",
             Position::Bottom,
         ),
         None => container(ellipsis(title).size(16).font(fonts::SEMIBOLD))
             .padding([4, 8])
             .into(),
     };
-    let mut list = column![
-        row![
-            container(heading).width(Length::Fill),
-            with_tooltip(add, "New room, chat or category; join a room".into()),
-        ]
-        .align_y(Alignment::Center)
+    let top = row![
+        container(heading).width(Length::Fill),
+        with_tooltip(add, "New room, chat or category, or join one".into()),
     ]
-    .padding(8);
+    .align_y(Alignment::Center);
+    let top = match selected_space {
+        Some(space) => space_topic(&view, space, top.into()),
+        None => top.into(),
+    };
+    let mut list = column![top].padding(8);
     if add_menu {
         let space = selected_space.map(|id| (id.clone(), title.to_owned()));
         list = list.push(add_menu_view(space));
@@ -491,20 +623,53 @@ pub fn room_list<'a>(view: RoomListView<'a>) -> Element<'a, Message> {
         list = list.extend(arranged(&view));
     } else {
         let found = search(rooms, selected_space, view.arrange, &view.grouping, &filter);
-        if found.is_empty() {
+        let unjoined = not_joined(&view, &filter);
+        let space_rooms = view.space_rooms;
+        let looking = space_rooms.any_loading(&directory::searched_spaces(rooms, selected_space));
+        if found.is_empty() && unjoined.is_empty() && !looking {
             let none = if selected_space.is_some() {
                 "No rooms or chats in this space match."
             } else {
                 "No rooms or chats at Home match."
             };
             list = list.push(container(text(none).size(12).style(text::secondary)).padding([8, 8]));
-        } else {
+        } else if !found.is_empty() {
             list = list.push(
                 container(section_title("Results")).padding(Padding::new(8.0).top(14).bottom(4)),
             );
         }
         for room in found {
             list = list.push(view.room_entry(room));
+        }
+        if !unjoined.is_empty() {
+            list = list.push(
+                container(section_title("Not joined")).padding(Padding::new(8.0).top(14).bottom(4)),
+            );
+        } else if looking {
+            list = list.push(
+                container(
+                    text("Looking in your spaces…")
+                        .size(12)
+                        .style(text::secondary),
+                )
+                .padding([8, 8]),
+            );
+        }
+        for room in unjoined {
+            let membership =
+                directory::membership(room, rooms, space_rooms.asked.contains(&room.id));
+            list = list.push(directory::entry(
+                room,
+                membership,
+                space_rooms.busy.contains(&room.id),
+                space().width(0).into(),
+                directory::Shown {
+                    avatars: view.avatars,
+                    pictures: view.room_pictures,
+                },
+                Message::JoinFound(room.id.clone(), room.via.clone(), false),
+                Message::JoinFound(room.id.clone(), room.via.clone(), true),
+            ));
         }
     }
     if !view.loaded {
@@ -1039,6 +1204,31 @@ pub fn drag_preview<'a>(
     )
 }
 
+/// A space's menu in the space bar.
+fn space_menu<'a>(space: OwnedRoomId, name: String) -> Element<'a, Message> {
+    context_menu::menu([
+        (
+            "Overview".to_owned(),
+            Message::ShowSpace(space.clone(), overview::Tab::Rooms),
+        ),
+        (
+            "Invite people…".to_owned(),
+            Message::OpenDialog(Kind::Invite {
+                room: space.clone(),
+                name: name.clone(),
+            }),
+        ),
+        (
+            "Space settings…".to_owned(),
+            Message::ShowSpace(space.clone(), overview::Tab::Settings),
+        ),
+        (
+            "Leave the space…".to_owned(),
+            Message::OpenDialog(Kind::Leave { room: space, name }),
+        ),
+    ])
+}
+
 /// What the room list's "+" offers; more inside a space.
 fn add_menu_view<'a>(space: Option<(OwnedRoomId, String)>) -> Element<'a, Message> {
     let item = |label: String, message: Message| {
@@ -1052,15 +1242,22 @@ fn add_menu_view<'a>(space: Option<(OwnedRoomId, String)>) -> Element<'a, Messag
     let mut menu = column![].spacing(1);
     menu = menu.push(dialog(
         match &space {
-            Some((_, name)) => format!("New room in {name}"),
-            None => "New room".into(),
+            Some((_, name)) => format!("New room in {name}…"),
+            None => "New room…".into(),
         },
         Kind::NewRoom {
             space: space.clone(),
         },
     ));
+    // In a space, its own rooms to join; at Home, any.
+    if let Some((id, name)) = &space {
+        menu = menu.push(item(
+            format!("Browse rooms in {name}…"),
+            Message::ShowSpace(id.clone(), overview::Tab::Rooms),
+        ));
+    }
     menu = menu
-        .push(dialog("New direct chat".into(), Kind::DirectChat))
+        .push(dialog("New direct chat…".into(), Kind::DirectChat))
         .push(dialog(
             "New category…".into(),
             Kind::Category {
@@ -1068,32 +1265,28 @@ fn add_menu_view<'a>(space: Option<(OwnedRoomId, String)>) -> Element<'a, Messag
                 category: None,
                 room: None,
             },
-        ))
-        .push(dialog("Join a room…".into(), Kind::Join));
-    if let Some((id, name)) = space {
-        menu = menu
-            .push(dialog(
-                "Add existing rooms…".into(),
-                Kind::AddExisting {
-                    space: id.clone(),
-                    name: name.clone(),
-                },
-            ))
-            .push(dialog(
-                "Invite people to the space…".into(),
-                Kind::Invite {
-                    room: id.clone(),
-                    name: name.clone(),
-                },
-            ))
-            .push(item(
-                "Space settings…".into(),
-                Message::ShowInfo(info::Target::Room(id.clone())),
-            ))
-            .push(dialog(
-                "Leave the space…".into(),
-                Kind::Leave { room: id, name },
-            ));
+        ));
+    match space {
+        None => menu = menu.push(item("Join a space or room…".into(), Message::OpenJoin)),
+        Some((id, name)) => {
+            menu = menu
+                .push(container(rule::horizontal(1).style(style::separator)).padding([4, 6]))
+                .push(dialog(
+                    "Invite people…".into(),
+                    Kind::Invite {
+                        room: id.clone(),
+                        name: name.clone(),
+                    },
+                ))
+                .push(item(
+                    "Space settings…".into(),
+                    Message::ShowSpace(id.clone(), overview::Tab::Settings),
+                ))
+                .push(dialog(
+                    "Leave the space…".into(),
+                    Kind::Leave { room: id, name },
+                ));
+        }
     }
     container(menu)
         .padding(4)
@@ -1337,20 +1530,14 @@ fn faint(theme: &Theme) -> Color {
 /// invited people (or a space's members) may join.
 fn access_symbol<'a>(public: bool) -> Element<'a, Message> {
     let symbol: Element<'a, Message> = if public {
-        text("#")
-            .size(16)
-            .font(fonts::SEMIBOLD)
-            .style(|theme: &Theme| text::Style {
-                color: Some(
-                    theme
-                        .extended_palette()
-                        .background
-                        .base
-                        .text
-                        .scale_alpha(0.55),
-                ),
-            })
-            .into()
+        icons::hash(16.0, |theme| {
+            theme
+                .extended_palette()
+                .background
+                .base
+                .text
+                .scale_alpha(0.55)
+        })
     } else {
         icons::lock(14.0, |theme| {
             theme
@@ -1811,6 +1998,10 @@ mod tests {
             room_pictures: false,
             notes: None,
             presences,
+            space_rooms: Box::leak(Box::default()),
+            space_topic: Box::leak(Box::default()),
+            call_services: &[],
+            topic_width: 440.0,
         }
     }
 

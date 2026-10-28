@@ -1,25 +1,25 @@
 //! Dialogs for managing rooms: create a room, space, direct chat or
-//! category, choose a category's rooms, join, invite, add rooms to a space,
-//! leave.
+//! category, choose a category's rooms, invite, add rooms to a space,
+//! leave. Joining has its own dialog ([`crate::join`]).
 
 use std::time::{Duration, Instant};
 
 use iced::{
     Alignment, Element, Length,
     task::Handle,
-    widget::{
-        button, checkbox, column, container, row, scrollable, space, text, text_input, toggler,
-    },
+    widget::{button, checkbox, column, container, row, space, text, text_input, toggler},
 };
 use mtrx_core::{
-    Contact, Grouping, NewRoom, OwnedRoomId, OwnedUserId, Permissions, RoomCategories, RoomSummary,
-    UserId, UserSummary,
+    Contact, Grouping, NewRoom, OwnedRoomId, OwnedUserId, Permissions, RoomCategories, RoomKind,
+    RoomSummary, UserId, UserSummary,
 };
 
 use crate::{
     app,
     arrange::{self, Arrange, CategoryEdit},
-    fonts, sidebar, style,
+    fonts, frame,
+    hint::{Position, hint},
+    sidebar, style,
 };
 
 /// Which dialog is open.
@@ -31,7 +31,6 @@ pub enum Kind {
     },
     NewSpace,
     DirectChat,
-    Join,
     Invite {
         room: OwnedRoomId,
         name: String,
@@ -41,6 +40,20 @@ pub enum Kind {
         name: String,
     },
     Leave {
+        room: OwnedRoomId,
+        name: String,
+    },
+    /// Remove someone (`name`) from a room, or ban them.
+    RemoveMember {
+        room: OwnedRoomId,
+        user: OwnedUserId,
+        name: String,
+        ban: bool,
+    },
+    /// A new power level for someone, or ourselves.
+    Level(LevelChange),
+    /// Encrypt a room's messages: not to be undone.
+    Encrypt {
         room: OwnedRoomId,
         name: String,
     },
@@ -54,13 +67,57 @@ pub enum Kind {
     },
 }
 
+/// A power level to give someone, or ourselves: asked first where it
+/// can't be undone, or entered.
+#[derive(Clone, Debug)]
+pub struct LevelChange {
+    pub room: OwnedRoomId,
+    pub user: OwnedUserId,
+    pub name: String,
+    /// `None`: entered in the dialog.
+    pub level: Option<i64>,
+    /// The highest level we may give.
+    pub up_to: i64,
+    /// A plain member's level in the room.
+    pub default_level: i64,
+    /// Our own level, lowered.
+    pub own: bool,
+    /// Nobody else in the room has our level.
+    pub alone: bool,
+}
+
+impl LevelChange {
+    /// What `level` makes someone: "admin", "moderator", "member" or
+    /// "level 20".
+    pub fn role(&self, level: i64) -> String {
+        match level {
+            100 => "admin".into(),
+            50 => "moderator".into(),
+            l if l == self.default_level => "member".into(),
+            l => format!("level {l}"),
+        }
+    }
+
+    /// The role with its article: "an admin", "level 20".
+    fn a_role(&self, level: i64) -> String {
+        match self.role(level) {
+            role if role.starts_with("level") => role,
+            role if role.starts_with('a') => format!("an {role}"),
+            role => format!("a {role}"),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum Message {
     Name(String),
     Topic(String),
+    /// Why someone is removed, for them to see.
+    Reason(String),
+    /// A power level, typed.
+    Level(String),
     Encrypted(bool),
     Moderated(bool),
-    Address(String),
     /// The people search field changed.
     Query(String),
     /// People the user shares spaces, rooms or chats with.
@@ -72,6 +129,10 @@ pub enum Message {
     ToggleRoom(OwnedRoomId),
     /// Tick all of these rooms.
     TickAll(Vec<OwnedRoomId>),
+    /// Whether the server gives new rooms co-owners.
+    OwnersOffered(bool),
+    /// An invited person co-owns the new room, or not.
+    CoOwner(OwnedUserId, bool),
     Submit,
     Cancel,
     /// The request finished; on success, possibly with a room to show.
@@ -85,6 +146,10 @@ pub enum Opened {
     Room(OwnedRoomId),
     Space(OwnedRoomId),
     Left(OwnedRoomId),
+    /// A room's members changed.
+    Members(OwnedRoomId),
+    /// A room's settings changed.
+    Settings(OwnedRoomId),
     SignedOut,
 }
 
@@ -106,10 +171,12 @@ pub enum Request {
     CreateRoom(NewRoom),
     CreateSpace(NewRoom),
     DirectChat(OwnedUserId),
-    Join(String),
     Invite(OwnedRoomId, Vec<OwnedUserId>),
     AddToSpace(OwnedRoomId, Vec<OwnedRoomId>),
     Leave(OwnedRoomId),
+    RemoveMember(OwnedRoomId, OwnedUserId, Option<String>, bool),
+    SetLevel(OwnedRoomId, OwnedUserId, i64),
+    Encrypt(OwnedRoomId),
     SignOut,
 }
 
@@ -117,9 +184,10 @@ pub struct Dialog {
     kind: Kind,
     name: String,
     topic: String,
+    reason: String,
+    level: String,
     encrypted: bool,
     moderated: bool,
-    address: String,
     query: String,
     /// People the user knows, closest first.
     contacts: Vec<Contact>,
@@ -131,6 +199,9 @@ pub struct Dialog {
     directory: Vec<UserSummary>,
     people: Vec<UserSummary>,
     rooms: Vec<OwnedRoomId>,
+    /// Invited people who co-own the new room, where the server offers it.
+    co_owners: Vec<OwnedUserId>,
+    owners_offered: bool,
     /// The running user search; replaced by each new query.
     pub search: Option<Handle>,
     /// When the request was sent, while it runs.
@@ -140,8 +211,9 @@ pub struct Dialog {
     error: Option<String>,
 }
 
-/// After this long a request offers to continue in the background.
+/// After this long a request says it may continue in the background.
 const SLOW: Duration = Duration::from_secs(15);
+const WIDTH: f32 = 480.0;
 
 impl Dialog {
     pub fn new(kind: Kind) -> Self {
@@ -149,9 +221,10 @@ impl Dialog {
             kind,
             name: String::new(),
             topic: String::new(),
+            reason: String::new(),
+            level: String::new(),
             encrypted: true,
             moderated: false,
-            address: String::new(),
             query: String::new(),
             contacts: Vec::new(),
             near: Vec::new(),
@@ -159,6 +232,8 @@ impl Dialog {
             directory: Vec::new(),
             people: Vec::new(),
             rooms: Vec::new(),
+            co_owners: Vec::new(),
+            owners_offered: false,
             search: None,
             busy: None,
             now: Instant::now(),
@@ -167,6 +242,11 @@ impl Dialog {
     }
 
     /// The dialog picks people.
+    /// It creates a room or space, which may get co-owners.
+    pub fn creates_room(&self) -> bool {
+        matches!(self.kind, Kind::NewRoom { .. } | Kind::NewSpace)
+    }
+
     pub fn picks_people(&self) -> bool {
         matches!(
             self.kind,
@@ -280,10 +360,6 @@ impl Dialog {
                 "The direct chat is ready.".into(),
                 "Could not start the direct chat".into(),
             ),
-            Kind::Join => (
-                format!("Joined {}.", self.address.trim()),
-                format!("Could not join {}", self.address.trim()),
-            ),
             Kind::Invite { name, .. } => (
                 format!("Invites to {name} sent."),
                 format!("Could not invite everyone to {name}"),
@@ -292,9 +368,31 @@ impl Dialog {
                 format!("Rooms added to {name}."),
                 format!("Could not add all rooms to {name}"),
             ),
+            Kind::RemoveMember { name, ban, .. } => (
+                format!("{name} was {}.", if *ban { "banned" } else { "removed" }),
+                format!("Could not {} {name}", if *ban { "ban" } else { "remove" }),
+            ),
+            Kind::Level(change) => {
+                let role = self.level().map(|l| change.a_role(l)).unwrap_or_default();
+                if change.own {
+                    (
+                        format!("You are {role} now."),
+                        "Could not change your level".into(),
+                    )
+                } else {
+                    (
+                        format!("{} is {role} now.", change.name),
+                        format!("Could not change {}'s level", change.name),
+                    )
+                }
+            }
             Kind::Leave { name, .. } => {
                 (format!("Left {name}."), format!("Could not leave {name}"))
             }
+            Kind::Encrypt { name, .. } => (
+                format!("{name} is encrypted now."),
+                format!("Could not encrypt {name}"),
+            ),
             Kind::SignOut => ("Signed out.".into(), "Could not sign out".into()),
             // Saved without waiting, like other changes to the room list.
             Kind::Category { .. } => (String::new(), String::new()),
@@ -308,10 +406,13 @@ impl Dialog {
             Kind::NewRoom { .. } => "Creating the room on the server…",
             Kind::NewSpace => "Creating the space on the server…",
             Kind::DirectChat => "Starting the chat…",
-            Kind::Join => "Joining…",
             Kind::Invite { .. } => "Sending the invites…",
             Kind::AddExisting { .. } => "Adding the rooms…",
             Kind::Leave { .. } => "Leaving…",
+            Kind::RemoveMember { ban: true, .. } => "Banning…",
+            Kind::RemoveMember { .. } => "Removing…",
+            Kind::Level(_) => "Changing the level…",
+            Kind::Encrypt { .. } => "Turning encryption on…",
             Kind::SignOut => "Signing out…",
             Kind::Category { .. } => "Saving…",
         };
@@ -328,8 +429,8 @@ impl Dialog {
         if elapsed >= SLOW {
             status = status.push(
                 text(
-                    "The server is taking long. You can continue in the background; \
-                     Mtrx tells you when it is done.",
+                    "The server is taking long. You can close this; Mtrx tells you \
+                     when it is done.",
                 )
                 .size(12)
                 .style(text::secondary),
@@ -342,9 +443,10 @@ impl Dialog {
         match message {
             Message::Name(v) => self.name = v,
             Message::Topic(v) => self.topic = v,
+            Message::Reason(v) => self.reason = v,
+            Message::Level(v) => self.level = v,
             Message::Encrypted(v) => self.encrypted = v,
             Message::Moderated(v) => self.moderated = v,
-            Message::Address(v) => self.address = v,
             Message::Query(query) => {
                 self.query = query.clone();
                 if let Some(search) = self.search.take() {
@@ -372,7 +474,15 @@ impl Dialog {
                 self.directory.clear();
             }
             Message::Unpick(index) if index < self.people.len() => {
-                self.people.remove(index);
+                let person = self.people.remove(index);
+                self.co_owners.retain(|id| *id != person.id);
+            }
+            Message::OwnersOffered(offered) => self.owners_offered = offered,
+            Message::CoOwner(user, on) => {
+                self.co_owners.retain(|id| *id != user);
+                if on {
+                    self.co_owners.push(user);
+                }
             }
             Message::Unpick(_) => {}
             Message::ToggleRoom(room) => match self.rooms.iter().position(|r| *r == room) {
@@ -429,6 +539,7 @@ impl Dialog {
                 topic: optional(topic),
                 encrypted: self.encrypted,
                 invite: people(),
+                co_owners: self.co_owners.clone(),
                 permissions,
                 parent: space.as_ref().map(|(id, _)| id.clone()),
                 ..Default::default()
@@ -438,11 +549,11 @@ impl Dialog {
                 topic: optional(topic),
                 space: true,
                 invite: people(),
+                co_owners: self.co_owners.clone(),
                 permissions,
                 ..Default::default()
             }),
             Kind::DirectChat => Request::DirectChat(self.person()?),
-            Kind::Join => Request::Join(optional(self.address.trim())?),
             Kind::Invite { room, .. } => {
                 let mut people = people();
                 if people.is_empty() {
@@ -455,10 +566,60 @@ impl Dialog {
             }
             Kind::AddExisting { .. } => return None,
             Kind::Leave { room, .. } => Request::Leave(room.clone()),
+            Kind::RemoveMember {
+                room, user, ban, ..
+            } => Request::RemoveMember(
+                room.clone(),
+                user.clone(),
+                optional(self.reason.trim()),
+                *ban,
+            ),
+            Kind::Encrypt { room, .. } => Request::Encrypt(room.clone()),
+            Kind::Level(change) => {
+                Request::SetLevel(change.room.clone(), change.user.clone(), self.level()?)
+            }
             Kind::SignOut => Request::SignOut,
             // Not for the server: see `category_edit`.
             Kind::Category { .. } => return None,
         })
+    }
+
+    /// The level to give: the one asked about, or the one entered, if we
+    /// may give it.
+    fn level(&self) -> Option<i64> {
+        let Kind::Level(change) = &self.kind else {
+            return None;
+        };
+        change
+            .level
+            .or_else(|| self.level.trim().parse().ok())
+            .filter(|l| *l <= change.up_to)
+    }
+
+    /// What can't be undone about the change, if anything.
+    fn level_warning(&self, change: &LevelChange) -> String {
+        let Some(level) = self.level() else {
+            return String::new();
+        };
+        if change.own {
+            let mut warning =
+                "You can't undo this: only someone with a higher level can raise you again."
+                    .to_owned();
+            if change.alone {
+                warning.push_str(" Nobody else here has your level, so nobody will be able to do all you can now.");
+            }
+            warning
+        } else if level < change.up_to {
+            String::new()
+        } else if level == 100 {
+            "Admins can do everything you can, including changing the room and its people. \
+             You can't take it back: an admin can't demote another admin."
+                .into()
+        } else {
+            "They'll have the same level as you. You can't take it back: nobody can lower \
+             someone with their own level."
+                .into()
+        }
     }
 
     /// The category the dialog describes, if named; rooms are optional.
@@ -502,15 +663,30 @@ impl Dialog {
             Kind::NewRoom { space: None } => ("New room".into(), "Create"),
             Kind::NewSpace => ("New space".into(), "Create"),
             Kind::DirectChat => ("New direct chat".into(), "Start chat"),
-            Kind::Join => ("Join a room".into(), "Join"),
             Kind::Invite { name, .. } => (format!("Invite to {name}"), "Invite"),
-            Kind::AddExisting { name, .. } => (format!("Add rooms to {name}"), "Add"),
+            Kind::AddExisting { name, .. } => (format!("Add your rooms to {name}"), "Add"),
             Kind::Leave { name, .. } => (format!("Leave {name}?"), "Leave"),
+            Kind::Encrypt { name, .. } => (format!("Encrypt {name}?"), "Encrypt"),
+            Kind::RemoveMember {
+                name, ban: false, ..
+            } => (format!("Remove {name}?"), "Remove"),
+            Kind::RemoveMember { name, .. } => (format!("Ban {name}?"), "Ban"),
+            Kind::Level(change) => match change.level {
+                Some(level) if change.own => {
+                    (format!("Step down to {}?", change.role(level)), "Step down")
+                }
+                Some(level) => (
+                    format!("Make {} {}?", change.name, change.a_role(level)),
+                    "Change",
+                ),
+                None if change.own => ("Your power level".into(), "Set"),
+                None => (format!("Power level for {}", change.name), "Set"),
+            },
             Kind::SignOut => ("Sign out?".into(), "Sign out"),
             Kind::Category { category: None, .. } => ("New category".into(), "Create"),
             Kind::Category { .. } => ("Edit category".into(), "Save"),
         };
-        let mut body = column![text(title).size(18).font(fonts::SEMIBOLD)].spacing(12);
+        let mut body = column![].spacing(12);
         body = match &self.kind {
             Kind::NewRoom { .. } | Kind::NewSpace => {
                 let space = matches!(self.kind, Kind::NewSpace);
@@ -536,27 +712,61 @@ impl Dialog {
             }
             Kind::DirectChat => body.push(self.people_view("Name or @user:server")),
             Kind::Invite { .. } => body.push(self.people_view("Name or @user:server")),
-            Kind::Join => body.push(
-                column![
-                    self.field(
-                        "#room:server or !id:server",
-                        &self.address,
-                        Message::Address
-                    ),
-                    text("Rooms you are invited to are in the room list.")
-                        .size(12)
-                        .style(text::secondary),
-                ]
-                .spacing(4),
-            ),
             Kind::AddExisting { space, .. } => body.push(self.rooms_view(space, rooms)),
             Kind::Category { space, .. } => body
                 .push(self.field("Name", &self.name, Message::Name))
                 .push(self.category_rooms_view(space.as_ref(), rooms, arrange, grouping)),
+            Kind::Encrypt { .. } => body.push(
+                text(
+                    "From now on, only members' devices can read new messages; servers and \
+                     bridges can't. Encryption can't be turned off again.",
+                )
+                .size(13),
+            ),
             Kind::Leave { .. } => body.push(
                 text("You can only come back if the room is public or someone invites you.")
                     .size(13),
             ),
+            Kind::RemoveMember { ban, .. } => body
+                .push(
+                    text(if *ban {
+                        "They can't come back until someone lifts the ban."
+                    } else {
+                        "They can come back if the room lets them join or someone invites them."
+                    })
+                    .size(13),
+                )
+                .push(self.field(
+                    "Reason (optional, they see it)",
+                    &self.reason,
+                    Message::Reason,
+                )),
+            Kind::Level(change) => {
+                if change.level.is_none() {
+                    body = body.push(
+                        column![
+                            text_input("Level", &self.level)
+                                .on_input(|v| message(Message::Level(v)))
+                                .on_submit(message(Message::Submit))
+                                .padding(8)
+                                .style(style::input),
+                            text(format!(
+                                "Admin 100 · Moderator 50 · Member {}{}",
+                                change.default_level,
+                                if change.up_to < 100 {
+                                    format!(" · at most {}", change.up_to)
+                                } else {
+                                    String::new()
+                                }
+                            ))
+                            .size(12)
+                            .style(text::secondary),
+                        ]
+                        .spacing(6),
+                    );
+                }
+                body.push(text(self.level_warning(change)).size(13))
+            }
             Kind::SignOut => body.push(
                 text(
                     "This device's data, including its message keys, is deleted. To read \
@@ -573,35 +783,40 @@ impl Dialog {
             body = body.push(text(error).size(12).style(text::danger));
         }
         let ready = (self.request().is_some() || self.category_edit().is_some()) && !self.busy();
-        let slow = self
-            .busy
-            .is_some_and(|since| self.now.saturating_duration_since(since) >= SLOW);
-        let cancel = match (self.busy(), slow) {
-            (false, _) => Some("Cancel"),
-            (true, true) => Some("Continue in background"),
-            (true, false) => None,
+        let submit_message = ready.then(|| message(Message::Submit));
+        // A confirmation is short: its answer below the question, as in
+        // system alerts. A form's action stays in the header.
+        let action = if matches!(
+            self.kind,
+            Kind::Leave { .. }
+                | Kind::Encrypt { .. }
+                | Kind::SignOut
+                | Kind::RemoveMember { .. }
+                | Kind::Level(LevelChange { level: Some(_), .. })
+        ) {
+            body = body.push(
+                row![
+                    space::horizontal(),
+                    button(text("Cancel"))
+                        .style(style::text_button)
+                        .on_press(message(Message::Cancel)),
+                    button(text(submit))
+                        .style(style::danger_button)
+                        .on_press_maybe(submit_message),
+                ]
+                .spacing(8),
+            );
+            None
+        } else {
+            Some(frame::primary(submit, submit_message))
         };
-        body = body.push(
-            row![
-                space::horizontal(),
-                button(text(cancel.unwrap_or("Cancel")))
-                    .style(style::text_button)
-                    .on_press_maybe(cancel.map(|_| message(Message::Cancel))),
-                button(text(submit))
-                    .style(if matches!(self.kind, Kind::Leave { .. } | Kind::SignOut) {
-                        style::danger_button
-                    } else {
-                        style::primary_button
-                    })
-                    .on_press_maybe(ready.then(|| message(Message::Submit))),
-            ]
-            .spacing(8),
-        );
-        container(body)
-            .padding(20)
-            .width(480)
-            .style(style::dialog)
-            .into()
+        frame::frame(
+            frame::title(title),
+            action,
+            message(Message::Cancel),
+            body,
+            WIDTH,
+        )
     }
 
     fn field<'a>(
@@ -622,14 +837,32 @@ impl Dialog {
     fn people_view<'a>(&'a self, placeholder: &'a str) -> Element<'a, app::Message> {
         let mut section = column![].spacing(6);
         if !self.people.is_empty() {
+            // A new room's invited people may co-own it.
+            let owners = self.owners_offered && self.creates_room();
             let chips = self.people.iter().enumerate().map(|(i, person)| {
-                button(text(format!("{} ×", label(person))).size(13))
+                let name = button(text(format!("{} ×", label(person))).size(13))
                     .padding([3, 8])
                     .style(style::secondary_button)
-                    .on_press(message(Message::Unpick(i)))
+                    .on_press(message(Message::Unpick(i)));
+                if !owners {
+                    return name.into();
+                }
+                let id = person.id.clone();
+                let owner = hint(
+                    checkbox(self.co_owners.contains(&person.id))
+                        .label("Co-owner")
+                        .text_size(12)
+                        .size(14)
+                        .on_toggle(move |on| message(Message::CoOwner(id.clone(), on))),
+                    "Owns the room as you do: nobody can demote them, and they can't step down.",
+                    Position::Bottom,
+                );
+                row![name, owner]
+                    .spacing(6)
+                    .align_y(Alignment::Center)
                     .into()
             });
-            section = section.push(row(chips).spacing(6).wrap());
+            section = section.push(row(chips).spacing(12).wrap());
         }
         let single = matches!(self.kind, Kind::DirectChat) && !self.people.is_empty();
         if !single {
@@ -669,11 +902,12 @@ impl Dialog {
                 avatar: None,
             }));
         }
-        section = section.push(scrollable(list).height(Length::Shrink));
+        section = section.push(frame::scroll(list).height(Length::Shrink));
         section.into()
     }
 
-    /// Joined rooms not yet in `space`, to tick.
+    /// Joined rooms (not direct chats) not yet in `space` that the search
+    /// finds, to tick.
     fn rooms_view<'a>(
         &'a self,
         space: &OwnedRoomId,
@@ -681,23 +915,56 @@ impl Dialog {
     ) -> Element<'a, app::Message> {
         let candidates: Vec<_> = rooms
             .iter()
-            .filter(|r| !r.invited && r.id != *space && !r.parents.contains(space))
+            .filter(|r| {
+                !r.invited
+                    && r.kind != RoomKind::Direct
+                    && r.id != *space
+                    && !r.parents.contains(space)
+            })
             .collect();
         if candidates.is_empty() {
             return text("All your rooms are already in this space.")
                 .size(13)
                 .into();
         }
-        let list = candidates.into_iter().map(|room| {
-            let chosen = self.rooms.contains(&room.id);
-            button(text(&room.name))
+        let query = self.query.trim().to_lowercase();
+        let found: Vec<_> = candidates
+            .into_iter()
+            .filter(|r| r.name.to_lowercase().contains(&query))
+            .collect();
+        let chosen = match self.rooms.len() {
+            0 => "Rooms you're in that aren't in this space yet.".to_owned(),
+            1 => "1 room chosen".to_owned(),
+            n => format!("{n} rooms chosen"),
+        };
+        let list = found.into_iter().map(|room| {
+            let toggle = message(Message::ToggleRoom(room.id.clone()));
+            let mut line = row![
+                checkbox(self.rooms.contains(&room.id)).on_toggle({
+                    let toggle = toggle.clone();
+                    move |_| toggle.clone()
+                }),
+                text(&room.name).width(Length::Fill),
+            ]
+            .spacing(8)
+            .align_y(Alignment::Center);
+            if room.kind == RoomKind::Space {
+                line = line.push(text("space").size(12).style(text::secondary));
+            }
+            button(line)
                 .width(Length::Fill)
                 .padding([4, 8])
-                .style(style::list_item(chosen))
-                .on_press(message(Message::ToggleRoom(room.id.clone())))
+                .style(style::list_item(false))
+                .on_press(toggle)
                 .into()
         });
-        scrollable(column(list).spacing(2)).height(260).into()
+        column![
+            self.field("Search your rooms", &self.query, Message::Query),
+            text(chosen).size(12).style(text::secondary),
+            frame::scroll(column(list).spacing(2)).height(300),
+        ]
+        .spacing(8)
+        .into()
     }
 }
 
@@ -780,7 +1047,7 @@ impl Dialog {
             ]
             .spacing(8)
             .align_y(Alignment::Center),
-            scrollable(column(list).spacing(2)).height(260),
+            frame::scroll(column(list).spacing(2)).height(260),
         ]
         .spacing(8)
         .into()

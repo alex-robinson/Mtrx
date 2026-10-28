@@ -9,9 +9,10 @@ use matrix_sdk::{
     deserialized_responses::SyncOrStrippedState,
     ruma::{
         OwnedEventId, OwnedMxcUri, OwnedRoomId, OwnedServerName, OwnedUserId, RoomId,
-        RoomOrAliasId, UserId,
-        api::client::room::create_room::v3::{
-            CreationContent, Request as CreateRoomRequest, RoomPreset,
+        RoomOrAliasId, RoomVersionId, UserId,
+        api::client::{
+            discovery::get_capabilities::v3::RoomVersionStability,
+            room::create_room::v3::{CreationContent, Request as CreateRoomRequest, RoomPreset},
         },
         events::{
             InitialStateEvent, SyncStateEvent,
@@ -33,7 +34,7 @@ use tracing::warn;
 use crate::{
     Error, Result, RoomTag, Session,
     permissions::{Permissions, open_power_levels_raw},
-    system_time,
+    synced, system_time,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -322,6 +323,9 @@ pub struct NewRoom {
     pub permissions: Permissions,
     /// Space to create the room in.
     pub parent: Option<OwnedRoomId>,
+    /// Owners like its creator, invited too; only where the server offers
+    /// owners ([`Session::offers_owners`]).
+    pub co_owners: Vec<OwnedUserId>,
 }
 
 /// A user found by [`Session::search_users`].
@@ -338,11 +342,28 @@ impl Session {
         RoomList::new(self.client.clone(), self.sync.room_list_service()).await
     }
 
+    /// Whether new rooms can have owners besides their creator: on room
+    /// version 12, where the server offers it as stable.
+    pub async fn offers_owners(&self) -> bool {
+        self.client
+            .homeserver_capabilities()
+            .room_versions()
+            .await
+            .is_ok_and(|versions| {
+                versions.available.get(&RoomVersionId::V12) == Some(&RoomVersionStability::Stable)
+            })
+    }
+
     pub async fn create_room(&self, new: NewRoom) -> Result<OwnedRoomId> {
         let mut request = CreateRoomRequest::new();
         request.name = new.name;
         request.topic = new.topic;
         request.invite = new.invite;
+        for owner in &new.co_owners {
+            if !request.invite.contains(owner) {
+                request.invite.push(owner.clone());
+            }
+        }
         request.is_direct = new.direct;
         request.preset = Some(if new.direct {
             RoomPreset::TrustedPrivateChat
@@ -353,9 +374,22 @@ impl Session {
         if new.permissions == Permissions::Everyone && !new.direct {
             request.power_level_content_override = Some(open_power_levels_raw()?);
         }
-        if new.space {
+        // The newest version where the server has it: its creators are
+        // owners, above every admin.
+        let owners = self.offers_owners().await;
+        if owners {
+            request.room_version = Some(RoomVersionId::V12);
+        } else if !new.co_owners.is_empty() {
+            return Err(Error::Permissions(
+                "this server can't give rooms co-owners".into(),
+            ));
+        }
+        if new.space || !new.co_owners.is_empty() {
             let mut creation = CreationContent::new();
-            creation.room_type = Some(RoomType::Space);
+            if new.space {
+                creation.room_type = Some(RoomType::Space);
+            }
+            creation.additional_creators = new.co_owners;
             request.creation_content = Some(Raw::new(&creation)?);
         }
         if new.encrypted {
@@ -439,11 +473,12 @@ impl Session {
         vec![self.user_id().server_name().to_owned()]
     }
 
-    /// Join by room ID or alias, or accept an invite.
-    pub async fn join(&self, room: &RoomOrAliasId) -> Result<OwnedRoomId> {
+    /// Join by room ID or alias, or accept an invite; through `via`, the
+    /// servers a space, directory or link names for it.
+    pub async fn join(&self, room: &RoomOrAliasId, via: &[OwnedServerName]) -> Result<OwnedRoomId> {
         Ok(self
             .client
-            .join_room_by_id_or_alias(room, &[])
+            .join_room_by_id_or_alias(room, via)
             .await?
             .room_id()
             .to_owned())
@@ -459,10 +494,8 @@ impl Session {
 
     /// Add `child` to `space` (sends `m.space.child` in the space).
     pub async fn add_to_space(&self, space: &OwnedRoomId, child: &OwnedRoomId) -> Result<()> {
-        self.room(space)?
-            .send_state_event_for_key(child, SpaceChildEventContent::new(self.via()))
-            .await?;
-        Ok(())
+        let content = SpaceChildEventContent::new(self.via());
+        synced::send_state(&self.room(space)?, child, content).await
     }
 
     /// Find a known room by ID, alias or exact display name.

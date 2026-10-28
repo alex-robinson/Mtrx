@@ -38,3 +38,6 @@ rc_invites:
   per_user: {per_second: 1000, burst_count: 1000}
 rc_key_requests: {per_second: 1000, burst_count: 1000}
 rc_room_creation: {per_second: 1000, burst_count: 1000}
+# Anyone may list rooms in the directory, as on public servers.
+room_list_publication_rules:
+  - action: allow

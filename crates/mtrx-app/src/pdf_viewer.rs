@@ -19,7 +19,7 @@ use mtrx_core::{Media, Session};
 use crate::{
     app,
     ellipsis::ellipsis,
-    fonts,
+    fonts, frame,
     hint::{Position, hint, shortcut},
     media::save_button,
     pdf::Document,
@@ -393,12 +393,8 @@ impl Viewer {
                 .push(fit);
         }
         container(
-            bar.push(save_button(&self.media)).push(
-                button(text("Close").size(13))
-                    .padding([5, 12])
-                    .style(style::primary_button)
-                    .on_press(app::Message::CloseImage),
-            ),
+            bar.push(save_button(&self.media))
+                .push(frame::close_button(app::Message::CloseImage)),
         )
         .padding(Padding::from([0, 12]))
         .center_y(BAR)

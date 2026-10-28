@@ -63,6 +63,7 @@ pub struct Session {
     _notifier: EventHandlerDropGuard,
     pub(crate) categories: crate::account_data::Synced<crate::RoomCategories>,
     pub(crate) colours: crate::account_data::Synced<crate::RoomListColours>,
+    pub(crate) directory_servers: crate::account_data::Synced<crate::DirectoryServers>,
     pub(crate) connection: tokio::sync::watch::Receiver<crate::Connection>,
     /// Kept for the session: it follows push rule changes, so it knows a
     /// room's mode right after setting it (sync echoes it later).
@@ -194,6 +195,7 @@ impl Session {
         let schedule = Arc::new(Schedule::load(client.clone(), send_lock.clone()).await?);
         let categories = crate::account_data::Synced::load(client.clone()).await;
         let colours = crate::account_data::Synced::load(client.clone()).await;
+        let directory_servers = crate::account_data::Synced::load(client.clone()).await;
         Ok(Self {
             client,
             sync,
@@ -206,6 +208,7 @@ impl Session {
             _notifier: notifier,
             categories,
             colours,
+            directory_servers,
             connection,
             notification_settings,
             kept_presence: Default::default(),

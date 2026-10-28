@@ -10,6 +10,7 @@ mod account_data;
 mod calls;
 mod categories;
 mod connection;
+mod directory;
 mod emoji;
 mod encryption;
 mod error;
@@ -33,6 +34,7 @@ mod secrets;
 mod send_time;
 mod session;
 mod spaces;
+mod synced;
 mod timeline;
 
 #[cfg(feature = "test-support")]
@@ -41,6 +43,10 @@ pub mod test_support;
 pub use calls::{CallService, ServiceKind, recognize_call_link};
 pub use categories::{AtHome, Category, Grouping, Layout, RoomCategories, RoomTag, Section, Sort};
 pub use connection::Connection;
+pub use directory::{
+    DirectoryKind, DirectoryPage, DirectoryRoom, DirectoryServers, JoinAccess, Membership,
+    parse_address,
+};
 pub use encryption::{
     DeviceInfo, EncryptionState, RecoveryStatus, RecoveryStep, Verification, VerificationEmoji,
     VerificationState,
@@ -48,7 +54,7 @@ pub use encryption::{
 pub use error::{Error, Result};
 pub use google::{Google, GoogleClient};
 pub use media::MediaRef;
-pub use members::{Member, Role};
+pub use members::{Manage, Member, Role};
 pub use notes::notes_markdown;
 pub use notifications::Notification;
 pub use people::{Contact, UserInfo};
@@ -59,7 +65,7 @@ pub use profile::Profile;
 pub use push::{HttpPusher, PushNotification, PusherInfo};
 pub use room_colours::RoomListColours;
 pub use room_links::{LinkKind, RoomLink, Topic, describe_change};
-pub use room_settings::{Access, NotifyMode, RoomSettings};
+pub use room_settings::{Access, Banned, History, NotifyMode, RoomSettings, SpaceLink};
 pub use rooms::{NewRoom, RoomKind, RoomList, RoomListState, RoomSummary, UserSummary};
 pub use scheduled::{ScheduledFile, ScheduledMessage};
 pub use secrets::{SecretBackend, SecretStore};
@@ -78,8 +84,8 @@ pub use url::Url;
 
 /// Matrix identifier types used in this crate's API.
 pub use matrix_sdk::ruma::{
-    MxcUri, OwnedDeviceId, OwnedEventId, OwnedMxcUri, OwnedRoomId, OwnedRoomOrAliasId, OwnedUserId,
-    RoomOrAliasId, UserId,
+    MxcUri, OwnedDeviceId, OwnedEventId, OwnedMxcUri, OwnedRoomAliasId, OwnedRoomId,
+    OwnedRoomOrAliasId, OwnedServerName, OwnedUserId, RoomOrAliasId, ServerName, UserId,
 };
 
 pub(crate) fn system_time(

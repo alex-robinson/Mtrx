@@ -61,6 +61,9 @@ use crate::{
     topic,
 };
 
+/// The topic panel's share of the room header's width.
+pub const TOPIC_SHARE: f32 = 2.0 / 3.0;
+
 /// Entries rendered when a room opens; laying out every loaded entry gets
 /// slow in big rooms, so only a window at the bottom is drawn.
 const WINDOW: usize = 80;
@@ -1008,11 +1011,14 @@ impl Room {
             let name = summary.map_or("", |s| s.name.as_str());
             body = body.push(members::view(
                 self.member_list.as_ref(),
-                &self.id,
                 name,
-                look.own_user,
-                look.avatars,
-                look.presences,
+                members::Shown {
+                    room: &self.id,
+                    own: look.own_user,
+                    avatars: look.avatars,
+                    presences: look.presences,
+                    menu: look.member_menu,
+                },
             ));
         }
         column![header, body].into()
@@ -1178,7 +1184,7 @@ impl Room {
                 .into()
         });
         popover(header, panel, Side::Below, Edge::Left)
-            .share_of_anchor(2.0 / 3.0, TIMELINE_PADDING + MESSAGE_PADDING)
+            .share_of_anchor(TOPIC_SHARE, TIMELINE_PADDING + MESSAGE_PADDING)
             .on_dismiss(Message::Topic(self.id.clone(), topic::Message::Dismiss))
             .into()
     }
@@ -1200,6 +1206,8 @@ pub struct Look<'a> {
     pub frequent_emoji: &'a [String],
     /// The member list is shown beside the room.
     pub show_members: bool,
+    /// The member whose menu is open, and in which room.
+    pub member_menu: Option<&'a crate::members::MenuKey>,
     /// People's presence, in the member list and a direct chat's header.
     pub presences: &'a Presences,
     /// For how long ago people were last active.
@@ -2259,7 +2267,9 @@ mod tests {
             name: Some("Nils Wolf".into()),
             avatar: Some("mxc://x/nils".into()),
             role: mtrx_core::Role::Member,
+            level: Some(0),
             invited: false,
+            manage: Default::default(),
         };
         let card = |members: Option<&[Member]>, entries: &[TimelineEntry]| match mentioned(
             nils.clone(),

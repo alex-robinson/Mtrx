@@ -24,7 +24,7 @@ use crate::{
     clipboard,
     context_menu::context_menu,
     ellipsis::ellipsis,
-    fonts,
+    fonts, frame,
     hint::{Position, hint},
     icons, message_menu, pdf, style,
 };
@@ -533,10 +533,7 @@ impl Viewer {
             row![
                 name,
                 save_button(&self.media),
-                button(text("Close").size(13))
-                    .padding([5, 12])
-                    .style(style::primary_button)
-                    .on_press(Message::CloseImage),
+                frame::close_button(Message::CloseImage),
             ]
             .spacing(8)
             .align_y(Alignment::Center),

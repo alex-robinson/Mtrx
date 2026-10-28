@@ -10,9 +10,7 @@ use std::{
 use iced::{
     Alignment, Element, Length, Theme,
     task::Handle,
-    widget::{
-        button, column, container, pick_list, row, scrollable, space, text, text_input, toggler,
-    },
+    widget::{button, column, pick_list, row, space, text, text_input, toggler},
 };
 use mtrx_core::{
     AtHome, CallService, GoogleClient, Grouping, OwnedRoomId, Permissions, RoomListColours,
@@ -24,7 +22,7 @@ use crate::{
     app,
     appearance::Appearance,
     dialog::Kind,
-    feedback, fonts,
+    feedback, fonts, frame,
     hint::{Position, hint, shortcut},
     style,
     text_size::TextSize,
@@ -575,14 +573,6 @@ impl Panel {
         updater: &'a Updater,
     ) -> Element<'a, app::Message> {
         let mut panel = column![
-            row![
-                text("Settings").size(18).font(fonts::SEMIBOLD),
-                space::horizontal(),
-                button(text("Done"))
-                    .style(style::primary_button)
-                    .on_press(app::Message::ShowSettings(false)),
-            ]
-            .align_y(Alignment::Center),
             heading("Updates"),
             updates(&settings.updates, updater),
             heading("Feedback"),
@@ -719,11 +709,13 @@ impl Panel {
                     .style(text::danger),
             );
         }
-        container(scrollable(container(panel).padding(20)))
-            .width(560)
-            .max_height(640)
-            .style(style::dialog)
-            .into()
+        frame::frame(
+            frame::title("Settings"),
+            [],
+            app::Message::ShowSettings(false),
+            panel,
+            560.0,
+        )
     }
 
     fn services_view<'a>(&self, settings: &'a Settings) -> Element<'a, app::Message> {
@@ -1186,7 +1178,7 @@ fn home_options<'a>(at_home: AtHome, grouping: Grouping) -> Element<'a, app::Mes
 
 /// A setting: its name and what it does, beside its control.
 pub fn option<'a>(
-    label: &'a str,
+    label: impl text::IntoFragment<'a>,
     description: impl text::IntoFragment<'a>,
     control: Element<'a, app::Message>,
 ) -> Element<'a, app::Message> {
@@ -1293,9 +1285,9 @@ mod tests {
     fn chooses_the_text_size() {
         let mut settings = Settings::default();
         assert_eq!(settings.text_size, TextSize::Default);
-        let action = change(&mut settings, Preference::TextSize(TextSize::Large));
+        let action = change(&mut settings, Preference::TextSize(TextSize::Smaller));
         assert!(matches!(action, Action::TextSize));
-        assert_eq!(settings.text_size, TextSize::Large);
+        assert_eq!(settings.text_size, TextSize::Smaller);
     }
 
     #[test]

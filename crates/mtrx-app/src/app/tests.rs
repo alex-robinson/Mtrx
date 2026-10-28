@@ -58,7 +58,9 @@ fn person(id: &str, name: &str, role: mtrx_core::Role) -> Member {
         name: Some(name.into()),
         avatar: None,
         role,
+        level: Some(role.level(0)),
         invited: false,
+        manage: Default::default(),
     }
 }
 
@@ -236,8 +238,8 @@ fn zoom_steps_the_text_size() {
 
     let mut app = app(Screen::Login(Login::default()), Mode::Light);
     let _ = app.update(Message::Zoom(Zoom::In));
-    assert_eq!(app.settings.text_size, TextSize::Large);
-    assert_eq!(app.scale_factor(), 1.1);
+    assert_eq!(app.settings.text_size, TextSize::Larger);
+    assert_eq!(app.scale_factor(), 1.25);
     for _ in 0..5 {
         let _ = app.update(Message::Zoom(Zoom::In));
     }
@@ -251,8 +253,8 @@ fn zoom_steps_the_text_size() {
     assert_eq!(app.settings.text_size, TextSize::Larger);
     let _ = app.update(Message::Zoom(Zoom::Reset));
     assert_eq!(app.settings.text_size, TextSize::Default);
-    assert_eq!(app.viewport(), Size::new(900.0, 600.0));
-    assert_eq!(app.pixel_scale(), 2.0);
+    assert_eq!(app.viewport(), Size::new(900.0, 600.0) / 1.1);
+    assert_eq!(app.pixel_scale(), 2.0 * 1.1);
 }
 
 /// ⌘F opens the find bar, ⌘G and ⇧⌘G go to the next and previous match,
@@ -336,7 +338,7 @@ fn window_placement_is_saved() {
     let mut app = app(Screen::Login(Login::default()), Mode::Light);
     app.placement_file = Some(file.clone());
     app.scale = 2.0;
-    app.settings.text_size = crate::text_size::TextSize::Large;
+    app.settings.text_size = crate::text_size::TextSize::Default;
     let placed = |maximized| Message::WindowPlaced {
         position: Some(iced::Point::new(1800.0, 200.0)),
         maximized,
@@ -527,7 +529,10 @@ async fn accept_invite(session: &Session, room: &OwnedRoomId) {
     })
     .await
     .unwrap();
-    session.join(<&RoomOrAliasId>::from(&**room)).await.unwrap();
+    session
+        .join(<&RoomOrAliasId>::from(&**room), &[])
+        .await
+        .unwrap();
 }
 
 /// Send and wait until the server has it.
@@ -1709,6 +1714,22 @@ async fn room_management_screens() {
     );
     snapshot(
         &main_with(&|main| {
+            let mut dialog = Dialog::new(dialog::Kind::NewRoom { space: None });
+            dialog.update(dialog::Message::Name("model runs".into()));
+            dialog.update(dialog::Message::OwnersOffered(true));
+            let nils = OwnedUserId::try_from("@nils:example.org").unwrap();
+            dialog.update(dialog::Message::Pick(mtrx_core::UserSummary {
+                id: nils.clone(),
+                name: Some("Nils".into()),
+                avatar: None,
+            }));
+            dialog.update(dialog::Message::CoOwner(nils, true));
+            main.dialog = Some(dialog);
+        }),
+        "new-room-owners",
+    );
+    snapshot(
+        &main_with(&|main| {
             let mut dialog = Dialog::new(dialog::Kind::NewRoom {
                 space: Some((space.clone(), "Climate".into())),
             });
@@ -1764,7 +1785,11 @@ async fn room_management_screens() {
     let contacts = session.contacts().await.unwrap();
     snapshot(
         &main_with(&|main| {
-            let mut card = info::Card::new(info::Target::User(bob_info.user.clone()), &[]);
+            let mut card = info::Card::new(
+                info::Target::User(bob_info.user.clone()),
+                &[],
+                overview::Tab::Rooms,
+            );
             card.update(info::Message::UserLoaded(
                 bob.user_id(),
                 Ok(bob_info.clone()),
@@ -1777,7 +1802,11 @@ async fn room_management_screens() {
     let settings = session.room_settings(&room).await.unwrap();
     snapshot(
         &main_with(&|main| {
-            let mut card = info::Card::new(info::Target::Room(room.clone()), &main.rooms.rooms);
+            let mut card = info::Card::new(
+                info::Target::Room(room.clone()),
+                &main.rooms.rooms,
+                overview::Tab::Rooms,
+            );
             card.update(info::Message::SettingsLoaded(
                 room.clone(),
                 Ok(settings.clone()),
@@ -1807,6 +1836,99 @@ async fn room_management_screens() {
             main.dialog = Some(dialog);
         }),
         "direct-chat-people",
+    );
+
+    // A space's overview and the join dialog, with a room not in the app's
+    // room list (made since), open to everyone.
+    let glaciers = session
+        .create_room(NewRoom {
+            name: Some("glaciers".into()),
+            topic: Some("Mass balance of mountain glaciers".into()),
+            parent: Some(space.clone()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    tokio::time::timeout(TIMEOUT, async {
+        while session
+            .set_room_access(&glaciers, mtrx_core::Access::Public)
+            .await
+            .is_err()
+        {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let children = session.space_children(&space).await.unwrap();
+    let space_settings = session.room_settings(&space).await.unwrap();
+    snapshot(
+        &main_with(&|main| {
+            let mut card = info::Card::new(
+                info::Target::Room(space.clone()),
+                &main.rooms.rooms,
+                overview::Tab::Rooms,
+            );
+            card.update(info::Message::SettingsLoaded(
+                space.clone(),
+                Ok(space_settings.clone()),
+            ));
+            main.space_rooms.loaded(space.clone(), Ok(children.clone()));
+            main.info = Some(card);
+        }),
+        "space-overview",
+    );
+    // The space's topic below its name, open over the room list.
+    for (open, name) in [(false, "space-topic"), (true, "space-topic-open")] {
+        snapshot(
+            &main_with(&|main| {
+                if let Some(summary) = main.rooms.rooms.iter_mut().find(|r| r.id == space) {
+                    summary.topic = Some(
+                        "Paleoclimate modelling and analysis, ice group\n\
+                         [call Weekly] https://meet.google.com/abc-defg-hij\n\
+                         [link Shared drive] https://drive.google.com/drive/folders/xyz"
+                            .into(),
+                    );
+                }
+                main.space_topic.can_edit = Some(true);
+                main.space_topic.open = open;
+            }),
+            name,
+        );
+    }
+    // Listed before, asked again: the list shows while it updates.
+    snapshot(
+        &main_with(&|main| {
+            let card = info::Card::new(
+                info::Target::Room(space.clone()),
+                &main.rooms.rooms,
+                overview::Tab::Rooms,
+            );
+            main.space_rooms.loaded(space.clone(), Ok(children.clone()));
+            main.space_rooms.start(&space, true);
+            main.info = Some(card);
+        }),
+        "space-overview-updating",
+    );
+    snapshot(
+        &main_with(&|main| {
+            let (mut join, action) = join::Join::new(
+                main.session.user_id().server_name().to_owned(),
+                &["matrix.org".into()],
+            );
+            let join::Action::Search(search) = action else {
+                panic!("no search");
+            };
+            join.update(join::Message::Found(
+                search,
+                Ok(mtrx_core::DirectoryPage {
+                    rooms: children.clone(),
+                    next: None,
+                }),
+            ));
+            main.join = Some(join);
+        }),
+        "join",
     );
 }
 

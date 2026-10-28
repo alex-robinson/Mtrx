@@ -13,12 +13,17 @@ use std::fmt;
 use iced::keyboard::{Key, Modifiers};
 use serde::{Deserialize, Serialize};
 
+/// The default is a little larger than the display's own scale, as most
+/// people asked for. Saved settings name the sizes before it was: "Small",
+/// "Default" (now Smaller, but kept as the default) and "Large".
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TextSize {
-    Small,
+    #[serde(alias = "Small")]
+    Smallest,
+    Smaller,
     #[default]
+    #[serde(alias = "Large")]
     Default,
-    Large,
     Larger,
     Largest,
 }
@@ -26,9 +31,9 @@ pub enum TextSize {
 impl TextSize {
     /// Smallest first, as declared: the zoom steps.
     pub const ALL: [Self; 5] = [
-        Self::Small,
+        Self::Smallest,
+        Self::Smaller,
         Self::Default,
-        Self::Large,
         Self::Larger,
         Self::Largest,
     ];
@@ -36,9 +41,9 @@ impl TextSize {
     /// Layout units per logical pixel (browsers' zoom levels).
     pub fn scale(self) -> f32 {
         match self {
-            Self::Small => 0.9,
-            Self::Default => 1.0,
-            Self::Large => 1.1,
+            Self::Smallest => 0.9,
+            Self::Smaller => 1.0,
+            Self::Default => 1.1,
             Self::Larger => 1.25,
             Self::Largest => 1.5,
         }
@@ -58,9 +63,9 @@ impl TextSize {
 impl fmt::Display for TextSize {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
-            Self::Small => "Small",
+            Self::Smallest => "Smallest",
+            Self::Smaller => "Smaller",
             Self::Default => "Default",
-            Self::Large => "Large",
             Self::Larger => "Larger",
             Self::Largest => "Largest",
         })
@@ -97,8 +102,8 @@ mod tests {
     #[test]
     fn steps_through_the_sizes() {
         assert_eq!(TextSize::default(), TextSize::Default);
-        assert_eq!(TextSize::Default.scale(), 1.0);
-        let mut size = TextSize::Small;
+        assert_eq!(TextSize::Default.scale(), 1.1);
+        let mut size = TextSize::Smallest;
         for next in &TextSize::ALL[1..] {
             assert!(next.scale() > size.scale());
             size = size.zoom(Zoom::In);
@@ -116,7 +121,16 @@ mod tests {
     #[test]
     fn stays_at_the_ends() {
         assert_eq!(TextSize::Largest.zoom(Zoom::In), TextSize::Largest);
-        assert_eq!(TextSize::Small.zoom(Zoom::Out), TextSize::Small);
+        assert_eq!(TextSize::Smallest.zoom(Zoom::Out), TextSize::Smallest);
+    }
+
+    #[test]
+    fn reads_the_sizes_saved_before() {
+        let read = |name: &str| serde_json::from_str::<TextSize>(&format!("\"{name}\"")).unwrap();
+        assert_eq!(read("Small"), TextSize::Smallest);
+        assert_eq!(read("Default"), TextSize::Default);
+        assert_eq!(read("Large"), TextSize::Default);
+        assert_eq!(read("Larger"), TextSize::Larger);
     }
 
     #[test]
