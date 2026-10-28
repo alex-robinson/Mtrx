@@ -88,7 +88,7 @@ class HomeRoutes(
 /**
  * The signed-in home, in four tabs ([nav]): Chats, the direct chats (one
  * opens in the tab); Spaces, a pager of the spaces and the selected space's
- * rooms and people, whose name opens its overview, with + for new spaces,
+ * direct messages and rooms, whose name opens its overview, with + for new spaces,
  * rooms and joining; Rooms, the last room ([roomPane]) or Recent; and
  * Settings. Spaces' badge counts unread messages in rooms that are not
  * recent, Rooms' those in recent ones. Banners for the connection over all

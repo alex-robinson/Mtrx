@@ -51,13 +51,13 @@ fun roomsOf(state: RoomListState, entry: SpaceEntry): List<RoomSummary> {
     return ids.mapNotNull { byId[it] }
 }
 
-/** A space's rooms page: its rooms, and its direct chats (People). */
-data class SpaceSections(val rooms: List<RoomSummary>, val people: List<RoomSummary>)
+/** A space's rooms page: its direct chats (Direct messages, first), and its rooms. */
+data class SpaceSections(val rooms: List<RoomSummary>, val directMessages: List<RoomSummary>)
 
 /** The rooms [entry] lists, the direct chats apart, each part in the order [sort]. */
 fun sectionsOf(state: RoomListState, entry: SpaceEntry, sort: RoomSort): SpaceSections {
-    val (people, rooms) = roomsOf(state, entry).partition { it.kind == RoomKind.DIRECT }
-    return SpaceSections(rooms = sorted(rooms, sort), people = sorted(people, sort))
+    val (direct, rooms) = roomsOf(state, entry).partition { it.kind == RoomKind.DIRECT }
+    return SpaceSections(rooms = sorted(rooms, sort), directMessages = sorted(direct, sort))
 }
 
 /** [rooms] in the order [sort]; ties keep the list's order. */

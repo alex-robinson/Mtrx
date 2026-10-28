@@ -116,7 +116,7 @@ class SpaceSelection(
     }
 }
 
-/** The order of a space's rooms and people (and of "Other rooms"). */
+/** The order of a space's rooms and direct messages (and of "Other rooms"). */
 enum class RoomSort(val label: String) {
     /** The room list's: most recently active first. */
     DEFAULT("Default"),

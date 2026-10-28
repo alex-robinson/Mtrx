@@ -89,7 +89,7 @@ fun SpaceList(
     }
 }
 
-/** A space's rooms page: Rooms, then People, each left out while empty. */
+/** A space's rooms page: Direct messages, then Rooms, each left out while empty. */
 @Composable
 fun SpaceRoomsList(
     sections: SpaceSections,
@@ -99,13 +99,14 @@ fun SpaceRoomsList(
     onOpenRoom: (RoomSummary) -> Unit,
     state: LazyListState = rememberLazyListState(),
 ) {
-    val empty = sections.rooms.isEmpty() && sections.people.isEmpty()
+    val empty = sections.rooms.isEmpty() && sections.directMessages.isEmpty()
     when {
         empty && !loaded -> Loading()
         empty -> Empty("No rooms")
+        // As the desktop: direct messages first.
         else -> LazyColumn(Modifier.fillMaxSize(), state = state) {
+            section("Direct messages", sections.directMessages, images, today, onOpenRoom)
             section("Rooms", sections.rooms, images, today, onOpenRoom)
-            section("People", sections.people, images, today, onOpenRoom)
         }
     }
 }

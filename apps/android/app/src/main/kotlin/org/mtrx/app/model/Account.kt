@@ -89,7 +89,7 @@ class Account(
     /** The space selected on the Spaces tab. */
     val spaceSelection = SpaceSelection(selectedSpace, rooms, scope)
 
-    /** The order of a space's rooms and people. */
+    /** The order of a space's rooms and direct messages. */
     val roomSort = RoomSortChoice(roomSortStore, scope)
 
     /** "Share my presence". */

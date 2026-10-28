@@ -92,24 +92,24 @@ class RoomListsTest {
     fun aSpacesPageHasItsRoomsThenItsPeople() {
         val team = sectionsOf(state, SpaceEntry.Space(TEAM), RoomSort.DEFAULT)
         assertEquals(listOf(OFFER, LAB, DEEP), team.rooms.map { it.id })
-        assertEquals(listOf(WITH_BOB, NOTES), team.people.map { it.id })
+        assertEquals(listOf(WITH_BOB, NOTES), team.directMessages.map { it.id })
 
         val other = sectionsOf(state, SpaceEntry.OtherRooms, RoomSort.DEFAULT)
         assertEquals(listOf(PARTY, LOOSE), other.rooms.map { it.id })
-        assertEquals(emptyList<String>(), other.people.map { it.id })
+        assertEquals(emptyList<String>(), other.directMessages.map { it.id })
 
         val gone = sectionsOf(state, SpaceEntry.Space("!left:x"), RoomSort.DEFAULT)
-        assertTrue(gone.rooms.isEmpty() && gone.people.isEmpty())
+        assertTrue(gone.rooms.isEmpty() && gone.directMessages.isEmpty())
     }
 
     @Test
     fun bothSectionsFollowTheChosenOrder() {
         val az = sectionsOf(state, SpaceEntry.Space(TEAM), RoomSort.A_TO_Z)
         assertEquals(listOf(DEEP, LAB, OFFER), az.rooms.map { it.id })
-        assertEquals(listOf(NOTES, WITH_BOB), az.people.map { it.id })
+        assertEquals(listOf(NOTES, WITH_BOB), az.directMessages.map { it.id })
         val za = sectionsOf(state, SpaceEntry.Space(TEAM), RoomSort.Z_TO_A)
         assertEquals(listOf(OFFER, LAB, DEEP), za.rooms.map { it.id })
-        assertEquals(listOf(WITH_BOB, NOTES), za.people.map { it.id })
+        assertEquals(listOf(WITH_BOB, NOTES), za.directMessages.map { it.id })
     }
 
     // In list order (most recently active first, by the library's rules).
