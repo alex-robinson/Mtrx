@@ -152,7 +152,8 @@ pub enum Message {
     /// Open the room above or below in the room list, or one by its row.
     GoToRoom(sidebar::Go),
     /// The rooms of our spaces, as their servers list them.
-    SpaceRoomsLoaded(Vec<(OwnedRoomId, Vec<mtrx_core::DirectoryRoom>)>),
+    /// A space's rooms as its server listed them, or why not.
+    SpaceRoomsLoaded(OwnedRoomId, Result<Vec<mtrx_core::DirectoryRoom>, String>),
     /// Join a room the search found in our spaces, or ask to (`true`).
     JoinFound(OwnedRoomId, Vec<OwnedServerName>, bool),
     /// Joined it (or asked to, `true`), or not.
@@ -481,6 +482,7 @@ impl Main {
         wanted.extend(self.info.as_ref().and_then(|c| c.avatar(rooms)));
         if let Some(overview) = self.info.as_ref().and_then(|c| c.overview.as_ref()) {
             wanted.extend(overview.avatars());
+            wanted.extend(self.space_rooms.avatars());
         }
         if let Some(join) = &self.join {
             wanted.extend(join.avatars());
@@ -1688,7 +1690,7 @@ impl App {
                 let overview = match card.update(message) {
                     overview::Action::None => Task::none(),
                     action => card.overview.as_ref().map_or(Task::none(), |o| {
-                        overview_task(&overview_session, &o.space, action)
+                        overview_task(&overview_session, &mut main.space_rooms, &o.space, action)
                     }),
                 };
                 Task::batch([task, overview, self.load_avatars()])
@@ -1871,9 +1873,9 @@ impl App {
                 main.filter = filter;
                 Task::batch([load, self.load_avatars()])
             }
-            Message::SpaceRoomsLoaded(spaces) => {
+            Message::SpaceRoomsLoaded(space, result) => {
                 if let Screen::Main(main) = &mut self.screen {
-                    main.space_rooms.loaded(spaces);
+                    main.space_rooms.loaded(space, result);
                 }
                 self.load_avatars()
             }
@@ -3737,9 +3739,12 @@ impl App {
             _ => Task::none(),
         };
         let overview = match main.info.as_ref().and_then(|c| c.overview.as_ref()) {
-            Some(overview) if overview.space == *room => {
-                overview_task(&main.session, room, overview::Action::LoadMembers)
-            }
+            Some(overview) if overview.space == *room => overview_task(
+                &main.session,
+                &mut main.space_rooms,
+                room,
+                overview::Action::LoadMembers,
+            ),
             _ => Task::none(),
         };
         Task::batch([beside, overview, self.reload_card(room)])
@@ -3913,7 +3918,7 @@ impl App {
                 .map_or_else(Task::none, |room| load_settings(&main.session, room)),
         };
         let overview = card.overview.as_ref().map_or(Task::none(), |o| {
-            overview_task(&main.session, &o.space, o.opened())
+            overview_task(&main.session, &mut main.space_rooms, &o.space, o.opened())
         });
         main.info = Some(card);
         Task::batch([load, presence, overview, self.load_avatars()])
@@ -4147,6 +4152,7 @@ impl App {
                             call_services: &self.settings.call_services,
                             room_pictures: self.settings.room_pictures,
                             member_menu: main.member_menu.as_ref(),
+                            space_rooms: &main.space_rooms,
                         }),
                         Message::Info(info::Message::Close),
                         true,
@@ -4759,30 +4765,41 @@ fn attach(room: OwnedRoomId, paths: Vec<PathBuf>) -> Task<Message> {
 
 /// Load the room's members, for its member list and mentions, and whether
 /// we may mention everyone.
-/// Load the rooms of all our spaces, for the room search.
+/// List the rooms of all our spaces, for the room search.
 fn load_space_rooms(main: &mut Main) -> Task<Message> {
     let spaces = directory::searched_spaces(&main.rooms.rooms, None);
-    if spaces.is_empty() || main.space_rooms.loading {
+    Task::batch(
+        spaces
+            .iter()
+            .map(|space| list_space_rooms(&main.session, &mut main.space_rooms, space, false)),
+    )
+}
+
+/// Ask `space`'s server for its rooms, unless listed lately (any time if
+/// `again`) or being listed.
+fn list_space_rooms(
+    session: &Arc<Session>,
+    space_rooms: &mut directory::SpaceRooms,
+    space: &OwnedRoomId,
+    again: bool,
+) -> Task<Message> {
+    if !space_rooms.start(space, again) {
         return Task::none();
     }
-    main.space_rooms.loading = true;
-    let session = main.session.clone();
+    let (session, space) = (session.clone(), space.clone());
     Task::perform(
-        futures_util::future::join_all(spaces.into_iter().map(move |space| {
-            let session = session.clone();
-            async move {
-                // A space its server won't list is left out.
-                let rooms = session.space_children(&space).await.unwrap_or_default();
-                (space, rooms)
-            }
-        })),
-        Message::SpaceRoomsLoaded,
+        {
+            let space = space.clone();
+            async move { session.space_children(&space).await }
+        },
+        move |result| Message::SpaceRoomsLoaded(space.clone(), result.map_err(|e| e.to_string())),
     )
 }
 
 /// Load or join what a space's overview needs.
 fn overview_task(
     session: &Arc<Session>,
+    space_rooms: &mut directory::SpaceRooms,
     space: &OwnedRoomId,
     action: overview::Action,
 ) -> Task<Message> {
@@ -4791,17 +4808,11 @@ fn overview_task(
     let done = |message: Overview| Message::Info(info::Message::Overview(message));
     match action {
         Action::None => Task::none(),
-        Action::Load(space) => Task::perform(
-            {
-                let space = space.clone();
-                async move { session.space_children(&space).await }
-            },
-            move |result| {
-                done(Overview::Loaded(
-                    space.clone(),
-                    result.map_err(|e| e.to_string()),
-                ))
-            },
+        Action::Load(space) => list_space_rooms(&session, space_rooms, &space, false),
+        Action::Reload(spaces) => Task::batch(
+            spaces
+                .iter()
+                .map(|space| list_space_rooms(&session, space_rooms, space, true)),
         ),
         Action::LoadMembers => {
             let space = space.clone();

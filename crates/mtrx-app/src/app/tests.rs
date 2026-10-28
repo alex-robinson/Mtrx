@@ -1873,13 +1873,24 @@ async fn room_management_screens() {
                 space.clone(),
                 Ok(space_settings.clone()),
             ));
-            card.update(info::Message::Overview(overview::Message::Loaded(
-                space.clone(),
-                Ok(children.clone()),
-            )));
+            main.space_rooms.loaded(space.clone(), Ok(children.clone()));
             main.info = Some(card);
         }),
         "space-overview",
+    );
+    // Listed before, asked again: the list shows while it updates.
+    snapshot(
+        &main_with(&|main| {
+            let card = info::Card::new(
+                info::Target::Room(space.clone()),
+                &main.rooms.rooms,
+                overview::Tab::Rooms,
+            );
+            main.space_rooms.loaded(space.clone(), Ok(children.clone()));
+            main.space_rooms.start(&space, true);
+            main.info = Some(card);
+        }),
+        "space-overview-updating",
     );
     snapshot(
         &main_with(&|main| {

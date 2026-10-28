@@ -4,13 +4,15 @@
 
 use iced::{
     Alignment, Element, Length, Theme,
-    widget::{button, column, container, row, rule, scrollable, text},
+    widget::{button, column, container, row, rule, scrollable, stack, text},
 };
 
 use crate::{app, fonts, hint, icons, style};
 
 /// Most of the window's height; the body scrolls beyond.
 const MAX_HEIGHT: f32 = 680.0;
+/// Below a body with a status pill: the pill's height.
+const STATUS_ROOM: f32 = 28.0;
 
 /// `title` is a heading, or any row (e.g. a picture and a name); `actions`
 /// go before the close button.
@@ -21,16 +23,18 @@ pub fn frame<'a>(
     body: impl Into<Element<'a, app::Message>>,
     width: f32,
 ) -> Element<'a, app::Message> {
-    with_bar(title, actions, close, None, body, width)
+    with_bar(title, actions, close, None, body, None, width)
 }
 
-/// A [`frame`] with a `bar` below the header that stays too, e.g. tabs.
+/// A [`frame`] with a `bar` below the header that stays too, e.g. tabs,
+/// and a `status` pill over the bottom of what scrolls below it.
 pub fn with_bar<'a>(
     title: impl Into<Element<'a, app::Message>>,
     actions: impl IntoIterator<Item = Element<'a, app::Message>>,
     close: app::Message,
     bar: Option<Element<'a, app::Message>>,
     body: impl Into<Element<'a, app::Message>>,
+    status: Option<Element<'a, app::Message>>,
     width: f32,
 ) -> Element<'a, app::Message> {
     let mut header = row![container(title).width(Length::Fill)]
@@ -49,16 +53,33 @@ pub fn with_bar<'a>(
             scrolling(iced::Padding::new(20.0).top(16.0)),
         ],
         // Below a bar that stays, a box shows what scrolls.
-        Some(bar) => column![
-            top,
-            container(bar).padding([0, 20]),
-            container(
-                container(scrolling(iced::Padding::new(14.0)))
-                    .style(style::section)
-                    .clip(true)
-            )
-            .padding(iced::Padding::new(20.0).top(12.0)),
-        ],
+        Some(bar) => {
+            // Room below the content for the status, so it hides nothing.
+            let padding = iced::Padding::new(14.0).bottom(if status.is_some() {
+                14.0 + STATUS_ROOM
+            } else {
+                14.0
+            });
+            let scrolled = container(scrolling(padding))
+                .style(style::section)
+                .clip(true);
+            let scrolled: Element<'a, app::Message> = match status {
+                Some(status) => stack![
+                    scrolled,
+                    container(status)
+                        .align_right(Length::Fill)
+                        .align_bottom(Length::Fill)
+                        .padding(10),
+                ]
+                .into(),
+                None => scrolled.into(),
+            };
+            column![
+                top,
+                container(bar).padding([0, 20]),
+                container(scrolled).padding(iced::Padding::new(20.0).top(12.0)),
+            ]
+        }
     };
     container(frame)
         .width(width)

@@ -57,8 +57,8 @@ pub enum Message {
     Tab(Tab),
     Filter(String),
     Show(Show),
-    /// A space's rooms and subspaces as its server lists them, or why not.
-    Loaded(OwnedRoomId, Result<Vec<DirectoryRoom>, String>),
+    /// List the rooms again after the server didn't answer.
+    TryAgain,
     /// Show or hide a subspace's rooms.
     Expand(OwnedRoomId),
     Join(OwnedRoomId, Vec<OwnedServerName>),
@@ -72,8 +72,10 @@ pub enum Message {
 /// What the app should do after a [`Message`].
 pub enum Action {
     None,
-    /// Load a space's rooms.
+    /// List a space's rooms, unless listed lately.
     Load(OwnedRoomId),
+    /// List them in any case.
+    Reload(Vec<OwnedRoomId>),
     LoadMembers,
     Join(OwnedRoomId, Vec<OwnedServerName>),
     Knock(OwnedRoomId, Vec<OwnedServerName>),
@@ -84,9 +86,6 @@ pub struct Overview {
     pub tab: Tab,
     filter: String,
     show: Show,
-    /// The rooms each loaded space lists: the space itself and expanded
-    /// subspaces.
-    children: Vec<(OwnedRoomId, Result<Vec<DirectoryRoom>, String>)>,
     expanded: HashSet<OwnedRoomId>,
     /// Joining or asking to join.
     busy: HashSet<OwnedRoomId>,
@@ -103,7 +102,6 @@ impl Overview {
             tab,
             filter: String::new(),
             show: Show::default(),
-            children: Vec::new(),
             expanded: HashSet::new(),
             busy: HashSet::new(),
             asked: HashSet::new(),
@@ -125,25 +123,18 @@ impl Overview {
             Message::Tab(tab) => {
                 self.tab = tab;
                 match tab {
-                    Tab::Rooms if !self.loaded(&self.space) => {
-                        return Action::Load(self.space.clone());
-                    }
+                    Tab::Rooms => return Action::Load(self.space.clone()),
                     Tab::Members if self.members.is_none() => return Action::LoadMembers,
                     _ => {}
                 }
             }
             Message::Filter(filter) => self.filter = filter,
             Message::Show(show) => self.show = show,
-            Message::Loaded(space, result) => {
-                self.children.retain(|(s, _)| *s != space);
-                self.children.push((space, result));
-            }
+            Message::TryAgain => return Action::Reload(self.shown_spaces()),
             Message::Expand(space) => {
                 if !self.expanded.remove(&space) {
                     self.expanded.insert(space.clone());
-                    if !self.loaded(&space) {
-                        return Action::Load(space);
-                    }
+                    return Action::Load(space);
                 }
             }
             Message::Join(room, via) => {
@@ -170,30 +161,55 @@ impl Overview {
         Action::None
     }
 
-    fn loaded(&self, space: &OwnedRoomId) -> bool {
-        self.children.iter().any(|(s, _)| s == space)
+    /// The space and its expanded subspaces, whose rooms are listed.
+    fn shown_spaces(&self) -> Vec<OwnedRoomId> {
+        std::iter::once(self.space.clone())
+            .chain(self.expanded.iter().cloned())
+            .collect()
     }
 
-    fn rooms_of(&self, space: &OwnedRoomId) -> Option<&Result<Vec<DirectoryRoom>, String>> {
-        self.children
-            .iter()
-            .find_map(|(s, rooms)| (s == space).then_some(rooms))
-    }
-
-    /// Pictures of the listed rooms, with their size.
+    /// Pictures of the members, with their size (the rooms' are the
+    /// app's, with their lists).
     pub fn avatars(&self) -> impl Iterator<Item = (&mtrx_core::MxcUri, f32)> {
-        let rooms = self
-            .children
-            .iter()
-            .filter_map(|(_, rooms)| rooms.as_ref().ok())
-            .flatten()
-            .filter_map(|r| Some((r.avatar.as_deref()?, directory::AVATAR)));
-        let members = self
-            .members
+        self.members
             .iter()
             .filter_map(|m| m.as_ref().ok())
-            .flat_map(|m| crate::members::avatars(m));
-        rooms.chain(members)
+            .flat_map(|m| crate::members::avatars(m))
+    }
+
+    /// While the Rooms tab shows, a pill saying the rooms are being listed,
+    /// or that the server didn't answer, to try again.
+    pub fn status<'a>(&self, shown: info::Shown<'a>) -> Option<Element<'a, app::Message>> {
+        if self.tab != Tab::Rooms {
+            return None;
+        }
+        let spaces = self.shown_spaces();
+        let rooms = shown.space_rooms;
+        let (line, problem): (Element<'a, app::Message>, bool) = if rooms.any_loading(&spaces) {
+            (text("Updating…").size(12).into(), false)
+        } else if spaces.iter().any(|s| rooms.failed(s).is_some()) {
+            (
+                row![
+                    text(format!("{} didn't answer", shown.own_user.server_name())).size(12),
+                    button(text("Try again").size(12))
+                        .padding([0, 6])
+                        .style(style::text_button)
+                        .on_press(message(Message::TryAgain)),
+                ]
+                .spacing(6)
+                .align_y(Alignment::Center)
+                .into(),
+                true,
+            )
+        } else {
+            return None;
+        };
+        Some(
+            container(line)
+                .padding([4, 12])
+                .style(style::status_pill(problem))
+                .into(),
+        )
     }
 
     /// The space's topic and links    /// The tabs, above the scrolling content.
@@ -294,25 +310,26 @@ impl Overview {
         shown: info::Shown<'a>,
     ) -> iced::widget::Column<'a, app::Message> {
         let indent = f32::from(depth) * INDENT;
-        let rooms = match self.rooms_of(of) {
-            None if depth == 0 => return list.push(frame::loading()),
-            None => {
-                return list.push(
-                    container(text("Loading…").size(12).style(text::secondary))
-                        .padding(iced::Padding::new(4.0).left(indent + 4.0)),
-                );
+        let listing = shown.space_rooms;
+        let rooms = listing.rooms(of, shown.rooms);
+        // Nothing to show yet: room for what comes, or why it didn't.
+        if rooms.is_empty() && !listing.listed(of) {
+            let waiting = listing.failed(of).is_none();
+            if depth == 0 && waiting {
+                return list.push(frame::loading());
             }
-            Some(Err(e)) => {
-                return list.push(
-                    container(text(e.as_str()).size(12).style(text::danger))
-                        .padding(iced::Padding::new(4.0).left(indent + 4.0)),
-                );
-            }
-            Some(Ok(rooms)) => rooms,
-        };
+            let line = if waiting {
+                text("Loading…").size(12).style(text::secondary)
+            } else {
+                text("Couldn't list the rooms.")
+                    .size(12)
+                    .style(text::secondary)
+            };
+            return list.push(container(line).padding(iced::Padding::new(4.0).left(indent + 4.0)));
+        }
         let filter = self.filter.trim().to_lowercase();
         let mut any = false;
-        for room in rooms {
+        for room in &rooms {
             let membership =
                 directory::membership(room, shown.rooms, self.asked.contains(&room.id));
             let joined = membership == Some(Membership::Joined);
@@ -349,7 +366,7 @@ impl Overview {
 
     fn room_row<'a>(
         &'a self,
-        room: &'a DirectoryRoom,
+        room: &DirectoryRoom,
         membership: Option<Membership>,
         indent: f32,
         shown: info::Shown<'a>,

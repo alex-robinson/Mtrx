@@ -551,7 +551,8 @@ pub fn room_list<'a>(view: RoomListView<'a>) -> Element<'a, Message> {
         let found = search(rooms, selected_space, view.arrange, &view.grouping, &filter);
         let unjoined = not_joined(&view, &filter);
         let space_rooms = view.space_rooms;
-        if found.is_empty() && unjoined.is_empty() && !space_rooms.loading {
+        let looking = space_rooms.any_loading(&directory::searched_spaces(rooms, selected_space));
+        if found.is_empty() && unjoined.is_empty() && !looking {
             let none = if selected_space.is_some() {
                 "No rooms or chats in this space match."
             } else {
@@ -570,7 +571,7 @@ pub fn room_list<'a>(view: RoomListView<'a>) -> Element<'a, Message> {
             list = list.push(
                 container(section_title("Not joined")).padding(Padding::new(8.0).top(14).bottom(4)),
             );
-        } else if space_rooms.loading {
+        } else if looking {
             list = list.push(
                 container(
                     text("Looking in your spaces…")

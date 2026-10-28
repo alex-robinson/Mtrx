@@ -55,6 +55,8 @@ pub struct Shown<'a> {
     pub room_pictures: bool,
     /// The member whose menu is open, and in which room.
     pub member_menu: Option<&'a crate::members::MenuKey>,
+    /// The rooms of spaces as their servers listed them.
+    pub space_rooms: &'a directory::SpaceRooms,
 }
 
 /// What to show a card for.
@@ -115,6 +117,8 @@ struct Framed<'a> {
     /// Stays below the header, e.g. a space's tabs.
     bar: Option<Element<'a, app::Message>>,
     body: Element<'a, app::Message>,
+    /// A pill over the body's bottom, e.g. while it updates.
+    status: Option<Element<'a, app::Message>>,
 }
 
 pub struct Card {
@@ -292,6 +296,7 @@ impl Card {
             actions,
             bar,
             body,
+            status,
         } = match &self.target {
             Target::User(user) => self.user_view(user, shown),
             Target::Room(id) => match shown.rooms.iter().find(|r| &r.id == id) {
@@ -301,6 +306,7 @@ impl Card {
                     actions: Vec::new(),
                     bar: None,
                     body: text("This room is not in your list.").into(),
+                    status: None,
                 },
             },
         };
@@ -310,6 +316,7 @@ impl Card {
             app::Message::Info(Message::Close),
             bar,
             body,
+            status,
             if self.overview.is_some() {
                 OVERVIEW_WIDTH
             } else {
@@ -420,6 +427,7 @@ impl Card {
             )],
             bar: None,
             body: card.into(),
+            status: None,
         }
     }
 
@@ -519,6 +527,7 @@ impl Card {
                 } else {
                     column![about, body].spacing(14).into()
                 },
+                status: None,
             };
         };
         // A space: its rooms, members and these settings, in tabs. The
@@ -531,6 +540,7 @@ impl Card {
         Framed {
             title,
             actions,
+            status: overview.status(shown),
             bar: Some(bar.into()),
             body: overview.view(
                 room,
