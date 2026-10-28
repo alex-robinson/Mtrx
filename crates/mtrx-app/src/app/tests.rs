@@ -1878,6 +1878,24 @@ async fn room_management_screens() {
         }),
         "space-overview",
     );
+    // The space's topic below its name, open over the room list.
+    for (open, name) in [(false, "space-topic"), (true, "space-topic-open")] {
+        snapshot(
+            &main_with(&|main| {
+                if let Some(summary) = main.rooms.rooms.iter_mut().find(|r| r.id == space) {
+                    summary.topic = Some(
+                        "Paleoclimate modelling and analysis, ice group\n\
+                         [call Weekly] https://meet.google.com/abc-defg-hij\n\
+                         [link Shared drive] https://drive.google.com/drive/folders/xyz"
+                            .into(),
+                    );
+                }
+                main.space_topic.can_edit = Some(true);
+                main.space_topic.open = open;
+            }),
+            name,
+        );
+    }
     // Listed before, asked again: the list shows while it updates.
     snapshot(
         &main_with(&|main| {

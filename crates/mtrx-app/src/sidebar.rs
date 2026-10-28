@@ -13,8 +13,8 @@ use iced::{
     },
 };
 use mtrx_core::{
-    DirectoryRoom, Grouping, Layout, MxcUri, OwnedRoomId, OwnedUserId, RoomKind, RoomSummary,
-    RoomTag, ScheduledMessage, Section, Sort, UserId, top_level_spaces,
+    CallService, DirectoryRoom, Grouping, Layout, MxcUri, OwnedRoomId, OwnedUserId, RoomKind,
+    RoomSummary, RoomTag, ScheduledMessage, Section, Sort, Topic, UserId, top_level_spaces,
 };
 
 use crate::{
@@ -32,7 +32,11 @@ use crate::{
     presence::{self, Presences},
     style::{self, ROOM_AVATAR, ROOM_ROW, SPACE_AVATAR, SPACE_BAR_WIDTH},
     tint::Tint,
+    topic,
 };
+
+/// The space's topic panel at most; longer, it scrolls.
+const TOPIC_HEIGHT: f32 = 420.0;
 
 /// The room search field, focused by ⌘K / Ctrl+K.
 pub const SEARCH: &str = "room-search";
@@ -466,6 +470,68 @@ pub struct RoomListView<'a> {
     pub presences: &'a Presences,
     /// The rooms of our spaces, for the search to find those not joined.
     pub space_rooms: &'a directory::SpaceRooms,
+    /// The selected space's topic panel.
+    pub space_topic: &'a topic::Panel,
+    /// Our call services, naming calls in the topic.
+    pub call_services: &'a [CallService],
+}
+
+/// Below the space's name, a caret and its topic's first line, opening the
+/// topic in full and its links (or its editor) over the room list, as a
+/// room's below its name.
+fn space_topic<'a>(
+    view: &RoomListView<'a>,
+    space: &OwnedRoomId,
+    top: Element<'a, Message>,
+) -> Element<'a, Message> {
+    let panel = view.space_topic;
+    let synced = (view.rooms.iter())
+        .find(|r| &r.id == space)
+        .and_then(|r| r.topic.as_deref());
+    let parsed = Topic::parse(panel.shown(synced));
+    let can_edit = panel.can_edit == Some(true);
+    let Some(preview) = topic::preview(&parsed, view.call_services, can_edit) else {
+        return top;
+    };
+    let message = |message| Message::Topic(space.clone(), message);
+    let open = panel.open;
+    let mut line = row![icons::chevron(11.0, open, |theme| {
+        theme
+            .extended_palette()
+            .background
+            .base
+            .text
+            .scale_alpha(0.7)
+    })]
+    .spacing(5)
+    .align_y(Alignment::Center);
+    if !open {
+        line = line.push(ellipsis(preview).size(12).style(text::secondary));
+    }
+    let header = column![
+        top,
+        button(line)
+            .width(Length::Fill)
+            .padding([2, 8])
+            .style(style::list_item(false))
+            .on_press(message(topic::Message::Toggle)),
+    ]
+    .spacing(2);
+    let shown = open.then(|| {
+        container(
+            scrollable(container(panel.view(space, &parsed, view.call_services)).padding(14))
+                .height(Length::Shrink),
+        )
+        .width(Length::Fill)
+        .max_height(TOPIC_HEIGHT)
+        .style(style::toolbar)
+        .into()
+    });
+    // As wide as the room list.
+    popover(header, shown, Side::Below, Edge::Left)
+        .share_of_anchor(1.0, 0.0)
+        .on_dismiss(message(topic::Message::Dismiss))
+        .into()
 }
 
 /// The Notes to self at the top of the room list.
@@ -511,14 +577,16 @@ pub fn room_list<'a>(view: RoomListView<'a>) -> Element<'a, Message> {
             .padding([4, 8])
             .into(),
     };
-    let mut list = column![
-        row![
-            container(heading).width(Length::Fill),
-            with_tooltip(add, "New room, chat or category, or join one".into()),
-        ]
-        .align_y(Alignment::Center)
+    let top = row![
+        container(heading).width(Length::Fill),
+        with_tooltip(add, "New room, chat or category, or join one".into()),
     ]
-    .padding(8);
+    .align_y(Alignment::Center);
+    let top = match selected_space {
+        Some(space) => space_topic(&view, space, top.into()),
+        None => top.into(),
+    };
+    let mut list = column![top].padding(8);
     if add_menu {
         let space = selected_space.map(|id| (id.clone(), title.to_owned()));
         list = list.push(add_menu_view(space));
@@ -1925,6 +1993,8 @@ mod tests {
             notes: None,
             presences,
             space_rooms: Box::leak(Box::default()),
+            space_topic: Box::leak(Box::default()),
+            call_services: &[],
         }
     }
 

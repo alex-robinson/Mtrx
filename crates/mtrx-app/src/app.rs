@@ -368,6 +368,8 @@ struct Main {
     space_menu: Option<sidebar::SpaceMenu>,
     /// The rooms of our spaces, for the room search.
     space_rooms: directory::SpaceRooms,
+    /// The selected space's topic panel, below its name.
+    space_topic: topic::Panel,
     /// The member whose menu is open, and in which room.
     member_menu: Option<members::MenuKey>,
     /// The invite shown instead of a room, and whether it is being answered.
@@ -461,6 +463,7 @@ impl Main {
             add_menu: false,
             space_menu: None,
             space_rooms: Default::default(),
+            space_topic: Default::default(),
             member_menu: None,
             invite: None,
             opening: None,
@@ -500,7 +503,7 @@ impl Main {
             .collect()
     }
 
-    fn room_list_view<'a>(&'a self, settings: &Settings) -> sidebar::RoomListView<'a> {
+    fn room_list_view<'a>(&'a self, settings: &'a Settings) -> sidebar::RoomListView<'a> {
         let (grouping, width) = (settings.room_list, settings.room_list_width);
         sidebar::RoomListView {
             rooms: &self.rooms.rooms,
@@ -524,6 +527,8 @@ impl Main {
             notes: self.pinned_notes(settings),
             presences: &self.presences,
             space_rooms: &self.space_rooms,
+            space_topic: &self.space_topic,
+            call_services: &settings.call_services,
         }
     }
 
@@ -990,11 +995,26 @@ impl App {
                 let Screen::Main(main) = &mut self.screen else {
                     return Task::none();
                 };
+                let changed = main.space != space;
                 main.space = space;
                 main.info = None;
                 main.restore = None;
                 main.arrange.escape();
-                self.load_avatars()
+                let topic = match main.space.clone().filter(|_| changed) {
+                    Some(space) => {
+                        main.space_topic = topic::Panel::default();
+                        let session = main.session.clone();
+                        Task::perform(
+                            {
+                                let space = space.clone();
+                                async move { session.can_change_topic(&space).await.ok() }
+                            },
+                            move |can| Message::Topic(space.clone(), topic::Message::CanEdit(can)),
+                        )
+                    }
+                    None => Task::none(),
+                };
+                Task::batch([topic, self.load_avatars()])
             }
             Message::Arrange(message) => {
                 let Screen::Main(main) = &mut self.screen else {
@@ -3045,44 +3065,47 @@ impl App {
         self.save_topic(room_id, topic)
     }
 
-    /// The open room's topic and links, in the topic panel.
+    /// A topic panel's message: the open room's, or the selected space's.
     fn room_topic(&mut self, room_id: OwnedRoomId, message: topic::Message) -> Task<Message> {
         let Screen::Main(main) = &mut self.screen else {
             return Task::none();
         };
-        let Some(room) = main.room.as_mut().filter(|r| r.id == room_id) else {
-            return Task::none();
-        };
-        match message {
-            topic::Message::Save => {
-                let Some(editor) = &room.topic.editor else {
-                    return Task::none();
-                };
-                let topic = editor.topic();
-                return self.save_topic(room_id, topic);
-            }
-            // From the call menu too.
-            topic::Message::Edit => room.calls.close(),
-            _ => {}
+        if let topic::Message::Save = message {
+            let Some(editor) = topic_panel(main, &room_id).and_then(|p| p.editor.as_ref()) else {
+                return Task::none();
+            };
+            let topic = editor.topic();
+            return self.save_topic(room_id, topic);
+        }
+        // From the call menu too.
+        if let topic::Message::Edit = message
+            && let Some(room) = main.room.as_mut().filter(|r| r.id == room_id)
+        {
+            room.calls.close();
         }
         let synced = (main.rooms.rooms.iter())
             .find(|r| r.id == room_id)
-            .and_then(|r| r.topic.as_deref());
-        let shown = room.topic.shown(synced).to_owned();
-        room.topic
+            .and_then(|r| r.topic.as_deref())
+            .map(ToOwned::to_owned);
+        let Some(panel) = topic_panel(main, &room_id) else {
+            return Task::none();
+        };
+        let shown = panel.shown(synced.as_deref()).to_owned();
+        panel
             .update(message, &shown)
             .map(move |message| Message::Topic(room_id.clone(), message))
     }
 
-    /// Save `topic` as the open room's, shown until the room list has it.
+    /// Save `topic` as the open room's or selected space's, shown until the
+    /// room list has it.
     fn save_topic(&mut self, room_id: OwnedRoomId, topic: String) -> Task<Message> {
         let Screen::Main(main) = &mut self.screen else {
             return Task::none();
         };
-        let Some(room) = main.room.as_mut().filter(|r| r.id == room_id) else {
+        let Some(panel) = topic_panel(main, &room_id) else {
             return Task::none();
         };
-        room.topic.save(topic.clone());
+        panel.save(topic.clone());
         let session = main.session.clone();
         let room = room_id.clone();
         Task::perform(
@@ -4765,6 +4788,14 @@ fn attach(room: OwnedRoomId, paths: Vec<PathBuf>) -> Task<Message> {
 
 /// Load the room's members, for its member list and mentions, and whether
 /// we may mention everyone.
+/// The topic panel of `room`: the open room's, or the selected space's.
+fn topic_panel<'a>(main: &'a mut Main, room: &OwnedRoomId) -> Option<&'a mut topic::Panel> {
+    match &mut main.room {
+        Some(open) if open.id == *room => Some(&mut open.topic),
+        _ => (main.space.as_ref() == Some(room)).then_some(&mut main.space_topic),
+    }
+}
+
 /// List the rooms of all our spaces, for the room search.
 fn load_space_rooms(main: &mut Main) -> Task<Message> {
     let spaces = directory::searched_spaces(&main.rooms.rooms, None);
