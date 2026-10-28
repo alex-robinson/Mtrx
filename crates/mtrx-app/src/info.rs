@@ -57,7 +57,7 @@ pub struct Shown<'a> {
     /// Rooms show their pictures, as the room list does.
     pub room_pictures: bool,
     /// The member whose menu is open, and in which room.
-    pub member_menu: Option<&'a (OwnedRoomId, OwnedUserId)>,
+    pub member_menu: Option<&'a crate::members::MenuKey>,
 }
 
 /// What to show a card for.

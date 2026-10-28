@@ -1455,20 +1455,14 @@ fn faint(theme: &Theme) -> Color {
 /// invited people (or a space's members) may join.
 fn access_symbol<'a>(public: bool) -> Element<'a, Message> {
     let symbol: Element<'a, Message> = if public {
-        text("#")
-            .size(16)
-            .font(fonts::SEMIBOLD)
-            .style(|theme: &Theme| text::Style {
-                color: Some(
-                    theme
-                        .extended_palette()
-                        .background
-                        .base
-                        .text
-                        .scale_alpha(0.55),
-                ),
-            })
-            .into()
+        icons::hash(16.0, |theme| {
+            theme
+                .extended_palette()
+                .background
+                .base
+                .text
+                .scale_alpha(0.55)
+        })
     } else {
         icons::lock(14.0, |theme| {
             theme

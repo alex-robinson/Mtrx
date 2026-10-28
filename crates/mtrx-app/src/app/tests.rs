@@ -58,6 +58,7 @@ fn person(id: &str, name: &str, role: mtrx_core::Role) -> Member {
         name: Some(name.into()),
         avatar: None,
         role,
+        level: Some(role.level(0)),
         invited: false,
         manage: Default::default(),
     }

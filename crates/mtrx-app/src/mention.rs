@@ -344,6 +344,7 @@ mod tests {
             name: name.map(Into::into),
             avatar: None,
             role: Role::Member,
+            level: Some(0),
             invited: false,
             manage: Default::default(),
         }

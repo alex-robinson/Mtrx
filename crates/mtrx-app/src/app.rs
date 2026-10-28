@@ -162,9 +162,9 @@ pub enum Message {
     ToggleMembers,
     /// Open the room with its members shown (where Invite is).
     ShowMembers(OwnedRoomId),
-    MemberMenu(Option<(OwnedRoomId, OwnedUserId)>),
-    /// Make a member a moderator or a plain member.
-    SetRole(OwnedRoomId, OwnedUserId, mtrx_core::Role),
+    MemberMenu(Option<members::MenuKey>),
+    /// Give a member a power level, without asking.
+    SetLevel(OwnedRoomId, OwnedUserId, i64),
     /// A room's members were changed by us, or not.
     MembersChanged(OwnedRoomId, Result<(), String>),
     /// A space's card, on one of its tabs.
@@ -366,7 +366,7 @@ struct Main {
     /// The rooms of our spaces, for the room search.
     space_rooms: directory::SpaceRooms,
     /// The member whose menu is open, and in which room.
-    member_menu: Option<(OwnedRoomId, OwnedUserId)>,
+    member_menu: Option<members::MenuKey>,
     /// The invite shown instead of a room, and whether it is being answered.
     invite: Option<(OwnedRoomId, bool)>,
     /// A room being opened (its timeline loads).
@@ -2009,7 +2009,7 @@ impl App {
                 }
                 Task::none()
             }
-            Message::SetRole(room, user, role) => {
+            Message::SetLevel(room, user, level) => {
                 let Screen::Main(main) = &mut self.screen else {
                     return Task::none();
                 };
@@ -2018,7 +2018,7 @@ impl App {
                 Task::perform(
                     {
                         let room = room.clone();
-                        async move { session.set_role(&room, &user, role).await }
+                        async move { session.set_level(&room, &user, level).await }
                     },
                     move |result| {
                         Message::MembersChanged(room.clone(), result.map_err(|e| e.to_string()))
@@ -4467,8 +4467,8 @@ async fn run_request(
                     .await?;
                 Opened::Members(room)
             }
-            Request::SetRole(room, user, role) => {
-                session.set_role(&room, &user, role).await?;
+            Request::SetLevel(room, user, level) => {
+                session.set_level(&room, &user, level).await?;
                 Opened::Members(room)
             }
             Request::SignOut => {

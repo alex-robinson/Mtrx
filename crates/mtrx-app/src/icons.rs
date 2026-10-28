@@ -1124,33 +1124,15 @@ pub fn copy<'a, M: 'a>(size: f32, color: fn(&Theme) -> Color) -> Element<'a, M> 
     })
 }
 
-/// A globe: anyone can join.
-pub fn globe<'a, M: 'a>(size: f32, color: fn(&Theme) -> Color) -> Element<'a, M> {
-    sketch(size, color, |frame, s, stroke| {
-        let center = frame.center();
-        let radius = s * 0.4;
-        frame.stroke(&Path::circle(center, radius), stroke);
-        frame.stroke(
-            &Path::line(
-                iced::Point::new(center.x - radius, center.y),
-                iced::Point::new(center.x + radius, center.y),
-            ),
-            stroke,
-        );
-        // A meridian: an ellipse, as two arcs.
-        frame.stroke(
-            &Path::new(|path| {
-                path.ellipse(canvas::path::arc::Elliptical {
-                    center,
-                    radii: Vector::new(radius * 0.45, radius),
-                    rotation: iced::Radians(0.0),
-                    start_angle: iced::Radians(0.0),
-                    end_angle: iced::Radians(std::f32::consts::TAU),
-                });
-            }),
-            stroke,
-        );
-    })
+/// A hash: anyone can join, as rooms are marked in the room list.
+pub fn hash<'a, M: 'a>(size: f32, color: fn(&Theme) -> Color) -> Element<'a, M> {
+    iced::widget::text("#")
+        .size(size)
+        .font(crate::fonts::SEMIBOLD)
+        .style(move |theme: &Theme| iced::widget::text::Style {
+            color: Some(color(theme)),
+        })
+        .into()
 }
 
 /// Two people: members of a space can join.

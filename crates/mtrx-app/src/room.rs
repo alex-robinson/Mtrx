@@ -1204,7 +1204,7 @@ pub struct Look<'a> {
     /// The member list is shown beside the room.
     pub show_members: bool,
     /// The member whose menu is open, and in which room.
-    pub member_menu: Option<&'a (OwnedRoomId, OwnedUserId)>,
+    pub member_menu: Option<&'a crate::members::MenuKey>,
     /// People's presence, in the member list and a direct chat's header.
     pub presences: &'a Presences,
     /// For how long ago people were last active.
@@ -2264,6 +2264,7 @@ mod tests {
             name: Some("Nils Wolf".into()),
             avatar: Some("mxc://x/nils".into()),
             role: mtrx_core::Role::Member,
+            level: Some(0),
             invited: false,
             manage: Default::default(),
         };

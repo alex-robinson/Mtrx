@@ -6,7 +6,7 @@ use std::collections::{HashMap, HashSet};
 
 use iced::{
     Alignment, Element, Length, Theme,
-    widget::{button, column, container, row, space, text},
+    widget::{button, column, container, hover, row, space, text},
 };
 use mtrx_core::{DirectoryRoom, JoinAccess, Membership, OwnedRoomId, Role, RoomKind, RoomSummary};
 
@@ -47,6 +47,7 @@ pub struct Shown<'a> {
 
 /// One room or space, after `lead` (an indent, say); `busy` while joining
 /// or asking to. Our role, Leave and the main button line up in columns.
+/// One we're in opens on a click; hovered, it offers Leave… and Open.
 pub fn entry<'a>(
     room: &'a DirectoryRoom,
     membership: Option<Membership>,
@@ -89,31 +90,51 @@ pub fn entry<'a>(
     if pictured {
         line = line.push(container(icon_for(room.access)).center_x(20));
     }
-    // Without pictures, who can join stands in for one (as in the room list).
     let joined = membership == Some(Membership::Joined);
     let role = match room.role.filter(|_| joined) {
         Some(Role::Admin) => "Admin",
         Some(Role::Moderator) => "Mod",
         _ => "",
     };
-    let leave: Element<'a, app::Message> = if joined {
-        button(text("Leave…").size(12))
-            .padding([4, 6])
-            .style(style::text_button)
-            .on_press(app::Message::OpenDialog(Kind::Leave {
-                room: room.id.clone(),
-                name: room.name.clone(),
-            }))
-            .into()
-    } else {
-        space().into()
-    };
-    line.push(container(text(role).size(11).style(text::secondary)).align_right(ROLE_WIDTH))
-        .push(container(leave).align_right(LEAVE_WIDTH))
+    let line = line
+        .push(container(text(role).size(11).style(text::secondary)).align_right(ROLE_WIDTH))
+        .push(space().width(LEAVE_WIDTH))
         .push(container(action(room, membership, busy, on_join, on_knock)).width(ACTION_WIDTH))
-        .padding([3, 4])
-        .align_y(Alignment::Center)
-        .into()
+        .align_y(Alignment::Center);
+    let open = if room.is_space {
+        app::Message::SelectSpace(Some(room.id.clone()))
+    } else {
+        app::Message::OpenRoom(room.id.clone())
+    };
+    let base = match membership {
+        // Opens the room, or shows the invite.
+        Some(Membership::Joined | Membership::Invited) => button(line)
+            .width(Length::Fill)
+            .padding([3, 4])
+            .style(style::list_item(false))
+            .on_press(open.clone()),
+        _ => return container(line).padding([3, 4]).into(),
+    };
+    if !joined {
+        return base.into();
+    }
+    let leave = button(text("Leave…").size(12))
+        .padding([4, 6])
+        .style(style::text_button)
+        .on_press(app::Message::OpenDialog(Kind::Leave {
+            room: room.id.clone(),
+            name: room.name.clone(),
+        }));
+    let top = row![
+        space::horizontal(),
+        container(leave).align_right(LEAVE_WIDTH),
+        container(act("Open", false, open)).width(ACTION_WIDTH),
+    ]
+    .spacing(8)
+    .padding([3, 4])
+    .height(Length::Fill)
+    .align_y(Alignment::Center);
+    hover(base, top)
 }
 
 /// "Space · 4 rooms · the topic's first line · 12 members".
@@ -159,27 +180,14 @@ fn action<'a>(
             "Joining…"
         });
     }
-    // Joining stands out; Open is quiet.
-    let act =
-        |label: &'a str, primary: bool, on_press: app::Message| -> Element<'a, app::Message> {
-            button(text(label).size(12).center().width(Length::Fill))
-                .width(Length::Fill)
-                .padding([4, 8])
-                .style(if primary {
-                    style::primary_button
-                } else {
-                    style::secondary_button
-                })
-                .on_press(on_press)
-                .into()
-        };
     let open = if room.is_space {
         app::Message::SelectSpace(Some(room.id.clone()))
     } else {
         app::Message::OpenRoom(room.id.clone())
     };
     match membership {
-        Some(Membership::Joined) => act("Open", false, open),
+        // Open shows while hovered.
+        Some(Membership::Joined) => space().into(),
         // Shows the invite, to accept or decline.
         Some(Membership::Invited) => act("Invited", true, open),
         Some(Membership::Asked) => quiet("Asked"),
@@ -191,11 +199,25 @@ fn action<'a>(
     }
 }
 
+/// A row's button: joining stands out, Open is quiet.
+fn act<'a>(label: &'a str, primary: bool, on_press: app::Message) -> Element<'a, app::Message> {
+    button(text(label).size(12).center().width(Length::Fill))
+        .width(Length::Fill)
+        .padding([4, 8])
+        .style(if primary {
+            style::primary_button
+        } else {
+            style::secondary_button
+        })
+        .on_press(on_press)
+        .into()
+}
+
 /// Who can join, as an icon with its hint.
 fn icon_for<'a>(access: JoinAccess) -> Element<'a, app::Message> {
     const SIZE: f32 = 15.0;
     let (icon, label) = match access {
-        JoinAccess::Public => (icons::globe(SIZE, secondary), "Anyone can join"),
+        JoinAccess::Public => (icons::hash(SIZE + 2.0, secondary), "Anyone can join"),
         JoinAccess::SpaceMembers => (icons::people(SIZE, secondary), "Space members can join"),
         JoinAccess::Knock => (icons::door(SIZE, secondary), "Ask to join"),
         JoinAccess::Invite => (icons::lock(SIZE, secondary), "Invited people only"),
