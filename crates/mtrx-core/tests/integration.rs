@@ -862,6 +862,14 @@ async fn browse_and_join_space_rooms() -> Result<()> {
     })
     .await?;
     s.set_room_access(&open, Access::SpaceMembers).await?;
+    let asking = s
+        .create_room(NewRoom {
+            name: Some("thesis".into()),
+            parent: Some(space.clone()),
+            ..Default::default()
+        })
+        .await?;
+    s.set_room_access(&asking, Access::Knock).await?;
     s.invite(&space, &bob.session.user_id()).await?;
     join_synced(&bob, &space, "Institute").await?;
 
@@ -873,6 +881,13 @@ async fn browse_and_join_space_rooms() -> Result<()> {
         .context("coffee listed")?;
     assert_eq!(coffee.access, JoinAccess::SpaceMembers);
     assert_eq!(coffee.membership, None);
+    assert_eq!(coffee.role, None);
+    let thesis = children
+        .iter()
+        .find(|r| r.id == asking)
+        .context("thesis listed")?;
+    assert_eq!(thesis.access, JoinAccess::Knock);
+    b.knock(&asking.clone().into(), thesis.via.clone()).await?;
     assert!(!coffee.via.is_empty());
     let preview = b.preview(&open.clone().into(), coffee.via.clone()).await?;
     assert_eq!(preview.name, "coffee");
@@ -883,9 +898,14 @@ async fn browse_and_join_space_rooms() -> Result<()> {
     timeout("membership synced", async {
         loop {
             let children = b.space_children(&space).await?;
-            if children
-                .iter()
-                .any(|r| r.id == open && r.membership == Some(Membership::Joined))
+            let membership = |id| {
+                children
+                    .iter()
+                    .find(|r| &r.id == id)
+                    .and_then(|r| r.membership)
+            };
+            if membership(&open) == Some(Membership::Joined)
+                && membership(&asking) == Some(Membership::Asked)
             {
                 return anyhow::Ok(());
             }

@@ -290,10 +290,12 @@ impl Join {
             .filter_map(|r| Some((r.avatar.as_deref()?, directory::AVATAR)))
     }
 
+    /// `pictures`: rooms show their pictures, as the room list does.
     pub fn view<'a>(
         &'a self,
         rooms: &'a [RoomSummary],
         avatars: &'a Avatars,
+        pictures: bool,
     ) -> Element<'a, app::Message> {
         let mut servers: Vec<Server> = self.servers.iter().cloned().map(Server::Named).collect();
         servers.push(Server::Other);
@@ -344,7 +346,7 @@ impl Join {
                     .size(12)
                     .style(text::danger)
                     .into(),
-                Some(Ok(room)) => self.entry(room, rooms, avatars),
+                Some(Ok(room)) => self.entry(room, rooms, avatars, pictures),
             });
         } else if self.server != Server::Other {
             body = body.push(directory::tabs(
@@ -358,7 +360,7 @@ impl Join {
             ));
             let mut list = column![].spacing(2);
             for room in &self.rooms {
-                list = list.push(self.entry(room, rooms, avatars));
+                list = list.push(self.entry(room, rooms, avatars, pictures));
             }
             if self.loading {
                 list = list.push(quiet("Looking…"));
@@ -391,6 +393,7 @@ impl Join {
         room: &'a DirectoryRoom,
         rooms: &'a [RoomSummary],
         avatars: &'a Avatars,
+        pictures: bool,
     ) -> Element<'a, app::Message> {
         let address: OwnedRoomOrAliasId = room.id.clone().into();
         directory::entry(
@@ -398,7 +401,7 @@ impl Join {
             directory::membership(room, rooms, self.asked.contains(&room.id)),
             self.busy.contains(address.as_str()),
             container(text("")).into(),
-            avatars,
+            directory::Shown { avatars, pictures },
             message(Message::Join(
                 address.clone(),
                 room.via.clone(),

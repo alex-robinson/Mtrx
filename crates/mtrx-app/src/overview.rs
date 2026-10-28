@@ -195,8 +195,21 @@ impl Overview {
         rooms.chain(members)
     }
 
-    /// The space's topic and links    /// The space's topic and links (`about`), the tabs, then the chosen
-    /// one's content; `settings` is the room card's, with the topic.
+    /// The space's topic and links    /// The tabs, above the scrolling content.
+    pub fn tabs<'a>(&self) -> Element<'a, app::Message> {
+        directory::tabs(
+            &[
+                ("Rooms", Tab::Rooms),
+                ("Members", Tab::Members),
+                ("Settings", Tab::Settings),
+            ],
+            self.tab,
+            |tab| message(Message::Tab(tab)),
+        )
+    }
+
+    /// The space's topic and links (`about`), then the chosen tab's
+    /// content; `settings` is the room card's, with the topic.
     pub fn view<'a>(
         &'a self,
         space: &'a RoomSummary,
@@ -206,15 +219,6 @@ impl Overview {
         can_invite: bool,
         settings: Element<'a, app::Message>,
     ) -> Element<'a, app::Message> {
-        let tabs = directory::tabs(
-            &[
-                ("Rooms", Tab::Rooms),
-                ("Members", Tab::Members),
-                ("Settings", Tab::Settings),
-            ],
-            self.tab,
-            |tab| message(Message::Tab(tab)),
-        );
         let content = match self.tab {
             Tab::Rooms => self.rooms_view(space, shown, can_add_rooms),
             Tab::Members => self.members_view(space, shown, can_invite),
@@ -226,7 +230,7 @@ impl Overview {
         {
             body = body.push(about);
         }
-        body.push(tabs).push(content).into()
+        body.push(content).into()
     }
 
     fn rooms_view<'a>(
@@ -375,7 +379,10 @@ impl Overview {
             membership,
             self.busy.contains(&room.id),
             row![space().width(indent), expander].into(),
-            shown.avatars,
+            directory::Shown {
+                avatars: shown.avatars,
+                pictures: shown.room_pictures,
+            },
             message(Message::Join(room.id.clone(), room.via.clone())),
             message(Message::Knock(room.id.clone(), room.via.clone())),
         )

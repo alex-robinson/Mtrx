@@ -47,6 +47,8 @@ pub struct Shown<'a> {
     pub now: SystemTime,
     pub pinned_notes: bool,
     pub call_services: &'a [CallService],
+    /// Rooms show their pictures, as the room list does.
+    pub room_pictures: bool,
 }
 
 /// What to show a card for.
@@ -81,6 +83,8 @@ pub enum Message {
 struct Framed<'a> {
     title: Element<'a, app::Message>,
     actions: Vec<Element<'a, app::Message>>,
+    /// Stays below the header, e.g. a space's tabs.
+    bar: Option<Element<'a, app::Message>>,
     body: Element<'a, app::Message>,
 }
 
@@ -218,6 +222,7 @@ impl Card {
         let Framed {
             title,
             actions,
+            bar,
             body,
         } = match &self.target {
             Target::User(user) => self.user_view(user, shown),
@@ -226,14 +231,16 @@ impl Card {
                 None => Framed {
                     title: frame::title("Room"),
                     actions: Vec::new(),
+                    bar: None,
                     body: text("This room is not in your list.").into(),
                 },
             },
         };
-        frame::frame(
+        frame::with_bar(
             title,
             actions,
             app::Message::Info(Message::Close),
+            bar,
             body,
             if self.overview.is_some() {
                 OVERVIEW_WIDTH
@@ -342,6 +349,7 @@ impl Card {
                 message,
                 Some(app::Message::ChatWith(user.id.clone())),
             )],
+            bar: None,
             body: card.into(),
         }
     }
@@ -436,15 +444,20 @@ impl Card {
             ));
             if settings.can_change_access && room.kind != RoomKind::Direct {
                 // Space members only for a room in a space.
-                let choices: Vec<Join> = [Access::Invite, Access::SpaceMembers, Access::Public]
-                    .into_iter()
-                    .filter(|&access| {
-                        access != Access::SpaceMembers
-                            || !room.parents.is_empty()
-                            || settings.access == access
-                    })
-                    .map(Join)
-                    .collect();
+                let choices: Vec<Join> = [
+                    Access::Invite,
+                    Access::Knock,
+                    Access::SpaceMembers,
+                    Access::Public,
+                ]
+                .into_iter()
+                .filter(|&access| {
+                    access != Access::SpaceMembers
+                        || !room.parents.is_empty()
+                        || settings.access == access
+                })
+                .map(Join)
+                .collect();
                 card = card.push(settings::option(
                     "Who can join",
                     access_description(settings.access, &parent_names(room, rooms)),
@@ -514,6 +527,7 @@ impl Card {
                 match access {
                     Access::Public => "Public: anyone can join",
                     Access::SpaceMembers => "Private: space members can join",
+                    Access::Knock => "Private: people ask to join",
                     Access::Invite => "Private: by invitation",
                 }
                 .to_owned(),
@@ -557,6 +571,7 @@ impl Card {
             return Framed {
                 title,
                 actions: self.room_action(room).into_iter().collect(),
+                bar: None,
                 body: card.push(actions.push(leave)).into(),
             };
         };
@@ -580,6 +595,7 @@ impl Card {
         Framed {
             title,
             actions,
+            bar: Some(overview.tabs()),
             body: overview.view(
                 room,
                 shown,
@@ -715,6 +731,7 @@ fn access_description(access: Access, spaces: &[&str]) -> String {
         }
         Access::SpaceMembers => format!("Members of {} can find and join it.", spaces.join(", ")),
         Access::Public => "Anyone can find and join it.".into(),
+        Access::Knock => "Anyone can ask to join; members let them in.".into(),
     }
 }
 
@@ -749,6 +766,7 @@ impl fmt::Display for Join {
         f.write_str(match self.0 {
             Access::Invite => "Invited people",
             Access::SpaceMembers => "Space members",
+            Access::Knock => "Ask to join",
             Access::Public => "Anyone",
         })
     }

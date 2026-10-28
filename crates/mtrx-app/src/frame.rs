@@ -21,6 +21,18 @@ pub fn frame<'a>(
     body: impl Into<Element<'a, app::Message>>,
     width: f32,
 ) -> Element<'a, app::Message> {
+    with_bar(title, actions, close, None, body, width)
+}
+
+/// A [`frame`] with a `bar` below the header that stays too, e.g. tabs.
+pub fn with_bar<'a>(
+    title: impl Into<Element<'a, app::Message>>,
+    actions: impl IntoIterator<Item = Element<'a, app::Message>>,
+    close: app::Message,
+    bar: Option<Element<'a, app::Message>>,
+    body: impl Into<Element<'a, app::Message>>,
+    width: f32,
+) -> Element<'a, app::Message> {
     let mut header = row![container(title).width(Length::Fill)]
         .spacing(8)
         .align_y(Alignment::Center);
@@ -32,8 +44,14 @@ pub fn frame<'a>(
     let body = scrollable(container(body).padding(iced::Padding::new(20.0).top(16.0))).direction(
         scrollable::Direction::Vertical(scrollable::Scrollbar::new().spacing(4)),
     );
+    let mut top = column![container(header).padding(iced::Padding::new(12.0).left(20.0))];
+    if let Some(bar) = bar {
+        top = top.push(
+            container(bar).padding(iced::Padding::new(0.0).left(20.0).right(20.0).bottom(8.0)),
+        );
+    }
     container(column![
-        container(header).padding(iced::Padding::new(12.0).left(20.0)),
+        top,
         rule::horizontal(1).style(style::separator),
         body,
     ])

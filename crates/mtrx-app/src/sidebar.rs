@@ -588,7 +588,10 @@ pub fn room_list<'a>(view: RoomListView<'a>) -> Element<'a, Message> {
                 membership,
                 space_rooms.busy.contains(&room.id),
                 space().width(0).into(),
-                view.avatars,
+                directory::Shown {
+                    avatars: view.avatars,
+                    pictures: view.room_pictures,
+                },
                 Message::JoinFound(room.id.clone(), room.via.clone(), false),
                 Message::JoinFound(room.id.clone(), room.via.clone(), true),
             ));

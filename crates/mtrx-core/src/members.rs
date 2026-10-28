@@ -69,7 +69,7 @@ impl Session {
     }
 }
 
-fn role(level: UserPowerLevel) -> Role {
+pub(crate) fn role(level: UserPowerLevel) -> Role {
     match level {
         UserPowerLevel::Infinite => Role::Admin,
         UserPowerLevel::Int(level) if level >= int!(100) => Role::Admin,

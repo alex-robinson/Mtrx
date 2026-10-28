@@ -24,7 +24,7 @@ use matrix_sdk::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::{Result, Session, account_data::AccountData};
+use crate::{Result, Role, Session, account_data::AccountData};
 
 /// Who may join a room found in a space or a directory.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -63,6 +63,8 @@ pub struct DirectoryRoom {
     pub children: u64,
     pub access: JoinAccess,
     pub membership: Option<Membership>,
+    /// Ours, where we are a member.
+    pub role: Option<Role>,
     /// Servers to join it through.
     pub via: Vec<OwnedServerName>,
     /// The space's admins suggest it.
@@ -177,6 +179,16 @@ fn display_name(name: Option<&str>, alias: Option<&OwnedRoomAliasId>, id: &RoomI
 }
 
 impl Session {
+    /// Our role in a joined room, from its power levels.
+    async fn own_role(&self, room: &RoomId) -> Option<Role> {
+        let room = self.client.get_room(room)?;
+        if room.state() != RoomState::Joined {
+            return None;
+        }
+        let levels = crate::permissions::power_levels(&room).await.ok()?;
+        Some(crate::members::role(levels.for_user(&self.user_id())))
+    }
+
     fn membership(&self, room: &RoomId) -> Option<Membership> {
         match self.client.get_room(room)?.state() {
             RoomState::Joined => Some(Membership::Joined),
@@ -212,6 +224,7 @@ impl Session {
                 }
                 let child = children.iter().find(|c| c.state_key == summary.room_id);
                 rooms.push(DirectoryRoom {
+                    role: self.own_role(&summary.room_id).await,
                     name: display_name(
                         summary.name.as_deref(),
                         summary.canonical_alias.as_ref(),
@@ -264,18 +277,23 @@ impl Session {
         request.filter = filter;
         let response = self.client.public_rooms_filtered(request).await?;
         let via: Vec<OwnedServerName> = server.map(ToOwned::to_owned).into_iter().collect();
+        let mut rooms: Vec<DirectoryRoom> = response
+            .chunk
+            .into_iter()
+            .map(|chunk| self.public_room(chunk, via.clone()))
+            .collect();
+        for room in &mut rooms {
+            room.role = self.own_role(&room.id).await;
+        }
         Ok(DirectoryPage {
-            rooms: response
-                .chunk
-                .into_iter()
-                .map(|chunk| self.public_room(chunk, via.clone()))
-                .collect(),
+            rooms,
             next: response.next_batch,
         })
     }
 
     fn public_room(&self, chunk: PublicRoomsChunk, via: Vec<OwnedServerName>) -> DirectoryRoom {
         DirectoryRoom {
+            role: None,
             name: display_name(
                 chunk.name.as_deref(),
                 chunk.canonical_alias.as_ref(),
@@ -304,6 +322,7 @@ impl Session {
     ) -> Result<DirectoryRoom> {
         let preview = self.client.get_room_preview(address, via.clone()).await?;
         Ok(DirectoryRoom {
+            role: self.own_role(&preview.room_id).await,
             name: display_name(
                 preview.name.as_deref(),
                 preview.canonical_alias.as_ref(),

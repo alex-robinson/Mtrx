@@ -1428,7 +1428,8 @@ impl App {
                     return Task::none();
                 };
                 main.add_menu = false;
-                main.info = None;
+                // A card stays below, e.g. a space's overview, to come
+                // back to.
                 let near = near_spaces(&kind, &main.rooms.rooms, main.space.as_ref());
                 main.arrange.escape();
                 let mut dialog = Dialog::new(kind);
@@ -2598,6 +2599,9 @@ impl App {
                     dialog::Opened::Left(id) => {
                         if main.room.as_ref().is_some_and(|r| r.id == id) {
                             main.room = None;
+                        }
+                        if main.info.as_ref().and_then(|c| c.room()) == Some(&id) {
+                            main.info = None;
                         }
                         if main.space.as_ref() == Some(&id) {
                             main.space = None;
@@ -3980,7 +3984,11 @@ impl App {
                     )
                 } else if let Some(join) = &main.join {
                     (
-                        join.view(&main.rooms.rooms, &main.avatars),
+                        join.view(
+                            &main.rooms.rooms,
+                            &main.avatars,
+                            self.settings.room_pictures,
+                        ),
                         Message::Join(join::Message::Close),
                     )
                 } else if let Some(card) = &main.info {
@@ -3993,6 +4001,7 @@ impl App {
                             now: main.now,
                             pinned_notes: self.settings.pinned_notes,
                             call_services: &self.settings.call_services,
+                            room_pictures: self.settings.room_pictures,
                         }),
                         Message::Info(info::Message::Close),
                     )

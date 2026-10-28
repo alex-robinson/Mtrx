@@ -56,6 +56,8 @@ pub enum Access {
     Invite,
     /// Members of the spaces the room is in (and invited people).
     SpaceMembers,
+    /// Anyone may ask to join; members let them in.
+    Knock,
     /// Anyone.
     Public,
 }
@@ -65,6 +67,7 @@ impl From<Option<JoinRule>> for Access {
         match rule {
             Some(JoinRule::Public) => Self::Public,
             Some(JoinRule::Restricted(_) | JoinRule::KnockRestricted(_)) => Self::SpaceMembers,
+            Some(JoinRule::Knock) => Self::Knock,
             _ => Self::Invite,
         }
     }
@@ -173,6 +176,7 @@ impl Session {
         let rule = match access {
             Access::Invite => JoinRule::Invite,
             Access::Public => JoinRule::Public,
+            Access::Knock => JoinRule::Knock,
             Access::SpaceMembers => {
                 let spaces = self.parent_spaces(room_id).await;
                 if spaces.is_empty() {
