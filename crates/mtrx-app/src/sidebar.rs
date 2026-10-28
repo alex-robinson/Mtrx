@@ -37,6 +37,8 @@ use crate::{
 
 /// The space's topic panel at most; longer, it scrolls.
 const TOPIC_HEIGHT: f32 = 420.0;
+/// The line previewing the space's topic.
+const PREVIEW_HEIGHT: f32 = 18.0;
 
 /// The room search field, focused by ⌘K / Ctrl+K.
 pub const SEARCH: &str = "room-search";
@@ -506,6 +508,9 @@ fn space_topic<'a>(
             .scale_alpha(0.7)
     })]
     .spacing(5)
+    // As high with the preview as without (while open), so the list below
+    // stays put.
+    .height(PREVIEW_HEIGHT)
     .align_y(Alignment::Center);
     if !open {
         line = line.push(ellipsis(preview).size(12).style(text::secondary));
