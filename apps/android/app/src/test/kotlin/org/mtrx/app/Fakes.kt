@@ -9,6 +9,7 @@ import kotlinx.coroutines.test.TestDispatcher
 import org.mtrx.app.model.Account
 import org.mtrx.app.model.Distributors
 import org.mtrx.app.model.GatewayDiscovery
+import org.mtrx.app.model.Logger
 import org.mtrx.app.model.PushRegistration
 import org.mtrx.app.model.PushStore
 import org.mtrx.app.model.RecentStore
@@ -958,4 +959,18 @@ fun testAccount(
     notifications: RoomNotifications = FakeNotifier(),
     sharePresence: SharePresenceStore = FakeSharePresenceStore(),
     recent: RecentStore = FakeRecentStore(),
-): Account = Account(mtrx, scope, spaces, sort, push, notifications, sharePresence, recent, testClock(scope))
+    log: FakeLog = FakeLog(),
+): Account = Account(mtrx, scope, spaces, sort, push, notifications, sharePresence, recent, testClock(scope), log)
+
+/** What the models logged, as "tag: message". */
+class FakeLog : Logger {
+    val lines = mutableListOf<String>()
+
+    override fun info(tag: String, message: String) {
+        lines += "$tag: $message"
+    }
+
+    override fun warn(tag: String, message: String) {
+        lines += "$tag: $message"
+    }
+}

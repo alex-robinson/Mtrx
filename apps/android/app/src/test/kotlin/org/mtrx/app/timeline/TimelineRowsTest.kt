@@ -178,7 +178,7 @@ class TimelineRowsTest {
         )
         // Ours, sent, in the menu's order.
         assertEquals(
-            all - MessageAction.RETRY - MessageAction.DISCARD,
+            all - MessageAction.PIN - MessageAction.UNPIN - MessageAction.RETRY - MessageAction.DISCARD,
             actions(messageEvent("2", me, text("mine"), own = true, editable = true)),
         )
         // Not sent yet: no reacting, replying or deleting.

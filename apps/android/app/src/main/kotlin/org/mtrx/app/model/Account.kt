@@ -64,7 +64,7 @@ sealed interface BrowserLogin {
  * told when a session opens and before it closes; [notifications] are
  * cleared as rooms are opened or read. Each session's [PresenceModel] reads
  * the direct chats' presence and sets ours around sync, as [sharePresence]
- * says; [clock] counts milliseconds, for idling. The rooms opened lately
+ * says; [clock] counts milliseconds, for idling; [log] has what goes wrong. The rooms opened lately
  * are kept in [recentStore], and each room's draft in [drafts], until
  * sign-out.
  */
@@ -78,6 +78,7 @@ class Account(
     sharePresenceStore: SharePresenceStore,
     recentStore: RecentStore,
     private val clock: () -> Long = { System.nanoTime() / 1_000_000 },
+    private val log: Logger = AndroidLog,
 ) {
     private val _state = MutableStateFlow<AccountState>(AccountState.Loading)
     val state: StateFlow<AccountState> = _state.asStateFlow()
@@ -474,7 +475,7 @@ class Account(
             }
         })
         subscriptions = handles
-        val sessionPresence = PresenceModel(signedIn, signedIn.userId(), rooms, sharePresence, scope, clock)
+        val sessionPresence = PresenceModel(signedIn, signedIn.userId(), rooms, sharePresence, scope, clock, log)
         presence = sessionPresence
         _state.value = AccountState.SignedIn(signedIn, Images(signedIn), sessionPresence)
         updateSync()
