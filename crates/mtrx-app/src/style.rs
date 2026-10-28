@@ -502,6 +502,20 @@ pub fn input(theme: &Theme, status: text_input::Status) -> text_input::Style {
     }
 }
 
+/// A field for text shown as a title, e.g. a card's name: plain until
+/// hovered or focused, then a field.
+pub fn title_input(theme: &Theme, status: text_input::Status) -> text_input::Style {
+    let style = input(theme, status);
+    match status {
+        text_input::Status::Active => text_input::Style {
+            background: Background::Color(Color::TRANSPARENT),
+            border: style.border.color(Color::TRANSPARENT),
+            ..style
+        },
+        _ => style,
+    }
+}
+
 pub fn editor(theme: &Theme, status: text_editor::Status) -> text_editor::Style {
     let style = text_editor::default(theme, status);
     text_editor::Style {
@@ -702,6 +716,19 @@ pub fn section(theme: &Theme) -> container::Style {
         background: Some(Background::Color(palette.background.base.color)),
         border: Border::default()
             .rounded(8)
+            .width(1)
+            .color(palette.background.strong.color),
+        ..Default::default()
+    }
+}
+
+/// A small round mark on a picture, e.g. a pencil: it can be changed.
+pub fn badge_circle(theme: &Theme) -> container::Style {
+    let palette = theme.extended_palette();
+    container::Style {
+        background: Some(Background::Color(palette.background.weak.color)),
+        border: Border::default()
+            .rounded(10)
             .width(1)
             .color(palette.background.strong.color),
         ..Default::default()

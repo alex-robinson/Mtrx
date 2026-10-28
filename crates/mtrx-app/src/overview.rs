@@ -209,29 +209,20 @@ impl Overview {
         )
     }
 
-    /// The space's topic and links (`about`), then the chosen tab's
-    /// content; `settings` is the room card's, with the topic.
+    /// The chosen tab's content; `settings` is the room card's.
     pub fn view<'a>(
         &'a self,
         space: &'a RoomSummary,
         shown: info::Shown<'a>,
-        about: Option<Element<'a, app::Message>>,
         can_add_rooms: bool,
         can_invite: bool,
         settings: Element<'a, app::Message>,
     ) -> Element<'a, app::Message> {
-        let content = match self.tab {
+        match self.tab {
             Tab::Rooms => self.rooms_view(space, shown, can_add_rooms),
             Tab::Members => self.members_view(space, shown, can_invite),
             Tab::Settings => settings,
-        };
-        let mut body = column![].spacing(16);
-        if self.tab != Tab::Settings
-            && let Some(about) = about
-        {
-            body = body.push(about);
         }
-        body.push(content).into()
     }
 
     fn rooms_view<'a>(
@@ -431,9 +422,8 @@ impl Overview {
             ),
         };
         // Names and roles close together, not across the whole card.
-        column![top, members]
-            .spacing(8)
-            .max_width(MEMBERS_WIDTH)
+        container(column![top, members].spacing(8).max_width(MEMBERS_WIDTH))
+            .center_x(Length::Fill)
             .into()
     }
 }

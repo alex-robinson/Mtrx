@@ -40,25 +40,36 @@ pub fn with_bar<'a>(
         header = header.push(action);
     }
     header = header.push(close_button(close));
+    let top = container(header).padding(iced::Padding::new(12.0).left(20.0));
     // The scrollbar beside the content, not over it.
-    let body = scrollable(container(body).padding(iced::Padding::new(20.0).top(16.0))).direction(
-        scrollable::Direction::Vertical(scrollable::Scrollbar::new().spacing(4)),
-    );
-    let mut top = column![container(header).padding(iced::Padding::new(12.0).left(20.0))];
-    if let Some(bar) = bar {
-        top = top.push(
-            container(bar).padding(iced::Padding::new(0.0).left(20.0).right(20.0).bottom(8.0)),
-        );
-    }
-    container(column![
-        top,
-        rule::horizontal(1).style(style::separator),
-        body,
-    ])
-    .width(width)
-    .max_height(MAX_HEIGHT)
-    .style(style::dialog)
-    .into()
+    let scrolling = |padding| {
+        scrollable(container(body).padding(padding)).direction(scrollable::Direction::Vertical(
+            scrollable::Scrollbar::new().spacing(4),
+        ))
+    };
+    let frame = match bar {
+        None => column![
+            top,
+            rule::horizontal(1).style(style::separator),
+            scrolling(iced::Padding::new(20.0).top(16.0)),
+        ],
+        // Below a bar that stays, a box shows what scrolls.
+        Some(bar) => column![
+            top,
+            container(bar).padding([0, 20]),
+            container(
+                container(scrolling(iced::Padding::new(14.0)))
+                    .style(style::section)
+                    .clip(true)
+            )
+            .padding(iced::Padding::new(20.0).top(12.0)),
+        ],
+    };
+    container(frame)
+        .width(width)
+        .max_height(MAX_HEIGHT)
+        .style(style::dialog)
+        .into()
 }
 
 /// A plain title for [`frame`].

@@ -5,7 +5,10 @@ use std::{fmt, time::SystemTime};
 
 use iced::{
     Alignment, Element, Length, Theme,
-    widget::{button, column, container, pick_list, row, scrollable, text, text_input, toggler},
+    widget::{
+        button, column, container, pick_list, row, scrollable, space, stack, text, text_input,
+        toggler,
+    },
 };
 use mtrx_core::{
     Access, CallService, MxcUri, NotifyMode, OwnedMxcUri, OwnedRoomId, OwnedUserId, RoomKind,
@@ -15,11 +18,13 @@ use mtrx_core::{
 use crate::{
     app, arrange,
     avatar::{Avatars, Shape},
+    context_menu,
     dialog::Kind,
     fonts, frame,
     hint::{Position, hint},
     icons,
     overview::{self, Overview},
+    popover::{Edge, Side, popover},
     presence::{self, Presences},
     selectable::selectable_text,
     settings::{self, Preference},
@@ -31,6 +36,8 @@ const AVATAR: f32 = 40.0;
 const WIDTH: f32 = 460.0;
 /// A space's card, with its rooms.
 const OVERVIEW_WIDTH: f32 = 720.0;
+/// A longer topic above a space's tabs scrolls.
+const ABOUT_HEIGHT: f32 = 180.0;
 /// Height of a person's shared rooms list; more scroll.
 const SHARED_HEIGHT: f32 = 200.0;
 
@@ -77,6 +84,10 @@ pub enum Message {
     RemovePicture,
     /// A change was saved on the server, or not.
     Saved(Result<(), String>),
+    PictureMenu(bool),
+    EditTopic,
+    /// Stop editing the topic, back to this one.
+    CancelTopic(String),
     Overview(overview::Message),
     Close,
 }
@@ -106,6 +117,9 @@ pub struct Card {
     copied: Option<String>,
     /// For a space: its rooms and members too.
     pub overview: Option<Overview>,
+    /// The picture's menu is open.
+    picture_menu: bool,
+    editing_topic: bool,
 }
 
 impl Card {
@@ -116,6 +130,8 @@ impl Card {
             Target::User(_) => None,
         };
         Self {
+            picture_menu: false,
+            editing_topic: false,
             overview: room
                 .filter(|r| r.kind == RoomKind::Space)
                 .map(|r| Overview::new(r.id.clone(), tab)),
@@ -202,13 +218,27 @@ impl Card {
                 self.saving = true;
                 self.error = None;
             }
-            Message::SaveDetails | Message::ChangePicture | Message::RemovePicture => {
+            Message::ChangePicture | Message::RemovePicture => {
+                self.picture_menu = false;
+                self.saving = true;
+                self.error = None;
+            }
+            Message::SaveDetails => {
                 self.saving = true;
                 self.error = None;
             }
             Message::Saved(result) => {
                 self.saving = false;
+                if result.is_ok() {
+                    self.editing_topic = false;
+                }
                 self.error = result.err();
+            }
+            Message::PictureMenu(open) => self.picture_menu = open,
+            Message::EditTopic => self.editing_topic = true,
+            Message::CancelTopic(topic) => {
+                self.topic = topic::Editor::new(&topic);
+                self.editing_topic = false;
             }
             Message::Overview(message) => {
                 if let Some(overview) = &mut self.overview {
@@ -371,65 +401,43 @@ impl Card {
         let loading = settings.is_none() && self.error.is_none();
         let allowed = |can: fn(&RoomSettings) -> bool| settings.is_some_and(can) && !self.saving;
         let star = sidebar::star_button(&room.id, room.tag == RoomTag::Favourite);
-        let title = heading(
-            avatars.view(
-                room.id.as_str(),
-                &room.name,
-                room.avatar.as_deref(),
-                AVATAR,
-                Shape::Circle,
-            ),
+        let picture = avatars.view(
+            room.id.as_str(),
             &room.name,
-            star,
+            room.avatar.as_deref(),
+            AVATAR,
+            Shape::Circle,
         );
-        let mut card = column![].spacing(14);
-
-        if allowed(|s| s.can_change_picture) {
-            let mut picture = row![
-                button(text("Change picture…").size(12))
-                    .padding([3, 10])
-                    .style(style::secondary_button)
-                    .on_press(app::Message::Info(Message::ChangePicture))
-            ]
-            .spacing(6);
-            if room.avatar.is_some() {
-                picture = picture.push(
-                    button(text("Remove").size(12))
-                        .padding([3, 10])
-                        .style(style::text_button)
-                        .on_press(app::Message::Info(Message::RemovePicture)),
-                );
-            }
-            card = card.push(picture);
-        }
-
-        // Editable where allowed, else text to select from.
+        let picture = if allowed(|s| s.can_change_picture) {
+            self.picture_button(picture, room.avatar.is_some())
+        } else {
+            picture
+        };
+        // The name is edited where it is shown.
         let name: Element<'a, app::Message> = if allowed(|s| s.can_rename) {
-            text_input("Room name", &self.name)
-                .style(style::input)
-                .padding([5, 8])
-                .size(13)
-                .on_input(|value| app::Message::Info(Message::Name(value)))
-                .on_submit(app::Message::Info(Message::SaveDetails))
+            hint(
+                text_input("Room name", &self.name)
+                    .style(style::title_input)
+                    .font(fonts::SEMIBOLD)
+                    .size(18)
+                    .padding([2, 6])
+                    .on_input(|value| app::Message::Info(Message::Name(value)))
+                    .on_submit(app::Message::Info(Message::SaveDetails)),
+                "Rename",
+                Position::Bottom,
+            )
+        } else {
+            selectable_text(room.name.as_str())
+                .size(18)
+                .font(fonts::SEMIBOLD)
                 .into()
-        } else {
-            selectable_text(self.name.as_str()).size(13).into()
         };
-        let topic: Element<'a, app::Message> = if allowed(|s| s.can_change_topic) {
-            (self.topic.view(call_services)).map(|edit| app::Message::Info(Message::Topic(edit)))
-        } else {
-            let topic = Topic::parse(room.topic.as_deref().unwrap_or_default());
-            topic::details(&topic, call_services)
-        };
-        // The topic's text and links in one box.
-        let topic = container(topic)
-            .width(Length::Fill)
-            .padding(10)
-            .style(style::section);
-        card = card
-            .push(labelled("Name", name))
-            .push(labelled("Topic", topic));
-
+        let title = row![picture, container(name).width(Length::Fill), star]
+            .spacing(12)
+            .align_y(Alignment::Center)
+            .into();
+        let about = self.about(room, call_services, allowed(|s| s.can_change_topic));
+        let mut card = column![].spacing(14);
         if let Some(settings) = settings {
             card = card.push(settings::option(
                 "Notifications",
@@ -580,7 +588,9 @@ impl Card {
                 body: if loading {
                     frame::loading()
                 } else {
-                    card.push(actions.push(leave)).into()
+                    column![about, card.push(actions.push(leave))]
+                        .spacing(14)
+                        .into()
                 },
             };
         };
@@ -598,17 +608,19 @@ impl Card {
             );
         }
         actions.extend(self.room_action(room));
-        let topic = Topic::parse(room.topic.as_deref().unwrap_or_default());
-        let about = (!topic.text.trim().is_empty() || !topic.links.is_empty())
-            .then(|| topic::details(&topic, call_services));
+        // The topic stays above the tabs, scrolling itself if long.
+        let bar = column![
+            container(scrollable(about).height(Length::Shrink)).max_height(ABOUT_HEIGHT),
+            overview.tabs(),
+        ]
+        .spacing(12);
         Framed {
             title,
             actions,
-            bar: Some(overview.tabs()),
+            bar: Some(bar.into()),
             body: overview.view(
                 room,
                 shown,
-                about,
                 settings.is_some_and(|s| s.can_add_rooms),
                 can_invite,
                 if loading {
@@ -618,6 +630,108 @@ impl Card {
                 },
             ),
         }
+    }
+
+    /// The picture, which changes or removes it from a menu.
+    fn picture_button<'a>(
+        &self,
+        picture: Element<'a, app::Message>,
+        has_picture: bool,
+    ) -> Element<'a, app::Message> {
+        let badge = container(icons::pencil(10.0, |theme: &Theme| {
+            theme.extended_palette().background.base.text
+        }))
+        .padding(3)
+        .style(style::badge_circle);
+        let shown = stack![
+            picture,
+            container(badge).align_right(AVATAR).align_bottom(AVATAR)
+        ];
+        let open = self.picture_menu;
+        let button = button(shown)
+            .padding(0)
+            .style(style::list_item(open))
+            .on_press(app::Message::Info(Message::PictureMenu(!open)));
+        let mut items = vec![(
+            "Change picture…".to_owned(),
+            app::Message::Info(Message::ChangePicture),
+        )];
+        if has_picture {
+            items.push((
+                "Remove picture".to_owned(),
+                app::Message::Info(Message::RemovePicture),
+            ));
+        }
+        let menu = open.then(|| context_menu::menu(items));
+        hint(
+            popover(button, menu, Side::Below, Edge::Left)
+                .on_dismiss(app::Message::Info(Message::PictureMenu(false))),
+            "Change picture",
+            Position::Bottom,
+        )
+    }
+
+    /// The topic and its links in a box, edited there (`can_edit`): an
+    /// Edit button in its corner opens the editor, saved with the header's
+    /// Save.
+    fn about<'a>(
+        &'a self,
+        room: &RoomSummary,
+        services: &'a [CallService],
+        can_edit: bool,
+    ) -> Element<'a, app::Message> {
+        let synced = room.topic.clone().unwrap_or_default();
+        let content: Element<'a, app::Message> = if self.editing_topic && can_edit {
+            column![
+                (self.topic.view(services)).map(|edit| app::Message::Info(Message::Topic(edit))),
+                row![
+                    space::horizontal(),
+                    button(text("Cancel").size(13))
+                        .padding([4, 10])
+                        .style(style::text_button)
+                        .on_press(app::Message::Info(Message::CancelTopic(synced))),
+                ],
+            ]
+            .spacing(8)
+            .into()
+        } else {
+            let topic = Topic::parse(&synced);
+            let empty = topic.text.trim().is_empty() && topic.links.is_empty();
+            let details: Element<'a, app::Message> = if empty {
+                text("No topic").size(13).style(text::secondary).into()
+            } else {
+                topic::details(&topic, services)
+            };
+            let mut line = row![container(details).width(Length::Fill)].spacing(12);
+            if can_edit {
+                line = line.push(
+                    button(
+                        row![
+                            icons::pencil(12.0, |theme: &Theme| {
+                                theme
+                                    .extended_palette()
+                                    .background
+                                    .base
+                                    .text
+                                    .scale_alpha(0.6)
+                            }),
+                            text(if empty { "Add a topic" } else { "Edit" }).size(13)
+                        ]
+                        .spacing(5)
+                        .align_y(Alignment::Center),
+                    )
+                    .padding([4, 10])
+                    .style(style::secondary_button)
+                    .on_press(app::Message::Info(Message::EditTopic)),
+                );
+            }
+            line.into()
+        };
+        container(content)
+            .width(Length::Fill)
+            .padding(10)
+            .style(style::section)
+            .into()
     }
 
     /// A label, the value and a button copying it.
@@ -675,21 +789,6 @@ fn labelled<'a>(
         content.into(),
     ]
     .spacing(4)
-    .into()
-}
-
-fn heading<'a>(
-    picture: Element<'a, app::Message>,
-    name: &'a str,
-    star: Element<'a, app::Message>,
-) -> Element<'a, app::Message> {
-    row![
-        picture,
-        container(selectable_text(name).size(18).font(fonts::SEMIBOLD)).width(Length::Fill),
-        star,
-    ]
-    .spacing(12)
-    .align_y(Alignment::Center)
     .into()
 }
 
