@@ -272,6 +272,8 @@ pub enum Message {
     /// Get the update: install it if signed, else its file in the browser,
     /// or its page.
     Download,
+    /// How far getting it in place is.
+    Step(Step),
     /// It is in place (the new version starts once this one has quit), or
     /// not.
     Installed(Result<(), String>),
@@ -279,12 +281,34 @@ pub enum Message {
     Notes,
 }
 
+/// Getting an update in place: downloading it (`done` bytes of `total`, if
+/// known), then installing it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Step {
+    Downloading { done: u64, total: Option<u64> },
+    Installing,
+}
+
+impl Step {
+    /// How much of the download has come, from 0 to 1, if known.
+    pub fn downloaded(self) -> Option<f32> {
+        match self {
+            Self::Downloading {
+                done,
+                total: Some(total),
+            } if total > 0 => Some((done as f32 / total as f32).min(1.0)),
+            Self::Downloading { .. } => None,
+            Self::Installing => Some(1.0),
+        }
+    }
+}
+
 /// The updates' state while the app runs.
 #[derive(Default)]
 pub struct Updater {
     pub checking: bool,
-    /// Downloading and installing an update.
-    pub installing: bool,
+    /// Getting an update in place, and how far.
+    pub installing: Option<Step>,
     /// When the last check ended.
     pub checked: Option<Instant>,
     pub available: Option<Update>,
@@ -317,14 +341,15 @@ impl Updater {
                 }
             }
             Message::Download => match (&self.available, PUBLIC_KEY) {
-                (Some(update), Some(key)) if update.installable() && !self.installing => {
-                    self.installing = true;
-                    self.error = None;
-                    return Task::perform(install::install(update.clone(), key), |result| {
-                        app::Message::Update(Message::Installed(result))
+                (Some(update), Some(key)) if update.installable() && self.installing.is_none() => {
+                    self.installing = Some(Step::Downloading {
+                        done: 0,
+                        total: None,
                     });
+                    self.error = None;
+                    return Task::run(install::install(update.clone(), key), app::Message::Update);
                 }
-                (Some(update), _) if !self.installing => {
+                (Some(update), _) if self.installing.is_none() => {
                     let url = update.file.as_ref().map_or(&update.page, |f| &f.url);
                     let _ = open::that_detached(url);
                 }
@@ -335,8 +360,13 @@ impl Updater {
                 return iced::window::oldest()
                     .and_then(|id| Task::done(app::Message::CloseWindow(id)));
             }
+            Message::Step(step) => {
+                if self.installing.is_some() {
+                    self.installing = Some(step);
+                }
+            }
             Message::Installed(Err(e)) => {
-                self.installing = false;
+                self.installing = None;
                 self.error = Some(e);
             }
             Message::Notes => {
@@ -366,6 +396,15 @@ impl Updater {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn downloaded_share() {
+        let downloading = |done, total| Step::Downloading { done, total };
+        assert_eq!(downloading(25, Some(100)).downloaded(), Some(0.25));
+        assert_eq!(downloading(25, None).downloaded(), None);
+        assert_eq!(downloading(0, Some(0)).downloaded(), None);
+        assert_eq!(Step::Installing.downloaded(), Some(1.0));
+    }
 
     fn release(tag: &str, prerelease: bool, assets: &[&str]) -> Release {
         Release {
