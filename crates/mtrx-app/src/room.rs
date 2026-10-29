@@ -18,9 +18,10 @@ use iced::{
     },
 };
 use mtrx_core::{
-    CallService, Event, EventContent, EventKey, Media, Member, MembershipChange, MessageKind,
-    MxcUri, OwnedEventId, OwnedRoomId, OwnedUserId, RoomKind, RoomSummary, RoomTimeline,
-    ScheduledMessage, SendState, TimelineEntry, Topic, Upload, UserId, describe_change,
+    CallService, Draft, Event, EventContent, EventKey, Media, Member, MembershipChange,
+    MessageKind, MxcUri, OwnedEventId, OwnedRoomId, OwnedUserId, RoomKind, RoomSummary,
+    RoomTimeline, ScheduledMessage, SendState, TimelineEntry, Topic, Upload, UserId,
+    describe_change,
 };
 
 use crate::{
@@ -106,6 +107,13 @@ pub struct Room {
     /// Its pinned messages.
     pub pins: pins::Pins,
     pub compose: Compose,
+    /// The draft as last kept on this device ([`Room::draft`]); none until
+    /// the kept one is loaded.
+    pub kept_draft: Option<Draft>,
+    /// Counts changes to the draft, so only a pause after the last keeps it.
+    pub draft_changes: u64,
+    /// The message a restored draft answers, until it is loaded.
+    pub pending_reply: Option<OwnedEventId>,
     /// A sent or scheduled message being edited in place.
     pub editing: Option<InlineEdit>,
     /// The timeline row whose reaction window is open, and where.
@@ -206,6 +214,9 @@ impl Room {
             entries,
             timeline,
             composer: text_editor::Content::new(),
+            kept_draft: None,
+            draft_changes: 0,
+            pending_reply: None,
             attachments: Vec::new(),
             later: SendLater::default(),
             shown: WINDOW,
@@ -325,6 +336,69 @@ impl Room {
             mention::insert(&mut self.composer, &completion.query, mention);
         }
         self.update_completion();
+    }
+
+    /// What is written and not sent: the composer's text and the message it
+    /// answers.
+    pub fn draft(&self) -> Draft {
+        Draft {
+            text: self.composer.text().trim_end().to_owned(),
+            reply_to: self
+                .compose
+                .reply_to()
+                .or(self.pending_reply.as_ref())
+                .cloned(),
+        }
+    }
+
+    /// The draft, if it is not the one kept: nothing written before the
+    /// kept one is loaded must not replace it.
+    pub fn draft_to_keep(&self) -> Option<Draft> {
+        let draft = self.draft();
+        match &self.kept_draft {
+            Some(kept) => (draft != *kept).then_some(draft),
+            None => (!draft.is_empty()).then_some(draft),
+        }
+    }
+
+    /// Put back the draft kept for the room (if any), unless something was
+    /// written meanwhile.
+    pub fn restore_draft(&mut self, draft: Option<Draft>) {
+        let written = self.draft();
+        let Some(draft) = draft.filter(|_| written.is_empty()) else {
+            self.kept_draft.get_or_insert(Draft::default());
+            return;
+        };
+        let mut composer = text_editor::Content::with_text(&draft.text);
+        composer.perform(text_editor::Action::Move(text_editor::Motion::DocumentEnd));
+        self.set_composer(composer);
+        self.pending_reply = draft.reply_to.clone();
+        self.resolve_reply();
+        self.kept_draft = Some(draft);
+    }
+
+    /// Answer the message a restored draft answers, once it is loaded.
+    pub fn resolve_reply(&mut self) {
+        let Some(event_id) = &self.pending_reply else {
+            return;
+        };
+        let target = self.entries.iter().find_map(|entry| match entry {
+            TimelineEntry::Event(event) if event.event_id.as_ref() == Some(event_id) => {
+                match &event.content {
+                    EventContent::Message(m) => Target::of(
+                        event,
+                        display_name(event),
+                        first_line(&m.document.to_plain_text()),
+                    ),
+                    _ => None,
+                }
+            }
+            _ => None,
+        });
+        if let Some(target) = target {
+            self.compose = Compose::Reply(target);
+            self.pending_reply = None;
+        }
     }
 
     /// Show a freshly loaded timeline, keeping what is being written.

@@ -1,5 +1,7 @@
 //! Space bar and room list.
 
+use std::collections::BTreeSet;
+
 use iced::{
     Alignment, Color, Element, Length, Padding, Rectangle, Task, Theme, Vector,
     advanced::widget::{Id, Operation, operation},
@@ -455,6 +457,8 @@ pub struct RoomListView<'a> {
     pub loaded: bool,
     pub avatars: &'a Avatars,
     pub scheduled: &'a [ScheduledMessage],
+    /// The rooms with a draft on this device.
+    pub drafts: &'a BTreeSet<OwnedRoomId>,
     /// The "+" menu is open.
     pub add_menu: bool,
     /// The search text.
@@ -1340,6 +1344,22 @@ impl Later {
 }
 
 impl<'a> RoomListView<'a> {
+    /// What a row ends with: a pencil for a draft (in a room not open, where
+    /// it shows), a clock for scheduled messages.
+    fn marks(&self, room: &RoomSummary) -> Vec<Element<'a, Message>> {
+        let mut marks = Vec::new();
+        if self.drafts.contains(&room.id) && self.open != Some(&room.id) {
+            marks.push(with_tooltip(
+                icons::pencil(12.0, style::muted),
+                "Draft".into(),
+            ));
+        }
+        if let Some(later) = Later::of(self.scheduled, &room.id) {
+            marks.push(later.view());
+        }
+        marks
+    }
+
     /// Whether `room`, in a section `collapsed` or not, has its row:
     /// collapsed sections still show the open room and unread ones.
     fn shows(&self, room: &RoomSummary, collapsed: bool) -> bool {
@@ -1409,8 +1429,8 @@ impl<'a> RoomListView<'a> {
                     .on_press(toggle_menu.clone()),
                 "Settings (or right-click)".into(),
             ));
-        } else if let Some(later) = Later::of(self.scheduled, &room.id) {
-            line = line.push(later.view());
+        } else {
+            line = line.extend(self.marks(room));
         }
         let entry = button(container(line).center_y(Length::Fill))
             .width(Length::Fill)
@@ -1483,8 +1503,8 @@ impl<'a> RoomListView<'a> {
         ));
         let dragging = self.arrange.dragging().is_some();
         let actions = (hovered || menu_open) && !room.invited && !dragging;
-        // On hover the star and menu take the place of the scheduled-message
-        // clock, so nothing else moves. Favourites have their own section.
+        // On hover the star and menu take the place of the draft's pencil
+        // and the scheduled-message clock, so nothing else moves. Favourites have their own section.
         if actions {
             line = line.push(star_button(&room.id, room.tag == RoomTag::Favourite));
             line = line.push(with_tooltip(
@@ -1494,8 +1514,8 @@ impl<'a> RoomListView<'a> {
                     .on_press(menu.clone()),
                 "Settings, low priority, categories (or right-click)".into(),
             ));
-        } else if let Some(later) = Later::of(self.scheduled, &room.id) {
-            line = line.push(later.view());
+        } else {
+            line = line.extend(self.marks(room));
         }
         let entry = button(container(line).center_y(Length::Fill))
             .width(Length::Fill)
@@ -1792,6 +1812,8 @@ mod tests {
 
     use super::*;
 
+    static NO_DRAFTS: BTreeSet<OwnedRoomId> = BTreeSet::new();
+
     fn room(id: &str, kind: RoomKind, parents: &[&str]) -> RoomSummary {
         RoomSummary {
             id: id.try_into().unwrap(),
@@ -2010,6 +2032,7 @@ mod tests {
             loaded: true,
             avatars,
             scheduled: &[],
+            drafts: &NO_DRAFTS,
             add_menu: false,
             filter,
             arrange,

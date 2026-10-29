@@ -2929,3 +2929,95 @@ impl iced::advanced::widget::Operation for TimelineView {
         }
     }
 }
+
+fn open_room(app: &mut App) -> &mut Room {
+    match &mut app.screen {
+        Screen::Main(main) => main.room.as_mut().unwrap(),
+        _ => unreachable!(),
+    }
+}
+
+/// Run `task` to its end, as iced would, for its messages.
+async fn messages_of(task: Task<Message>) -> Vec<Message> {
+    let Some(stream) = iced_runtime::task::into_stream(task) else {
+        return Vec::new();
+    };
+    stream
+        .filter_map(|action| async move {
+            match action {
+                iced_runtime::Action::Output(message) => Some(message),
+                _ => None,
+            }
+        })
+        .collect()
+        .await
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs local Synapse (testserver/run.sh)"]
+async fn drafts_stay_in_their_room() {
+    let dir = TempDir::new().unwrap();
+    let (_, alice) = user("drafts", &dir).await;
+    let new_room = |name: &str| NewRoom {
+        name: Some(name.into()),
+        ..Default::default()
+    };
+    let a = alice.create_room(new_room("a")).await.unwrap();
+    let b = alice.create_room(new_room("b")).await.unwrap();
+    let timeline = Arc::new(alice.timeline(&a).await.unwrap());
+    let question = send(&timeline, "Coffee at three?").await;
+    let alice = Arc::new(alice);
+    let mut main = Main::new(alice.clone());
+    main.verified = Some(true);
+    let mut open = Room::new(a.clone(), timeline.clone());
+    open.entries = timeline.current();
+    open.restore_draft(None);
+    main.room = Some(open);
+    let mut app = app(Screen::Main(Box::new(main)), Mode::Light);
+
+    // Writing an answer, kept after a pause.
+    let target = open_room(&mut app)
+        .entries
+        .iter()
+        .find_map(|entry| match entry {
+            TimelineEntry::Event(e) if e.event_id.as_ref() == Some(&question) => {
+                actions::Target::of(e, "alice".into(), "Coffee at three?".into())
+            }
+            _ => None,
+        });
+    let _ = app.update(Message::Act(actions::Message::Reply(target.unwrap())));
+    let paused = app.update(Message::Composer(text_editor::Action::Edit(
+        text_editor::Edit::Paste(Arc::new("Yes, see you".into())),
+    )));
+    for message in messages_of(paused).await {
+        let _ = messages_of(app.update(message)).await;
+    }
+    let kept = mtrx_core::Draft {
+        text: "Yes, see you".into(),
+        reply_to: Some(question.clone()),
+    };
+    assert_eq!(alice.draft(&a).await.unwrap(), Some(kept.clone()));
+
+    // More written, then another room opened at once: kept as it was.
+    let _ = app.update(Message::Composer(text_editor::Action::Edit(
+        text_editor::Edit::Paste(Arc::new(" there".into())),
+    )));
+    let before = app.room_draft();
+    let other = Room::new(b.clone(), Arc::new(alice.timeline(&b).await.unwrap()));
+    *open_room(&mut app) = other;
+    let _ = messages_of(app.keep_draft(before)).await;
+    let kept = mtrx_core::Draft {
+        text: "Yes, see you there".into(),
+        ..kept
+    };
+    assert_eq!(alice.draft(&a).await.unwrap(), Some(kept.clone()));
+    assert_eq!(alice.draft(&b).await.unwrap(), None, "per room");
+
+    // Back in the room: the text, answering the question.
+    let mut back = Room::new(a.clone(), timeline.clone());
+    back.entries = timeline.current();
+    back.restore_draft(alice.draft(&a).await.unwrap());
+    assert_eq!(back.composer.text().trim_end(), "Yes, see you there");
+    assert_eq!(back.compose.reply_to(), Some(&question));
+    assert_eq!(back.draft_to_keep(), None, "nothing new to keep");
+}

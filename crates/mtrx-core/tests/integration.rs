@@ -2173,7 +2173,10 @@ async fn drafts_are_kept_per_room_across_restarts() -> Result<()> {
     s.save_draft(&room, &draft).await?;
     assert_eq!(s.draft(&room).await?, Some(draft.clone()));
     assert_eq!(s.draft(&other).await?, None, "per room");
-    assert_eq!(with_drafts.next().await.unwrap(), [room.clone()].into());
+    assert_eq!(
+        with_drafts.next().await.unwrap(),
+        std::collections::BTreeSet::from([room.clone()])
+    );
 
     // Kept on the device: back after a restart, and listed.
     let Device { session, _dir: dir } = alice;
@@ -2181,7 +2184,10 @@ async fn drafts_are_kept_per_room_across_restarts() -> Result<()> {
     let s = Session::restore(Profile::new("test", dir.path(), SecretStore::File)?).await?;
     assert_eq!(s.draft(&room).await?, Some(draft));
     let mut with_drafts = Box::pin(s.rooms_with_drafts_updates());
-    assert_eq!(with_drafts.next().await.unwrap(), [room.clone()].into());
+    assert_eq!(
+        with_drafts.next().await.unwrap(),
+        std::collections::BTreeSet::from([room.clone()])
+    );
 
     // Sending (an empty draft) clears it.
     s.save_draft(&room, &Draft::default()).await?;
