@@ -1491,6 +1491,12 @@ async fn send_later_bar() {
         install: update::Install::Source,
     });
     snapshot(&app, "settings");
+    // Downloading it: how much has come, below.
+    app.updater.installing = Some(update::Step::Downloading {
+        done: 34,
+        total: Some(100),
+    });
+    snapshot(&app, "settings-downloading");
 }
 
 /// Timings for a big encrypted room opened on a new, recovered device:

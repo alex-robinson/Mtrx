@@ -150,9 +150,13 @@ fn bundle(root: &Path) -> Result<()> {
         .arg(contents.join("Resources/Mtrx.icns")))?;
     std::fs::remove_dir_all(&iconset)?;
 
-    // Ad-hoc signature: a stable identity for notifications and the keychain.
+    // Signed with the certificate named by `MTRX_SIGN_IDENTITY` (the
+    // release workflow's, self-signed): the keychain then trusts each new
+    // version as it trusted the last. Else ad hoc, which it trusts for this
+    // build only.
+    let identity = std::env::var("MTRX_SIGN_IDENTITY").unwrap_or_else(|_| "-".into());
     run(Command::new("codesign")
-        .args(["--force", "--sign", "-"])
+        .args(["--force", "--sign", &identity])
         .arg(&app))?;
     println!("{}", app.canonicalize()?.display());
     Ok(())

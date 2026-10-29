@@ -10,7 +10,9 @@ use std::{
 use iced::{
     Alignment, Element, Length, Theme,
     task::Handle,
-    widget::{button, column, pick_list, row, space, text, text_input, toggler},
+    widget::{
+        button, column, container, pick_list, progress_bar, row, space, text, text_input, toggler,
+    },
 };
 use mtrx_core::{
     AtHome, CallService, GoogleClient, Grouping, OwnedRoomId, Permissions, RoomCategories,
@@ -973,24 +975,44 @@ fn updates<'a>(
     };
     let status = match &updater.available {
         Some(update) => row![
-            state(
-                format!("Mtrx {} is available", update.version),
-                Some(
-                    updater
-                        .error
-                        .clone()
-                        .unwrap_or(format!("You have {current}."))
-                ),
-            ),
+            {
+                let line = state(
+                    format!("Mtrx {} is available", update.version),
+                    Some(
+                        updater
+                            .error
+                            .clone()
+                            .unwrap_or(format!("You have {current}.")),
+                    ),
+                );
+                // How much has come, below what is available.
+                match updater.installing.map(|step| step.downloaded()) {
+                    Some(done) => line.push(
+                        container(
+                            progress_bar(0.0..=1.0, done.unwrap_or(0.0))
+                                .girth(4)
+                                .style(progress_bar::primary),
+                        )
+                        .padding(iced::Padding::ZERO.top(4).right(12)),
+                    ),
+                    None => line,
+                }
+            },
             action(
                 "What's new",
                 update::Message::Notes,
                 style::secondary_button
             ),
-            if updater.installing {
-                button(text("Installing…").size(13))
-                    .padding([4, 10])
-                    .style(style::primary_button)
+            if let Some(step) = updater.installing {
+                button(
+                    text(match step {
+                        update::Step::Downloading { .. } => "Downloading…",
+                        update::Step::Installing => "Installing…",
+                    })
+                    .size(13),
+                )
+                .padding([4, 10])
+                .style(style::primary_button)
             } else if update.installable() {
                 action(
                     "Install and restart",

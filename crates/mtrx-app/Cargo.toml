@@ -33,7 +33,7 @@ unicode-normalization = "0.1.26"
 # Same version as typst-render's, for previewing PDFs.
 hayro = "0.7.1"
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
-notify-rust = "4.18.2"
+notify-rust = { version = "4.18.2", features = ["preview-macos-un"] }
 rfd = "0.17.2"
 # Same version as iced's, for the window icon.
 resvg = "0.45.1"

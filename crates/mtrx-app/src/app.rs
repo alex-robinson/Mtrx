@@ -727,7 +727,15 @@ impl App {
         let update = Task::done(Message::Update(update::Message::Tick));
         (
             app,
-            Task::batch([restore, scale, mode, opened, menu_bar, update]),
+            Task::batch([
+                restore,
+                scale,
+                mode,
+                opened,
+                menu_bar,
+                update,
+                ask_to_notify(),
+            ]),
         )
     }
 
@@ -4955,8 +4963,29 @@ fn load_members(session: &Arc<Session>, room: &mut Room) -> Task<Message> {
     )
 }
 
-/// Show a system notification; true when it was clicked. The calls block,
-/// so they run off the UI thread.
+/// macOS asks once whether Mtrx may show notifications; only for the app
+/// bundle (`Mtrx.app`), as macOS sends them for bundles only.
+fn ask_to_notify() -> Task<Message> {
+    #[cfg(target_os = "macos")]
+    return Task::future(async {
+        if let Err(e) = notify_rust::request_auth().await {
+            tracing::warn!("notifications not allowed: {e}");
+        }
+    })
+    .discard();
+    #[cfg(not(target_os = "macos"))]
+    Task::none()
+}
+
+/// How long a notification waits to be clicked (macOS): it may be clicked
+/// in Notification Center long after its banner, but "Clear All" there
+/// never answers, and each waits on a thread of its own.
+#[cfg(target_os = "macos")]
+const NOTIFICATION_WAIT: u32 = 12 * 60 * 60 * 1000;
+
+/// Show a system notification; true when it was clicked, also later from
+/// Notification Center (macOS). The calls block, so they run off the UI
+/// thread.
 async fn notify(notification: Notification) -> bool {
     const MAX_BODY: usize = 200;
     let title = if notification.direct {
@@ -4970,6 +4999,8 @@ async fn notify(notification: Notification) -> bool {
         desktop.appname("Mtrx").summary(&title).body(&body);
         #[cfg(windows)]
         crate::windows::notification_sender(&mut desktop);
+        #[cfg(target_os = "macos")]
+        desktop.timeout(notify_rust::Timeout::Milliseconds(NOTIFICATION_WAIT));
         // Freedesktop servers report clicks only for a "default" action.
         #[cfg(all(unix, not(target_os = "macos")))]
         desktop.action("default", "Open");

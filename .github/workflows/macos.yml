@@ -47,6 +47,27 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Test
         run: cargo test --workspace ${{ env.WARM == 'true' && '--no-run' || '' }}
+      # The self-signed certificate the app is signed with, so the keychain
+      # keeps trusting it across updates (from `scripts/make-sign-cert.sh`).
+      # Without it the app is signed ad hoc.
+      - name: Signing certificate
+        if: env.PACKAGE == 'true'
+        env:
+          MTRX_MACOS_CERT: ${{ secrets.MTRX_MACOS_CERT }}
+          MTRX_MACOS_CERT_PASSWORD: ${{ secrets.MTRX_MACOS_CERT_PASSWORD }}
+        run: |
+          if [ -z "$MTRX_MACOS_CERT" ]; then echo "No certificate: signed ad hoc."; exit 0; fi
+          keychain="$RUNNER_TEMP/sign.keychain-db"
+          security create-keychain -p "" "$keychain"
+          security set-keychain-settings "$keychain"
+          security unlock-keychain -p "" "$keychain"
+          echo "$MTRX_MACOS_CERT" | base64 --decode > "$RUNNER_TEMP/sign.p12"
+          security import "$RUNNER_TEMP/sign.p12" -k "$keychain" \
+            -P "$MTRX_MACOS_CERT_PASSWORD" -T /usr/bin/codesign
+          rm "$RUNNER_TEMP/sign.p12"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "" "$keychain"
+          security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
+          echo "MTRX_SIGN_IDENTITY=Mtrx" >> "$GITHUB_ENV"
       - name: Package
         if: env.PACKAGE == 'true'
         run: |

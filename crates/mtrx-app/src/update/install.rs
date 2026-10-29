@@ -10,38 +10,61 @@ use std::{
 
 use base64::{Engine, engine::general_purpose::STANDARD};
 use ed25519_dalek::{Signature, VerifyingKey};
+use iced::futures::{SinkExt, Stream, channel::mpsc::Sender};
 
-use super::{File, Install, Update};
+use super::{File, Install, Message, Step, Update};
 
 /// Download `update`'s file, check it against `public_key` and put it in
 /// place of this copy; the new version starts once this process has ended.
-pub async fn install(update: Update, public_key: &'static str) -> Result<(), String> {
+/// How far it got as it goes, then whether it did.
+pub fn install(update: Update, public_key: &'static str) -> impl Stream<Item = Message> {
+    iced::stream::channel(8, async move |mut steps: Sender<Message>| {
+        let result = put(update, public_key, &mut steps).await;
+        let _ = steps.send(Message::Installed(result)).await;
+    })
+}
+
+async fn put(
+    update: Update,
+    public_key: &'static str,
+    steps: &mut Sender<Message>,
+) -> Result<(), String> {
     let file = update
         .file
         .ok_or("The release has no file for this installation.")?;
-    let data = download(&file.url).await?;
+    let data = download(&file.url, Some(steps)).await?;
     let signature = file
         .signature
         .as_deref()
         .ok_or("The release is not signed.")?;
-    let signature = String::from_utf8(download(signature).await?)
+    let signature = String::from_utf8(download(signature, None).await?)
         .map_err(|_| "The release's signature is not text.".to_owned())?;
     verify(&data, &signature, public_key)?;
+    let _ = steps.send(Message::Step(Step::Installing)).await;
     tokio::task::spawn_blocking(move || put_in_place(&update.install, &file, &data))
         .await
         .map_err(|e| e.to_string())?
 }
 
-async fn download(url: &str) -> Result<Vec<u8>, String> {
-    let response = reqwest::get(url)
+/// The file at `url`, telling `steps` how much has come, if given.
+async fn download(url: &str, mut steps: Option<&mut Sender<Message>>) -> Result<Vec<u8>, String> {
+    let failed = |e: reqwest::Error| format!("Could not download the update: {e}");
+    let mut response = reqwest::get(url)
         .await
         .and_then(|response| response.error_for_status())
-        .map_err(|e| format!("Could not download the update: {e}"))?;
-    let bytes = response
-        .bytes()
-        .await
-        .map_err(|e| format!("Could not download the update: {e}"))?;
-    Ok(bytes.to_vec())
+        .map_err(failed)?;
+    let total = response.content_length();
+    let mut data = Vec::with_capacity(total.unwrap_or_default() as usize);
+    while let Some(chunk) = response.chunk().await.map_err(failed)? {
+        data.extend_from_slice(&chunk);
+        if let Some(steps) = steps.as_mut() {
+            let done = data.len() as u64;
+            let _ = steps
+                .send(Message::Step(Step::Downloading { done, total }))
+                .await;
+        }
+    }
+    Ok(data)
 }
 
 /// Whether `signature` (base64, from `cargo xtask sign`) is `data`'s, made
