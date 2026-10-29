@@ -310,10 +310,11 @@ pub fn format(highlight: &Highlight, theme: &iced::Theme) -> Format<iced::Font> 
         Highlight::Emoji => Format {
             color: None,
             font: Some(crate::fonts::EMOJI),
+            ..Format::default()
         },
         Highlight::Mention => Format {
             color: Some(theme.extended_palette().primary.base.color),
-            font: None,
+            ..Format::default()
         },
     }
 }

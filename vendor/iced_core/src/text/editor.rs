@@ -1,7 +1,7 @@
 //! Edit text.
 use crate::text::highlighter::{self, Highlighter};
 use crate::text::{LineHeight, Wrapping};
-use crate::{Pixels, Point, Rectangle, Size};
+use crate::{Color, Pixels, Point, Rectangle, Size};
 
 use std::borrow::Cow;
 use std::sync::Arc;
@@ -49,6 +49,12 @@ pub trait Editor: Sized + Default {
     /// Returns where a click at the given [`Point`] would put the caret, as
     /// [`Selection::Caret`] has it.
     fn caret_at(&self, point: Point) -> Option<Point>;
+
+    // Mtrx patch (spelling): for the words marked by a highlighter.
+    /// Returns the visible runs of text a [`highlighter::Format`] underlines,
+    /// each with the color of its line, where [`Selection::Range`] would
+    /// have them.
+    fn underlines(&self) -> Vec<(Rectangle, Color)>;
 
     /// Returns the current boundaries of the [`Editor`].
     fn bounds(&self) -> Size;

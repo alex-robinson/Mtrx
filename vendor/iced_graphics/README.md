@@ -28,3 +28,7 @@
   to serve both.
 - Menu actions (marked "Mtrx patch (menu actions)"): `Editor::can_undo` and
   `can_redo` from the history, for the menus' Undo and Redo.
+- Spelling (marked "Mtrx patch (spelling)"): a highlight's `underline` is
+  kept in its glyphs' metadata (one more than the color's index in
+  `underline_colors`), so it follows the text through edits and wrapping;
+  `underlines` joins the glyphs of each visible run that carry one.

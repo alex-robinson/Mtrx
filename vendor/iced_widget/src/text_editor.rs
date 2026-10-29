@@ -879,6 +879,17 @@ where
 
                     shell.capture_event();
                 }
+                // Mtrx patch (spelling): a right-click puts the caret
+                // where it is, for a menu of what is there (the word's
+                // spelling), as in a text view; one in the selection keeps
+                // it, for the menu's Cut and Copy. The menu takes the click.
+                Update::RightClick(position) => {
+                    state.focus = Some(Focus::now());
+
+                    if !self.content.selection_contains(position) {
+                        shell.publish(on_edit(Action::Click(position)));
+                    }
+                }
                 // Mtrx patch (editing).
                 Update::DragText { at, over } => {
                     if let Some(drag) = &mut state.drag_text {
@@ -1191,6 +1202,13 @@ where
                 style.value,
                 text_bounds,
             );
+
+            // Mtrx patch (spelling).
+            let translation = text_bounds.position() - Point::ORIGIN;
+
+            for (run, color) in internal.editor.underlines() {
+                crate::wavy::draw(renderer, run + translation, color, text_bounds);
+            }
         }
 
         let translation = text_bounds.position() - Point::ORIGIN;
@@ -1524,6 +1542,8 @@ impl<Message> Binding<Message> {
 
 enum Update<Message> {
     Click(mouse::Click),
+    // Mtrx patch (spelling).
+    RightClick(Point),
     Drag(Point),
     // Mtrx patch (editing).
     DragText { at: Point, over: bool },
@@ -1580,6 +1600,13 @@ impl<Message> Update<Message> {
                 }
                 mouse::Event::ButtonReleased(mouse::Button::Left) => {
                     Some(Update::Release)
+                }
+                // Mtrx patch (spelling).
+                mouse::Event::ButtonPressed(mouse::Button::Right) => {
+                    let cursor_position = cursor.position_in(bounds)?
+                        - Vector::new(padding.left, padding.top);
+
+                    Some(Update::RightClick(cursor_position))
                 }
                 // Mtrx patch (editing): the selection dragged, also beyond
                 // the editor.

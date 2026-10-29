@@ -7,7 +7,7 @@ use crate::core::text::editor::{
 };
 use crate::core::text::highlighter::{self, Highlighter};
 use crate::core::text::{LineHeight, Wrapping};
-use crate::core::{Font, Pixels, Point, Rectangle, Size};
+use crate::core::{Color, Font, Pixels, Point, Rectangle, Size};
 use crate::text;
 
 use cosmic_text::Edit as _;
@@ -29,6 +29,9 @@ struct Internal {
     version: text::Version,
     // Mtrx patch (editing).
     history: history::History,
+    // Mtrx patch (spelling): the colors of the underlines, by the glyph
+    // metadata `underline_metadata` gives them.
+    underline_colors: Vec<Color>,
 }
 
 impl Editor {
@@ -481,6 +484,44 @@ impl editor::Editor for Editor {
             .map(|cursor| caret(buffer, cursor))
     }
 
+    // Mtrx patch (spelling).
+    fn underlines(&self) -> Vec<(Rectangle, Color)> {
+        let internal = self.internal();
+        let buffer = buffer_from_editor(&internal.editor);
+        let mut underlines = Vec::new();
+
+        for run in buffer.layout_runs() {
+            let mut glyphs = run.glyphs.iter().peekable();
+
+            while let Some(first) = glyphs.next() {
+                let Some(color) =
+                    underline_color(&internal.underline_colors, first.metadata)
+                else {
+                    continue;
+                };
+                let mut end = first.x + first.w;
+
+                while let Some(next) =
+                    glyphs.next_if(|glyph| glyph.metadata == first.metadata)
+                {
+                    end = next.x + next.w;
+                }
+
+                underlines.push((
+                    Rectangle {
+                        x: first.x,
+                        y: run.line_y,
+                        width: end - first.x,
+                        height: run.line_top + run.line_height - run.line_y,
+                    },
+                    color,
+                ));
+            }
+        }
+
+        underlines
+    }
+
     fn bounds(&self) -> Size {
         self.internal().bounds
     }
@@ -659,11 +700,21 @@ impl editor::Editor for Editor {
             for (range, highlight) in highlighter.highlight_line(line.text()) {
                 let format = format_highlight(&highlight);
 
-                if format.color.is_some() || format.font.is_some() {
+                if format.color.is_some()
+                    || format.font.is_some()
+                    || format.underline.is_some()
+                {
                     list.add_span(
                         range,
                         &cosmic_text::Attrs {
                             color_opt: format.color.map(text::to_color),
+                            // Mtrx patch (spelling).
+                            metadata: format.underline.map_or(0, |color| {
+                                underline_metadata(
+                                    &mut internal.underline_colors,
+                                    color,
+                                )
+                            }),
                             ..if let Some(font) = format.font {
                                 text::to_attributes(font)
                             } else {
@@ -714,6 +765,8 @@ impl Default for Internal {
             version: text::Version::default(),
             // Mtrx patch (editing).
             history: history::History::default(),
+            // Mtrx patch (spelling).
+            underline_colors: Vec::new(),
         }
     }
 }
@@ -1023,6 +1076,23 @@ fn delete_to(
 
     editor.set_cursor(start);
     editor.delete_range(start, end);
+}
+
+// Mtrx patch (spelling).
+/// The glyph metadata of an underline in `color`: one more than its index
+/// in `colors`, where it is added if new.
+fn underline_metadata(colors: &mut Vec<Color>, color: Color) -> usize {
+    let index = colors.iter().position(|c| *c == color).unwrap_or_else(|| {
+        colors.push(color);
+        colors.len() - 1
+    });
+
+    index + 1
+}
+
+/// The color of the underline of a glyph with `metadata`, if any.
+fn underline_color(colors: &[Color], metadata: usize) -> Option<Color> {
+    colors.get(metadata.checked_sub(1)?).copied()
 }
 
 // Mtrx patch (editing): out of `selection`, for `caret_at` too.

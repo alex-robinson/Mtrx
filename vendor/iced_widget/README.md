@@ -50,3 +50,9 @@ section B). Each is marked "Mtrx patch" in the code:
   `update` (`edit`) and serve the actions too; Paste as Plain Text pastes,
   plain text being all it takes. Both report their `EditState` with their
   input method, for the menu to enable Undo, Redo and Cut.
+- `src/wavy.rs`, `src/text_editor.rs`, `src/text_input.rs` (spelling,
+  marked "Mtrx patch (spelling)"): a wavy line under a misspelled word, as
+  macOS draws it. The editor draws its `Editor::underlines`; the text
+  input takes byte ranges of its value and a color for the theme
+  (`underlines`). A right-click in the editor puts the caret there (unless
+  in the selection), for the menu to offer the word's spellings.
