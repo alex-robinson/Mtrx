@@ -77,9 +77,6 @@ fn main() -> iced::Result {
             }),
         )
         .init();
-    #[cfg(target_os = "macos")]
-    logo::notifications_from_bundle();
-
     let environment = app::Environment::load().expect("valid MTRX_PROFILE and data directory");
     log_panics(environment.data_root().join(CRASH_LOG));
     let window = environment.window();
