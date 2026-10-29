@@ -63,8 +63,15 @@ final class SessionModel: ObservableObject {
     /// The spaces' rooms as their servers last listed them, for the
     /// overview to show at once.
     let spaceChildren = SpaceChildrenCache()
+    /// How this phone shows each space's sections.
+    let sectionLayouts: SectionLayouts
+    private var layoutChanges: AnyCancellable?
 
     private let subscriptions = Subscriptions()
+    /// The room list as last given.
+    private var listState: RoomListState?
+    /// Notes at the top as just chosen here, until the room list has it.
+    @Published private var notesAtTopSaving: Bool?
     /// The app is in the foreground: sync runs.
     private var foreground = false
     /// Sync has started once.
@@ -90,9 +97,13 @@ final class SessionModel: ObservableObject {
         if let saved = defaults.string(forKey: Self.selectedSpaceKey) {
             selectedSpace = SpaceEntry(saved: saved)
         }
+        sectionLayouts = SectionLayouts(defaults: defaults)
         recent = RecentRooms(defaults.stringArray(forKey: Self.recentKey) ?? [])
         // The Rooms tab reopens the last room.
         roomsPath = recent.last.map { [$0] } ?? []
+        layoutChanges = sectionLayouts.objectWillChange.sink { [weak self] _ in
+            MainActor.assumeIsolated { self?.objectWillChange.send() }
+        }
     }
 
     /// Follow the connection, the room list, the encryption state and
@@ -128,9 +139,20 @@ final class SessionModel: ObservableObject {
     }
 
     private func apply(_ state: RoomListState) {
+        listState = state
         rooms = state.rooms
         loaded = state.loaded
-        lists = RoomLists(state)
+        // A choice made here shows until the list has it.
+        if notesAtTopSaving == state.notesAtTop {
+            notesAtTopSaving = nil
+        }
+        if let notesAtTop = notesAtTopSaving {
+            var state = state
+            state.notesAtTop = notesAtTop
+            lists = RoomLists(state)
+        } else {
+            lists = RoomLists(state)
+        }
         expecting = expecting.filter { lists.byId[$0]?.invited ?? true }
         guard state.loaded else { return }
         // The first states may be a cache: rooms may come with sync.
@@ -141,6 +163,30 @@ final class SessionModel: ObservableObject {
         var kept = recent
         kept.keep(Set(lists.byId.keys).union(expecting))
         setRecent(kept)
+    }
+
+    /// The Notes to self stays at the top of Chats and of every space (for
+    /// all the user's devices).
+    var notesAtTop: Bool {
+        notesAtTopSaving ?? listState?.notesAtTop ?? true
+    }
+
+    /// Keep the Notes to self at the top, or not: shown so at once, until
+    /// the room list has it (or it failed, with why).
+    @discardableResult
+    func setNotesAtTop(_ on: Bool) -> Task<Void, Never> {
+        notesAtTopSaving = on
+        if let listState { apply(listState) }
+        let session = self.session
+        return Task {
+            do {
+                try await session.setNotesAtTop(on: on)
+            } catch {
+                self.error = errorMessage(error)
+                notesAtTopSaving = nil
+                if let listState { apply(listState) }
+            }
+        }
     }
 
     private func isExpected(_ entry: SpaceEntry) -> Bool {
@@ -396,6 +442,7 @@ final class SessionModel: ObservableObject {
     private func forgetPlaces() {
         defaults.removeObject(forKey: Self.selectedSpaceKey)
         defaults.removeObject(forKey: Self.recentKey)
+        sectionLayouts.forget()
     }
 }
 

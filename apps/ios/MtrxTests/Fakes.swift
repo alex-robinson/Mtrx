@@ -374,6 +374,8 @@ final class FakeSession: Session, @unchecked Sendable {
 
     override func unban(roomId: String, userId: String) async throws { try change("unban \(userId)") }
 
+    override func setNotesAtTop(on: Bool) async throws { try change("notes at top \(on)") }
+
     override func leave(roomId: String) async throws { try change("leave \(roomId)") }
 
     override func join(room: String, via: [String]) async throws -> String {
@@ -538,6 +540,15 @@ enum Make {
             userId: "@\(name):example.org", name: named ? name.capitalized : nil, avatarUrl: nil,
             role: level == 100 || level == nil ? .admin : level == 50 ? .moderator : .member, level: level,
             invited: invited, manage: Manage(remove: remove, ban: ban, upTo: upTo, defaultLevel: 0))
+    }
+
+    /// A section of a space's list; `key` as the library makes them.
+    static func section(_ kind: SectionKind, _ roomIds: [String], name: String = "", key: String? = nil) -> RoomSection {
+        let keys: [SectionKind: String] = [
+            .invites: "invites", .favourites: "favourites", .directMessages: "direct_messages", .rooms: "rooms",
+            .lowPriority: "low_priority", .category: "category:\(name.lowercased())",
+        ]
+        return RoomSection(key: key ?? keys[kind]!, kind: kind, name: name, roomIds: roomIds)
     }
 
     static func directoryRoom(

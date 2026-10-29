@@ -17,6 +17,15 @@ struct SettingsView: View {
                     LabeledContent("Device", value: session.deviceId)
                 }
                 .textSelection(.enabled)
+                Section {
+                    Toggle(
+                        "Notes at the top",
+                        isOn: Binding(get: { session.notesAtTop }, set: { session.setNotesAtTop($0) }))
+                } header: {
+                    Text("Room list")
+                } footer: {
+                    Text("Your notes to self stay at the top of Chats and of every space.")
+                }
                 PrivacySection()
                 EncryptionSection()
                 Section {
