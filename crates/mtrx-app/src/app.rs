@@ -50,7 +50,7 @@ use crate::{
     selection::{self, Selection},
     send_later,
     settings::{self, Settings},
-    sidebar,
+    sidebar, spelling,
     style::{self, MESSAGE_INSET, SPACE_BAR_WIDTH},
     text_size::Zoom,
     tint::Tint,
@@ -677,6 +677,7 @@ impl App {
         let settings_file = Settings::path(&data_root);
         #[cfg(target_os = "macos")]
         settings.appearance.apply();
+        spelling::set_enabled(settings.check_spelling);
         update::clean_up();
         let app = Self {
             profile: profile.clone(),
@@ -2025,15 +2026,17 @@ impl App {
                         room.completion = None;
                     } else if let Some(room) = main.room.as_mut().filter(|r| r.menu.is_some()) {
                         room.menu = None;
-                    } else if let Some(room) = main.room.as_mut().filter(|r| r.composer_menu) {
-                        room.composer_menu = false;
+                    } else if let Some(room) =
+                        main.room.as_mut().filter(|r| r.composer_menu.is_some())
+                    {
+                        room.composer_menu = None;
                     } else if let Some(edit) = main
                         .room
                         .as_mut()
                         .and_then(|r| r.editing.as_mut())
-                        .filter(|e| e.menu)
+                        .filter(|e| e.menu.is_some())
                     {
-                        edit.menu = false;
+                        edit.menu = None;
                     } else if let Some(room) = main.room.as_mut().filter(|r| r.readers.is_some()) {
                         room.readers = None;
                     } else if let Some(room) = main.room.as_mut().filter(|r| r.reactors.is_some()) {
@@ -2600,29 +2603,56 @@ impl App {
                 let Some(room) = main.room.as_mut() else {
                     return Task::none();
                 };
-                let open = message == Menu::Open;
-                let (selection, focus) = match field {
-                    Field::Composer => {
-                        room.composer_menu = open;
-                        (
-                            room.composer.selection(),
-                            iced::widget::operation::focus(room::COMPOSER),
-                        )
-                    }
+                let (content, menu, focus) = match field {
+                    Field::Composer => (
+                        &mut room.composer,
+                        &mut room.composer_menu,
+                        iced::widget::operation::focus(room::COMPOSER),
+                    ),
                     Field::Edit => {
-                        let edit = room.editing.as_mut();
-                        (
-                            edit.and_then(|edit| {
-                                edit.menu = open;
-                                edit.selection()
-                            }),
-                            InlineEdit::focus(),
-                        )
+                        let Some(edit) = room.editing.as_mut() else {
+                            return Task::none();
+                        };
+                        let (content, menu) = edit.with_menu();
+                        (content, menu, InlineEdit::focus())
                     }
+                };
+                // Any choice closes the menu.
+                let misspelled = menu.take().and_then(|menu| menu.misspelled);
+                if message == Menu::Open {
+                    *menu = Some(edit_menu::Menu::at(content));
+                    return Task::none();
+                }
+                let selection = content.selection();
+                // The spelling replaces the word as typed over it.
+                let correction = match (&message, &misspelled) {
+                    (Menu::Correct(i), Some(misspelled)) => {
+                        misspelled.select(content);
+                        misspelled.suggestions.get(*i).cloned()
+                    }
+                    _ => None,
                 };
                 // The field keeps the focus, as a text field does.
                 let done = match message {
                     Menu::Open | Menu::Close => return Task::none(),
+                    Menu::Correct(_) => correction.map_or_else(Task::none, |spelling| {
+                        self.update(in_field(
+                            field,
+                            Action::Edit(Edit::Paste(Arc::new(spelling))),
+                        ))
+                    }),
+                    Menu::LearnSpelling => {
+                        if let Some(misspelled) = misspelled {
+                            spelling::learn(&misspelled.word);
+                        }
+                        Task::none()
+                    }
+                    Menu::IgnoreSpelling => {
+                        if let Some(misspelled) = misspelled {
+                            spelling::ignore(&misspelled.word);
+                        }
+                        Task::none()
+                    }
                     Menu::Cut => Task::batch([
                         selection.map_or_else(Task::none, iced::clipboard::write),
                         self.update(in_field(field, Action::Edit(Edit::Delete))),
@@ -2867,6 +2897,11 @@ impl App {
             settings::Action::TextSize => {
                 self.save_settings();
                 self.rescaled()
+            }
+            settings::Action::Spelling => {
+                self.save_settings();
+                spelling::set_enabled(self.settings.check_spelling);
+                Task::none()
             }
             settings::Action::SharePresence => {
                 self.save_settings();

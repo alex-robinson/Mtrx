@@ -16,11 +16,12 @@ use crate::{
     app,
     ellipsis::ellipsis,
     fonts,
+    highlight::{self, Marks},
     hint::{Position, hint},
     icons,
     reorder::{self, Reorder},
     selectable::selectable_text,
-    selection, style,
+    selection, spelling, style,
 };
 
 /// How long a saved topic shows before the room list has it (sync lags
@@ -522,7 +523,8 @@ impl Editor {
             .map_or_else(|| "Title".to_owned(), |l| l.name(services));
         let mut first = row![
             kind_icon(draft.call),
-            input(&title, &draft.title).on_input(move |v| Edit::Title(at, v)),
+            spelling::checked(input(&title, &draft.title), &draft.title)
+                .on_input(move |v| Edit::Title(at, v)),
         ]
         .spacing(6)
         .align_y(Alignment::Center);
@@ -636,9 +638,10 @@ impl Draft {
 fn field<'a>(
     content: &'a text_editor::Content,
     on_action: fn(text_editor::Action) -> Edit,
-) -> iced::widget::TextEditor<'a, iced::advanced::text::highlighter::PlainText, Edit> {
+) -> iced::widget::TextEditor<'a, highlight::Highlighter, Edit> {
     let selected = content.selection().is_some();
     text_editor(content)
+        .highlight_with::<highlight::Highlighter>(Marks::new(Default::default()), highlight::format)
         .on_action(on_action)
         .style(style::editor)
         .padding(8)

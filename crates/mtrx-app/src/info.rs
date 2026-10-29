@@ -25,7 +25,7 @@ use crate::{
     presence::{self, Presences},
     selectable::selectable_text,
     settings::{self, Preference},
-    sidebar, style, topic,
+    sidebar, spelling, style, topic,
 };
 
 /// The picture in the card's header.
@@ -459,7 +459,7 @@ impl Card {
         // The name is edited where it is shown.
         let name: Element<'a, app::Message> = if allowed(|s| s.can_rename) {
             hint(
-                text_input("Room name", &self.name)
+                spelling::checked(text_input("Room name", &self.name), &self.name)
                     .style(style::title_input)
                     .font(fonts::SEMIBOLD)
                     .size(18)

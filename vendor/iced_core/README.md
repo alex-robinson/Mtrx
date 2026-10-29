@@ -39,3 +39,7 @@ section B1). Each is marked "Mtrx patch" in the code:
 - `src/window/settings/macos.rs` (hide on close, marked "Mtrx patch (hide
   on close)", `docs/native-behaviour.md` A1): `hides_on_close`, our
   winit's: closing the window hides it, as a Mac app's main window.
+- `src/text/highlighter.rs`, `src/text/editor.rs` (spelling, marked "Mtrx
+  patch (spelling)"): a highlighter's `Format` has an `underline` color,
+  for a wavy line under a misspelled word. `Editor::underlines` gives the
+  visible runs underlined (`src/renderer/null.rs` too).

@@ -76,6 +76,9 @@ pub struct Format<Font> {
     pub color: Option<Color>,
     /// The `Font` of the text.
     pub font: Option<Font>,
+    // Mtrx patch (spelling): words marked as misspelled.
+    /// The [`Color`] of a wavy line under the text.
+    pub underline: Option<Color>,
 }
 
 impl<Font> Default for Format<Font> {
@@ -83,6 +86,7 @@ impl<Font> Default for Format<Font> {
         Self {
             color: None,
             font: None,
+            underline: None,
         }
     }
 }

@@ -4,11 +4,10 @@
 //! `@room`; sending resolves it against the members (see
 //! [`mtrx_core::mention_targets`]).
 
-use std::{ops::Range, sync::Arc};
+use std::sync::Arc;
 
 use iced::{
     Alignment, Element, Length,
-    advanced::text::highlighter::Format,
     widget::{button, column, container, row, text, text_editor},
 };
 use mtrx_core::{Member, UserId};
@@ -17,7 +16,7 @@ use crate::{
     app,
     avatar::{Avatars, Shape},
     ellipsis::ellipsis,
-    emoji, style,
+    style,
 };
 
 /// Candidates offered at most.
@@ -234,92 +233,8 @@ pub fn view<'a>(
         .into()
 }
 
-/// What [`Highlighter`] marks.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Highlight {
-    /// Drawn with the emoji font (see [`emoji::runs`]).
-    Emoji,
-    Mention,
-}
-
-/// Marks a text field's emoji, so they are drawn with the emoji font while
-/// typing too, and its mentions: `@` + one of the settings' texts (see
-/// [`mtrx_format::find_mentions`]).
-pub struct Highlighter {
-    mentions: Arc<[String]>,
-    line: usize,
-}
-
-impl iced::advanced::text::Highlighter for Highlighter {
-    type Settings = Arc<[String]>;
-    type Highlight = Highlight;
-    type Iterator<'a> = std::vec::IntoIter<(Range<usize>, Highlight)>;
-
-    fn new(mentions: &Self::Settings) -> Self {
-        Self {
-            mentions: mentions.clone(),
-            line: 0,
-        }
-    }
-
-    fn update(&mut self, mentions: &Self::Settings) {
-        self.mentions = mentions.clone();
-        self.line = 0;
-    }
-
-    fn change_line(&mut self, line: usize) {
-        self.line = self.line.min(line);
-    }
-
-    fn highlight_line(&mut self, line: &str) -> Self::Iterator<'_> {
-        self.line += 1;
-        highlights(line, &self.mentions).into_iter()
-    }
-
-    fn current_line(&self) -> usize {
-        self.line
-    }
-}
-
-/// The emoji and mentions of `line`, in order; emoji within a mention are
-/// emoji.
-fn highlights(line: &str, mentions: &[String]) -> Vec<(Range<usize>, Highlight)> {
-    let found = mtrx_format::find_mentions(line, mentions);
-    let mut out = Vec::new();
-    let mut at = 0;
-    for (is_emoji, run) in emoji::runs(line) {
-        let range = at..at + run.len();
-        at = range.end;
-        if is_emoji {
-            out.push((range, Highlight::Emoji));
-            continue;
-        }
-        for (mention, _) in &found {
-            let (start, end) = (mention.start.max(range.start), mention.end.min(range.end));
-            if start < end {
-                out.push((start..end, Highlight::Mention));
-            }
-        }
-    }
-    out
-}
-
-/// How [`Highlighter`]'s highlights are drawn.
-pub fn format(highlight: &Highlight, theme: &iced::Theme) -> Format<iced::Font> {
-    match highlight {
-        Highlight::Emoji => Format {
-            color: None,
-            font: Some(crate::fonts::EMOJI),
-        },
-        Highlight::Mention => Format {
-            color: Some(theme.extended_palette().primary.base.color),
-            font: None,
-        },
-    }
-}
-
-/// The texts `@` may mention among `members`, for [`Highlighter`] and
-/// [`candidates`].
+/// The texts `@` may mention among `members`, for the fields' highlighter
+/// ([`crate::highlight`]) and [`candidates`].
 pub fn texts(members: &[Member]) -> Arc<[String]> {
     mtrx_core::mention_targets(members.iter().map(|m| (&*m.id, m.name.as_deref())))
         .into_iter()
@@ -409,18 +324,5 @@ mod tests {
         insert(&mut content, &query, "@Nils Weitzel");
         assert_eq!(content.text(), "Thanks @Nils Weitzel ");
         assert_eq!(completion(&content), None);
-    }
-
-    #[test]
-    fn highlights_mentions_and_emoji() {
-        let mentions = ["Nils Weitzel".to_owned(), "room".to_owned()];
-        assert_eq!(
-            highlights("hi @Nils Weitzel 👍 @room", &mentions),
-            [
-                (3..16, Highlight::Mention),
-                (17..21, Highlight::Emoji),
-                (22..27, Highlight::Mention),
-            ]
-        );
     }
 }

@@ -16,6 +16,8 @@ mod pin;
 mod responsive;
 mod stack;
 mod themer;
+// Mtrx patch (spelling).
+mod wavy;
 
 pub mod button;
 pub mod checkbox;

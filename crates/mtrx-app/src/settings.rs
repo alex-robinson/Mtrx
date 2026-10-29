@@ -26,7 +26,7 @@ use crate::{
     dialog::Kind,
     feedback, fonts, frame,
     hint::{Position, hint, shortcut},
-    style,
+    spelling, style,
     text_size::TextSize,
     tint::Tint,
     update::{self, Updater},
@@ -62,6 +62,8 @@ pub struct Settings {
     pub pinned_notes: bool,
     /// Others see when we are online or idle; otherwise we are offline.
     pub share_presence: bool,
+    /// Misspelled words are marked where one writes.
+    pub check_spelling: bool,
     /// Looking for newer versions of the app.
     pub updates: update::Preferences,
     /// Room list colours chosen before they were kept in the account
@@ -88,6 +90,7 @@ impl Default for Settings {
             room_pictures: false,
             pinned_notes: true,
             share_presence: true,
+            check_spelling: true,
             updates: update::Preferences::default(),
             legacy_home_tint: None,
             legacy_space_tints: BTreeMap::new(),
@@ -145,6 +148,7 @@ pub enum Preference {
     RoomPictures(bool),
     PinnedNotes(bool),
     SharePresence(bool),
+    CheckSpelling(bool),
     /// Look for updates at start and once a day.
     AutomaticUpdates(bool),
     UpdateChannel(update::Channel),
@@ -194,6 +198,9 @@ pub enum Action {
     /// Sharing our presence was turned on or off; save the settings and
     /// set it.
     SharePresence,
+    /// Spell checking was turned on or off; save the settings and mark
+    /// words or not.
+    Spelling,
     /// The update channel changed; save the settings and look for updates
     /// on it.
     CheckUpdates,
@@ -417,6 +424,10 @@ pub fn change(settings: &mut Settings, preference: Preference) -> Action {
             settings.desktop_notifications = on;
             Action::Save
         }
+        Preference::CheckSpelling(on) => {
+            settings.check_spelling = on;
+            Action::Spelling
+        }
         Preference::IconBadge(on) => {
             settings.icon_badge = on;
             Action::Save
@@ -633,6 +644,13 @@ impl Panel {
                 "Show people's names in their own colour, as Element does.",
                 toggler(settings.colored_names)
                     .on_toggle(|on| preference(Preference::ColoredNames(on)))
+                    .into(),
+            ),
+            option(
+                "Check spelling",
+                spelling_detail(),
+                toggler(settings.check_spelling)
+                    .on_toggle(|on| preference(Preference::CheckSpelling(on)))
                     .into(),
             ),
             option(
@@ -1064,6 +1082,30 @@ fn updates<'a>(
     .into()
 }
 
+/// What "Check spelling" says: the languages checked, and where to add one.
+fn spelling_detail() -> String {
+    /// Languages named, the rest counted.
+    const NAMED: usize = 4;
+    let languages = spelling::languages();
+    let named = match languages.len() {
+        0 => "none yet".to_owned(),
+        n if n <= NAMED => languages.join(", "),
+        n => format!(
+            "{} and {} more",
+            languages[..NAMED - 1].join(", "),
+            n - (NAMED - 1)
+        ),
+    };
+    let add = if cfg!(target_os = "macos") {
+        "Choose them in System Settings › Keyboard › Text Input › Edit › Spelling."
+    } else if cfg!(windows) {
+        "Add one in Settings › Time & language › Language & region."
+    } else {
+        "Add one by installing its Hunspell dictionary, such as hunspell-es."
+    };
+    format!("Marks misspelled words where you write. Languages: {named}. {add}")
+}
+
 fn heading<'a>(label: &str) -> Element<'a, app::Message> {
     text(label.to_uppercase())
         .size(11)
@@ -1259,6 +1301,7 @@ mod tests {
             room_pictures: true,
             pinned_notes: false,
             share_presence: false,
+            check_spelling: false,
             updates: crate::update::Preferences {
                 automatic: false,
                 channel: crate::update::Channel::Beta,

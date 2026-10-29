@@ -57,6 +57,8 @@ use crate::core::widget;
 use crate::core::widget::operation::{self, Operation};
 use crate::core::widget::tree::{self, Tree};
 use crate::core::window;
+use std::ops::Range;
+
 use crate::core::{
     Alignment, Background, Border, Color, Element, Event, InputMethod, Layout,
     Length, Padding, Pixels, Point, Rectangle, Shell, Size, Theme, Vector,
@@ -120,6 +122,9 @@ pub struct TextInput<
     icon: Option<Icon<Renderer::Font>>,
     class: Theme::Class<'a>,
     last_status: Option<Status>,
+    // Mtrx patch (spelling).
+    underlines: Vec<Range<usize>>,
+    underline_color: Option<Box<dyn Fn(&Theme) -> Color + 'a>>,
 }
 
 /// The default [`Padding`] of a [`TextInput`].
@@ -151,7 +156,23 @@ where
             icon: None,
             class: Theme::default(),
             last_status: None,
+            // Mtrx patch (spelling).
+            underlines: Vec::new(),
+            underline_color: None,
         }
+    }
+
+    // Mtrx patch (spelling): words marked as misspelled.
+    /// Sets the ranges of the value, in bytes, to draw a wavy line under,
+    /// in the color `color` gives for the theme.
+    pub fn underlines(
+        mut self,
+        underlines: impl IntoIterator<Item = Range<usize>>,
+        color: impl Fn(&Theme) -> Color + 'a,
+    ) -> Self {
+        self.underlines = underlines.into_iter().collect();
+        self.underline_color = Some(Box::new(color));
+        self
     }
 
     /// Sets the [`widget::Id`] of the [`TextInput`].
@@ -640,13 +661,15 @@ where
                 renderer.with_translation(Vector::ZERO, |_| {});
             }
 
+            let position = text_bounds.anchor(
+                paragraph.min_bounds(),
+                Alignment::Start,
+                Alignment::Center,
+            ) + Vector::new(alignment_offset - offset, 0.0);
+
             renderer.fill_paragraph(
                 paragraph,
-                text_bounds.anchor(
-                    paragraph.min_bounds(),
-                    Alignment::Start,
-                    Alignment::Center,
-                ) + Vector::new(alignment_offset - offset, 0.0),
+                position,
                 if text.is_empty() {
                     style.placeholder
                 } else {
@@ -654,6 +677,18 @@ where
                 },
                 viewport,
             );
+
+            // Mtrx patch (spelling).
+            if !text.is_empty() && !self.is_secure {
+                self.draw_underlines(
+                    renderer,
+                    theme,
+                    paragraph,
+                    &text,
+                    position,
+                    text_bounds,
+                );
+            }
         };
 
         if is_selecting {
@@ -661,6 +696,61 @@ where
                 .with_layer(text_bounds, |renderer| draw(renderer, *viewport));
         } else {
             draw(renderer, text_bounds);
+        }
+    }
+}
+
+// Mtrx patch (spelling).
+impl<Message, Theme, Renderer> TextInput<'_, Message, Theme, Renderer>
+where
+    Theme: Catalog,
+    Renderer: text::Renderer,
+{
+    /// Draws the underlines of `text`, laid out in `paragraph` at
+    /// `position`, clipped to `clip`.
+    fn draw_underlines(
+        &self,
+        renderer: &mut Renderer,
+        theme: &Theme,
+        paragraph: &Renderer::Paragraph,
+        text: &str,
+        position: Point,
+        clip: Rectangle,
+    ) {
+        use unicode_segmentation::UnicodeSegmentation;
+
+        let Some(color) = &self.underline_color else {
+            return;
+        };
+        let color = color(theme);
+
+        // The grapheme at each byte offset, as the paragraph counts them.
+        let grapheme = |byte: usize| {
+            text.grapheme_indices(true)
+                .take_while(|(start, _)| *start < byte)
+                .count()
+        };
+        let x = |byte: usize| {
+            paragraph
+                .grapheme_position(0, grapheme(byte))
+                .map_or(0.0, |point| point.x)
+        };
+
+        let size = f32::from(self.size.unwrap_or_else(|| renderer.default_size()));
+        let line_height = f32::from(self.line_height.to_absolute(size.into()));
+        // The baseline, about where a font of `size` has it in its line.
+        let baseline = position.y + line_height / 2.0 + size * 0.3;
+
+        for range in &self.underlines {
+            let start = x(range.start);
+            let run = Rectangle {
+                x: position.x + start,
+                y: baseline,
+                width: x(range.end) - start,
+                height: line_height - (baseline - position.y),
+            };
+
+            crate::wavy::draw(renderer, run, color, clip);
         }
     }
 }

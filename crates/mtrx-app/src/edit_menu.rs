@@ -1,19 +1,30 @@
 //! The menu of a field one writes in (right-click), the composer or a
-//! message being edited: Cut, Copy, Paste, Select All and, on macOS,
-//! Emoji & Symbols.
+//! message being edited: for a misspelled word its spellings, Learn
+//! Spelling and Ignore Spelling; then Cut, Copy, Paste, Select All and, on
+//! macOS, Emoji & Symbols.
 
-use iced::Element;
+use std::ops::Range;
+
+use iced::{
+    Element,
+    widget::text_editor::{Content, Cursor, Position},
+};
 
 use crate::{
     app,
     clipboard::Field,
     context_menu::{self, context_menu},
+    spelling,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Message {
     Open,
     Close,
+    /// Replace the misspelled word by its spelling at this index.
+    Correct(usize),
+    LearnSpelling,
+    IgnoreSpelling,
     Cut,
     Copy,
     Paste,
@@ -24,34 +35,112 @@ pub enum Message {
     EmojiAndSymbols,
 }
 
-/// What the menu offers: Cut and Copy with text `selected`.
-pub fn items(selected: bool) -> Vec<(&'static str, Message)> {
-    let mut items = Vec::new();
-    if selected {
-        items.extend([("Cut", Message::Cut), ("Copy", Message::Copy)]);
+/// An open menu.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Menu {
+    /// The misspelled word right-clicked, if any.
+    pub misspelled: Option<Misspelled>,
+}
+
+impl Menu {
+    /// The menu opened in `content`, right-clicked where its caret now is.
+    pub fn at(content: &Content) -> Self {
+        Self {
+            misspelled: Misspelled::at(content),
+        }
     }
-    items.extend([
-        ("Paste", Message::Paste),
-        ("Select All", Message::SelectAll),
-    ]);
+}
+
+/// A misspelled word in a field, with its spellings.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Misspelled {
+    line: usize,
+    range: Range<usize>,
+    pub word: String,
+    pub suggestions: Vec<String>,
+}
+
+impl Misspelled {
+    /// The misspelled word at `content`'s caret, while spell checking is
+    /// on.
+    fn at(content: &Content) -> Option<Self> {
+        spelling::marking()?;
+        let Cursor {
+            position,
+            selection: None,
+        } = content.cursor()
+        else {
+            return None;
+        };
+        let line = content.line(position.line)?.text;
+        let range = spelling::word_at(&line, position.column)?;
+        Some(Self {
+            line: position.line,
+            word: line[range.clone()].to_owned(),
+            suggestions: spelling::suggestions(&line, range.clone()),
+            range,
+        })
+    }
+
+    /// Select the word in `content`, for a spelling to replace it.
+    pub fn select(&self, content: &mut Content) {
+        let at = |column| Position {
+            line: self.line,
+            column,
+        };
+        content.move_to(Cursor {
+            position: at(self.range.end),
+            selection: Some(at(self.range.start)),
+        });
+    }
+}
+
+/// What `menu` offers: the spellings of its misspelled word, then Cut and
+/// Copy with text `selected`.
+pub fn items(menu: &Menu, selected: bool) -> Vec<(String, Message)> {
+    let mut items = Vec::new();
+    if let Some(misspelled) = &menu.misspelled {
+        items.extend(
+            (misspelled.suggestions.iter().enumerate())
+                .map(|(i, suggestion)| (suggestion.clone(), Message::Correct(i))),
+        );
+        items.extend([
+            ("Learn Spelling".to_owned(), Message::LearnSpelling),
+            ("Ignore Spelling".to_owned(), Message::IgnoreSpelling),
+        ]);
+    }
+    if selected {
+        items.extend([("Cut", Message::Cut), ("Copy", Message::Copy)].map(owned));
+    }
+    items.extend(
+        [
+            ("Paste", Message::Paste),
+            ("Select All", Message::SelectAll),
+        ]
+        .map(owned),
+    );
     #[cfg(target_os = "macos")]
-    items.push(("Emoji & Symbols", Message::EmojiAndSymbols));
+    items.push(owned(("Emoji & Symbols", Message::EmojiAndSymbols)));
     items
 }
 
+fn owned((label, message): (&str, Message)) -> (String, Message) {
+    (label.to_owned(), message)
+}
+
 /// `editor`, which is `field`, with its menu on right-click: shown while
-/// `open`, Cut and Copy with text `selected`.
+/// open (`menu`), Cut and Copy with text `selected`.
 pub fn with_menu<'a>(
     field: Field,
     editor: impl Into<Element<'a, app::Message>>,
-    open: bool,
+    menu: Option<&Menu>,
     selected: bool,
 ) -> Element<'a, app::Message> {
-    let menu = open.then(|| {
+    let menu = menu.map(|menu| {
         context_menu::menu(
-            items(selected)
+            items(menu, selected)
                 .into_iter()
-                .map(|(label, message)| (label.to_owned(), app::Message::EditMenu(field, message))),
+                .map(|(label, message)| (label, app::Message::EditMenu(field, message))),
         )
     });
     context_menu(editor, menu, app::Message::EditMenu(field, Message::Open))
@@ -83,8 +172,8 @@ mod tests {
 
     use super::*;
 
-    fn labels(selected: bool) -> Vec<&'static str> {
-        items(selected)
+    fn labels(menu: &Menu, selected: bool) -> Vec<String> {
+        items(menu, selected)
             .into_iter()
             .map(|(label, _)| label)
             .collect()
@@ -96,8 +185,45 @@ mod tests {
         if cfg!(target_os = "macos") {
             expected.push("Emoji & Symbols");
         }
-        assert_eq!(labels(true), expected);
-        assert_eq!(labels(false), expected[2..]);
+        assert_eq!(labels(&Menu::default(), true), expected);
+        assert_eq!(labels(&Menu::default(), false), expected[2..]);
+    }
+
+    #[test]
+    fn a_misspelled_word_offers_its_spellings_first() {
+        let menu = Menu {
+            misspelled: Some(Misspelled {
+                line: 0,
+                range: 4..12,
+                word: "tommorow".into(),
+                suggestions: vec!["tomorrow".into(), "tomorrows".into()],
+            }),
+        };
+        let labels = labels(&menu, false);
+        assert_eq!(
+            labels[..5],
+            [
+                "tomorrow",
+                "tomorrows",
+                "Learn Spelling",
+                "Ignore Spelling",
+                "Paste"
+            ]
+        );
+        assert_eq!(items(&menu, false)[1].1, Message::Correct(1));
+    }
+
+    #[test]
+    fn a_word_is_selected_to_be_replaced() {
+        let mut content = Content::<iced::Renderer>::with_text("one\nsee tommorow then");
+        let misspelled = Misspelled {
+            line: 1,
+            range: 4..12,
+            word: "tommorow".into(),
+            suggestions: Vec::new(),
+        };
+        misspelled.select(&mut content);
+        assert_eq!(content.selection().as_deref(), Some("tommorow"));
     }
 
     /// What an editor wrapped as a message being edited is, its menu `open`
@@ -108,7 +234,8 @@ mod tests {
         let editor = iced::widget::text_editor(&content)
             .on_action(app::Message::Composer)
             .key_binding(text_editor::Binding::from_key_press);
-        let field = with_menu(Field::Edit, editor, open, true);
+        let menu = open.then(Menu::default);
+        let field = with_menu(Field::Edit, editor, menu.as_ref(), true);
         let mut ui = Simulator::with_size(
             crate::fonts::settings(),
             Size::new(400.0, 300.0),
@@ -122,6 +249,33 @@ mod tests {
         ui.into_messages()
             .filter(|message| !matches!(message, app::Message::Composer(_)))
             .collect()
+    }
+
+    #[test]
+    fn a_right_click_puts_the_caret_there_then_opens_it() {
+        let content = Content::<iced::Renderer>::with_text("Melt");
+        let editor = iced::widget::text_editor(&content).on_action(app::Message::Composer);
+        let field = with_menu(Field::Composer, editor, None, false);
+        let mut ui = Simulator::with_size(
+            crate::fonts::settings(),
+            Size::new(400.0, 300.0),
+            iced::widget::column![field],
+        );
+        ui.point_at((20.0, 10.0));
+        let _ = ui.simulate([Event::Mouse(mouse::Event::ButtonPressed(
+            mouse::Button::Right,
+        ))]);
+        let sent: Vec<_> = ui.into_messages().collect();
+        assert!(
+            matches!(
+                sent[..],
+                [
+                    app::Message::Composer(text_editor::Action::Click(_)),
+                    app::Message::EditMenu(Field::Composer, Message::Open),
+                ]
+            ),
+            "{sent:?}"
+        );
     }
 
     #[test]

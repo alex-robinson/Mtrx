@@ -206,6 +206,11 @@ impl text::Editor for () {
         None
     }
 
+    // Mtrx patch (spelling).
+    fn underlines(&self) -> Vec<(Rectangle, Color)> {
+        Vec::new()
+    }
+
     fn bounds(&self) -> Size {
         Size::ZERO
     }
