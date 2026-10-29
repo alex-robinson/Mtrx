@@ -441,30 +441,22 @@ struct RoomList<Empty: View>: View {
             if let notes {
                 rows([notes])
             }
+            // Headings are rows of their own, not the list's section
+            // headers, whose spacing is not ours to set.
             ForEach(sections) { section in
                 if let title = section.title {
-                    Section {
-                        if !section.folded {
-                            rows(section.rooms)
-                        }
-                    } header: {
-                        Group {
-                            if let fold {
-                                FoldingHeading(section: section, title: title) { fold(section.key) }
-                            } else {
-                                Text(title)
-                            }
-                        }
-                        .font(.footnote.weight(.semibold))
-                        .padding(.top, 4)
-                    }
-                } else {
+                    SectionHeading(section: section, title: title, fold: fold.map { fold in { fold(section.key) } })
+                        .listRowInsets(EdgeInsets(top: 8, leading: 14, bottom: 3, trailing: 14))
+                        .listRowSeparator(.hidden)
+                }
+                if !section.folded {
                     rows(section.rooms)
                 }
             }
         }
         .listStyle(.plain)
-        .modifier(CompactSections())
+        // Headings as low as their text; rooms keep their own height.
+        .environment(\.defaultMinListRowHeight, 0)
         .overlay {
             if sections.allSatisfy(\.rooms.isEmpty) && notes == nil && !searching {
                 empty()
@@ -501,45 +493,57 @@ struct RoomList<Empty: View>: View {
     }
 }
 
-/// Low section headings, so more rooms fit.
-private struct CompactSections: ViewModifier {
-    func body(content: Content) -> some View {
-        content.environment(\.defaultMinListHeaderHeight, 22)
-    }
-}
-
-/// A section's heading that folds it: a caret, its title, and while folded
-/// its rooms' unread messages, as a badge in the unread colour.
-struct FoldingHeading: View {
+/// A section's heading, a compact row of the list: where it folds (`fold`),
+/// a caret, its title, and while folded its rooms' unread messages, as a
+/// badge in the unread colour; a tap folds or unfolds it.
+struct SectionHeading: View {
     let section: ListSection
     let title: String
-    let toggle: () -> Void
+    let fold: (() -> Void)?
 
     var body: some View {
-        Button(action: toggle) {
-            HStack(spacing: 6) {
+        if let fold {
+            Button(action: fold) {
+                content(caret: true)
+            }
+            .buttonStyle(.plain)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(title)
+            .accessibilityValue(section.folded ? "Folded" : "Unfolded")
+            .accessibilityAddTraits([.isHeader, .isButton])
+            .accessibilityHint(section.folded ? "Shows its rooms" : "Hides its rooms")
+            .accessibilityAction(named: section.folded ? "Unfold" : "Fold", fold)
+        } else {
+            content(caret: false)
+                .accessibilityElement(children: .combine)
+                .accessibilityAddTraits(.isHeader)
+        }
+    }
+
+    private func content(caret: Bool) -> some View {
+        HStack(spacing: 6) {
+            if caret {
                 Image(systemName: "chevron.down")
                     .font(.caption2.weight(.bold))
                     .rotationEffect(.degrees(section.folded ? -90 : 0))
-                Text(title)
-                Spacer(minLength: 8)
-                let unread = section.unread
-                if section.folded && unread.count > 0 {
-                    Text(unread.count > 999 ? "999+" : String(unread.count))
-                        .font(.caption2.weight(.semibold))
-                        .monospacedDigit()
-                        .foregroundColor(.white)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 1)
-                        .frame(minWidth: 18)
-                        .background(unread.mentions ? Color.red : Color.accentColor, in: Capsule())
-                }
             }
-            .contentShape(Rectangle())
+            Text(title)
+                .font(.footnote.weight(.semibold))
+            Spacer(minLength: 8)
+            let unread = section.unread
+            if section.folded && unread.count > 0 {
+                Text(unread.count > 999 ? "999+" : String(unread.count))
+                    .font(.caption2.weight(.semibold))
+                    .monospacedDigit()
+                    .foregroundColor(.white)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 1)
+                    .frame(minWidth: 18)
+                    .background(unread.mentions ? Color.red : Color.accentColor, in: Capsule())
+            }
         }
-        .buttonStyle(.plain)
-        .accessibilityLabel("\(title), \(section.folded ? "folded" : "unfolded")")
-        .accessibilityHint(section.folded ? "Shows its rooms" : "Hides its rooms")
+        .foregroundStyle(.secondary)
+        .contentShape(Rectangle())
     }
 }
 
