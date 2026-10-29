@@ -142,6 +142,10 @@ pub struct RoomListState {
     /// The Notes to self's room, if there is one.
     #[uniffi(default)]
     pub notes_room_id: Option<String>,
+    /// IDs of the rooms with a draft on this device (`Session.saveDraft`),
+    /// marked with a pencil.
+    #[uniffi(default)]
+    pub drafts: Vec<String>,
 }
 
 /// What a section of a space's list holds.
@@ -195,6 +199,7 @@ impl RoomListState {
         by_space: core::RoomsBySpace,
         categories: &core::RoomCategories,
         notes: Option<&core::OwnedRoomId>,
+        drafts: &std::collections::BTreeSet<core::OwnedRoomId>,
     ) -> Self {
         let ids = |ids: &[core::OwnedRoomId]| ids.iter().map(ToString::to_string).collect();
         Self {
@@ -219,6 +224,7 @@ impl RoomListState {
             rooms_outside_spaces: ids(&by_space.outside),
             notes_at_top: categories.notes_at_top(),
             notes_room_id: notes.map(ToString::to_string),
+            drafts: drafts.iter().map(ToString::to_string).collect(),
         }
     }
 }
@@ -1008,7 +1014,13 @@ mod tests {
             }],
             outside: Vec::new(),
         };
-        let state = RoomListState::new(&state, by_space, &Default::default(), None);
+        let state = RoomListState::new(
+            &state,
+            by_space,
+            &Default::default(),
+            None,
+            &Default::default(),
+        );
         assert!(state.notes_at_top && state.notes_room_id.is_none());
         assert!(state.loaded);
         let summary = &state.rooms[0];

@@ -18,9 +18,9 @@ use std::{
 use anyhow::{Context, Result, bail};
 use futures_util::{Stream, StreamExt};
 use mtrx_core::{
-    Access, Attachment, CallService, Connection, DirectoryKind, EventContent, History, JoinAccess,
-    Membership, MembershipChange, NewRoom, NotifyMode, Permissions, PinsChange, PresenceState,
-    Profile, RecoveryStatus, Role, RoomKind, SecretStore, Session, TimelineEntry,
+    Access, Attachment, CallService, Connection, DirectoryKind, Draft, EventContent, History,
+    JoinAccess, Membership, MembershipChange, NewRoom, NotifyMode, Permissions, PinsChange,
+    PresenceState, Profile, RecoveryStatus, Role, RoomKind, SecretStore, Session, TimelineEntry,
     VerificationState,
     test_support::{self, PASSWORD, homeserver, unique_name},
 };
@@ -2152,4 +2152,44 @@ async fn someone_elses_public_room_is_public() -> Result<()> {
     let other = login(&alice_name).await?;
     public("public on another device", &other).await?;
     Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs local Synapse (testserver/run.sh)"]
+async fn drafts_are_kept_per_room_across_restarts() -> Result<()> {
+    let (_, alice) = new_user("drafts").await?;
+    let s = &alice.session;
+    let room = s.create_room(NewRoom::default()).await?;
+    let other = s.create_room(NewRoom::default()).await?;
+    let mut with_drafts = Box::pin(s.rooms_with_drafts_updates());
+    assert!(with_drafts.next().await.unwrap().is_empty());
+    assert_eq!(s.draft(&room).await?, None);
+
+    let reply_to = answered_event();
+    let draft = Draft {
+        text: "half a thought".into(),
+        reply_to: Some(reply_to),
+    };
+    s.save_draft(&room, &draft).await?;
+    assert_eq!(s.draft(&room).await?, Some(draft.clone()));
+    assert_eq!(s.draft(&other).await?, None, "per room");
+    assert_eq!(with_drafts.next().await.unwrap(), [room.clone()].into());
+
+    // Kept on the device: back after a restart, and listed.
+    let Device { session, _dir: dir } = alice;
+    drop(session);
+    let s = Session::restore(Profile::new("test", dir.path(), SecretStore::File)?).await?;
+    assert_eq!(s.draft(&room).await?, Some(draft));
+    let mut with_drafts = Box::pin(s.rooms_with_drafts_updates());
+    assert_eq!(with_drafts.next().await.unwrap(), [room.clone()].into());
+
+    // Sending (an empty draft) clears it.
+    s.save_draft(&room, &Draft::default()).await?;
+    assert_eq!(s.draft(&room).await?, None);
+    assert!(with_drafts.next().await.unwrap().is_empty());
+    Ok(())
+}
+
+fn answered_event() -> mtrx_core::OwnedEventId {
+    "$answered:example.org".try_into().unwrap()
 }

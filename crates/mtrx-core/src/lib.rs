@@ -11,6 +11,7 @@ mod calls;
 mod categories;
 mod connection;
 mod directory;
+mod drafts;
 mod emoji;
 mod encryption;
 mod error;
@@ -47,6 +48,7 @@ pub use directory::{
     DirectoryKind, DirectoryPage, DirectoryRoom, DirectoryServers, JoinAccess, Membership,
     parse_address,
 };
+pub use drafts::Draft;
 pub use encryption::{
     DeviceInfo, EncryptionState, RecoveryStatus, RecoveryStep, Verification, VerificationEmoji,
     VerificationState,

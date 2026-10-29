@@ -20,6 +20,8 @@ pub(crate) async fn follow(
     let mut states = Box::pin(list.updates());
     let mut category_updates = Box::pin(session.room_categories_updates());
     let mut categories = session.room_categories();
+    let mut draft_updates = Box::pin(session.rooms_with_drafts_updates());
+    let mut drafts = draft_updates.next().await.unwrap_or_default();
     let mut members = SpaceMembers::default();
     let mut loads = JoinSet::new();
     let Some(mut state) = states.next().await else {
@@ -36,7 +38,7 @@ pub(crate) async fn follow(
         }
         let by_space = core::RoomsBySpace::new(&state.rooms, &members, &categories);
         let notes = session.notes_room();
-        let new = RoomListState::new(&state, by_space, &categories, notes.as_ref());
+        let new = RoomListState::new(&state, by_space, &categories, notes.as_ref(), &drafts);
         if sent.as_ref() != Some(&new) {
             listener.on_update(new.clone());
             sent = Some(new);
@@ -48,6 +50,7 @@ pub(crate) async fn follow(
                 None => return,
             },
             Some(next) = category_updates.next() => categories = next,
+            Some(next) = draft_updates.next() => drafts = next,
             Some(Ok((space, count, loaded))) = loads.join_next() => match loaded {
                 Ok(ids) => members.loaded(space, count, ids),
                 Err(e) => warn!(%space, "could not load the space's members: {e}"),
