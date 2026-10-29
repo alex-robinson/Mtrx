@@ -24,6 +24,7 @@ import org.mtrx.app.model.RecentRooms
 import org.mtrx.app.testAccount
 import org.mtrx.app.ui.HomeNav
 import org.mtrx.app.ui.HomeTab
+import uniffi.mtrx.Draft
 import uniffi.mtrx.RoomListState
 
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -59,23 +60,28 @@ class RecentTest {
         val store = FakeRecentStore(listOf(LAB, DEEP))
         val account = testAccount(FakeMtrx(restored = session), scope(), recent = store)
         account.start()
-        account.drafts[LAB] = "half a thought"
+        session.drafts[LAB] = Draft("half a thought", null)
         account.leave(LAB, "lab")
         assertEquals(listOf("leave $LAB"), session.roomCalls)
         assertEquals(listOf(DEEP), account.recent.ids.value)
-        assertEquals("", account.drafts[LAB])
+        // Its draft goes.
+        assertFalse(LAB in session.drafts)
     }
 
     @Test
     fun signingOutForgetsTheRecentRoomsAndDrafts() = runTest {
+        val session = FakeSession()
         val store = FakeRecentStore(listOf(LAB))
-        val account = testAccount(FakeMtrx(restored = FakeSession()), scope(), recent = store)
+        val account = testAccount(FakeMtrx(restored = session), scope(), recent = store)
         account.start()
-        account.drafts[LAB] = "draft"
+        session.roomListListener!!.onUpdate(state.copy(drafts = listOf(LAB)))
+        assertEquals(listOf(LAB), account.rooms.value.drafts)
         account.signOut()
         assertEquals(emptyList<String>(), account.recent.ids.value)
         assertEquals(emptyList<String>(), store.saved)
-        assertEquals("", account.drafts[LAB])
+        // The drafts were in the session's store, gone with it.
+        assertTrue(session.loggedOut)
+        assertEquals(emptyList<String>(), account.rooms.value.drafts)
     }
 
     @Test

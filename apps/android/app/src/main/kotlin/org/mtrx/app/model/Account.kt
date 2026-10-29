@@ -18,6 +18,7 @@ import org.mtrx.app.rooms.SpaceChildrenCache
 import uniffi.mtrx.ConnectionListener
 import uniffi.mtrx.ConnectionState
 import uniffi.mtrx.DeviceInfo
+import uniffi.mtrx.Draft
 import uniffi.mtrx.EncryptionState
 import uniffi.mtrx.EncryptionStateListener
 import uniffi.mtrx.MtrxException
@@ -67,9 +68,10 @@ sealed interface BrowserLogin {
  * cleared as rooms are opened or read. Each session's [PresenceModel] reads
  * the direct chats' presence and sets ours around sync, as [sharePresence]
  * says; [clock] counts milliseconds, for idling; [log] has what goes
- * wrong. The rooms opened lately are kept in [recentStore], and each
- * room's draft in [drafts], until sign-out; how this phone arranges the
- * spaces' sections in [sectionStore] (the device's, as the rooms' order).
+ * wrong. The rooms opened lately are kept in [recentStore] until sign-out
+ * (the drafts are in the session's store, which goes with it); how this
+ * phone arranges the spaces' sections in [sectionStore] (the device's, as
+ * the rooms' order).
  */
 class Account(
     private val mtrx: MtrxInterface,
@@ -104,9 +106,6 @@ class Account(
 
     /** How this phone arranges each space's sections. */
     val sections = SectionLayouts(sectionStore, scope)
-
-    /** The composer's text per room. */
-    val drafts = Drafts()
 
     /** The last list of each space's rooms, for its overview. */
     val spaceChildren = SpaceChildrenCache()
@@ -261,10 +260,18 @@ class Account(
         try {
             it.leave(roomId)
             recent.remove(roomId)
-            drafts[roomId] = ""
+            clearDraft(it, roomId)
             null
         } catch (e: MtrxException) {
             "Could not leave $name: ${describe(e)}"
+        }
+    }
+
+    private suspend fun clearDraft(current: Session, roomId: String) {
+        try {
+            current.saveDraft(roomId, Draft("", null))
+        } catch (e: MtrxException) {
+            // Only on this device, and the room is no longer listed.
         }
     }
 
@@ -546,7 +553,6 @@ class Account(
         _connection.value = ConnectionState.ONLINE
         spaceSelection.clear()
         recent.clear()
-        drafts.clear()
         spaceChildren.clear()
         _roomRequest.value = null
         notifications.clearAll()

@@ -265,8 +265,8 @@ private fun rowActions(
 private fun names(rooms: RoomListState): Map<String, String> = rooms.rooms.associate { it.id to it.name }
 
 /**
- * A room in a tab: its timeline (opened while it shows, its draft kept by
- * the account), or for an invite, Accept and Decline.
+ * A room in a tab: its timeline (opened while it shows, its draft kept on
+ * this device), or for an invite, Accept and Decline.
  */
 @Composable
 private fun RoomPane(
@@ -316,7 +316,6 @@ private fun RoomPane(
                 signedIn.session,
                 onRead = { account.roomRead(roomId) },
                 onInput = account::input,
-                drafts = account.drafts,
             )
         }
         // Its notifications go, and pushes for it post none while it shows.

@@ -44,6 +44,7 @@ import uniffi.mtrx.RoomSettings
 import uniffi.mtrx.SpaceLink
 import uniffi.mtrx.ConnectionState
 import uniffi.mtrx.DeviceInfo
+import uniffi.mtrx.Draft
 import uniffi.mtrx.EncryptionState
 import uniffi.mtrx.EncryptionStateListener
 import uniffi.mtrx.EventContent
@@ -404,6 +405,19 @@ class FakeSession : Session(NoHandle) {
     override suspend fun offersOwners(): Boolean = ownersOffered
 
     override suspend fun setNotesAtTop(on: Boolean) = call("notes at top $on")
+
+    /** The drafts kept, by room (an empty one clears it), and each save; [draftError] fails the saves. */
+    val drafts = mutableMapOf<String, Draft>()
+    val draftSaves = mutableListOf<Pair<String, Draft>>()
+    var draftError: MtrxException? = null
+
+    override suspend fun draft(roomId: String): Draft? = drafts[roomId]
+
+    override suspend fun saveDraft(roomId: String, draft: Draft) {
+        draftSaves += roomId to draft
+        draftError?.let { throw it }
+        if (draft.text.isBlank() && draft.replyTo == null) drafts.remove(roomId) else drafts[roomId] = draft
+    }
 
     override suspend fun createRoom(new: NewRoom): String {
         call("create ${new.name}")
