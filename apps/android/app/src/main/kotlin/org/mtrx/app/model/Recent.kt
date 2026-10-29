@@ -65,23 +65,3 @@ class RecentRooms(private val store: RecentStore, private val scope: CoroutineSc
         const val LIMIT = 20
     }
 }
-
-/**
- * The composer's text per room (#42): typed in one room, still there when
- * coming back to it after another. Kept in memory while signed in.
- */
-class Drafts {
-    private val texts = mutableMapOf<String, String>()
-
-    operator fun get(roomId: String): String = synchronized(texts) { texts[roomId].orEmpty() }
-
-    operator fun set(roomId: String, text: String) {
-        synchronized(texts) {
-            if (text.isEmpty()) texts.remove(roomId) else texts[roomId] = text
-        }
-    }
-
-    fun clear() {
-        synchronized(texts) { texts.clear() }
-    }
-}
