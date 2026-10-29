@@ -91,7 +91,7 @@ final class TimelineModelTests: XCTestCase {
     func testRepliesWithTheDraft() async {
         await show([bobsMessage])
         model.startReply(to: "b")
-        XCTAssertEqual(model.compose, .reply(ComposeTarget(itemId: "b", sender: "Bob", preview: "Lunch?")))
+        XCTAssertEqual(model.compose, .reply(ComposeTarget(itemId: "b", eventId: "$b", sender: "Bob", preview: "Lunch?")))
         model.draft = "Sure"
         await model.send()
         XCTAssertEqual(timeline.replies.map(\.itemId), ["b"])
@@ -134,7 +134,7 @@ final class TimelineModelTests: XCTestCase {
         if case .edit = model.compose { XCTFail("still editing") }
         XCTAssertEqual(model.draft, "Draft")
         model.startEdit("o")
-        XCTAssertEqual(model.compose, .edit(ComposeTarget(itemId: "o", sender: "Me", preview: "Hello world")))
+        XCTAssertEqual(model.compose, .edit(ComposeTarget(itemId: "o", eventId: "$o", sender: "Me", preview: "Hello world")))
     }
 
     func testAFailedReplyKeepsReplying() async {

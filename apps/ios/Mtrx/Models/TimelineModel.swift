@@ -19,6 +19,8 @@ final class TimelineModel: ObservableObject {
     /// Scrolled up less than this (points), the timeline counts as at the
     /// bottom.
     static let bottomTolerance: CGFloat = 40
+    /// Typing stopped this long (seconds), the draft is saved.
+    static let draftDelay: TimeInterval = 1.5
 
     let roomId: String
     /// The other person of a direct chat (not the Notes to self), whose
@@ -30,18 +32,19 @@ final class TimelineModel: ObservableObject {
     /// Back-pagination reached the room's beginning.
     @Published private(set) var reachedStart = false
     @Published private(set) var loadingOlder = false
-    /// The composer's text; kept for the room when it closes (`Drafts`).
+    /// The composer's text; kept for the room on this device, with the
+    /// message it answers (`Session.saveDraft`).
     @Published var draft = "" {
         didSet {
             if draft != oldValue {
                 setTyping(!draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                keepDraft()
+                draftChanged()
             }
         }
     }
     /// What sending the draft does instead of sending a new message.
     @Published private(set) var compose: Compose? {
-        didSet { keepDraft() }
+        didSet { draftChanged() }
     }
     /// We may pin and unpin messages here.
     @Published private(set) var canPin = false
@@ -87,31 +90,46 @@ final class TimelineModel: ObservableObject {
     /// The last back-pagination: each waits for the one before.
     private var pagination: Task<Bool, Error>?
     private var seek: Seek?
-    private let drafts: Drafts
+    /// The draft as the store has it; nil until it was read (nothing is
+    /// saved before, which would replace it), or after a save failed.
+    private var storedDraft: Draft?
+    private var draftLoaded = false
+    /// The message the draft left in the room answers (its event ID), until
+    /// it is among the rows.
+    private var restoringReply: String?
+    /// Saves the draft once typing stopped (`draftDelay`).
+    private var draftTimer: Task<Void, Never>?
+    /// The last save: each waits for the one before.
+    private var draftSave: Task<Void, Never>?
+    private let draftDelay: TimeInterval
     /// Our reactions added or taken away here, until the library's items
     /// show them: whether we want each one, shown so at once.
     private var reacting: [ReactionKey: Bool] = [:]
 
     /// `keysArriving`: whether message keys are arriving from the backup,
-    /// now and on every change (`SessionModel.keysArriving`). The draft
-    /// left in the room is back (`drafts`).
-    init(session: Session, room: RoomSummary, keysArriving: AnyPublisher<Bool, Never>, drafts: Drafts = Drafts()) {
+    /// now and on every change (`SessionModel.keysArriving`).
+    init(
+        session: Session, room: RoomSummary, keysArriving: AnyPublisher<Bool, Never>,
+        draftDelay: TimeInterval = TimelineModel.draftDelay
+    ) {
         self.session = session
         self.room = room
-        self.drafts = drafts
+        self.draftDelay = draftDelay
         roomId = room.id
         showSenders = room.kind != .direct
         pinned = Set(room.pinned)
         let ours = session.userId()
         person = room.kind == .direct ? room.directUserId.flatMap { $0 == ours ? nil : $0 } : nil
-        draft = drafts[room.id]
         keysArrivingSubscription = keysArriving.sink { [weak self] arriving in
             MainActor.assumeIsolated { self?.setKeysArriving(arriving) }
         }
     }
 
+    /// Open the timeline, with the draft left in the room.
     func open() async {
         guard timeline == nil else { return }
+        // Before the timeline: bringing it back is not typing.
+        await restoreDraft()
         do {
             let timeline = try await session.timeline(roomId: roomId)
             self.timeline = timeline
@@ -144,6 +162,7 @@ final class TimelineModel: ObservableObject {
         if items.contains(where: { $0.content == .start }) {
             reachedStart = true
         }
+        restoreReply()
         checkSeek()
         markRead()
     }
@@ -181,16 +200,8 @@ final class TimelineModel: ObservableObject {
         pinned = Set(ids)
     }
 
-    private func keepDraft() {
-        if case .edit = compose {
-            drafts[roomId] = savedDraft ?? ""
-        } else {
-            drafts[roomId] = draft
-        }
-    }
-
     /// The timeline is on screen (or not): mark it read and show who types
-    /// while it is; leaving it, we stop typing.
+    /// while it is; leaving it, we stop typing and the draft is saved.
     func setVisible(_ visible: Bool) {
         self.visible = visible
         if visible {
@@ -200,6 +211,7 @@ final class TimelineModel: ObservableObject {
             watchingTyping = false
             typing = []
             setTyping(false)
+            saveDraft()
         }
         markRead()
     }
@@ -268,11 +280,14 @@ final class TimelineModel: ObservableObject {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let timeline, !text.isEmpty else { return }
         let compose = self.compose
+        // Its message not found: sent as a new one.
+        restoringReply = nil
         // After an edit, the draft from before it is back.
         endCompose()
         if case .edit = compose {} else {
             draft = ""
         }
+        saveDraft()
         let left = draft
         do {
             switch compose {
@@ -302,6 +317,7 @@ final class TimelineModel: ObservableObject {
         if case .edit = compose {
             endCompose()
         }
+        restoringReply = nil
         compose = .reply(ComposeTarget(itemId: itemId, row: row))
     }
 
@@ -312,6 +328,7 @@ final class TimelineModel: ObservableObject {
         if case .edit = compose {} else {
             savedDraft = draft
         }
+        restoringReply = nil
         compose = .edit(ComposeTarget(itemId: itemId, row: row))
         draft = message.rawBody.isEmpty ? message.body : message.rawBody
     }
@@ -328,6 +345,87 @@ final class TimelineModel: ObservableObject {
             savedDraft = nil
         }
         compose = nil
+    }
+
+    // MARK: Drafts
+
+    /// The draft as kept: during an edit, the one from before it (an edit
+    /// is not a draft).
+    private var keptDraft: Draft {
+        switch compose {
+        case .edit: return Draft(text: savedDraft ?? "", replyTo: nil)
+        case .reply(let target): return Draft(text: draft, replyTo: target.eventId)
+        case nil: return Draft(text: draft, replyTo: restoringReply)
+        }
+    }
+
+    /// Bring back the draft left in the room, unless something was written
+    /// meanwhile: its text, and the reply once its message is among the
+    /// rows.
+    private func restoreDraft() async {
+        guard !draftLoaded else { return }
+        let left = try? await session.draft(roomId: roomId)
+        draftLoaded = true
+        storedDraft = left ?? Draft(text: "", replyTo: nil)
+        guard let left, draft.isEmpty, compose == nil else { return }
+        restoringReply = left.replyTo
+        draft = left.text
+        restoreReply()
+    }
+
+    /// Reply to the restored draft's message, once it is among the rows.
+    private func restoreReply() {
+        guard let eventId = restoringReply, compose == nil, let row = eventRow(eventId),
+            case .message(let message) = row.content
+        else { return }
+        restoringReply = nil
+        compose = .reply(ComposeTarget(itemId: row.id, row: message))
+    }
+
+    /// The draft changed: saved once typing stops.
+    private func draftChanged() {
+        draftTimer?.cancel()
+        let delay = UInt64(draftDelay * 1_000_000_000)
+        draftTimer = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: delay)
+            guard !Task.isCancelled else { return }
+            self?.saveDraft()
+        }
+    }
+
+    /// Keep the draft on this device now, if it changed (an empty one is
+    /// cleared): leaving the room, and after sending.
+    @discardableResult
+    func saveDraft() -> Task<Void, Never> {
+        draftTimer?.cancel()
+        let draft = keptDraft
+        guard draftLoaded, draft != storedDraft else { return Task {} }
+        storedDraft = draft
+        let (session, roomId, previous) = (self.session, self.roomId, draftSave)
+        let save = Task { [weak self] in
+            await previous?.value
+            do {
+                try await session.saveDraft(roomId: roomId, draft: draft)
+            } catch {
+                // Saved again on the next change.
+                if self?.storedDraft == draft {
+                    self?.storedDraft = nil
+                }
+            }
+        }
+        draftSave = save
+        return save
+    }
+
+    /// The app leaves the foreground: the draft is saved, in the time iOS
+    /// grants, before it may end the app.
+    func leftForeground() {
+        let background = BackgroundTask(name: "Save the draft")
+        let save = saveDraft()
+        Task {
+            await save.value
+            background.end()
+        }
     }
 
     /// Tell the others whether we type (the library sends at most a notice
@@ -455,6 +553,14 @@ final class TimelineModel: ObservableObject {
         Self.messageRow(itemId, in: rows)
     }
 
+    /// The row of the message with `eventId`, if loaded.
+    private func eventRow(_ eventId: String) -> TimelineRow? {
+        rows.first { row in
+            if case .message(let message) = row.content { return message.event.eventId == eventId }
+            return false
+        }
+    }
+
     private static func messageRow(_ itemId: String, in rows: [TimelineRow]) -> MessageRow? {
         for row in rows where row.id == itemId {
             if case .message(let message) = row.content { return message }
@@ -525,11 +631,7 @@ final class TimelineModel: ObservableObject {
     /// Scroll to the row of the message with `eventId` and mark it, if it
     /// is there.
     private func reveal(_ eventId: String) -> Bool {
-        let row = rows.first { row in
-            if case .message(let message) = row.content { return message.event.eventId == eventId }
-            return false
-        }
-        guard let row else { return false }
+        guard let row = eventRow(eventId) else { return false }
         scrollTarget = ScrollTarget(rowId: row.id, serial: (scrollTarget?.serial ?? 0) + 1)
         highlighted = row.id
         Task {
@@ -638,18 +740,23 @@ extension MessageRow {
 /// The message replied to or edited, as the composer's bar shows it.
 struct ComposeTarget: Equatable {
     let itemId: String
+    /// Its event ID, kept with a draft that answers it.
+    let eventId: String?
     let sender: String
     /// Its first line.
     let preview: String
 
-    init(itemId: String, sender: String, preview: String) {
+    init(itemId: String, eventId: String? = nil, sender: String, preview: String) {
         self.itemId = itemId
+        self.eventId = eventId
         self.sender = sender
         self.preview = preview
     }
 
     init(itemId: String, row: MessageRow) {
-        self.init(itemId: itemId, sender: row.event.displayName, preview: row.message?.summary ?? "")
+        self.init(
+            itemId: itemId, eventId: row.event.eventId, sender: row.event.displayName,
+            preview: row.message?.summary ?? "")
     }
 }
 

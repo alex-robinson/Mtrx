@@ -11,6 +11,7 @@ struct RoomView: View {
     @EnvironmentObject private var images: ImageCache
     @EnvironmentObject private var session: SessionModel
     @EnvironmentObject private var presence: PresenceModel
+    @Environment(\.scenePhase) private var scenePhase
     @State private var sheet: RoomSheet?
     @State private var showsInfo = false
     /// The message to delete, once confirmed.
@@ -55,6 +56,11 @@ struct RoomView: View {
             session.opened(room)
         }
         .onDisappear { model.setVisible(false) }
+        .onChange(of: scenePhase) { phase in
+            if phase != .active {
+                model.leftForeground()
+            }
+        }
         .onChange(of: room.pinned) { model.setPinned($0) }
         .onChange(of: room.topic) { info.topicListed($0) }
         .sheet(item: $sheet) { sheet in
