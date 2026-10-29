@@ -99,6 +99,9 @@ enum MessageAction: Equatable {
     case selectText
     /// Change its text (ours).
     case edit
+    /// Pin it to the room's topic panel, or take it off (where we may).
+    case pin
+    case unpin
     /// Delete it for everyone (ours).
     case delete
     /// Send it again after the server refused it.

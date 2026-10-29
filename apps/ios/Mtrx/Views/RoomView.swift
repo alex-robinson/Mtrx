@@ -1,21 +1,28 @@
 import MtrxFFI
 import SwiftUI
 
-/// A room: its timeline, newest at the bottom, who types, and the
-/// composer.
+/// A room: its header (name and topic line), its timeline, newest at the
+/// bottom, who types, and the composer. The name opens the room's info,
+/// the topic line its topic panel.
 struct RoomView: View {
     let room: RoomSummary
     @StateObject private var model: TimelineModel
+    @StateObject private var info: RoomInfoModel
     @EnvironmentObject private var images: ImageCache
     @EnvironmentObject private var session: SessionModel
     @EnvironmentObject private var presence: PresenceModel
     @State private var sheet: RoomSheet?
+    @State private var showsInfo = false
     /// The message to delete, once confirmed.
     @State private var deleting: String?
 
-    init(room: RoomSummary, model: @autoclosure @escaping () -> TimelineModel) {
+    init(
+        room: RoomSummary, model: @autoclosure @escaping () -> TimelineModel,
+        info: @autoclosure @escaping () -> RoomInfoModel
+    ) {
         self.room = room
         _model = StateObject(wrappedValue: model())
+        _info = StateObject(wrappedValue: info())
     }
 
     var body: some View {
@@ -31,24 +38,40 @@ struct RoomView: View {
         .navigationTitle(room.name)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
-            if let person = model.person {
-                ToolbarItem(placement: .principal) {
+            ToolbarItem(placement: .principal) {
+                if let person = model.person {
                     PersonHeader(room: room, presence: presence.presence(of: person), open: model.showPersonInfo)
+                } else {
+                    RoomHeader(
+                        room: room, topic: topic, canEdit: info.settings?.canChangeTopic ?? false,
+                        openInfo: { showsInfo = true }, openTopic: { sheet = .topic })
                 }
             }
         }
         .task { await model.open() }
-        .onAppear { model.setVisible(true) }
+        .task { await info.loadSettings() }
+        .onAppear {
+            model.setVisible(true)
+            session.opened(room)
+        }
         .onDisappear { model.setVisible(false) }
+        .onChange(of: room.pinned) { model.setPinned($0) }
+        .onChange(of: room.topic) { info.topicListed($0) }
         .sheet(item: $sheet) { sheet in
-            RoomSheetView(sheet: sheet, model: model)
+            RoomSheetView(sheet: sheet, room: room, model: model, info: info, topic: topic)
                 .environmentObject(images)
+                .environmentObject(session)
         }
         .sheet(item: $model.personInfo) { info in
             PersonInfoView(model: info)
                 .environmentObject(images)
                 .environmentObject(session)
                 .environmentObject(presence)
+        }
+        .fullScreenCover(isPresented: $showsInfo) {
+            RoomInfoView(room: room, model: info)
+                .environmentObject(images)
+                .environmentObject(session)
         }
         .confirmationDialog("Delete this message for everyone?", isPresented: isDeleting, titleVisibility: .visible) {
             Button("Delete", role: .destructive) {
@@ -62,8 +85,14 @@ struct RoomView: View {
         }
     }
 
+    /// The topic as shown: one just saved until the room list has it.
+    private var topic: Topic {
+        parseTopic(topic: info.shownTopic(room.topic))
+    }
+
     private var actions: RowActions {
         RowActions(
+            entries: model.actions(for:),
             perform: perform,
             react: { id, key in model.react(id, key: key) },
             goTo: { quote in Task { await model.goTo(eventId: quote.eventId) } },
@@ -81,6 +110,7 @@ struct RoomView: View {
                 sheet = .text(body)
             }
         case .edit: model.startEdit(id)
+        case .pin, .unpin: model.togglePin(id)
         case .delete: deleting = id
         case .retry: model.retry(id)
         case .discard: model.discard(id)
@@ -93,6 +123,46 @@ struct RoomView: View {
 
     private var hasError: Binding<Bool> {
         Binding(get: { model.error != nil }, set: { if !$0 { model.error = nil } })
+    }
+}
+
+/// A room's title: its name, which opens its info, over its topic line, a
+/// caret and the topic's first line (else its links' names, else "Add a
+/// topic" where we may edit it), which opens the topic panel.
+struct RoomHeader: View {
+    let room: RoomSummary
+    let topic: Topic
+    let canEdit: Bool
+    let openInfo: () -> Void
+    let openTopic: () -> Void
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Button(action: openInfo) {
+                Text(room.name)
+                    .font(.headline)
+                    .foregroundColor(.primary)
+                    .lineLimit(1)
+            }
+            .buttonStyle(.plain)
+            .accessibilityHint("Shows the room's info and settings")
+            if let line = Topics.preview(topic, canEdit: canEdit) {
+                Button(action: openTopic) {
+                    HStack(spacing: 3) {
+                        Image(systemName: "chevron.down")
+                            .font(.system(size: 9, weight: .bold))
+                        Text(line)
+                            .font(.caption)
+                            .lineLimit(1)
+                    }
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: 240)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Topic: \(line)")
+                .accessibilityHint("Shows the topic, its links and the pinned messages")
+            }
+        }
     }
 }
 
@@ -133,6 +203,8 @@ enum RoomSheet: Identifiable {
     case emoji(itemId: String)
     /// A message's text, to select from.
     case text(String)
+    /// The topic in full, its links and the pinned messages.
+    case topic
 
     var id: String {
         switch self {
@@ -140,6 +212,7 @@ enum RoomSheet: Identifiable {
         case .readers(let itemId): return "readers \(itemId)"
         case .emoji(let itemId): return "emoji \(itemId)"
         case .text(let text): return "text \(text)"
+        case .topic: return "topic"
         }
     }
 }
@@ -147,7 +220,11 @@ enum RoomSheet: Identifiable {
 /// A room's sheet, from the newest rows (names arrive in later updates).
 private struct RoomSheetView: View {
     let sheet: RoomSheet
+    let room: RoomSummary
     @ObservedObject var model: TimelineModel
+    @ObservedObject var info: RoomInfoModel
+    let topic: Topic
+    @EnvironmentObject private var session: SessionModel
 
     var body: some View {
         switch sheet {
@@ -163,25 +240,27 @@ private struct RoomSheetView: View {
             }
         case .text(let text):
             SelectTextSheet(text: text)
+        case .topic:
+            TopicPanel(
+                topic: topic, canEdit: info.settings?.canChangeTopic ?? false, info: info,
+                pinned: PinnedModel(session: session.session, roomId: room.id)
+            ) { eventId in
+                Task { await model.goTo(eventId: eventId) }
+            }
         }
     }
 }
 
 /// The timeline, newest message at the bottom, older ones loading when its
-/// top comes into view. The list and its rows are flipped upside down: the
-/// newest row is then the scroll view's first, where it starts and where a
-/// lazy stack keeps its place while rows come and change. (Anchored at the
-/// bottom instead, the lazy stack's estimates of the rows not drawn yet
-/// change with every change of the rows, and a reopened room landed short
-/// of its bottom, or past it with nothing drawn.) Flipped, the scroll
-/// view's edge effects would be drawn at the wrong edges: they are hidden,
-/// and the list is cut at the bars instead. Scrolled up, a button leads
+/// top comes into view. The scroll view is anchored at its bottom: it opens
+/// there, and rows added above (older ones) or below (new ones, while at
+/// the bottom) keep what is in view in place. Scrolled up, a button leads
 /// back to the bottom.
 struct TimelineList: View {
     @ObservedObject var model: TimelineModel
     let actions: RowActions
 
-    /// Below the newest row (flipped: the list's first).
+    /// Below the newest row.
     private static let bottomId = "bottom"
 
     var body: some View {
@@ -189,10 +268,8 @@ struct TimelineList: View {
             ScrollView {
                 rows
             }
+            .modifier(AnchoredAtBottom(model: model, proxy: proxy, bottomId: Self.bottomId))
             .modifier(TracksBottom(model: model))
-            .modifier(HidesScrollEdgeEffects())
-            .upsideDown(true)
-            .clipped()
             .onChange(of: model.scrollTarget) { target in
                 guard let target else { return }
                 withAnimation {
@@ -203,8 +280,7 @@ struct TimelineList: View {
                 if model.showsScrollToBottom {
                     ScrollToBottomButton {
                         withAnimation {
-                            // The flipped list's top.
-                            proxy.scrollTo(Self.bottomId, anchor: .top)
+                            proxy.scrollTo(Self.bottomId, anchor: .bottom)
                         }
                     }
                     .transition(.scale.combined(with: .opacity))
@@ -229,19 +305,16 @@ struct TimelineList: View {
         }
     }
 
-    /// Newest first, each the right way up; read oldest first.
+    /// Oldest first.
     private var rows: some View {
         LazyVStack(spacing: 0) {
-            bottom
-            ForEach(Array(model.rows.enumerated().reversed()), id: \.element.id) { index, row in
+            top
+            ForEach(model.rows) { row in
                 TimelineRowView(row: row, highlighted: model.highlighted == row.id, actions: actions)
                     .id(row.id)
-                    .upsideDown(true)
-                    .accessibilitySortPriority(-Double(index))
             }
-            top.upsideDown(true)
+            bottom
         }
-        .accessibilityElement(children: .contain)
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
     }
@@ -271,31 +344,58 @@ struct TimelineList: View {
     }
 }
 
-/// From iOS 18, how far the (flipped) timeline is scrolled up from its
-/// bottom, as the scroll view says.
+/// Keeps the timeline at its bottom as it opens and while new messages
+/// come, and what is in view in place while older ones load above it. From
+/// iOS 18 the scroll view's bottom anchor does all of it; before, the rows'
+/// changes are followed here too (iOS 17's anchor places it at the start).
+private struct AnchoredAtBottom: ViewModifier {
+    @ObservedObject var model: TimelineModel
+    let proxy: ScrollViewProxy
+    let bottomId: String
+    /// The oldest row, as last drawn.
+    @State private var oldest: String?
+
+    func body(content: Content) -> some View {
+        if #available(iOS 18, *) {
+            content.defaultScrollAnchor(.bottom)
+        } else if #available(iOS 17, *) {
+            following(content.defaultScrollAnchor(.bottom))
+        } else {
+            following(content)
+        }
+    }
+
+    private func following(_ content: some View) -> some View {
+        content
+            .onChange(of: model.rows.last?.id) { _ in
+                if model.atBottom {
+                    proxy.scrollTo(bottomId, anchor: .bottom)
+                }
+            }
+            .onChange(of: model.rows.first?.id) { first in
+                // Older rows came above: the row that was the oldest stays
+                // at the top.
+                if let oldest, oldest != first, !model.atBottom {
+                    proxy.scrollTo(oldest, anchor: .top)
+                }
+                oldest = first
+            }
+    }
+}
+
+/// From iOS 18, how far the timeline is scrolled up from its bottom, as the
+/// scroll view says.
 private struct TracksBottom: ViewModifier {
     @ObservedObject var model: TimelineModel
 
     func body(content: Content) -> some View {
         if #available(iOS 18, *) {
             content.onScrollGeometryChange(for: CGFloat.self) { geometry in
-                // Flipped: the bottom is the scroll view's top.
-                geometry.contentOffset.y + geometry.contentInsets.top
+                // Short content sits at the bottom: nothing below is hidden.
+                geometry.contentSize.height - geometry.visibleRect.maxY
             } action: { _, distance in
                 model.scrolled(distanceFromBottom: distance)
             }
-        } else {
-            content
-        }
-    }
-}
-
-/// The scroll view's soft edges (iOS 26), which a flipped one draws at the
-/// wrong edges, over its content.
-private struct HidesScrollEdgeEffects: ViewModifier {
-    func body(content: Content) -> some View {
-        if #available(iOS 26, *) {
-            content.scrollEdgeEffectHidden(true, for: .all)
         } else {
             content
         }
@@ -414,13 +514,5 @@ private extension Optional where Wrapped == TimelineModel.Compose {
     var isEdit: Bool {
         if case .edit = self { return true }
         return false
-    }
-}
-
-extension View {
-    /// Flipped vertically if `flipped`: a list and its rows both flipped
-    /// show the rows in reverse order, the right way up.
-    func upsideDown(_ flipped: Bool) -> some View {
-        scaleEffect(x: 1, y: flipped ? -1 : 1, anchor: .center)
     }
 }

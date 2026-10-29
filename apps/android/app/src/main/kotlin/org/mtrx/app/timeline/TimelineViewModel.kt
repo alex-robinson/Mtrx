@@ -26,14 +26,18 @@ import kotlinx.coroutines.selects.select
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
+import org.mtrx.app.model.Drafts
 import org.mtrx.app.model.describe
 import uniffi.mtrx.MtrxException
+import uniffi.mtrx.RoomSettings
 import uniffi.mtrx.Session
 import uniffi.mtrx.TaskHandle
 import uniffi.mtrx.Timeline
 import uniffi.mtrx.TimelineItem
 import uniffi.mtrx.TimelineListener
+import uniffi.mtrx.Topic
 import uniffi.mtrx.TypingListener
+import uniffi.mtrx.composeTopic as libraryComposeTopic
 
 /**
  * A room's timeline screen: its rows, older events on demand, the composer
@@ -47,17 +51,25 @@ import uniffi.mtrx.TypingListener
  * each successful [markRead] (the room's notifications go); [onInput] each
  * change of the draft (typing on the keyboard, which the activity does not
  * see, is not idle).
+ *
+ * The draft is the room's in [drafts], so it stays when the room is left
+ * and opened again (#42); during an edit, the text from before it. The
+ * room's settings say whether we may edit its topic (saved as
+ * [composeTopic] makes it, the library's) and pin messages; the pinned
+ * messages load while the topic panel shows them.
  */
 class TimelineViewModel(
-    roomId: String,
+    private val roomId: String,
     private val session: Session,
     private val onRead: () -> Unit,
     private val onInput: () -> Unit = {},
-) : ViewModel() {
+    private val drafts: Drafts = Drafts(),
+    private val composeTopic: (Topic) -> String = ::libraryComposeTopic,
+) : ViewModel(), TimelineActions {
     private val _rows = MutableStateFlow<List<TimelineRow>>(emptyList())
     val rows: StateFlow<List<TimelineRow>> = _rows.asStateFlow()
 
-    private val _draft = MutableStateFlow("")
+    private val _draft = MutableStateFlow(drafts[roomId])
     val draft: StateFlow<String> = _draft.asStateFlow()
 
     /** What the draft answers or edits; null for a new message. */
@@ -87,6 +99,22 @@ class TimelineViewModel(
     private val _personInfo = MutableStateFlow<PersonInfoModel?>(null)
     val personInfo: StateFlow<PersonInfoModel?> = _personInfo.asStateFlow()
 
+    /** The room's settings, for what we may change; null until read. */
+    private val _settings = MutableStateFlow<RoomSettings?>(null)
+    val settings: StateFlow<RoomSettings?> = _settings.asStateFlow()
+
+    /** We may pin and unpin messages. */
+    private val _canPin = MutableStateFlow(false)
+    val canPin: StateFlow<Boolean> = _canPin.asStateFlow()
+
+    /** The pinned messages, while the topic panel shows them; null while loading. */
+    private val _pinned = MutableStateFlow<List<EventRow>?>(null)
+    val pinned: StateFlow<List<EventRow>?> = _pinned.asStateFlow()
+
+    private var pinnedTimeline: Timeline? = null
+    private var pinnedSubscription: TaskHandle? = null
+    private var pinnedJob: Job? = null
+
     private var timeline: Timeline? = null
     private var subscription: TaskHandle? = null
     private var typingSubscription: TaskHandle? = null
@@ -109,6 +137,7 @@ class TimelineViewModel(
     private var typingOn = false
 
     init {
+        viewModelScope.launch { loadSettings() }
         viewModelScope.launch {
             try {
                 val opened = session.timeline(roomId)
@@ -133,8 +162,74 @@ class TimelineViewModel(
         }
     }
 
+    private suspend fun loadSettings() {
+        try {
+            _settings.value = session.roomSettings(roomId)
+            _canPin.value = session.canPin(roomId)
+        } catch (e: MtrxException) {
+            // Then we may not edit; the timeline works without.
+        }
+    }
+
+    /** Save the room's topic, its text and links. */
+    override fun saveTopic(topic: Topic) {
+        actions.launch {
+            try {
+                session.setRoomTopic(roomId, composeTopic(topic))
+            } catch (e: MtrxException) {
+                _error.value = describe(e)
+            }
+            loadSettings()
+        }
+    }
+
+    /** Pin or unpin the message with [eventId]. */
+    override fun setPinned(eventId: String, pin: Boolean) {
+        actions.launch {
+            try {
+                session.setPinned(roomId, eventId, pin)
+            } catch (e: MtrxException) {
+                _error.value = describe(e)
+            }
+        }
+    }
+
+    /** The topic panel opened: load the pinned messages into [pinned]. */
+    override fun showPinned() {
+        if (pinnedJob != null) return
+        pinnedJob = viewModelScope.launch {
+            try {
+                val opened = session.pinnedTimeline(roomId)
+                pinnedTimeline = opened
+                pinnedSubscription = opened.subscribe(object : TimelineListener {
+                    // On a library thread.
+                    override fun onUpdate(items: List<TimelineItem>) {
+                        // None yet: still loading (the panel asks only where some are pinned).
+                        _pinned.value = timelineRows(items).filterIsInstance<EventRow>().ifEmpty { null }
+                    }
+                })
+            } catch (e: MtrxException) {
+                _pinned.value = emptyList()
+            }
+        }
+    }
+
+    /** The topic panel closed: the pinned messages are no longer followed. */
+    override fun hidePinned() {
+        pinnedJob?.cancel()
+        pinnedJob = null
+        pinnedSubscription?.let {
+            it.cancel()
+            it.close()
+        }
+        pinnedSubscription = null
+        pinnedTimeline?.close()
+        pinnedTimeline = null
+        _pinned.value = null
+    }
+
     /** The list is scrolled (nearly) to its top: load older events while it is. */
-    fun onNearTop(value: Boolean) {
+    override fun onNearTop(value: Boolean) {
         nearTop = value
         if (value) loadOlder()
     }
@@ -164,7 +259,7 @@ class TimelineViewModel(
     }
 
     /** The newest message is on screen. */
-    fun markRead() {
+    override fun markRead() {
         val current = timeline ?: return
         val latest = latestEventId(_rows.value) ?: return
         if (latest == markedRead) return
@@ -181,10 +276,16 @@ class TimelineViewModel(
     }
 
     /** The user changed the text. */
-    fun onDraft(value: String) {
+    override fun onDraft(value: String) {
         onInput()
         _draft.value = value
+        saveDraft()
         typed(value.isNotEmpty())
+    }
+
+    /** The room's draft: the text, or during an edit the text from before it. */
+    private fun saveDraft() {
+        drafts[roomId] = (_composing.value as? Composing.Editing)?.draft ?: _draft.value
     }
 
     /** Tell the others: on every change while there is text (the library throttles), once when it is gone. */
@@ -208,23 +309,24 @@ class TimelineViewModel(
      * Reply to row [itemId] (from its menu, or swiped): the composer says to
      * whom; an edit under way ends. Only a sent message can be answered.
      */
-    fun startReply(itemId: String) {
+    override fun startReply(itemId: String) {
         val row = eventRow(itemId)?.takeIf { it.canReply } ?: return
         endEdit()
         _composing.value = Composing.Replying(itemId, displayName(row.event), preview(row))
     }
 
     /** Edit row [itemId]: the composer gets its text as we wrote it; a reply under way ends. */
-    fun startEdit(itemId: String) {
+    override fun startEdit(itemId: String) {
         val message = eventRow(itemId)?.message ?: return
         val original = message.rawBody.ifEmpty { message.body }
         val draft = (_composing.value as? Composing.Editing)?.draft ?: _draft.value
         _composing.value = Composing.Editing(itemId, original, draft)
         _draft.value = original
+        saveDraft()
     }
 
     /** Back to a new message; an edit gives back the text from before it. */
-    fun cancelComposing() {
+    override fun cancelComposing() {
         endEdit()
         _composing.value = null
     }
@@ -233,16 +335,18 @@ class TimelineViewModel(
         val editing = _composing.value as? Composing.Editing ?: return
         _composing.value = null
         _draft.value = editing.draft
+        saveDraft()
     }
 
     /** Send the draft, as a reply or an edit if one is under way; false if there is nothing to send. */
-    fun send(): Boolean {
+    override fun send(): Boolean {
         val current = timeline ?: return false
         val text = _draft.value
         if (text.isBlank()) return false
         val mode = _composing.value
         _composing.value = null
         _draft.value = (mode as? Composing.Editing)?.draft ?: ""
+        saveDraft()
         typed(false)
         if (mode is Composing.Editing && text == mode.original) return true
         actions.launch {
@@ -273,10 +377,11 @@ class TimelineViewModel(
                 _draft.value = text
             }
         }
+        saveDraft()
     }
 
     /** The name or avatar of a direct chat's header was tapped: the sheet about [userId]. */
-    fun showPersonInfo(userId: String) {
+    override fun showPersonInfo(userId: String) {
         if (_personInfo.value?.userId == userId) return
         _personInfo.value?.close()
         _personInfo.value = PersonInfoModel(userId, session, viewModelScope, actions)
@@ -288,16 +393,16 @@ class TimelineViewModel(
     }
 
     /** Add our reaction [key] to row [itemId], or remove it. */
-    fun react(itemId: String, key: String) = act { it.react(itemId, key) }
+    override fun react(itemId: String, key: String) = act { it.react(itemId, key) }
 
     /** Delete row [itemId]'s message for everyone. */
-    fun delete(itemId: String) = act { it.delete(itemId) }
+    override fun delete(itemId: String) = act { it.delete(itemId) }
 
     /** Send row [itemId]'s failed message again. */
-    fun retry(itemId: String) = act { it.retry(itemId) }
+    override fun retry(itemId: String) = act { it.retry(itemId) }
 
     /** Drop row [itemId]'s failed message. */
-    fun discard(itemId: String) = act { it.discard(itemId) }
+    override fun discard(itemId: String) = act { it.discard(itemId) }
 
     private fun act(action: suspend (Timeline) -> Unit) {
         val current = timeline ?: return
@@ -315,7 +420,7 @@ class TimelineViewModel(
      * loading older events until it is there, the room's start, or
      * [SEEK_PAGES] pages. A new one replaces one under way.
      */
-    fun goToOriginal(eventId: String) {
+    override fun goToOriginal(eventId: String) {
         val current = timeline ?: return
         seek?.cancel()
         // Started once it is `seek`: it may end without suspending.
@@ -387,11 +492,12 @@ class TimelineViewModel(
     private fun describeAction(e: MtrxException): String? =
         if (e is MtrxException.InvalidInput) GONE else describe(e)
 
-    fun clearError() {
+    override fun clearError() {
         _error.value = null
     }
 
     override fun onCleared() {
+        hidePinned()
         for (handle in listOfNotNull(subscription, typingSubscription)) {
             handle.cancel()
             handle.close()

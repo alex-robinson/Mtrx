@@ -53,6 +53,8 @@ struct TimelineRowView: View {
 
 /// What a message's row asks of the room, with the row's ID.
 struct RowActions {
+    /// The entries of a message's menu, in order.
+    let entries: (MessageRow) -> [MessageAction]
     /// An entry of the message's menu (`react`: the full picker).
     let perform: (MessageAction, String) -> Void
     /// Add or remove our reaction (item ID, key).
@@ -75,7 +77,6 @@ struct MessageView: View {
     let highlighted: Bool
     let actions: RowActions
     @State private var swipe = SwipeToReply()
-    @EnvironmentObject private var images: ImageCache
 
     static let avatarSize: CGFloat = 32
     private static let avatarSpacing: CGFloat = 8
@@ -102,10 +103,8 @@ struct MessageView: View {
                     }
                 }
                 VStack(alignment: own ? .trailing : .leading, spacing: 4) {
-                    // The preview drawn apart: the flipped timeline's own
-                    // would be squashed into a line.
                     content
-                        .contextMenu { menu } preview: { content.environmentObject(images) }
+                        .contextMenu { menu }
                     if !row.reactions.isEmpty {
                         ReactionChips(reactions: row.reactions, trailing: own) { key in
                             actions.react(id, key)
@@ -203,7 +202,7 @@ struct MessageView: View {
     /// The menu of a held message: only what applies to it.
     @ViewBuilder
     private var menu: some View {
-        let entries = row.actions
+        let entries = actions.entries(row)
         if entries.contains(.react) {
             ReactMenu(ours: Set(row.reactions.filter(\.byUs).map(\.key))) { key in
                 actions.react(id, key)
@@ -325,7 +324,7 @@ private struct SwipesToReply: ViewModifier {
 
 /// A pan that begins only when the finger first moves leftward, as
 /// `SwipeToReply.begins` says; its translation is in the window's
-/// coordinates (the timeline is flipped).
+/// coordinates.
 @available(iOS 18, *)
 private struct LeftwardPan: UIGestureRecognizerRepresentable {
     let changed: (CGPoint) -> Void
@@ -466,7 +465,8 @@ struct ReaderAvatarsView: View {
 
 /// The emoji to react with at the top of a message's menu: the common ones
 /// in a row (ours marked), then "More Reactions" for all of them. iOS 16
-/// has them in a submenu.
+/// has them in a submenu. Choosing one closes the menu, and the reaction
+/// shows under the message at once.
 struct ReactMenu: View {
     let ours: Set<String>
     let react: (String) -> Void
@@ -490,17 +490,30 @@ struct ReactMenu: View {
         }
     }
 
+    /// Toggles, to mark ours; a palette's would leave the menu open.
     private var common: some View {
         ForEach(Emoji.common, id: \.self) { key in
             Toggle(isOn: Binding(get: { ours.contains(key) }, set: { _ in react(key) })) {
                 Text(key)
             }
+            .modifier(ClosesMenu())
         }
     }
 
     private var moreButton: some View {
         Button(action: more) {
             Label("More Reactions", systemImage: "face.smiling")
+        }
+    }
+}
+
+/// A menu's action closes the menu (from iOS 16.4, where it may not).
+private struct ClosesMenu: ViewModifier {
+    func body(content: Content) -> some View {
+        if #available(iOS 16.4, *) {
+            content.menuActionDismissBehavior(.enabled)
+        } else {
+            content
         }
     }
 }
@@ -513,6 +526,8 @@ extension MessageAction {
         case .copy: return "Copy"
         case .selectText: return "Select Text"
         case .edit: return "Edit"
+        case .pin: return "Pin"
+        case .unpin: return "Unpin"
         case .delete: return "Delete"
         case .retry: return "Retry"
         case .discard: return "Discard"
@@ -526,6 +541,8 @@ extension MessageAction {
         case .copy: return "doc.on.doc"
         case .selectText: return "selection.pin.in.out"
         case .edit: return "pencil"
+        case .pin: return "pin"
+        case .unpin: return "pin.slash"
         case .delete: return "trash"
         case .retry: return "arrow.clockwise"
         case .discard: return "xmark.bin"

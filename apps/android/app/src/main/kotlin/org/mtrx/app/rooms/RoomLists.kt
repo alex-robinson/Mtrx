@@ -51,14 +51,6 @@ fun roomsOf(state: RoomListState, entry: SpaceEntry): List<RoomSummary> {
     return ids.mapNotNull { byId[it] }
 }
 
-/** A space's rooms page: its rooms, and its direct chats (People). */
-data class SpaceSections(val rooms: List<RoomSummary>, val people: List<RoomSummary>)
-
-/** The rooms [entry] lists, the direct chats apart, each part in the order [sort]. */
-fun sectionsOf(state: RoomListState, entry: SpaceEntry, sort: RoomSort): SpaceSections {
-    val (people, rooms) = roomsOf(state, entry).partition { it.kind == RoomKind.DIRECT }
-    return SpaceSections(rooms = sorted(rooms, sort), people = sorted(people, sort))
-}
 
 /** [rooms] in the order [sort]; ties keep the list's order. */
 fun sorted(rooms: List<RoomSummary>, sort: RoomSort): List<RoomSummary> = when (sort) {
@@ -76,6 +68,55 @@ private fun byName(): Comparator<RoomSummary> {
 
 /** The latest active first; never active last. */
 private val byRecent: Comparator<RoomSummary> = compareBy(nullsLast(reverseOrder<Instant>())) { it.lastActivity }
+
+/** A row of Recent: the room, and the name of its space ("Other rooms" outside spaces). */
+data class RecentRow(val room: RoomSummary, val space: String?)
+
+/**
+ * The recent rooms ([ids], newest first) that are still in the list: rooms
+ * and invites, not direct chats nor joined spaces.
+ */
+fun recentRooms(state: RoomListState, ids: List<String>): List<RoomSummary> {
+    val byId = state.rooms.associateBy { it.id }
+    return ids.mapNotNull { byId[it] }.filter { opensOnRoomsTab(it) }
+}
+
+/** Recent's rows, each with the name of the top-level space that lists it. */
+fun recentRows(state: RoomListState, ids: List<String>): List<RecentRow> {
+    val names = state.rooms.associate { it.id to it.name }
+    return recentRooms(state, ids).map { room ->
+        val space = state.spaces.firstOrNull { room.id in it.roomIds }?.let { names[it.spaceId] }
+            ?: room.parents.firstNotNullOfOrNull { names[it] }
+            ?: OTHER_ROOMS_NAME.takeIf { room.id in state.roomsOutsideSpaces }
+        RecentRow(room, space)
+    }
+}
+
+/**
+ * The room the Rooms tab reopens: the newest recent one still in the list;
+ * the newest saved one while the list is not loaded yet, or while it is
+ * [opening] (just joined or made) and not listed yet.
+ */
+fun lastRoom(state: RoomListState, ids: List<String>, opening: String? = null): String? {
+    val newest = ids.firstOrNull()
+    if (newest != null && newest == opening && state.rooms.none { it.id == newest }) return newest
+    return recentRooms(state, ids).firstOrNull()?.id ?: if (state.loaded) null else newest
+}
+
+/** Rooms and invites open on the Rooms tab (and join Recent); direct chats on Chats. */
+fun opensOnRoomsTab(room: RoomSummary): Boolean = room.kind != RoomKind.DIRECT && (room.kind != RoomKind.SPACE || room.invited)
+
+/** Unread messages in the recent rooms, except [except] (the room on screen). */
+fun recentUnread(state: RoomListState, ids: List<String>, except: String? = null): Long =
+    recentRooms(state, ids).filter { it.id != except }.sumOf { it.unreadMessages.toLong() }
+
+/** Unread messages in the spaces' rooms (and the other rooms) that are not recent. */
+fun spacesUnread(state: RoomListState, ids: List<String>): Long {
+    val recent = ids.toSet()
+    return state.rooms
+        .filter { it.kind == RoomKind.ROOM && !it.invited && it.id !in recent }
+        .sumOf { it.unreadMessages.toLong() }
+}
 
 /** The unread count to show, and whether it counts mentions; null if none. */
 fun unreadBadge(room: RoomSummary): Pair<Long, Boolean>? = when {

@@ -15,8 +15,8 @@ use iced::{
     },
 };
 use mtrx_core::{
-    AtHome, CallService, GoogleClient, Grouping, OwnedRoomId, Permissions, RoomListColours,
-    ServiceKind,
+    AtHome, CallService, GoogleClient, Grouping, OwnedRoomId, Permissions, RoomCategories,
+    RoomListColours, ServiceKind,
 };
 use serde::{Deserialize, Serialize};
 
@@ -56,7 +56,9 @@ pub struct Settings {
     /// Rooms show their picture (or initial) rather than a symbol saying
     /// whether they are public or private.
     pub room_pictures: bool,
-    /// The Notes to self at the top of the room list, in every space.
+    /// The Notes to self at the top, as this desktop had it before the
+    /// choice moved to the account ([`RoomCategories::notes_at_top`]):
+    /// saved there once, if the account has none yet.
     pub pinned_notes: bool,
     /// Others see when we are online or idle; otherwise we are offline.
     pub share_presence: bool,
@@ -207,6 +209,8 @@ pub enum Action {
     Colour(Option<OwnedRoomId>, Tint),
     /// Set which rooms of spaces Home lists too, in the account.
     AtHome(AtHome),
+    /// Keep the Notes to self at the top, in the account.
+    NotesAtTop(bool),
 }
 
 /// State of the open settings panel.
@@ -426,10 +430,7 @@ pub fn change(settings: &mut Settings, preference: Preference) -> Action {
             settings.room_pictures = on;
             Action::Save
         }
-        Preference::PinnedNotes(on) => {
-            settings.pinned_notes = on;
-            Action::Save
-        }
+        Preference::PinnedNotes(on) => Action::NotesAtTop(on),
         Preference::SharePresence(on) => {
             settings.share_presence = on;
             Action::SharePresence
@@ -562,7 +563,7 @@ impl Panel {
     }
 
     /// `spaces`: the top-level spaces, for their room list colours;
-    /// `at_home`: which rooms of spaces Home lists, from the account;
+    /// `arranged`: the room list's arrangement, from the account;
     /// `presence_shared`: the server shares presence (as far as known);
     /// `updater`: whether there is a newer version, first in the panel.
     pub fn view<'a>(
@@ -570,7 +571,7 @@ impl Panel {
         settings: &'a Settings,
         spaces: Vec<(OwnedRoomId, String)>,
         colours: &RoomListColours,
-        at_home: AtHome,
+        arranged: &RoomCategories,
         presence_shared: bool,
         updater: &'a Updater,
     ) -> Element<'a, app::Message> {
@@ -652,7 +653,7 @@ impl Panel {
             ),
             heading("Room list"),
             room_list_options(settings.room_list),
-            home_options(at_home, settings.room_list),
+            home_options(arranged.at_home, settings.room_list),
             option(
                 "Room pictures",
                 "Rooms show their picture or initial, instead of # for public \
@@ -664,7 +665,7 @@ impl Panel {
             option(
                 "Notes at the top",
                 "Your notes to self stay at the top of the room list, in every space.",
-                toggler(settings.pinned_notes)
+                toggler(arranged.notes_at_top())
                     .on_toggle(|on| preference(Preference::PinnedNotes(on)))
                     .into(),
             ),

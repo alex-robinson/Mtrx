@@ -15,9 +15,11 @@ mod android;
 mod client;
 mod encryption;
 mod error;
+mod manage;
 mod presence;
 mod push;
 mod room_list;
+mod rooms;
 mod runtime;
 mod secrets;
 mod session;
@@ -31,8 +33,16 @@ pub use encryption::{
     VerificationRequestListener, VerificationState,
 };
 pub use error::MtrxError;
+pub use manage::{
+    Access, Banned, History, Manage, Member, NotifyMode, Permissions, Role, RoomSettings,
+    SpaceLink, role_level,
+};
 pub use presence::{Presence, PresenceListener, PresenceState};
 pub use push::{NotificationContent, PusherInfo};
+pub use rooms::{
+    Address, DirectoryKind, DirectoryPage, DirectoryRoom, JoinAccess, Membership, NewRoom,
+    RoomLink, Topic, compose_topic, parse_address, parse_topic,
+};
 pub use runtime::TaskHandle;
 pub use secrets::{SecretBackend, SecretError};
 pub use session::{ConnectionListener, RoomListListener, Session};

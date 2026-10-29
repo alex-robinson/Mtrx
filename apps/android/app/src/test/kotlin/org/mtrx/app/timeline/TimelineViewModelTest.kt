@@ -23,6 +23,8 @@ import org.junit.Test
 import org.mtrx.app.FakeSession
 import org.mtrx.app.FakeTimeline
 import org.mtrx.app.messageEvent
+import org.mtrx.app.model.Drafts
+import org.mtrx.app.roomSettings
 import org.mtrx.app.textEvent
 import uniffi.mtrx.Message
 import uniffi.mtrx.MessageKind
@@ -31,6 +33,7 @@ import uniffi.mtrx.QuoteState
 import uniffi.mtrx.ReplyQuote
 import uniffi.mtrx.TimelineItem
 import uniffi.mtrx.TimelineItemContent
+import uniffi.mtrx.Topic
 import uniffi.mtrx.UserProfile
 
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -348,5 +351,65 @@ class TimelineViewModelTest {
         assertEquals(TimelineViewModel.SEEK_PAGES, timeline.pages)
         assertEquals(TimelineViewModel.NOT_FOUND, viewModel.error.value)
         assertFalse(viewModel.seeking.value)
+    }
+
+    @Test
+    fun theDraftStaysWithItsRoom() = runTest {
+        val drafts = Drafts()
+        fun open(room: String) = TimelineViewModel(room, session, onRead = {}, drafts = drafts)
+        open("!a:x").onDraft("for A")
+        val b = open("!b:x")
+        assertEquals("", b.draft.value)
+        b.onDraft("for B")
+        assertEquals("for A", open("!a:x").draft.value)
+        assertEquals("for B", open("!b:x").draft.value)
+    }
+
+    @Test
+    fun duringAnEditTheRoomKeepsTheDraftFromBefore() = runTest {
+        val drafts = Drafts()
+        val viewModel = TimelineViewModel("!a:x", session, onRead = {}, drafts = drafts)
+        timeline.listener!!.onUpdate(listOf(messageEvent("1", "@me:example.org", Message(kind = MessageKind.TEXT, body = "mine", edited = false, media = null), own = true, editable = true)))
+        viewModel.onDraft("half")
+        viewModel.startEdit("1")
+        viewModel.onDraft("mine, edited")
+        assertEquals("half", drafts["!a:x"])
+        viewModel.send()
+        assertEquals("half", drafts["!a:x"])
+        viewModel.onDraft("")
+        assertEquals("", drafts["!a:x"])
+    }
+
+    @Test
+    fun topicAndPinsFollowTheRoomsSettings() = runTest {
+        session.settings = roomSettings(may = true)
+        session.pinAllowed = true
+        val viewModel = TimelineViewModel("!a:x", session, onRead = {}, composeTopic = { "composed ${it.text}" })
+        assertEquals(true, viewModel.settings.value?.canChangeTopic)
+        assertTrue(viewModel.canPin.value)
+        viewModel.saveTopic(Topic("Ice", emptyList()))
+        viewModel.setPinned("\$1", true)
+        assertEquals(listOf("topic composed Ice", "pin \$1"), session.roomCalls)
+
+        // The pinned messages while the panel shows them.
+        assertNull(viewModel.pinned.value)
+        viewModel.showPinned()
+        session.pinnedRoomTimeline.listener!!.onUpdate(listOf(textEvent("p", alice, "pinned")))
+        assertEquals(listOf("p"), viewModel.pinned.value?.map { it.id })
+        viewModel.hidePinned()
+        assertNull(viewModel.pinned.value)
+        assertTrue(session.pinnedRoomTimeline.closed)
+    }
+
+    @Test
+    fun pinAndUnpinInTheMenuOfSentMessagesWhereAllowed() {
+        val row = timelineRows(listOf(textEvent("1", alice, "hi"))).filterIsInstance<EventRow>().single()
+        assertFalse(MessageAction.PIN in menuActions(row, canPin = false, pinned = emptyList()))
+        assertTrue(MessageAction.PIN in menuActions(row, canPin = true, pinned = emptyList()))
+        val pinned = menuActions(row, canPin = true, pinned = listOf("\$1"))
+        assertTrue(MessageAction.UNPIN in pinned)
+        assertFalse(MessageAction.PIN in pinned)
+        // In the menu's order.
+        assertEquals(pinned.sortedBy { it.ordinal }, pinned.toList())
     }
 }

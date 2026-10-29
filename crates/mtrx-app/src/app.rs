@@ -371,6 +371,8 @@ struct Main {
     space_rooms: directory::SpaceRooms,
     /// The selected space's topic panel, below its name.
     space_topic: topic::Panel,
+    /// This desktop's "Notes at the top" was offered to the account.
+    notes_moved: bool,
     /// The member whose menu is open, and in which room.
     member_menu: Option<members::MenuKey>,
     /// The invite shown instead of a room, and whether it is being answered.
@@ -465,6 +467,7 @@ impl Main {
             space_menu: None,
             space_rooms: Default::default(),
             space_topic: Default::default(),
+            notes_moved: false,
             member_menu: None,
             invite: None,
             opening: None,
@@ -525,7 +528,7 @@ impl Main {
             width,
             tint: Tint::of(&self.colours, self.space.as_ref()),
             room_pictures: settings.room_pictures,
-            notes: self.pinned_notes(settings),
+            notes: self.pinned_notes(),
             presences: &self.presences,
             space_rooms: &self.space_rooms,
             space_topic: &self.space_topic,
@@ -586,8 +589,8 @@ impl Main {
 
     /// The Notes to self if pinned; missing ones only once the room list
     /// is complete, so they are not started twice.
-    fn pinned_notes(&self, settings: &Settings) -> Option<sidebar::Notes<'_>> {
-        if !settings.pinned_notes {
+    fn pinned_notes(&self) -> Option<sidebar::Notes<'_>> {
+        if !self.arrange.categories.notes_at_top() {
             return None;
         }
         let rooms = &self.rooms.rooms;
@@ -824,7 +827,7 @@ impl App {
             }
             None => Task::none(),
         };
-        let task = Task::batch([task, topic]);
+        let task = Task::batch([task, topic, self.move_notes_at_top()]);
         if remember {
             self.remember_view();
         }
@@ -2929,6 +2932,9 @@ impl App {
             settings::Action::AtHome(at_home) => {
                 self.update(Message::Arrange(arrange::Message::AtHome(at_home)))
             }
+            settings::Action::NotesAtTop(on) => {
+                self.update(Message::Arrange(arrange::Message::NotesAtTop(on)))
+            }
             settings::Action::GoogleSignOut => {
                 let google = self.google.clone();
                 Task::perform(async move { google.sign_out().await }, |result| {
@@ -3789,6 +3795,22 @@ impl App {
         Task::batch([beside, overview, self.reload_card(room)])
     }
 
+    /// Once synced, an account without "Notes at the top" gets this
+    /// desktop's earlier choice; asked once a run.
+    fn move_notes_at_top(&mut self) -> Task<Message> {
+        let Screen::Main(main) = &mut self.screen else {
+            return Task::none();
+        };
+        if main.notes_moved || !main.rooms.loaded || main.arrange.categories.notes_at_top.is_some()
+        {
+            return Task::none();
+        }
+        main.notes_moved = true;
+        Task::done(Message::Arrange(arrange::Message::NotesAtTop(
+            self.settings.pinned_notes,
+        )))
+    }
+
     fn selected_space(&self) -> Option<OwnedRoomId> {
         match &self.screen {
             Screen::Main(main) => main.space.clone(),
@@ -4178,7 +4200,7 @@ impl App {
                             &self.settings,
                             spaces,
                             &main.colours,
-                            main.arrange.categories.at_home,
+                            &main.arrange.categories,
                             !main.presences.unavailable(),
                             &self.updater,
                         ),
@@ -4209,7 +4231,7 @@ impl App {
                             own_user: &main.own_user,
                             presences: &main.presences,
                             now: main.now,
-                            pinned_notes: self.settings.pinned_notes,
+                            pinned_notes: main.arrange.categories.notes_at_top(),
                             call_services: &self.settings.call_services,
                             room_pictures: self.settings.room_pictures,
                             member_menu: main.member_menu.as_ref(),

@@ -35,7 +35,8 @@ pub(crate) async fn follow(
             });
         }
         let by_space = core::RoomsBySpace::new(&state.rooms, &members, &categories);
-        let new = RoomListState::new(&state, by_space);
+        let notes = session.notes_room();
+        let new = RoomListState::new(&state, by_space, &categories, notes.as_ref());
         if sent.as_ref() != Some(&new) {
             listener.on_update(new.clone());
             sent = Some(new);

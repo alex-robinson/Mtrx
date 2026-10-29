@@ -1,6 +1,12 @@
 package org.mtrx.app.timeline
 
 import android.graphics.Bitmap
+import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.layout.size
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.material3.BadgedBox
+import kotlinx.coroutines.flow.Flow
+import org.mtrx.app.rooms.topicPreview
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.animate
@@ -113,6 +119,7 @@ import kotlinx.coroutines.launch
 import org.mtrx.app.model.Images
 import org.mtrx.app.ui.Avatar
 import org.mtrx.app.ui.MtrxIcons
+import org.mtrx.app.ui.UnreadBadge
 import org.mtrx.app.ui.PresenceLine
 import org.mtrx.app.ui.WithPresenceDot
 import org.mtrx.app.ui.dayLabel
@@ -150,13 +157,30 @@ private class RowHandlers(
     val showReaders: (String) -> Unit,
 )
 
+/** What the room screen shows, from its model's flows. */
+data class TimelineState(
+    val rows: List<TimelineRow>,
+    val draft: String = "",
+    val composing: Composing? = null,
+    val typing: List<String> = emptyList(),
+    val seeking: Boolean = false,
+    val highlighted: String? = null,
+    val error: String? = null,
+    val canEditTopic: Boolean = false,
+    val canPin: Boolean = false,
+    /** The pinned messages while the topic panel shows; null while loading. */
+    val pinned: List<EventRow>? = null,
+)
+
 /**
  * A room's timeline. [keysArriving] while message keys come from the backup
  * (undecryptable rows say they are decrypting); [spaces], the top-level
  * ones, to invite a direct chat's person to; [presences], for the header
  * and the person sheet, and [refreshPresence] when the sheet opens.
+ * [backCount] on the back button: unread messages in the other recent rooms.
+ * The room's name opens [onRoomInfo] (a direct chat's, its person); links of
+ * the topic open with [onOpenLink].
  */
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun TimelineScreen(
     header: RoomHeader,
@@ -166,7 +190,10 @@ fun TimelineScreen(
     spaces: List<RoomSummary>,
     presences: Map<String, Presence>,
     refreshPresence: suspend (String) -> Unit,
+    backCount: Long,
     onBack: () -> Unit,
+    onRoomInfo: () -> Unit,
+    onOpenLink: (String) -> Unit,
 ) {
     val rows by viewModel.rows.collectAsStateWithLifecycle()
     // At once, not at the next frame: the field compares its text with it.
@@ -177,6 +204,65 @@ fun TimelineScreen(
     val highlighted by viewModel.highlighted.collectAsStateWithLifecycle()
     val error by viewModel.error.collectAsStateWithLifecycle()
     val personInfo by viewModel.personInfo.collectAsStateWithLifecycle()
+    val settings by viewModel.settings.collectAsStateWithLifecycle()
+    val canPin by viewModel.canPin.collectAsStateWithLifecycle()
+    val pinned by viewModel.pinned.collectAsStateWithLifecycle()
+    val state = TimelineState(
+        rows = rows,
+        draft = draft,
+        composing = composing,
+        typing = typing,
+        seeking = seeking,
+        highlighted = highlighted,
+        error = error,
+        canEditTopic = settings?.canChangeTopic == true,
+        canPin = canPin,
+        pinned = pinned,
+    )
+    TimelineContent(
+        header,
+        state,
+        viewModel,
+        images,
+        keysArriving,
+        presence = header.person?.let { presences[it] },
+        backCount = backCount,
+        scrollTo = viewModel.scrollTo,
+        onBack = onBack,
+        onRoomInfo = onRoomInfo,
+        onOpenLink = onOpenLink,
+    )
+
+    personInfo?.let { model ->
+        // Fresher than the subscription's, and for someone not in it.
+        LaunchedEffect(model) { refreshPresence(model.userId) }
+        PersonInfoSheet(model, header, presences[model.userId], spaces, images, onDismiss = viewModel::closePersonInfo)
+    }
+}
+
+/**
+ * The room screen as [state] says, without a model: the header with its
+ * topic line and panel ([topicOpen] or [editingTopic] at first), the
+ * timeline, the composer and the menus of messages.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun TimelineContent(
+    header: RoomHeader,
+    state: TimelineState,
+    actions: TimelineActions,
+    images: Images,
+    keysArriving: Boolean,
+    presence: Presence?,
+    backCount: Long,
+    scrollTo: Flow<String>,
+    onBack: () -> Unit,
+    onRoomInfo: () -> Unit,
+    onOpenLink: (String) -> Unit,
+    topicOpen: Boolean = false,
+    editingTopic: Boolean = false,
+) {
+    val rows = state.rows
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
     val snackbar = remember { SnackbarHostState() }
@@ -184,29 +270,45 @@ fun TimelineScreen(
     @Suppress("DEPRECATION") // LocalClipboard's API is suspending; this is a plain copy.
     val clipboard = LocalClipboardManager.current
     var overlay by remember { mutableStateOf<Overlay?>(null) }
+    var panel by remember {
+        mutableStateOf(
+            when {
+                editingTopic -> TopicPanelMode.EDITING
+                topicOpen -> TopicPanelMode.SHOWING
+                else -> null
+            },
+        )
+    }
     // Newest first: the list is reversed, so it starts at the bottom and
     // stays there as messages arrive.
     val newestFirst = remember(rows) { rows.asReversed() }
     val currentRows by rememberUpdatedState(newestFirst)
     val today = remember(rows) { LocalDate.now() }
 
-    LaunchedEffect(error) {
-        val message = error ?: return@LaunchedEffect
+    LaunchedEffect(state.error) {
+        val message = state.error ?: return@LaunchedEffect
         snackbar.showSnackbar(message)
-        viewModel.clearError()
+        actions.clearError()
     }
+
+    // The pinned messages, while the panel is open.
+    val panelOpen = panel != null
+    LaunchedEffect(panelOpen) {
+        if (panelOpen) actions.showPinned() else actions.hidePinned()
+    }
+    BackHandler(enabled = panelOpen) { panel = null }
 
     // Older events near the top (the reversed list's end).
     LaunchedEffect(listState) {
         snapshotFlow {
             val info = listState.layoutInfo
             (info.visibleItemsInfo.lastOrNull()?.index ?: -1) >= info.totalItemsCount - LOAD_MARGIN
-        }.collect { viewModel.onNearTop(it) }
+        }.collect { actions.onNearTop(it) }
     }
 
-    // A reply's original, once its row is on the list.
-    LaunchedEffect(viewModel) {
-        viewModel.scrollTo.collectLatest { id ->
+    // A reply's original (or a pinned message), once its row is on the list.
+    LaunchedEffect(scrollTo) {
+        scrollTo.collectLatest { id ->
             val list = snapshotFlow { currentRows }.first { list -> list.any { it.id == id } }
             listState.animateScrollToItem(list.indexOfFirst { it.id == id })
         }
@@ -222,20 +324,22 @@ fun TimelineScreen(
     val lifecycleState by LocalLifecycleOwner.current.lifecycle.currentStateFlow.collectAsState()
     val atBottom by remember { derivedStateOf { listState.firstVisibleItemIndex == 0 } }
     LaunchedEffect(atBottom, newestId, lifecycleState) {
-        if (atBottom && lifecycleState.isAtLeast(Lifecycle.State.RESUMED)) viewModel.markRead()
+        if (atBottom && lifecycleState.isAtLeast(Lifecycle.State.RESUMED)) actions.markRead()
     }
 
-    val handlers = remember(viewModel) {
+    val canPin by rememberUpdatedState(state.canPin)
+    val pinnedIds by rememberUpdatedState(header.pinned)
+    val handlers = remember(actions) {
         RowHandlers(
             hold = { row ->
-                if (row.actions.isNotEmpty()) {
+                if (menuActions(row, canPin, pinnedIds).isNotEmpty()) {
                     haptics.performHapticFeedback(HapticFeedbackType.LongPress)
                     overlay = Overlay.Menu(row.id)
                 }
             },
-            goTo = viewModel::goToOriginal,
-            reply = viewModel::startReply,
-            react = viewModel::react,
+            goTo = actions::goToOriginal,
+            reply = actions::startReply,
+            react = actions::react,
             showReactors = { rowId, key -> overlay = Overlay.Reactors(rowId, key) },
             showReaders = { rowId -> overlay = Overlay.Readers(rowId) },
         )
@@ -246,27 +350,44 @@ fun TimelineScreen(
             Column {
                 TopAppBar(
                     title = {
-                        RoomTitle(header, header.person?.let { presences[it] }, images, onPerson = viewModel::showPersonInfo)
+                        RoomTitle(
+                            header,
+                            presence,
+                            images,
+                            topicLine = topicPreview(header.topic, state.canEditTopic),
+                            topicOpen = panelOpen,
+                            onTitle = {
+                                val person = header.person
+                                if (person != null) actions.showPersonInfo(person) else onRoomInfo()
+                            },
+                            onTopic = { panel = if (panelOpen) null else TopicPanelMode.SHOWING },
+                        )
                     },
                     navigationIcon = {
                         IconButton(onClick = onBack) {
-                            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                            BadgedBox(
+                                badge = {
+                                    if (backCount > 0) UnreadBadge(backCount)
+                                },
+                            ) {
+                                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                            }
                         }
                     },
                 )
-                if (seeking) LinearProgressIndicator(Modifier.fillMaxWidth())
+                if (state.seeking) LinearProgressIndicator(Modifier.fillMaxWidth())
             }
         },
         bottomBar = {
             Column {
-                TypingLine(typingText(typing))
+                TypingLine(typingText(state.typing))
                 Composer(
-                    draft = draft,
-                    composing = composing,
-                    onDraft = viewModel::onDraft,
-                    onCancel = viewModel::cancelComposing,
+                    draft = state.draft,
+                    composing = state.composing,
+                    onDraft = actions::onDraft,
+                    onCancel = actions::cancelComposing,
                     onSend = {
-                        if (viewModel.send()) scope.launch { listState.scrollToItem(0) }
+                        if (actions.send()) scope.launch { listState.scrollToItem(0) }
                     },
                 )
             }
@@ -288,30 +409,49 @@ fun TimelineScreen(
             }
         },
     ) { padding ->
-        LazyColumn(
+        Box(
             Modifier
                 .padding(padding)
                 .fillMaxSize(),
-            state = listState,
-            reverseLayout = true,
-            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
         ) {
-            items(newestFirst, key = { it.id }, contentType = { it::class }) { row ->
-                when (row) {
-                    is EventRow -> EventBubble(row, images, highlighted == row.id, keysArriving, handlers)
-                    is StateRow -> Notice(row.text)
-                    is DayRow -> DayDivider(dayLabel(row.date, today))
-                    is ReadMarkerRow -> ReadMarker()
-                    is StartRow -> Notice("This is the beginning of the room")
+            LazyColumn(
+                Modifier.fillMaxSize(),
+                state = listState,
+                reverseLayout = true,
+                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+            ) {
+                items(newestFirst, key = { it.id }, contentType = { it::class }) { row ->
+                    when (row) {
+                        is EventRow -> EventBubble(row, images, state.highlighted == row.id, keysArriving, handlers)
+                        is StateRow -> Notice(row.text)
+                        is DayRow -> DayDivider(dayLabel(row.date, today))
+                        is ReadMarkerRow -> ReadMarker()
+                        is StartRow -> Notice("This is the beginning of the room")
+                    }
                 }
             }
+            panel?.let { mode ->
+                TopicPanel(
+                    topic = header.topic,
+                    pinned = state.pinned,
+                    pinnedCount = header.pinned.size,
+                    canEdit = state.canEditTopic,
+                    editing = mode == TopicPanelMode.EDITING,
+                    onEdit = { panel = TopicPanelMode.EDITING },
+                    onSave = { topic ->
+                        actions.saveTopic(topic)
+                        panel = TopicPanelMode.SHOWING
+                    },
+                    onCancel = { panel = TopicPanelMode.SHOWING },
+                    onClose = { panel = null },
+                    onOpenLink = onOpenLink,
+                    onPinned = { eventId ->
+                        panel = null
+                        actions.goToOriginal(eventId)
+                    },
+                )
+            }
         }
-    }
-
-    personInfo?.let { model ->
-        // Fresher than the subscription's, and for someone not in it.
-        LaunchedEffect(model) { refreshPresence(model.userId) }
-        PersonInfoSheet(model, header, presences[model.userId], spaces, images, onDismiss = viewModel::closePersonInfo)
     }
 
     val dismiss = { overlay = null }
@@ -321,15 +461,17 @@ fun TimelineScreen(
         null -> {}
         is Overlay.Menu -> {
             val row = rowOf(shown.rowId)
-            if (row == null || row.actions.isEmpty()) {
+            val menu = row?.let { menuActions(it, state.canPin, header.pinned) }.orEmpty()
+            if (row == null || menu.isEmpty()) {
                 LaunchedEffect(shown) { overlay = null }
             } else {
                 MessageMenu(
                     row = row,
+                    actions = menu,
                     onDismiss = dismiss,
                     onReact = { key ->
                         overlay = null
-                        viewModel.react(row.id, key)
+                        actions.react(row.id, key)
                     },
                     onMoreReactions = { overlay = Overlay.EmojiPicker(row.id) },
                     onAction = { action ->
@@ -338,15 +480,17 @@ fun TimelineScreen(
                             MessageAction.REACT -> {
                                 overlay = Overlay.EmojiPicker(row.id)
                             }
-                            MessageAction.REPLY -> viewModel.startReply(row.id)
+                            MessageAction.REPLY -> actions.startReply(row.id)
                             MessageAction.COPY -> row.text?.let { clipboard.setText(AnnotatedString(it)) }
                             MessageAction.SELECT_TEXT -> row.text?.let { overlay = Overlay.SelectText(it) }
-                            MessageAction.EDIT -> viewModel.startEdit(row.id)
+                            MessageAction.EDIT -> actions.startEdit(row.id)
+                            MessageAction.PIN -> row.event.eventId?.let { actions.setPinned(it, true) }
+                            MessageAction.UNPIN -> row.event.eventId?.let { actions.setPinned(it, false) }
                             MessageAction.DELETE -> {
                                 overlay = Overlay.ConfirmDelete(row.id)
                             }
-                            MessageAction.RETRY -> viewModel.retry(row.id)
-                            MessageAction.DISCARD -> viewModel.discard(row.id)
+                            MessageAction.RETRY -> actions.retry(row.id)
+                            MessageAction.DISCARD -> actions.discard(row.id)
                         }
                     },
                 )
@@ -355,7 +499,7 @@ fun TimelineScreen(
         is Overlay.EmojiPicker -> EmojiPickerDialog(
             onPick = { key ->
                 overlay = null
-                viewModel.react(shown.rowId, key)
+                actions.react(shown.rowId, key)
             },
             onDismiss = dismiss,
         )
@@ -379,37 +523,86 @@ fun TimelineScreen(
         is Overlay.ConfirmDelete -> ConfirmDeleteDialog(
             onDelete = {
                 overlay = null
-                viewModel.delete(shown.rowId)
+                actions.delete(shown.rowId)
             },
             onDismiss = dismiss,
         )
     }
 }
 
+/** The topic panel: showing the topic, or editing it. */
+private enum class TopicPanelMode { SHOWING, EDITING }
+
 /**
- * The room's name; a direct chat's with the person's avatar and [presence]
- * (the dot, and the line under the name), all tapped for [onPerson].
+ * The room's name, tapped for [onTitle]; a direct chat's with the person's
+ * avatar and [presence] (the dot, and the line under the name). Below a
+ * room's name, a caret and [topicLine] (after the pinned messages' count),
+ * tapped for [onTopic].
  */
 @Composable
-private fun RoomTitle(header: RoomHeader, presence: Presence?, images: Images, onPerson: (String) -> Unit) {
+private fun RoomTitle(
+    header: RoomHeader,
+    presence: Presence?,
+    images: Images,
+    topicLine: String?,
+    topicOpen: Boolean,
+    onTitle: () -> Unit,
+    onTopic: () -> Unit,
+) {
     val person = header.person
-    if (person == null) {
-        Text(header.name, maxLines = 1, overflow = TextOverflow.Ellipsis)
-        return
-    }
-    Row(
-        Modifier
-            .clip(RoundedCornerShape(8.dp))
-            .clickable { onPerson(person) },
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        WithPresenceDot(presence, avatarSize = 32.dp, dotSize = 10.dp, ring = MaterialTheme.colorScheme.surface) {
-            Avatar(header.name, header.avatarUrl, seed = header.seed, images = images, size = 32.dp)
+    Column {
+        Row(
+            Modifier
+                .clip(RoundedCornerShape(8.dp))
+                .clickable(onClick = onTitle),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            if (person != null) {
+                WithPresenceDot(presence, avatarSize = 32.dp, dotSize = 10.dp, ring = MaterialTheme.colorScheme.surface) {
+                    Avatar(header.name, header.avatarUrl, seed = header.seed, images = images, size = 32.dp)
+                }
+                Spacer(Modifier.width(10.dp))
+            }
+            Column {
+                Text(header.name, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.titleMedium)
+                if (person != null) PresenceLine(presence, style = MaterialTheme.typography.bodySmall)
+            }
         }
-        Spacer(Modifier.width(10.dp))
-        Column {
-            Text(header.name, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            PresenceLine(presence, style = MaterialTheme.typography.bodySmall)
+        if (person == null && topicLine != null) {
+            Row(
+                Modifier
+                    .clip(RoundedCornerShape(6.dp))
+                    .clickable(onClick = onTopic)
+                    .padding(end = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(
+                    if (topicOpen) Icons.Filled.KeyboardArrowDown else Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                    contentDescription = if (topicOpen) "Hide the topic" else "Show the topic",
+                    modifier = Modifier.size(16.dp),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                if (header.pinned.isNotEmpty()) {
+                    Icon(
+                        MtrxIcons.Pin,
+                        contentDescription = "Pinned",
+                        modifier = Modifier.size(12.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Text(
+                        "${header.pinned.size}  ",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Text(
+                    topicLine,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
         }
     }
 }
