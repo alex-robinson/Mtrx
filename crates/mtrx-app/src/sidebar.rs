@@ -81,7 +81,7 @@ fn unread(
         .listed(rooms, space, grouping)
         .iter()
         .filter(|r| space.is_none() || r.kind != RoomKind::Direct)
-        .any(|r| r.unread_messages > 0)
+        .any(|r| is_unread(r))
 }
 
 /// The room list's sections and their rooms, in display order; sections
@@ -1342,7 +1342,7 @@ impl<'a> RoomListView<'a> {
     /// Whether `room`, in a section `collapsed` or not, has its row:
     /// collapsed sections still show the open room and unread ones.
     fn shows(&self, room: &RoomSummary, collapsed: bool) -> bool {
-        !collapsed || self.open == Some(&room.id) || room.unread_messages > 0
+        !collapsed || self.open == Some(&room.id) || is_unread(room)
     }
 
     /// The pinned Notes row: like a room's, but not dragged or tagged, and
@@ -1373,7 +1373,7 @@ impl<'a> RoomListView<'a> {
         };
         let selected = self.open == Some(&room.id);
         let menu_open = self.arrange.room_menu.as_ref() == Some(&room.id);
-        let font = if room.unread_messages > 0 {
+        let font = if is_unread(room) {
             fonts::SEMIBOLD
         } else {
             fonts::INTER
@@ -1429,7 +1429,7 @@ impl<'a> RoomListView<'a> {
             )]));
         }
         // Found by `find_out_of_view` when unread.
-        if room.unread_messages > 0 {
+        if is_unread(room) {
             container(block).id(unread_id(&room.id)).into()
         } else {
             block.into()
@@ -1443,7 +1443,7 @@ impl<'a> RoomListView<'a> {
         let menu_open = self.arrange.room_menu.as_ref() == Some(&room.id);
         let hovered =
             matches!(&self.arrange.hovered, Some(arrange::Dragged::Room(id)) if *id == room.id);
-        let font = if room.unread_messages > 0 {
+        let font = if is_unread(room) {
             fonts::SEMIBOLD
         } else {
             fonts::INTER
@@ -1508,7 +1508,7 @@ impl<'a> RoomListView<'a> {
             area = area.on_right_press(menu);
         }
         // Found by `find_out_of_view` when unread.
-        if room.unread_messages > 0 {
+        if is_unread(room) {
             container(area).id(unread_id(&room.id)).into()
         } else {
             area.into()
@@ -1551,13 +1551,20 @@ fn access_symbol<'a>(public: bool) -> Element<'a, Message> {
     container(symbol).center(ROOM_AVATAR).into()
 }
 
-/// Unread messages, in red when they mention the user.
+/// Whether the room has unread messages or notifications: bold, shown in
+/// a collapsed section, and found when out of view.
+fn is_unread(room: &RoomSummary) -> bool {
+    room.unread_messages > 0 || room.unread_notifications > 0
+}
+
+/// Its notifications (the dock's count adds these up), in red when they
+/// mention the user.
 fn unread_count<'a>(room: &RoomSummary) -> Option<Element<'a, Message>> {
     let highlight = room.unread_mentions > 0;
     let count = if highlight {
         room.unread_mentions
     } else {
-        room.unread_messages
+        room.unread_notifications
     };
     (count > 0).then(|| {
         container(text(count.to_string()).size(11).font(fonts::SEMIBOLD))
@@ -1629,7 +1636,7 @@ pub struct OutOfView {
 pub fn find_out_of_view(rooms: &[RoomSummary]) -> Task<OutOfView> {
     let ids = rooms
         .iter()
-        .filter(|r| r.kind != RoomKind::Space && r.unread_messages > 0)
+        .filter(|r| r.kind != RoomKind::Space && is_unread(r))
         .map(|r| unread_id(&r.id))
         .collect();
     iced::advanced::widget::operate(FindUnread {
@@ -1856,6 +1863,20 @@ mod tests {
             &Grouping::default()
         ));
         assert!(unread(&rooms, None, &arrange, &Grouping::default()));
+    }
+
+    /// A room with notifications the client doesn't count as unread
+    /// messages (e.g. one it couldn't decrypt) still shows them, as the
+    /// dock counts them.
+    #[test]
+    fn notifications_show_without_unread_messages() {
+        let mut room = rooms().remove(0);
+        room.unread_messages = 0;
+        room.unread_notifications = 2;
+        assert!(is_unread(&room));
+        assert!(unread_count(&room).is_some());
+        room.unread_notifications = 0;
+        assert!(!is_unread(&room) && unread_count(&room).is_none());
     }
 
     #[test]
