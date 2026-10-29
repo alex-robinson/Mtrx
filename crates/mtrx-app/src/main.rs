@@ -56,6 +56,7 @@ mod selectable;
 mod selectable_image;
 mod selection;
 mod send_later;
+mod spelling;
 mod settings;
 mod sidebar;
 mod status;

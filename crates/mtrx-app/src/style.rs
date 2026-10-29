@@ -531,6 +531,11 @@ pub fn text_button(theme: &Theme, status: button::Status) -> button::Style {
     rounded_button(button::text)(theme, status)
 }
 
+/// The wavy line under a misspelled word.
+pub fn misspelled(theme: &Theme) -> Color {
+    theme.extended_palette().danger.base.color
+}
+
 pub fn input(theme: &Theme, status: text_input::Status) -> text_input::Style {
     let style = text_input::default(theme, status);
     text_input::Style {
