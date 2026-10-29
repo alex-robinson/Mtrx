@@ -764,6 +764,151 @@ fn rooms_by_space_with_direct_chats_and_invites() {
     assert_eq!(summary(&sub).kind, RoomKind::Space);
 }
 
+/// Through the bindings alone: a space and a room in it made, inviting
+/// Bob; its settings and topic changed; the space's rooms listed; the invite
+/// accepted, a role given, and the room left.
+#[test]
+#[ignore = "needs the local Synapse (testserver/run.sh)"]
+fn rooms_made_set_up_joined_and_left() {
+    let core_runtime = tokio::runtime::Runtime::new().unwrap();
+    let [alice, bob] = ["ffi-manage", "ffi-manage-bob"].map(|prefix| {
+        let name = unique_name(prefix);
+        core_runtime.block_on(register(&name)).unwrap();
+        name
+    });
+    let (a, b) = (sign_in(&alice), sign_in(&bob));
+    let (a_rooms, a_updates) = forward();
+    let _a_list = block_on(a.session.subscribe_room_list(a_rooms)).unwrap();
+    let (b_rooms, b_updates) = forward();
+    let _b_list = block_on(b.session.subscribe_room_list(b_rooms)).unwrap();
+
+    assert!(block_on(a.session.offers_owners()));
+    let space = block_on(a.session.create_room(mtrx_ffi::NewRoom {
+        name: "Lab".into(),
+        space: true,
+        ..Default::default()
+    }))
+    .unwrap();
+    let room = block_on(a.session.create_room(mtrx_ffi::NewRoom {
+        name: "coffee".into(),
+        encrypted: true,
+        invite: vec![b.session.user_id()],
+        parent: Some(space.clone()),
+        ..Default::default()
+    }))
+    .unwrap();
+    let state = wait_for("the room in its space", &a_updates, |s: &RoomListState| {
+        s.spaces
+            .iter()
+            .any(|sp| sp.space_id == space && sp.room_ids.contains(&room))
+    });
+    // In the space's Rooms section, among all the desktop's sections.
+    let sections = &state
+        .spaces
+        .iter()
+        .find(|sp| sp.space_id == space)
+        .unwrap()
+        .sections;
+    let keys: Vec<_> = sections.iter().map(|s| s.key.as_str()).collect();
+    assert_eq!(
+        keys,
+        [
+            "invites",
+            "direct_messages",
+            "favourites",
+            "rooms",
+            "low_priority"
+        ]
+    );
+    assert_eq!(sections[3].room_ids, std::slice::from_ref(&room));
+    // Notes at the top: on until turned off, for all devices.
+    assert!(state.notes_at_top);
+    block_on(a.session.set_notes_at_top(false)).unwrap();
+    wait_for("Notes not at the top", &a_updates, |s: &RoomListState| {
+        !s.notes_at_top
+    });
+
+    // Its settings: ours to change; the topic with a call link.
+    let settings = block_on(a.session.room_settings(room.clone())).unwrap();
+    assert!(settings.can_rename && settings.can_change_access && settings.encrypted);
+    assert_eq!(settings.version.as_deref(), Some("12"));
+    assert_eq!(settings.spaces[0].space_id, space);
+    let topic = mtrx_ffi::compose_topic(mtrx_ffi::Topic {
+        text: "Breaks".into(),
+        links: vec![mtrx_ffi::RoomLink {
+            call: true,
+            title: Some("Daily".into()),
+            url: "https://meet.example.org/coffee".into(),
+            passcode: None,
+            name: String::new(),
+        }],
+    });
+    block_on(a.session.set_room_topic(room.clone(), topic)).unwrap();
+    block_on(
+        a.session
+            .set_notify_mode(room.clone(), mtrx_ffi::NotifyMode::Mentions),
+    )
+    .unwrap();
+    block_on(
+        a.session
+            .set_room_access(room.clone(), mtrx_ffi::Access::SpaceMembers),
+    )
+    .unwrap();
+    let settings = block_on(a.session.room_settings(room.clone())).unwrap();
+    assert_eq!(
+        (settings.notify, settings.access),
+        (
+            mtrx_ffi::NotifyMode::Mentions,
+            mtrx_ffi::Access::SpaceMembers
+        )
+    );
+    let state = wait_for("the topic", &a_updates, |s: &RoomListState| {
+        s.rooms
+            .iter()
+            .any(|r| r.id == room && r.topic.as_deref().is_some_and(|t| t.contains("[call")))
+    });
+    let summary = state.rooms.iter().find(|r| r.id == room).unwrap();
+    let parsed = mtrx_ffi::parse_topic(summary.topic.clone().unwrap());
+    assert_eq!(
+        (parsed.text.as_str(), parsed.links[0].name.as_str()),
+        ("Breaks", "Daily")
+    );
+
+    // The space lists it; Bob accepts the invite.
+    let children = block_on(a.session.space_children(space.clone())).unwrap();
+    let listed = children.iter().find(|r| r.id == room).unwrap();
+    assert_eq!(listed.access, mtrx_ffi::JoinAccess::SpaceMembers);
+    wait_for("Bob's invite", &b_updates, |s: &RoomListState| {
+        s.rooms.iter().any(|r| r.id == room && r.invited)
+    });
+    assert_eq!(
+        block_on(b.session.join(room.clone(), vec![])).unwrap(),
+        room
+    );
+
+    // Alice makes him a moderator; he may not manage her.
+    let level = mtrx_ffi::role_level(mtrx_ffi::Role::Moderator, 0);
+    let bob_id = b.session.user_id();
+    let deadline = std::time::Instant::now() + TIMEOUT;
+    loop {
+        let members = block_on(a.session.members(room.clone())).unwrap();
+        if let Some(bob) = members.iter().find(|m| m.user_id == bob_id && !m.invited) {
+            assert!(bob.manage.up_to.is_some() && bob.manage.remove);
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline, "Bob joined");
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    block_on(a.session.set_level(room.clone(), bob_id.clone(), level)).unwrap();
+    let members = block_on(b.session.members(room.clone())).unwrap();
+    assert!(members.iter().all(|m| !m.manage.remove));
+
+    block_on(b.session.leave(room.clone())).unwrap();
+    wait_for("Bob left", &b_updates, |s: &RoomListState| {
+        !s.rooms.iter().any(|r| r.id == room)
+    });
+}
+
 /// A 1×1 PNG, opaque red.
 fn red_dot_png() -> Vec<u8> {
     vec![

@@ -26,6 +26,9 @@ json = "20250517"
 androidxTestRunner = "1.6.2"
 androidxTestCore = "1.6.1"
 androidxTestJunit = "1.2.1"
+# Screenshot tests on the JVM (layoutlib); this release is built for AGP 8.10,
+# Kotlin 2.1.21 and compileSdk 36, as the app.
+paparazzi = "2.0.0-alpha02"
 
 [libraries]
 androidx-annotation = { group = "androidx.annotation", name = "annotation", version.ref = "annotation" }
@@ -58,3 +61,4 @@ android-application = { id = "com.android.application", version.ref = "agp" }
 android-library = { id = "com.android.library", version.ref = "agp" }
 kotlin-android = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }
 kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
+paparazzi = { id = "app.cash.paparazzi", version.ref = "paparazzi" }

@@ -69,6 +69,8 @@ pub enum Message {
     Sort(String, Sort),
     /// Which rooms of spaces Home lists too, from the settings.
     AtHome(AtHome),
+    /// The Notes to self at the top, from the settings.
+    NotesAtTop(bool),
     TagSaved(OwnedRoomId, Result<(), String>),
     Saved(Result<(), String>),
 }
@@ -465,6 +467,9 @@ impl Arrange {
             }
             Message::AtHome(at_home) => {
                 return self.change(context.session, move |c| c.at_home = at_home);
+            }
+            Message::NotesAtTop(on) => {
+                return self.change(context.session, move |c| c.notes_at_top = Some(on));
             }
             Message::TagSaved(room, Ok(())) => {
                 if let Some(pending) = self.pending_tags.get_mut(&room) {

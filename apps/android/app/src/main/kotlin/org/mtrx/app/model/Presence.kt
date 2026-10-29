@@ -1,6 +1,5 @@
 package org.mtrx.app.model
 
-import android.util.Log
 import java.time.Duration
 import java.time.Instant
 import kotlinx.coroutines.CoroutineScope
@@ -121,7 +120,8 @@ class SharePresence(private val store: SharePresenceStore, private val scope: Co
  * nothing more is read or set. The `Account` calls [foreground] and
  * [background] around sync, [sharingChanged] for the switch, [input] for
  * touches and keys, and [close] at sign-out. Used on [parent]'s (main)
- * thread; listener callbacks hop there. [clock] counts milliseconds.
+ * thread; listener callbacks hop there. [clock] counts milliseconds;
+ * what goes wrong goes to [log].
  */
 @OptIn(FlowPreview::class)
 class PresenceModel(
@@ -131,6 +131,7 @@ class PresenceModel(
     private val sharing: SharePresence,
     parent: CoroutineScope,
     private val clock: () -> Long,
+    private val log: Logger,
     private val idleAfter: Long = IDLE_AFTER_MS,
 ) {
     private val scope = CoroutineScope(parent.coroutineContext + SupervisorJob(parent.coroutineContext[Job]))
@@ -294,7 +295,7 @@ class PresenceModel(
     /** The server does not share presence: hide it for the rest of the session. */
     private fun hide() {
         if (!_available.value) return
-        Log.i(TAG, "The server does not share presence")
+        log.info(TAG, "The server does not share presence")
         _available.value = false
         _presences.value = emptyMap()
         users = null
@@ -306,7 +307,7 @@ class PresenceModel(
         if (error is MtrxException.Other && error.reason == PRESENCE_UNAVAILABLE) {
             hide()
         } else {
-            Log.w(TAG, "$doing failed: ${describe(error)}")
+            log.warn(TAG, "$doing failed: ${describe(error)}")
         }
     }
 

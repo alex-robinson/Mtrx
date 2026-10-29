@@ -1,6 +1,7 @@
 # Android app (apps/android): the Rust library and its Kotlin bindings, then
 # a debug APK (artifact Mtrx-android-debug, signed with the runner's debug
-# key), the app's unit tests, and on an emulator the APK started (artifact
+# key), the app's unit tests, screenshots of the key screens (artifact
+# android-screenshots), and on an emulator the APK started (artifact
 # android-smoke) and the instrumented tests against a local Synapse (push
 # notifications end to end). Gradle is set up by version; no wrapper jar is
 # committed.
@@ -77,6 +78,19 @@ jobs:
         if: env.WARM != 'true'
         working-directory: apps/android
         run: gradle --no-daemon --stacktrace :app:testDebugUnitTest
+      - name: Screenshots
+        # The key screens with fake data (Paparazzi, on the JVM; app/src/test/
+        # .../screenshots), recorded as PNGs, not compared: to look at.
+        if: env.WARM != 'true'
+        id: screenshots
+        working-directory: apps/android
+        run: gradle --no-daemon --stacktrace :app:recordPaparazziDebug
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() && steps.screenshots.outcome != 'skipped' && env.WARM != 'true' }}
+        with:
+          name: android-screenshots
+          path: apps/android/app/src/test/snapshots/images
+          if-no-files-found: error
       - name: Instrumented tests' APK
         if: env.WARM != 'true'
         working-directory: apps/android

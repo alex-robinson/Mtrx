@@ -4,6 +4,8 @@ plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.compose)
+    // Screenshot tests of the screens with fake data (src/test/.../screenshots).
+    alias(libs.plugins.paparazzi)
 }
 
 android {

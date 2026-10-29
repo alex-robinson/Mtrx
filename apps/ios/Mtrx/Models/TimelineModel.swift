@@ -30,15 +30,24 @@ final class TimelineModel: ObservableObject {
     /// Back-pagination reached the room's beginning.
     @Published private(set) var reachedStart = false
     @Published private(set) var loadingOlder = false
+    /// The composer's text; kept for the room when it closes (`Drafts`).
     @Published var draft = "" {
         didSet {
             if draft != oldValue {
                 setTyping(!draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                keepDraft()
             }
         }
     }
     /// What sending the draft does instead of sending a new message.
-    @Published private(set) var compose: Compose?
+    @Published private(set) var compose: Compose? {
+        didSet { keepDraft() }
+    }
+    /// We may pin and unpin messages here.
+    @Published private(set) var canPin = false
+    /// Event IDs of the pinned messages: the room list's, and our changes
+    /// at once.
+    @Published private(set) var pinned: Set<String>
     /// The names of the others typing.
     @Published private(set) var typing: [String] = []
     /// Looking for a quoted message in older events.
@@ -78,16 +87,24 @@ final class TimelineModel: ObservableObject {
     /// The last back-pagination: each waits for the one before.
     private var pagination: Task<Bool, Error>?
     private var seek: Seek?
+    private let drafts: Drafts
+    /// Our reactions added or taken away here, until the library's items
+    /// show them: whether we want each one, shown so at once.
+    private var reacting: [ReactionKey: Bool] = [:]
 
     /// `keysArriving`: whether message keys are arriving from the backup,
-    /// now and on every change (`SessionModel.keysArriving`).
-    init(session: Session, room: RoomSummary, keysArriving: AnyPublisher<Bool, Never>) {
+    /// now and on every change (`SessionModel.keysArriving`). The draft
+    /// left in the room is back (`drafts`).
+    init(session: Session, room: RoomSummary, keysArriving: AnyPublisher<Bool, Never>, drafts: Drafts = Drafts()) {
         self.session = session
         self.room = room
+        self.drafts = drafts
         roomId = room.id
         showSenders = room.kind != .direct
+        pinned = Set(room.pinned)
         let ours = session.userId()
         person = room.kind == .direct ? room.directUserId.flatMap { $0 == ours ? nil : $0 } : nil
+        draft = drafts[room.id]
         keysArrivingSubscription = keysArriving.sink { [weak self] arriving in
             MainActor.assumeIsolated { self?.setKeysArriving(arriving) }
         }
@@ -111,11 +128,19 @@ final class TimelineModel: ObservableObject {
             opening = false
             self.error = errorMessage(error)
         }
+        canPin = (try? await session.canPin(roomId: roomId)) ?? false
     }
 
     func apply(_ items: [TimelineItem]) {
         self.items = items
-        rows = TimelineRows.build(items, showSenders: showSenders, keysArriving: keysArriving)
+        let built = build()
+        // Reactions the library shows as wanted (or whose message went)
+        // are no longer ours to show.
+        reacting = reacting.filter { key, wanted in
+            guard let row = Self.messageRow(key.itemId, in: built) else { return false }
+            return row.reactions.contains { $0.key == key.key && $0.byUs } != wanted
+        }
+        rows = withOurReactions(built)
         if items.contains(where: { $0.content == .start }) {
             reachedStart = true
         }
@@ -123,11 +148,45 @@ final class TimelineModel: ObservableObject {
         markRead()
     }
 
+    /// The rows for the library's items, as it gives them.
+    private func build() -> [TimelineRow] {
+        TimelineRows.build(items, showSenders: showSenders, keysArriving: keysArriving)
+    }
+
+    /// `rows` with the reactions we changed and the library does not show
+    /// yet.
+    private func withOurReactions(_ rows: [TimelineRow]) -> [TimelineRow] {
+        guard !reacting.isEmpty else { return rows }
+        return rows.map { row in
+            guard case .message(let message) = row.content else { return row }
+            let changes = reacting.filter { $0.key.itemId == row.id }
+            guard !changes.isEmpty else { return row }
+            var reactions = message.reactions
+            for (key, wanted) in changes {
+                reactions = Reactions.setting(key.key, ours: wanted, in: reactions)
+            }
+            return TimelineRow(id: row.id, content: .message(message.with(reactions: reactions)))
+        }
+    }
+
     /// Undecryptable rows already shown change their text too.
     private func setKeysArriving(_ arriving: Bool) {
         guard arriving != keysArriving else { return }
         keysArriving = arriving
-        rows = TimelineRows.build(items, showSenders: showSenders, keysArriving: arriving)
+        rows = withOurReactions(build())
+    }
+
+    /// The room list's pinned messages changed (`RoomSummary.pinned`).
+    func setPinned(_ ids: [String]) {
+        pinned = Set(ids)
+    }
+
+    private func keepDraft() {
+        if case .edit = compose {
+            drafts[roomId] = savedDraft ?? ""
+        } else {
+            drafts[roomId] = draft
+        }
     }
 
     /// The timeline is on screen (or not): mark it read and show who types
@@ -304,10 +363,58 @@ final class TimelineModel: ObservableObject {
 
     // MARK: Acting on messages
 
-    /// Add our reaction `key` to row `itemId`'s message, or remove it.
+    /// Add our reaction `key` to row `itemId`'s message, or remove it: shown
+    /// so at once, until the library's items show it (or it failed).
     @discardableResult
     func react(_ itemId: String, key: String) -> Task<Void, Never> {
-        act { try await $0.react(itemId: itemId, key: key) }
+        guard timeline != nil, let row = messageRow(itemId) else { return act { try await $0.react(itemId: itemId, key: key) } }
+        let change = ReactionKey(itemId: itemId, key: key)
+        reacting[change] = !row.reactions.contains { $0.key == key && $0.byUs }
+        rows = withOurReactions(build())
+        return act {
+            try await $0.react(itemId: itemId, key: key)
+        } failed: { [weak self] in
+            guard let self else { return }
+            reacting[change] = nil
+            rows = withOurReactions(build())
+        }
+    }
+
+    /// What holding row `itemId`'s message offers: its own actions, and
+    /// pinning it where we may.
+    func actions(for row: MessageRow) -> [MessageAction] {
+        var actions = row.actions
+        if canPin, let eventId = row.event.eventId, row.message != nil {
+            let pin: MessageAction = pinned.contains(eventId) ? .unpin : .pin
+            if let delete = actions.firstIndex(of: .delete) {
+                actions.insert(pin, at: delete)
+            } else {
+                actions.append(pin)
+            }
+        }
+        return actions
+    }
+
+    /// Pin row `itemId`'s message, or unpin it: shown so at once.
+    @discardableResult
+    func togglePin(_ itemId: String) -> Task<Void, Never> {
+        guard let eventId = messageRow(itemId)?.event.eventId else { return Task {} }
+        let pin = !pinned.contains(eventId)
+        let before = pinned
+        if pin {
+            pinned.insert(eventId)
+        } else {
+            pinned.remove(eventId)
+        }
+        let (session, roomId) = (self.session, self.roomId)
+        return Task {
+            do {
+                try await session.setPinned(roomId: roomId, eventId: eventId, pin: pin)
+            } catch {
+                pinned = before
+                self.error = errorMessage(error)
+            }
+        }
     }
 
     /// Delete row `itemId`'s message (ours) for everyone.
@@ -330,18 +437,25 @@ final class TimelineModel: ObservableObject {
 
     /// Run `action` in a task of the model's (leaving the room does not
     /// cancel it); a failure shows as `error`.
-    private func act(_ action: @escaping (Timeline) async throws -> Void) -> Task<Void, Never> {
+    private func act(
+        _ action: @escaping (Timeline) async throws -> Void, failed: @escaping @MainActor () -> Void = {}
+    ) -> Task<Void, Never> {
         guard let timeline else { return Task {} }
         return Task {
             do {
                 try await action(timeline)
             } catch {
+                failed()
                 self.error = errorMessage(error)
             }
         }
     }
 
     func messageRow(_ itemId: String) -> MessageRow? {
+        Self.messageRow(itemId, in: rows)
+    }
+
+    private static func messageRow(_ itemId: String, in rows: [TimelineRow]) -> MessageRow? {
         for row in rows where row.id == itemId {
             if case .message(let message) = row.content { return message }
         }
@@ -475,6 +589,49 @@ extension TimelineModel {
         let eventId: String
         /// Back-pagination reached the room's start.
         var atStart = false
+    }
+
+    /// A reaction of ours to a row's message.
+    private struct ReactionKey: Hashable {
+        let itemId: String
+        let key: String
+    }
+}
+
+/// Reactions as they are once ours changed.
+enum Reactions {
+    /// `reactions` with ours with `key` added (`ours`) or taken away; the
+    /// others' stay. A new key goes last.
+    static func setting(_ key: String, ours: Bool, in reactions: [Reaction]) -> [Reaction] {
+        var reactions = reactions
+        if let at = reactions.firstIndex(where: { $0.key == key }) {
+            var reaction = reactions[at]
+            guard reaction.byUs != ours else { return reactions }
+            reaction.byUs = ours
+            reaction.count = ours ? reaction.count + 1 : reaction.count - min(reaction.count, 1)
+            if reaction.count == 0 {
+                reactions.remove(at: at)
+            } else {
+                reactions[at] = reaction
+            }
+        } else if ours {
+            reactions.append(Reaction(key: key, count: 1, byUs: true, senders: []))
+        }
+        return reactions
+    }
+}
+
+extension MessageRow {
+    /// The same row with other reactions.
+    func with(reactions: [Reaction]) -> MessageRow {
+        var event = event
+        if case .message(var message) = event.content {
+            message.reactions = reactions
+            event.content = .message(message: message)
+        }
+        return MessageRow(
+            event: event, firstInGroup: firstInGroup, showSender: showSender, avatarColumn: avatarColumn,
+            decrypting: decrypting)
     }
 }
 

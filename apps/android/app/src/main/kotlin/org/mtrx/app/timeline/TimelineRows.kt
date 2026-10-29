@@ -65,6 +65,8 @@ enum class MessageAction(val label: String) {
     COPY("Copy"),
     SELECT_TEXT("Select text"),
     EDIT("Edit"),
+    PIN("Pin"),
+    UNPIN("Unpin"),
     DELETE("Delete"),
     RETRY("Retry"),
     DISCARD("Discard"),
@@ -94,6 +96,21 @@ fun messageActions(row: EventRow): Set<MessageAction> {
             add(MessageAction.DISCARD)
         }
     }
+}
+
+/**
+ * The menu of a held message: [EventRow.actions], and Pin or Unpin (by its
+ * event ID, in [pinned]) for a sent message where we [canPin]; in the
+ * menu's order.
+ */
+fun menuActions(row: EventRow, canPin: Boolean, pinned: List<String>): Set<MessageAction> {
+    val eventId = row.event.eventId
+    val pin = when {
+        !canPin || eventId == null || row.message == null -> null
+        eventId in pinned -> MessageAction.UNPIN
+        else -> MessageAction.PIN
+    }
+    return (row.actions + listOfNotNull(pin)).sortedBy { it.ordinal }.toSet()
 }
 
 /** A message's text; an image's or file's body is its name unless it has a caption. */

@@ -62,6 +62,16 @@ impl From<std::io::Error> for MtrxError {
     }
 }
 
+/// A room ID from the apps.
+pub(crate) fn room_id(id: &str) -> Result<mtrx_core::OwnedRoomId, MtrxError> {
+    mtrx_core::OwnedRoomId::try_from(id).map_err(MtrxError::invalid)
+}
+
+/// A user ID from the apps.
+pub(crate) fn user_id(id: &str) -> Result<mtrx_core::OwnedUserId, MtrxError> {
+    mtrx_core::OwnedUserId::try_from(id).map_err(MtrxError::invalid)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

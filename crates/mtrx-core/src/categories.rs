@@ -26,6 +26,11 @@ pub struct RoomCategories {
     pub spaces: BTreeMap<OwnedRoomId, Layout>,
     #[serde(default)]
     pub at_home: AtHome,
+    /// The Notes to self at the top of the room list, in every space and on
+    /// every device; `None` until set (a desktop then saves its own
+    /// earlier choice here).
+    #[serde(default)]
+    pub notes_at_top: Option<bool>,
 }
 
 /// Which rooms of spaces Home lists too. It always lists direct chats,
@@ -138,6 +143,11 @@ impl Grouping {
 }
 
 impl RoomCategories {
+    /// Whether the Notes to self stay at the top: on until turned off.
+    pub fn notes_at_top(&self) -> bool {
+        self.notes_at_top.unwrap_or(true)
+    }
+
     /// The layout of `space`, or Home's for `None`.
     pub fn layout(&self, space: Option<&RoomId>) -> &Layout {
         static EMPTY: Layout = Layout {

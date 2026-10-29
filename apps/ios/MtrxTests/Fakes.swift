@@ -37,11 +37,16 @@ final class FakeTimeline: Timeline, @unchecked Sendable {
     var discarded: [String] = []
     var typing: [Bool] = []
     var actionError: Error?
+    /// Given to the listener as it subscribes, if any.
+    var initialItems: [TimelineItem] = []
 
     override func roomId() -> String { "!room:example.org" }
 
     override func subscribe(listener: TimelineListener) -> TaskHandle {
         self.listener = listener
+        if !initialItems.isEmpty {
+            listener.onUpdate(items: initialItems)
+        }
         return FakeTaskHandle(noHandle: .init())
     }
 
@@ -284,6 +289,130 @@ final class FakeSession: Session, @unchecked Sendable {
     }
 
     override func forget() async throws {}
+
+    // MARK: Rooms: settings, members, pins, joining, making
+
+    let fakePinned = FakeTimeline(noHandle: .init())
+    var canPinResult = true
+    /// Each `roomSettings` call returns this (after the changes made).
+    var settings = Make.settings()
+    var memberList: [Member] = []
+    /// Changes asked for, in order, e.g. "notify mentions", "pin $e true".
+    var changes: [String] = []
+    /// Thrown by the calls that change something, if set.
+    var changeError: Error?
+    var children: Result<[DirectoryRoom], Error> = .success([])
+    var childrenRequests = 0
+    var directory: Result<DirectoryPage, Error> = .success(DirectoryPage(rooms: [], next: nil))
+    /// Each `publicRooms` call's server, query and kind.
+    var directoryRequests: [(server: String?, query: String, kind: DirectoryKind)] = []
+    var browsedServers: [String] = []
+    var previewResult: Result<DirectoryRoom, Error> = .failure(MtrxError.Other(reason: "Not found"))
+    var offersOwnersResult = false
+    var created: [NewRoom] = []
+
+    private func change(_ change: String) throws {
+        if let changeError { throw changeError }
+        changes.append(change)
+    }
+
+    override func canPin(roomId: String) async throws -> Bool { canPinResult }
+
+    override func setPinned(roomId: String, eventId: String, pin: Bool) async throws {
+        try change("pin \(eventId) \(pin)")
+    }
+
+    override func pinnedTimeline(roomId: String) async throws -> Timeline { fakePinned }
+
+    override func roomSettings(roomId: String) async throws -> RoomSettings { settings }
+
+    override func members(roomId: String) async throws -> [Member] { memberList }
+
+    override func setNotifyMode(roomId: String, mode: NotifyMode) async throws {
+        try change("notify \(mode)")
+        settings.notify = mode
+    }
+
+    override func setRoomAccess(roomId: String, access: Access) async throws {
+        try change("access \(access)")
+        settings.access = access
+    }
+
+    override func setRoomName(roomId: String, name: String) async throws { try change("name \(name)") }
+
+    override func setRoomTopic(roomId: String, topic: String) async throws { try change("topic \(topic)") }
+
+    override func setAddress(roomId: String, name: String?) async throws { try change("address \(name ?? "-")") }
+
+    override func setListed(roomId: String, listed: Bool) async throws { try change("listed \(listed)") }
+
+    override func setHistory(roomId: String, history: History) async throws { try change("history \(history)") }
+
+    override func setPermissions(roomId: String, permissions: Permissions) async throws {
+        try change("permissions \(permissions)")
+    }
+
+    override func encryptRoom(roomId: String) async throws { try change("encrypt") }
+
+    override func setSuggested(spaceId: String, roomId: String, suggested: Bool) async throws {
+        try change("suggested \(spaceId) \(suggested)")
+    }
+
+    override func addToSpace(spaceId: String, roomId: String) async throws { try change("add to \(spaceId)") }
+
+    override func removeFromSpace(spaceId: String, roomId: String) async throws {
+        try change("remove from \(spaceId)")
+    }
+
+    override func setLevel(roomId: String, userId: String, level: Int64) async throws {
+        try change("level \(userId) \(level)")
+    }
+
+    override func removeMember(roomId: String, userId: String, reason: String?, ban: Bool) async throws {
+        try change("\(ban ? "ban" : "remove") \(userId) \(reason ?? "-")")
+    }
+
+    override func unban(roomId: String, userId: String) async throws { try change("unban \(userId)") }
+
+    override func setNotesAtTop(on: Bool) async throws { try change("notes at top \(on)") }
+
+    override func leave(roomId: String) async throws { try change("leave \(roomId)") }
+
+    override func join(room: String, via: [String]) async throws -> String {
+        try change("join \(room)")
+        return room.hasPrefix("!") ? room : "!joined:example.org"
+    }
+
+    override func knock(room: String, via: [String]) async throws -> String {
+        try change("knock \(room)")
+        return room
+    }
+
+    override func spaceChildren(spaceId: String) async throws -> [DirectoryRoom] {
+        childrenRequests += 1
+        return try children.get()
+    }
+
+    override func publicRooms(server: String?, query: String, kind: DirectoryKind, page: String?) async throws
+        -> DirectoryPage
+    {
+        directoryRequests.append((server, query, kind))
+        return try directory.get()
+    }
+
+    override func preview(address: Address) async throws -> DirectoryRoom { try previewResult.get() }
+
+    override func directoryServers() -> [String] { ["other.org"] }
+
+    override func rememberDirectoryServer(server: String) async throws { browsedServers.append(server) }
+
+    override func offersOwners() async -> Bool { offersOwnersResult }
+
+    override func createRoom(new: NewRoom) async throws -> String {
+        if let changeError { throw changeError }
+        created.append(new)
+        return "!new:example.org"
+    }
 }
 
 final class FakeOAuthLogin: OAuthLogin, @unchecked Sendable {
@@ -377,12 +506,59 @@ enum Make {
 
     static func room(
         _ id: String, kind: RoomKind = .room, invited: Bool = false, name: String? = nil, unread: UInt64 = 0,
-        directUser: String? = nil, lastActivity: Date? = nil, avatarUrl: String? = nil
+        directUser: String? = nil, lastActivity: Date? = nil, avatarUrl: String? = nil, topic: String? = nil,
+        parents: [String] = [], pinned: [String] = [], alias: String? = nil, members: UInt64 = 2,
+        mentions: UInt64 = 0
     ) -> RoomSummary {
         RoomSummary(
-            id: id, name: name ?? id, avatarUrl: avatarUrl, topic: nil, kind: kind, invited: invited, encrypted: false,
-            unreadMessages: unread, unreadMentions: 0, unreadNotifications: 0, lastActivity: lastActivity,
-            directUserId: directUser, alias: nil, joinedMembers: 2)
+            id: id, name: name ?? id, avatarUrl: avatarUrl, topic: topic, kind: kind, invited: invited,
+            encrypted: false, unreadMessages: unread, unreadMentions: mentions, unreadNotifications: 0,
+            lastActivity: lastActivity, directUserId: directUser, alias: alias, joinedMembers: members,
+            parents: parents, public: false, pinned: pinned)
+    }
+
+    /// A room's settings, all ours to change unless said otherwise.
+    static func settings(
+        canChange: Bool = true, access: Access = .invite, encrypted: Bool = true, listed: Bool? = false,
+        spaces: [SpaceLink] = [], canAddTo: [String] = [], banned: [Banned] = [], address: String? = nil
+    ) -> RoomSettings {
+        RoomSettings(
+            canRename: canChange, canChangeTopic: canChange, canChangePicture: canChange, canInvite: canChange,
+            notify: .all, access: access, canChangeAccess: canChange, canAddRooms: canChange, address: address,
+            canChangeAddress: canChange, listed: listed, history: .joined, canChangeHistory: canChange,
+            permissions: .everyone, canChangePermissions: canChange, encrypted: encrypted, canEncrypt: canChange,
+            version: "12", spaces: spaces, canAddTo: canAddTo, banned: banned, canUnban: canChange)
+    }
+
+    /// A member at `level` (nil: an owner); `upTo`: the highest level we
+    /// may give them (nil: theirs is not ours to change).
+    static func member(
+        _ name: String, level: Int64?, upTo: Int64? = nil, remove: Bool = false, ban: Bool = false,
+        invited: Bool = false, named: Bool = true
+    ) -> Member {
+        Member(
+            userId: "@\(name):example.org", name: named ? name.capitalized : nil, avatarUrl: nil,
+            role: level == 100 || level == nil ? .admin : level == 50 ? .moderator : .member, level: level,
+            invited: invited, manage: Manage(remove: remove, ban: ban, upTo: upTo, defaultLevel: 0))
+    }
+
+    /// A section of a space's list; `key` as the library makes them.
+    static func section(_ kind: SectionKind, _ roomIds: [String], name: String = "", key: String? = nil) -> RoomSection {
+        let keys: [SectionKind: String] = [
+            .invites: "invites", .favourites: "favourites", .directMessages: "direct_messages", .rooms: "rooms",
+            .lowPriority: "low_priority", .category: "category:\(name.lowercased())",
+        ]
+        return RoomSection(key: key ?? keys[kind]!, kind: kind, name: name, roomIds: roomIds)
+    }
+
+    static func directoryRoom(
+        _ id: String, name: String? = nil, access: JoinAccess = .public, membership: Membership? = nil,
+        space: Bool = false, members: UInt64 = 5, topic: String? = nil, role: Role? = nil, children: UInt64 = 0
+    ) -> DirectoryRoom {
+        DirectoryRoom(
+            id: id, alias: nil, name: name ?? id, topic: topic, avatarUrl: nil, members: members, isSpace: space,
+            children: children, access: access, membership: membership, role: role, via: ["example.org"],
+            suggested: false)
     }
 
     /// The rooms by space as the library's integration test makes them, most
