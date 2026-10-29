@@ -1,6 +1,14 @@
 package org.mtrx.app.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.width
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.ui.text.style.TextOverflow
+import org.mtrx.app.rooms.ShownSection
+import org.mtrx.app.rooms.SectionedList
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -37,7 +45,6 @@ import org.mtrx.app.model.Images
 import org.mtrx.app.model.SpaceEntry
 import org.mtrx.app.rooms.RecentRow
 import org.mtrx.app.rooms.SpaceRow
-import org.mtrx.app.rooms.SpaceSections
 import org.mtrx.app.rooms.unreadBadge
 import uniffi.mtrx.Presence
 import uniffi.mtrx.RoomKind
@@ -46,9 +53,13 @@ import uniffi.mtrx.RoomSummary
 // The lists of the home's tabs, in compact rows (#47): without a model, for
 // the screens and their screenshot tests.
 
-/** The Chats tab: the direct chats, with the people's presence. */
+/**
+ * The Chats tab: the Notes to self at the top where pinned there ([notes]),
+ * then the direct chats, with the people's presence.
+ */
 @Composable
 fun ChatList(
+    notes: RoomSummary?,
     rooms: List<RoomSummary>,
     loaded: Boolean,
     images: Images,
@@ -58,12 +69,24 @@ fun ChatList(
     state: LazyListState = rememberLazyListState(),
 ) {
     when {
-        rooms.isEmpty() && !loaded -> Loading()
-        rooms.isEmpty() -> Empty("No chats")
+        notes == null && rooms.isEmpty() && !loaded -> Loading()
+        notes == null && rooms.isEmpty() -> Empty("No chats")
         else -> LazyColumn(Modifier.fillMaxSize(), state = state) {
+            notesRow(notes, images, today, onOpenRoom)
             items(rooms, key = { it.id }) { room ->
                 RoomRow(room, images, today, onClick = { onOpenRoom(room) }, presence = presenceOf(room))
             }
+        }
+    }
+}
+
+/** The Notes to self, pinned above the rest, with a line under it. */
+private fun LazyListScope.notesRow(notes: RoomSummary?, images: Images, today: LocalDate, onOpenRoom: (RoomSummary) -> Unit) {
+    if (notes == null) return
+    item(key = "notes", contentType = "notes") {
+        Column {
+            RoomRow(notes, images, today, onClick = { onOpenRoom(notes) })
+            HorizontalDivider(Modifier.padding(horizontal = 16.dp))
         }
     }
 }
@@ -89,24 +112,27 @@ fun SpaceList(
     }
 }
 
-/** A space's rooms page: Direct messages, then Rooms, each left out while empty. */
+/**
+ * A space's rooms page: the Notes to self at the top where pinned there,
+ * then the sections shown, in order; a section's heading folds it
+ * ([onFold] with its key), and a folded one shows its unread count.
+ */
 @Composable
 fun SpaceRoomsList(
-    sections: SpaceSections,
+    list: SectionedList,
     loaded: Boolean,
     images: Images,
     today: LocalDate,
     onOpenRoom: (RoomSummary) -> Unit,
+    onFold: (String) -> Unit,
     state: LazyListState = rememberLazyListState(),
 ) {
-    val empty = sections.rooms.isEmpty() && sections.directMessages.isEmpty()
     when {
-        empty && !loaded -> Loading()
-        empty -> Empty("No rooms")
-        // As the desktop: direct messages first.
+        list.isEmpty && !loaded -> Loading()
+        list.isEmpty -> Empty("No rooms")
         else -> LazyColumn(Modifier.fillMaxSize(), state = state) {
-            section("Direct messages", sections.directMessages, images, today, onOpenRoom)
-            section("Rooms", sections.rooms, images, today, onOpenRoom)
+            notesRow(list.notes, images, today, onOpenRoom)
+            for (section in list.sections) section(section, images, today, onOpenRoom, onFold)
         }
     }
 }
@@ -144,24 +170,47 @@ fun RecentList(
 }
 
 private fun LazyListScope.section(
-    title: String,
-    rooms: List<RoomSummary>,
+    section: ShownSection,
     images: Images,
     today: LocalDate,
     onOpenRoom: (RoomSummary) -> Unit,
+    onFold: (String) -> Unit,
 ) {
-    if (rooms.isEmpty()) return
-    // Room IDs start with "!": no clash with the rows' keys.
-    item(key = "section:$title", contentType = "section") {
+    item(key = "section:${section.key}", contentType = "section") {
+        SectionHeading(section, onClick = { onFold(section.key) })
+    }
+    if (section.folded) return
+    items(section.rooms, key = { "${section.key}/${it.id}" }, contentType = { "room" }) { room ->
+        RoomRow(room, images, today, onClick = { onOpenRoom(room) })
+    }
+}
+
+/** A section's heading: a caret (down while unfolded), its title, and while folded its unread count. */
+@Composable
+private fun SectionHeading(section: ShownSection, onClick: () -> Unit) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clickable(onClickLabel = if (section.folded) "Unfold" else "Fold", onClick = onClick)
+            .padding(start = 8.dp, end = 16.dp, top = 8.dp, bottom = 2.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(
+            if (section.folded) Icons.AutoMirrored.Filled.KeyboardArrowRight else Icons.Filled.KeyboardArrowDown,
+            contentDescription = null,
+            modifier = Modifier.size(20.dp),
+            tint = MaterialTheme.colorScheme.primary,
+        )
+        Spacer(Modifier.width(4.dp))
         Text(
-            title,
-            Modifier.padding(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 2.dp),
+            section.title,
+            Modifier.weight(1f),
             style = MaterialTheme.typography.titleSmall,
             color = MaterialTheme.colorScheme.primary,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
         )
-    }
-    items(rooms, key = { it.id }, contentType = { "room" }) { room ->
-        RoomRow(room, images, today, onClick = { onOpenRoom(room) })
+        if (section.folded && section.unread > 0) UnreadBadge(section.unread, section.mentions)
     }
 }
 
