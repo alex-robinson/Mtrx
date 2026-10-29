@@ -40,6 +40,8 @@ import uniffi.mtrx.RoomKind
 import uniffi.mtrx.RoomLink
 import uniffi.mtrx.SendState
 import uniffi.mtrx.SpaceLink
+import uniffi.mtrx.RoomSection
+import uniffi.mtrx.SectionKind
 import uniffi.mtrx.SpaceRooms
 import uniffi.mtrx.TimelineEvent
 import uniffi.mtrx.TimelineItem
@@ -66,6 +68,10 @@ const val PAPERS = "!papers:example.org"
 const val TEACHING = "!teaching:example.org"
 const val LOOSE = "!loose:example.org"
 const val WORKSHOP = "!workshop:example.org"
+const val RADAR = "!radar:example.org"
+const val CODE = "!code:example.org"
+const val ARCHIVE = "!archive:example.org"
+const val SUMMIT = "!summit:example.org"
 
 val iceTopic = Topic(
     text = "Ice sheet modelling: runs, papers and the weekly call.\nNotes from each call go to the drive.",
@@ -89,13 +95,30 @@ val rooms = uniffi.mtrx.RoomListState(
         summary(TEAM, RoomKind.SPACE, name = "Ice team"),
         summary(OUTREACH, RoomKind.SPACE, name = "Outreach"),
         summary("!with-dan:example.org", RoomKind.DIRECT, directUserId = "@dan:example.org", name = "Dan Dahl", lastActivity = at(16, 0, daysAgo = 4)),
+        summary(RADAR, name = "Radar data", lastActivity = at(15, 10, daysAgo = 1), topic = "Radargrams from the traverse", parents = listOf(TEAM)),
+        summary(CODE, unread = 4, name = "Model code", lastActivity = at(11, 0, daysAgo = 1), parents = listOf(TEAM)),
+        summary(ARCHIVE, name = "Archive 2025", lastActivity = at(9, 0, daysAgo = 40), parents = listOf(TEAM)),
+        summary(SUMMIT, invited = true, name = "Ice summit 2027"),
     ),
     loaded = true,
     spaces = listOf(
-        SpaceRooms(spaceId = TEAM, roomIds = listOf("!with-bob:example.org", ICE, SEA, PAPERS, "!notes:example.org")),
+        SpaceRooms(
+            spaceId = TEAM,
+            roomIds = listOf("!with-bob:example.org", ICE, SEA, PAPERS, "!notes:example.org", RADAR, CODE, ARCHIVE, SUMMIT, "!with-dan:example.org"),
+            sections = listOf(
+                RoomSection("invites", SectionKind.INVITES, "", listOf(SUMMIT)),
+                RoomSection("direct_messages", SectionKind.DIRECT_MESSAGES, "", listOf("!with-bob:example.org", "!notes:example.org", "!with-dan:example.org")),
+                RoomSection("favourites", SectionKind.FAVOURITES, "", listOf(ICE)),
+                RoomSection("category:field", SectionKind.CATEGORY, "Field work", listOf(SEA, RADAR)),
+                RoomSection("rooms", SectionKind.ROOMS, "", listOf(PAPERS, CODE)),
+                RoomSection("low_priority", SectionKind.LOW_PRIORITY, "", listOf(ARCHIVE)),
+            ),
+        ),
         SpaceRooms(spaceId = OUTREACH, roomIds = listOf(TEACHING, "!notes:example.org")),
     ),
     roomsOutsideSpaces = listOf(WORKSHOP, LOOSE),
+    notesAtTop = true,
+    notesRoomId = "!notes:example.org",
 )
 
 /** A message by [sender] ([name]) at [time]. */

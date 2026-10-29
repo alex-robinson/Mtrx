@@ -23,10 +23,16 @@ import org.mtrx.app.rooms.NewRoomForm
 import org.mtrx.app.rooms.OverviewRooms
 import org.mtrx.app.rooms.RoomInfoContent
 import org.mtrx.app.rooms.SpaceOverviewContent
-import org.mtrx.app.rooms.chats
 import org.mtrx.app.rooms.recentRows
 import org.mtrx.app.rooms.recentUnread
-import org.mtrx.app.rooms.sectionsOf
+import org.mtrx.app.rooms.SectionPrefs
+import org.mtrx.app.rooms.chatList
+import org.mtrx.app.rooms.sectionChoices
+import org.mtrx.app.rooms.spaceList
+import org.mtrx.app.ui.RoomListSettings
+import org.mtrx.app.ui.SectionHeading
+import org.mtrx.app.ui.ShowActions
+import org.mtrx.app.ui.ShowSheetContent
 import org.mtrx.app.rooms.spaceRows
 import org.mtrx.app.rooms.spacesUnread
 import org.mtrx.app.model.RoomSort
@@ -61,9 +67,29 @@ class ScreensTest {
     }
 
     @Test
-    fun chats() = snap("chats") {
+    fun chats() = snap("chats-notes-at-top") {
+        val (notes, chats) = chatList(rooms)
         HomeFrame(HomeTab.Chats, badges, onTab = {}) {
-            ChatList(chats(rooms), loaded = true, images, today, onOpenRoom = {}, presenceOf = { null })
+            ChatList(notes, chats, loaded = true, images, today, onOpenRoom = {}, presenceOf = { null })
+        }
+    }
+
+    @Test
+    fun settingsSwitch() = snap("settings-notes-at-top") {
+        HomeFrame(HomeTab.Settings, badges, onTab = {}) {
+            SectionHeading("Room list")
+            RoomListSettings(notesAtTop = true, onNotesAtTop = {})
+        }
+    }
+
+    @Test
+    fun showSheet() = snap("show-sheet") {
+        Surface(Modifier.fillMaxWidth()) {
+            ShowSheetContent(
+                "Ice team",
+                sectionChoices(rooms, SpaceEntry.Space(TEAM), SectionPrefs(hidden = setOf("low_priority"))),
+                ShowActions(setShown = { _, _ -> }, showAll = {}, hideAll = {}, move = { _, _ -> }),
+            )
         }
     }
 
@@ -74,10 +100,19 @@ class ScreensTest {
         }
     }
 
+    // All sections: Invites, Direct messages, Favourites, a category, Rooms
+    // folded with its unread count, Low priority; the Notes to self on top.
     @Test
-    fun spaceRooms() = snap("space-rooms") {
+    fun spaceRooms() = snap("space-sections") {
         HomeFrame(HomeTab.Spaces, badges, onTab = {}, title = { SpaceTitle("Ice team", onClick = {}) }) {
-            SpaceRoomsList(sectionsOf(rooms, SpaceEntry.Space(TEAM), RoomSort.DEFAULT), loaded = true, images, today, onOpenRoom = {})
+            SpaceRoomsList(
+                spaceList(rooms, SpaceEntry.Space(TEAM), SectionPrefs(folded = setOf("rooms")), RoomSort.DEFAULT),
+                loaded = true,
+                images,
+                today,
+                onOpenRoom = {},
+                onFold = {},
+            )
         }
     }
 

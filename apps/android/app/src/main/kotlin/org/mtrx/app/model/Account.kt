@@ -1,6 +1,8 @@
 package org.mtrx.app.model
 
 import java.util.concurrent.atomic.AtomicReference
+import org.mtrx.app.rooms.SectionLayouts
+import org.mtrx.app.rooms.SectionStore
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -64,9 +66,10 @@ sealed interface BrowserLogin {
  * told when a session opens and before it closes; [notifications] are
  * cleared as rooms are opened or read. Each session's [PresenceModel] reads
  * the direct chats' presence and sets ours around sync, as [sharePresence]
- * says; [clock] counts milliseconds, for idling; [log] has what goes wrong. The rooms opened lately
- * are kept in [recentStore], and each room's draft in [drafts], until
- * sign-out.
+ * says; [clock] counts milliseconds, for idling; [log] has what goes
+ * wrong. The rooms opened lately are kept in [recentStore], and each
+ * room's draft in [drafts], until sign-out; how this phone arranges the
+ * spaces' sections in [sectionStore] (the device's, as the rooms' order).
  */
 class Account(
     private val mtrx: MtrxInterface,
@@ -77,6 +80,7 @@ class Account(
     private val notifications: RoomNotifications,
     sharePresenceStore: SharePresenceStore,
     recentStore: RecentStore,
+    sectionStore: SectionStore,
     private val clock: () -> Long = { System.nanoTime() / 1_000_000 },
     private val log: Logger = AndroidLog,
 ) {
@@ -97,6 +101,9 @@ class Account(
 
     /** The rooms opened lately on the Rooms tab; the first is the last room. */
     val recent = RecentRooms(recentStore, scope)
+
+    /** How this phone arranges each space's sections. */
+    val sections = SectionLayouts(sectionStore, scope)
 
     /** The composer's text per room. */
     val drafts = Drafts()
@@ -221,6 +228,16 @@ class Account(
     /** The navigation opened the requested room. */
     fun roomRequestHandled() {
         _roomRequest.value = null
+    }
+
+    /** Keep the Notes to self at the top, or not: the account's choice, for all its devices. */
+    fun setNotesAtTop(on: Boolean): Job = scope.launch {
+        val current = session ?: return@launch
+        try {
+            current.setNotesAtTop(on)
+        } catch (e: MtrxException) {
+            _messages.tryEmit("Could not change Notes at the top: ${describe(e)}")
+        }
     }
 
     /**

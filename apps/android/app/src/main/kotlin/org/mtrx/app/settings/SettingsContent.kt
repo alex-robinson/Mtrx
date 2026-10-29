@@ -26,6 +26,7 @@ import org.mtrx.app.model.Account
 import org.mtrx.app.model.PresenceModel
 import org.mtrx.app.model.PushRegistration
 import org.mtrx.app.model.showsEncryptionBanner
+import org.mtrx.app.ui.RoomListSettings
 import uniffi.mtrx.EncryptionState
 import uniffi.mtrx.RecoveryStatus
 
@@ -33,7 +34,8 @@ import uniffi.mtrx.RecoveryStatus
 data class SessionInfo(val userId: String, val homeserver: String, val deviceId: String)
 
 /**
- * The Settings tab: the account, notifications, privacy (sharing our
+ * The Settings tab: the account, the room list (Notes at the top),
+ * notifications, privacy (sharing our
  * presence), encryption (its state, recovery and verification), and
  * signing out.
  */
@@ -49,6 +51,7 @@ fun SettingsContent(
 ) {
     val encryption by account.encryption.collectAsStateWithLifecycle()
     val devices by account.devices.collectAsStateWithLifecycle()
+    val rooms by account.rooms.collectAsStateWithLifecycle()
     LaunchedEffect(account) { account.loadDevices() }
     // Unknown (not loaded, or failed) counts as having one: the request says.
     val otherDevice = devices?.any { !it.current } ?: true
@@ -63,6 +66,9 @@ fun SettingsContent(
         Line("User", info.userId)
         Line("Server", info.homeserver)
         Line("Device", info.deviceId)
+        HorizontalDivider(Modifier.padding(vertical = 8.dp))
+        SectionTitle("Room list")
+        RoomListSettings(rooms.notesAtTop, onNotesAtTop = { account.setNotesAtTop(it) })
         HorizontalDivider(Modifier.padding(vertical = 8.dp))
         SectionTitle("Notifications")
         NotificationsSection(push)

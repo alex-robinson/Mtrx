@@ -64,12 +64,14 @@ import org.mtrx.app.model.RoomSort
 import org.mtrx.app.model.SpaceEntry
 import org.mtrx.app.model.directPerson
 import org.mtrx.app.model.showsEncryptionBanner
-import org.mtrx.app.rooms.SpaceSections
-import org.mtrx.app.rooms.chats
+import org.mtrx.app.rooms.SectionedList
+import org.mtrx.app.rooms.accountSections
+import org.mtrx.app.rooms.chatList
+import org.mtrx.app.rooms.sectionChoices
+import org.mtrx.app.rooms.spaceList
 import org.mtrx.app.rooms.lastRoom
 import org.mtrx.app.rooms.recentRows
 import org.mtrx.app.rooms.recentUnread
-import org.mtrx.app.rooms.sectionsOf
 import org.mtrx.app.rooms.spaceRows
 import org.mtrx.app.rooms.spacesUnread
 import org.mtrx.app.settings.SessionInfo
@@ -118,11 +120,13 @@ fun HomeScreen(
     val snackbar = remember { SnackbarHostState() }
     LaunchedEffect(account) { account.messages.collect { snackbar.showSnackbar(it) } }
     val today = remember(list) { LocalDate.now() }
-    val chatRooms = remember(list) { chats(list) }
+    val sectionPrefs by account.sections.prefs.collectAsStateWithLifecycle()
+    val (notes, chatRooms) = remember(list) { chatList(list) }
     val spaceEntries = remember(list) { spaceRows(list) }
-    val sections = remember(list, selected, sort) {
-        selected?.let { sectionsOf(list, it, sort) } ?: SpaceSections(emptyList(), emptyList())
+    val sections = remember(list, selected, sort, sectionPrefs) {
+        selected?.let { spaceList(list, it, sectionPrefs[it.key], sort) } ?: SectionedList(null, emptyList())
     }
+    var showing by rememberSaveable { mutableStateOf(false) }
     val recent = remember(list, recentIds) { recentRows(list, recentIds) }
     val last = lastRoom(list, recentIds, nav.opening)
     val badges = mapOf(
@@ -174,6 +178,24 @@ fun HomeScreen(
             else -> Text(nav.tab.label)
         }
     }
+    // Which of the space's sections show, on this phone.
+    val showingEntry = selected
+    if (showing && onSpaceRooms && showingEntry != null) {
+        val space = showingEntry.key
+        val choices = sectionChoices(list, showingEntry, sectionPrefs[space])
+        val keys = accountSections(list, showingEntry).map { it.key }
+        ShowSheet(
+            selectedSpace?.name.orEmpty(),
+            choices,
+            ShowActions(
+                setShown = { key, on -> account.sections.setShown(space, key, on) },
+                showAll = { account.sections.showAll(space) },
+                hideAll = { account.sections.hideAll(space, keys) },
+                move = { from, to -> account.sections.move(space, keys, from, to) },
+            ),
+            onDismiss = { showing = false },
+        )
+    }
     HomeFrame(
         tab = nav.tab,
         badges = badges,
@@ -191,7 +213,12 @@ fun HomeScreen(
         },
         actions = {
             if (nav.tab == HomeTab.Spaces) {
-                if (onSpaceRooms) SortMenu(sort, onSort = account.roomSort::choose)
+                if (onSpaceRooms) {
+                    IconButton(onClick = { showing = true }) {
+                        Icon(MtrxIcons.Checklist, contentDescription = "Show…")
+                    }
+                    SortMenu(sort, onSort = account.roomSort::choose)
+                }
                 val space = (selected as? SpaceEntry.Space)?.id?.takeIf { onSpaceRooms }
                 AddMenu(
                     spaceName = selectedSpace?.name.takeIf { space != null },
@@ -213,6 +240,7 @@ fun HomeScreen(
                 roomPane(chat, 0L) { nav.chat = null }
             } else {
                 ChatList(
+                    notes,
                     chatRooms,
                     list.loaded,
                     images,
@@ -232,7 +260,15 @@ fun HomeScreen(
                         }
                     })
                 } else {
-                    SpaceRoomsList(sections, list.loaded, images, today, onOpenRoom = open, state = spaceRoomsList)
+                    SpaceRoomsList(
+                        sections,
+                        list.loaded,
+                        images,
+                        today,
+                        onOpenRoom = open,
+                        onFold = { key -> selected?.let { account.sections.toggleFold(it.key, key) } },
+                        state = spaceRoomsList,
+                    )
                 }
             }
             HomeTab.Rooms -> if (room != null) {
