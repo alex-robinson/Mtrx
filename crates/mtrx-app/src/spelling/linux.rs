@@ -130,7 +130,8 @@ impl Lazy {
                 let read = |path: &Path| fs::read(path).map(|bytes| decoded(&bytes));
                 let loaded = read(&self.dic.with_extension("aff")).and_then(|aff| {
                     let dic = read(&self.dic)?;
-                    spellbook::Dictionary::new(&aff, &dic).map_err(std::io::Error::other)
+                    spellbook::Dictionary::new(&aff, &dic)
+                        .map_err(|e| std::io::Error::other(e.to_string()))
                 });
                 loaded
                     .inspect_err(
