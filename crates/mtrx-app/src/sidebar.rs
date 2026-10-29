@@ -30,6 +30,7 @@ use crate::{
     icons, info, overview,
     popover::{Edge, Side, popover},
     presence::{self, Presences},
+    spelling,
     style::{self, ROOM_AVATAR, ROOM_ROW, SPACE_AVATAR, SPACE_BAR_WIDTH},
     tint::Tint,
     topic,
@@ -1040,7 +1041,7 @@ fn section_title<'a>(title: &str) -> Element<'a, Message> {
 /// The field renaming a category: Enter saves, Esc cancels.
 fn name_input<'a>(name: &str) -> Element<'a, Message> {
     container(
-        text_input("Category name", name)
+        spelling::checked(text_input("Category name", name), name)
             .id(NAME_INPUT)
             .on_input(|name| arrange_message(arrange::Message::Name(name)))
             .on_submit(arrange_message(arrange::Message::SaveName))

@@ -36,6 +36,7 @@ use crate::{
     emoji,
     find::{self, Find},
     fonts,
+    highlight::{self, Marks},
     hint::{Position, hint},
     icons, info,
     math::{self, Math, Rendered},
@@ -128,8 +129,8 @@ pub struct Room {
     pub emoji: Option<emoji::Panel>,
     /// The composer's emoji panel, while shown.
     pub composer_emoji: Option<emoji::Panel>,
-    /// The composer's menu is open.
-    pub composer_menu: bool,
+    /// The composer's menu, while open.
+    pub composer_menu: Option<edit_menu::Menu>,
     /// The timeline row whose deletion awaits confirmation.
     pub confirm_delete: Option<String>,
     /// Names of others typing.
@@ -193,7 +194,7 @@ impl Room {
             find: None,
             emoji: None,
             composer_emoji: None,
-            composer_menu: false,
+            composer_menu: None,
             confirm_delete: None,
             typing: Vec::new(),
             member_list: None,
@@ -817,7 +818,10 @@ impl Room {
         let empty = self.composer.text().is_empty();
         let composer = text_editor(&self.composer)
             .id(COMPOSER)
-            .highlight_with::<mention::Highlighter>(self.mentions.clone(), mention::format)
+            .highlight_with::<highlight::Highlighter>(
+                Marks::new(self.mentions.clone()),
+                highlight::format,
+            )
             .style(style::editor)
             .placeholder("Message…  (Markdown, $…$ for math; Shift+Enter for a new line)")
             .on_action(Message::Composer)
@@ -870,8 +874,12 @@ impl Room {
                     }),
             )
             .max_height(200);
-        let composer =
-            edit_menu::with_menu(Field::Composer, composer, self.composer_menu, selected);
+        let composer = edit_menu::with_menu(
+            Field::Composer,
+            composer,
+            self.composer_menu.as_ref(),
+            selected,
+        );
         let attach = hint(
             button(icons::paperclip(19.0, |theme| {
                 theme

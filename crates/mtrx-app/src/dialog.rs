@@ -7,7 +7,9 @@ use std::time::{Duration, Instant};
 use iced::{
     Alignment, Element, Length,
     task::Handle,
-    widget::{button, checkbox, column, container, row, space, text, text_input, toggler},
+    widget::{
+        TextInput, button, checkbox, column, container, row, space, text, text_input, toggler,
+    },
 };
 use mtrx_core::{
     Contact, Grouping, NewRoom, OwnedRoomId, OwnedUserId, Permissions, RoomCategories, RoomKind,
@@ -19,7 +21,7 @@ use crate::{
     arrange::{self, Arrange, CategoryEdit},
     fonts, frame,
     hint::{Position, hint},
-    sidebar, style,
+    sidebar, spelling, style,
 };
 
 /// Which dialog is open.
@@ -691,8 +693,8 @@ impl Dialog {
             Kind::NewRoom { .. } | Kind::NewSpace => {
                 let space = matches!(self.kind, Kind::NewSpace);
                 let mut fields = column![
-                    self.field("Name", &self.name, Message::Name),
-                    self.field("Topic (optional)", &self.topic, Message::Topic),
+                    self.prose_field("Name", &self.name, Message::Name),
+                    self.prose_field("Topic (optional)", &self.topic, Message::Topic),
                 ]
                 .spacing(8);
                 if !space {
@@ -714,7 +716,7 @@ impl Dialog {
             Kind::Invite { .. } => body.push(self.people_view("Name or @user:server")),
             Kind::AddExisting { space, .. } => body.push(self.rooms_view(space, rooms)),
             Kind::Category { space, .. } => body
-                .push(self.field("Name", &self.name, Message::Name))
+                .push(self.prose_field("Name", &self.name, Message::Name))
                 .push(self.category_rooms_view(space.as_ref(), rooms, arrange, grouping)),
             Kind::Encrypt { .. } => body.push(
                 text(
@@ -736,7 +738,7 @@ impl Dialog {
                     })
                     .size(13),
                 )
-                .push(self.field(
+                .push(self.prose_field(
                     "Reason (optional, they see it)",
                     &self.reason,
                     Message::Reason,
@@ -824,13 +826,22 @@ impl Dialog {
         placeholder: &'a str,
         value: &'a str,
         on_input: fn(String) -> Message,
-    ) -> Element<'a, app::Message> {
+    ) -> TextInput<'a, app::Message> {
         text_input(placeholder, value)
             .on_input(move |v| message(on_input(v)))
             .on_submit(message(Message::Submit))
             .style(style::input)
             .padding(8)
-            .into()
+    }
+
+    /// A [`Self::field`] for prose, its misspelled words marked.
+    fn prose_field<'a>(
+        &self,
+        placeholder: &'a str,
+        value: &'a str,
+        on_input: fn(String) -> Message,
+    ) -> TextInput<'a, app::Message> {
+        spelling::checked(self.field(placeholder, value, on_input), value)
     }
 
     /// Chosen people, the search field and its suggestions.

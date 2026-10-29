@@ -22,8 +22,9 @@ use crate::{
     edit_menu,
     ellipsis::ellipsis,
     emoji, fonts,
+    highlight::{self, Marks},
     hint::{Position, hint, hint_with},
-    icons, info, mention, message,
+    icons, info, message,
     message_menu::MenuAt,
     popover::{Edge, Side, popover},
     selectable::selectable,
@@ -216,8 +217,8 @@ pub struct InlineEdit {
     original: String,
     /// Its emoji panel, while shown.
     pub emoji: Option<emoji::Panel>,
-    /// Its menu (right-click) is open.
-    pub menu: bool,
+    /// Its menu (right-click), while open.
+    pub menu: Option<edit_menu::Menu>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -236,7 +237,7 @@ impl InlineEdit {
             content,
             original: text.to_owned(),
             emoji: None,
-            menu: false,
+            menu: None,
         }
     }
 
@@ -262,9 +263,9 @@ impl InlineEdit {
         self.content.text().trim_end().to_owned()
     }
 
-    /// The text selected in it.
-    pub fn selection(&self) -> Option<String> {
-        self.content.selection()
+    /// Its editor and menu, for the menu's actions.
+    pub fn with_menu(&mut self) -> (&mut text_editor::Content, &mut Option<edit_menu::Menu>) {
+        (&mut self.content, &mut self.menu)
     }
 
     /// The editor, with emoji, Save and Cancel; Enter saves, Esc cancels.
@@ -272,7 +273,10 @@ impl InlineEdit {
         let selected = self.content.selection().is_some();
         let editor = text_editor(&self.content)
             .id(EDITOR)
-            .highlight_with::<mention::Highlighter>(Default::default(), mention::format)
+            .highlight_with::<highlight::Highlighter>(
+                Marks::new(Default::default()),
+                highlight::format,
+            )
             .style(style::editor)
             .on_action(|action| act(Message::EditAction(action)))
             .key_binding(move |press| {
@@ -290,7 +294,7 @@ impl InlineEdit {
             })
             .padding(iced::Padding::new(6.0).right(emoji::FIELD_INSET_COMPACT))
             .max_height(240);
-        let editor = edit_menu::with_menu(Field::Edit, editor, self.menu, selected);
+        let editor = edit_menu::with_menu(Field::Edit, editor, self.menu.as_ref(), selected);
         let editor = emoji::in_field(
             editor,
             self.emoji.is_some(),
