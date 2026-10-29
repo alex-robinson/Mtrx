@@ -448,11 +448,15 @@ struct RoomList<Empty: View>: View {
                             rows(section.rooms)
                         }
                     } header: {
-                        if let fold {
-                            FoldingHeading(section: section, title: title) { fold(section.key) }
-                        } else {
-                            Text(title)
+                        Group {
+                            if let fold {
+                                FoldingHeading(section: section, title: title) { fold(section.key) }
+                            } else {
+                                Text(title)
+                            }
                         }
+                        .font(.footnote.weight(.semibold))
+                        .padding(.top, 4)
                     }
                 } else {
                     rows(section.rooms)
@@ -497,14 +501,10 @@ struct RoomList<Empty: View>: View {
     }
 }
 
-/// Little space between a list's sections (from iOS 17), so more rooms fit.
+/// Low section headings, so more rooms fit.
 private struct CompactSections: ViewModifier {
     func body(content: Content) -> some View {
-        if #available(iOS 17, *) {
-            content.listSectionSpacing(.compact)
-        } else {
-            content
-        }
+        content.environment(\.defaultMinListHeaderHeight, 22)
     }
 }
 
