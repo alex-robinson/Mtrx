@@ -119,6 +119,8 @@ val rooms = uniffi.mtrx.RoomListState(
     roomsOutsideSpaces = listOf(WORKSHOP, LOOSE),
     notesAtTop = true,
     notesRoomId = "!notes:example.org",
+    // A pencil on their rows: with and without unread messages.
+    drafts = listOf("!with-bob:example.org", "!with-dan:example.org", ICE, SEA, LOOSE),
 )
 
 /** A message by [sender] ([name]) at [time]. */

@@ -5,6 +5,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.width
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.ui.text.style.TextOverflow
 import org.mtrx.app.rooms.ShownSection
@@ -55,7 +56,8 @@ import uniffi.mtrx.RoomSummary
 
 /**
  * The Chats tab: the Notes to self at the top where pinned there ([notes]),
- * then the direct chats, with the people's presence.
+ * then the direct chats, with the people's presence; a pencil on those with
+ * a draft ([drafts], room IDs).
  */
 @Composable
 fun ChatList(
@@ -66,26 +68,33 @@ fun ChatList(
     today: LocalDate,
     onOpenRoom: (RoomSummary) -> Unit,
     presenceOf: (RoomSummary) -> Presence?,
+    drafts: Set<String> = emptySet(),
     state: LazyListState = rememberLazyListState(),
 ) {
     when {
         notes == null && rooms.isEmpty() && !loaded -> Loading()
         notes == null && rooms.isEmpty() -> Empty("No chats")
         else -> LazyColumn(Modifier.fillMaxSize(), state = state) {
-            notesRow(notes, images, today, onOpenRoom)
+            notesRow(notes, images, today, drafts, onOpenRoom)
             items(rooms, key = { it.id }) { room ->
-                RoomRow(room, images, today, onClick = { onOpenRoom(room) }, presence = presenceOf(room))
+                RoomRow(room, images, today, onClick = { onOpenRoom(room) }, presence = presenceOf(room), draft = room.id in drafts)
             }
         }
     }
 }
 
 /** The Notes to self, pinned above the rest, with a line under it. */
-private fun LazyListScope.notesRow(notes: RoomSummary?, images: Images, today: LocalDate, onOpenRoom: (RoomSummary) -> Unit) {
+private fun LazyListScope.notesRow(
+    notes: RoomSummary?,
+    images: Images,
+    today: LocalDate,
+    drafts: Set<String>,
+    onOpenRoom: (RoomSummary) -> Unit,
+) {
     if (notes == null) return
     item(key = "notes", contentType = "notes") {
         Column {
-            RoomRow(notes, images, today, onClick = { onOpenRoom(notes) })
+            RoomRow(notes, images, today, onClick = { onOpenRoom(notes) }, draft = notes.id in drafts)
             HorizontalDivider(Modifier.padding(horizontal = 16.dp))
         }
     }
@@ -115,7 +124,8 @@ fun SpaceList(
 /**
  * A space's rooms page: the Notes to self at the top where pinned there,
  * then the sections shown, in order; a section's heading folds it
- * ([onFold] with its key), and a folded one shows its unread count.
+ * ([onFold] with its key), and a folded one shows its unread count. A
+ * pencil on the rooms with a draft ([drafts]).
  */
 @Composable
 fun SpaceRoomsList(
@@ -125,21 +135,23 @@ fun SpaceRoomsList(
     today: LocalDate,
     onOpenRoom: (RoomSummary) -> Unit,
     onFold: (String) -> Unit,
+    drafts: Set<String> = emptySet(),
     state: LazyListState = rememberLazyListState(),
 ) {
     when {
         list.isEmpty && !loaded -> Loading()
         list.isEmpty -> Empty("No rooms")
         else -> LazyColumn(Modifier.fillMaxSize(), state = state) {
-            notesRow(list.notes, images, today, onOpenRoom)
-            for (section in list.sections) section(section, images, today, onOpenRoom, onFold)
+            notesRow(list.notes, images, today, drafts, onOpenRoom)
+            for (section in list.sections) section(section, images, today, drafts, onOpenRoom, onFold)
         }
     }
 }
 
 /**
  * Recent: the rooms opened lately, newest first, each with its space in
- * small grey and its unread count; without any, a way to the spaces.
+ * small grey, its unread count and a pencil if it has a draft ([drafts]);
+ * without any, a way to the spaces.
  */
 @Composable
 fun RecentList(
@@ -148,6 +160,7 @@ fun RecentList(
     today: LocalDate,
     onOpenRoom: (RoomSummary) -> Unit,
     onBrowseSpaces: () -> Unit,
+    drafts: Set<String> = emptySet(),
     state: LazyListState = rememberLazyListState(),
 ) {
     if (rows.isEmpty()) {
@@ -164,7 +177,7 @@ fun RecentList(
     }
     LazyColumn(Modifier.fillMaxSize(), state = state) {
         items(rows, key = { it.room.id }) { row ->
-            RoomRow(row.room, images, today, onClick = { onOpenRoom(row.room) }, subtitle = row.space ?: "")
+            RoomRow(row.room, images, today, onClick = { onOpenRoom(row.room) }, subtitle = row.space ?: "", draft = row.room.id in drafts)
         }
     }
 }
@@ -173,6 +186,7 @@ private fun LazyListScope.section(
     section: ShownSection,
     images: Images,
     today: LocalDate,
+    drafts: Set<String>,
     onOpenRoom: (RoomSummary) -> Unit,
     onFold: (String) -> Unit,
 ) {
@@ -181,7 +195,7 @@ private fun LazyListScope.section(
     }
     if (section.folded) return
     items(section.rooms, key = { "${section.key}/${it.id}" }, contentType = { "room" }) { room ->
-        RoomRow(room, images, today, onClick = { onOpenRoom(room) })
+        RoomRow(room, images, today, onClick = { onOpenRoom(room) }, draft = room.id in drafts)
     }
 }
 
@@ -256,8 +270,8 @@ private fun SpaceRowItem(row: SpaceRow, selected: Boolean, images: Images, onCli
 
 /**
  * A room in a compact row: avatar (with [presence]'s dot), name, a grey
- * line ([subtitle], else what the room is), its last activity and unread
- * count.
+ * line ([subtitle], else what the room is), its last activity, and below
+ * it a small grey pencil if it has a [draft] and the unread count.
  */
 @Composable
 fun RoomRow(
@@ -267,6 +281,7 @@ fun RoomRow(
     onClick: () -> Unit,
     presence: Presence? = null,
     subtitle: String? = null,
+    draft: Boolean = false,
 ) {
     val badge = unreadBadge(room)
     val activity = room.lastActivity
@@ -302,7 +317,19 @@ fun RoomRow(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
-                if (badge != null) UnreadBadge(badge.first, badge.second)
+                if (draft || badge != null) {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                        if (draft) {
+                            Icon(
+                                Icons.Outlined.Edit,
+                                contentDescription = "Draft",
+                                modifier = Modifier.size(14.dp),
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        if (badge != null) UnreadBadge(badge.first, badge.second)
+                    }
+                }
             }
         },
     )
