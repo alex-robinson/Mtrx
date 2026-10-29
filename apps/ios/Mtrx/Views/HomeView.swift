@@ -460,6 +460,7 @@ struct RoomList<Empty: View>: View {
             }
         }
         .listStyle(.plain)
+        .modifier(CompactSections())
         .overlay {
             if sections.allSatisfy(\.rooms.isEmpty) && notes == nil && !searching {
                 empty()
@@ -492,6 +493,17 @@ struct RoomList<Empty: View>: View {
                 }
             }
             .compactRow()
+        }
+    }
+}
+
+/// Little space between a list's sections (from iOS 17), so more rooms fit.
+private struct CompactSections: ViewModifier {
+    func body(content: Content) -> some View {
+        if #available(iOS 17, *) {
+            content.listSectionSpacing(.compact)
+        } else {
+            content
         }
     }
 }
