@@ -5,7 +5,7 @@ use std::collections::{HashMap, HashSet};
 
 use matrix_sdk::ruma::{OwnedRoomId, OwnedUserId, RoomId};
 
-use crate::{Grouping, Layout, RoomCategories, RoomKind, RoomSummary, RoomTag};
+use crate::{Grouping, Layout, RoomCategories, RoomKind, RoomSummary, RoomTag, Section};
 
 /// Joined spaces in no joined space, in the order of `rooms` (the list's,
 /// most recently active first). Nested spaces show through these.
@@ -110,6 +110,9 @@ pub struct RoomsBySpace {
 pub struct SpaceRooms {
     pub space: OwnedRoomId,
     pub rooms: Vec<OwnedRoomId>,
+    /// The same rooms in the desktop's sections for the space, in its
+    /// order (every built-in section, even empty, and its categories).
+    pub sections: Vec<(Section, Vec<OwnedRoomId>)>,
 }
 
 impl RoomsBySpace {
@@ -117,17 +120,19 @@ impl RoomsBySpace {
     pub fn new(rooms: &[RoomSummary], members: &SpaceMembers, categories: &RoomCategories) -> Self {
         let spaces: Vec<SpaceRooms> = top_level_spaces(rooms)
             .into_iter()
-            .map(|space| SpaceRooms {
-                space: space.id.clone(),
-                rooms: space_rooms(
-                    rooms,
-                    &space.id,
-                    members.get(&space.id),
-                    categories.layout(Some(&space.id)),
-                )
-                .into_iter()
-                .map(|r| r.id.clone())
-                .collect(),
+            .map(|space| {
+                let layout = categories.layout(Some(&space.id));
+                let listed = space_rooms(rooms, &space.id, members.get(&space.id), layout);
+                let ids = |list: &[&RoomSummary]| list.iter().map(|r| r.id.clone()).collect();
+                SpaceRooms {
+                    space: space.id.clone(),
+                    sections: layout
+                        .group(listed.iter().copied(), &Grouping::default())
+                        .into_iter()
+                        .map(|(section, list)| (section, ids(&list)))
+                        .collect(),
+                    rooms: ids(&listed),
+                }
             })
             .collect();
         let in_spaces: HashSet<&OwnedRoomId> = spaces.iter().flat_map(|s| &s.rooms).collect();

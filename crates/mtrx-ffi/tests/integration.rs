@@ -797,10 +797,35 @@ fn rooms_made_set_up_joined_and_left() {
         ..Default::default()
     }))
     .unwrap();
-    wait_for("the room in its space", &a_updates, |s: &RoomListState| {
-        s.rooms
+    let state = wait_for("the room in its space", &a_updates, |s: &RoomListState| {
+        s.spaces
             .iter()
-            .any(|r| r.id == room && r.parents.contains(&space))
+            .any(|sp| sp.space_id == space && sp.room_ids.contains(&room))
+    });
+    // In the space's Rooms section, among all the desktop's sections.
+    let sections = &state
+        .spaces
+        .iter()
+        .find(|sp| sp.space_id == space)
+        .unwrap()
+        .sections;
+    let keys: Vec<_> = sections.iter().map(|s| s.key.as_str()).collect();
+    assert_eq!(
+        keys,
+        [
+            "invites",
+            "direct_messages",
+            "favourites",
+            "rooms",
+            "low_priority"
+        ]
+    );
+    assert_eq!(sections[3].room_ids, std::slice::from_ref(&room));
+    // Notes at the top: on until turned off, for all devices.
+    assert!(state.notes_at_top);
+    block_on(a.session.set_notes_at_top(false)).unwrap();
+    wait_for("Notes not at the top", &a_updates, |s: &RoomListState| {
+        !s.notes_at_top
     });
 
     // Its settings: ours to change; the topic with a call link.

@@ -451,6 +451,17 @@ impl Session {
         run(async move { Ok(session.unban(&room, &user).await?) }).await
     }
 
+    /// Keep the Notes to self at the top, on all the user's devices.
+    pub async fn set_notes_at_top(&self, on: bool) -> Result<(), MtrxError> {
+        let session = self.core();
+        run(async move {
+            Ok(session
+                .change_room_categories(|c| c.notes_at_top = Some(on))
+                .await?)
+        })
+        .await
+    }
+
     /// Pin a message (its `TimelineEvent.eventId`), or unpin it.
     pub async fn set_pinned(
         &self,
