@@ -23,6 +23,7 @@ use matrix_sdk::{
             },
             space::child::SpaceChildEventContent,
         },
+        push::{Action, PushCondition, RuleKind, Ruleset},
     },
 };
 use tokio::sync::broadcast::error::RecvError;
@@ -275,10 +276,12 @@ impl Session {
     /// then starts from the server's rules, not from older ones still on
     /// their way.
     ///
-    /// The rules are read from `notification_settings` after it applied a
-    /// sync, not from the synced event itself: it handles the same event
-    /// concurrently, and an older event from midway through the change may
-    /// still arrive after the change was applied locally.
+    /// `notification_settings` applies a change to its rules as soon as the
+    /// server took it, before sync brings it back; a sync from midway
+    /// through the change (a rule added, the old one not yet removed) may
+    /// still replace them after that. So the change is confirmed by the
+    /// rules as last synced (the store's, kept before event handlers run),
+    /// once `notification_settings` applied that sync too.
     pub async fn set_notify_mode(&self, room_id: &RoomId, mode: NotifyMode) -> Result<()> {
         let settings = &self.notification_settings;
         let mode = RoomNotificationMode::from(mode);
@@ -287,6 +290,10 @@ impl Session {
                 .get_user_defined_room_notification_mode(room_id)
                 .await
                 == Some(mode)
+        };
+        let synced_mode = || async {
+            let rules = self.client.account().push_rules().await.ok()?;
+            user_defined_mode(&rules, room_id)
         };
         if has_mode().await {
             // Nothing to change, so nothing comes back.
@@ -302,7 +309,7 @@ impl Session {
                 match synced.recv().await {
                     Err(RecvError::Closed) => return,
                     // A change missed while lagging still left its rules.
-                    _ if has_mode().await => return,
+                    _ if synced_mode().await == Some(mode) && has_mode().await => return,
                     _ => {}
                 }
             }
@@ -480,5 +487,81 @@ async fn child_link(space: &Room, room_id: &RoomId) -> Option<SpaceChildEventCon
             Some(content)
         }
         _ => None,
+    }
+}
+
+/// The mode `rules` give the room, if the user chose one: as
+/// `notification_settings` reads its own rules (which it does not offer
+/// for others).
+fn user_defined_mode(rules: &Ruleset, room_id: &RoomId) -> Option<RoomNotificationMode> {
+    let muted = rules.override_.iter().any(|rule| {
+        rule.enabled
+            && rule.conditions.iter().any(|condition| {
+                matches!(
+                    condition,
+                    PushCondition::EventMatch(data)
+                        if data.key == "room_id" && data.pattern == *room_id
+                )
+            })
+            && !rule.actions.iter().any(Action::should_notify)
+    });
+    if muted {
+        return Some(RoomNotificationMode::Mute);
+    }
+    let rule = rules.get(RuleKind::Room, room_id)?;
+    Some(if rule.triggers_notification() {
+        RoomNotificationMode::AllMessages
+    } else {
+        RoomNotificationMode::MentionsAndKeywordsOnly
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use matrix_sdk::ruma::{
+        owned_room_id, owned_user_id,
+        push::{NewConditionalPushRule, NewPushRule, NewSimplePushRule},
+    };
+
+    use super::*;
+
+    #[test]
+    fn modes_are_read_from_rules_as_the_sdk_does() {
+        let room = owned_room_id!("!r:example.org");
+        let mut rules = Ruleset::server_default(&owned_user_id!("@me:example.org"));
+        assert_eq!(user_defined_mode(&rules, &room), None);
+        // Mentions: a room rule that does not notify.
+        rules
+            .insert(
+                NewPushRule::Room(NewSimplePushRule::new(room.clone(), vec![])),
+                None,
+                None,
+            )
+            .unwrap();
+        assert_eq!(
+            user_defined_mode(&rules, &room),
+            Some(RoomNotificationMode::MentionsAndKeywordsOnly)
+        );
+        // Mute wins over it, as midway from Mute to Mentions.
+        let condition =
+            PushCondition::EventMatch(matrix_sdk::ruma::push::EventMatchConditionData::new(
+                "room_id".into(),
+                room.to_string(),
+            ));
+        rules
+            .insert(
+                NewPushRule::Override(NewConditionalPushRule::new(
+                    room.to_string(),
+                    vec![condition],
+                    vec![],
+                )),
+                None,
+                None,
+            )
+            .unwrap();
+        assert_eq!(
+            user_defined_mode(&rules, &room),
+            Some(RoomNotificationMode::Mute)
+        );
     }
 }
