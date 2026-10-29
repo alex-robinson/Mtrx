@@ -82,9 +82,14 @@ struct ChatsTab: View {
     @State private var search = ""
 
     var body: some View {
+        let lists = session.lists
+        let searching = !search.isEmpty
+        // The Notes to self at the top, unless searching: then among the
+        // chats found.
+        let chats = searching ? RoomLists.search(lists.chats + [lists.notes].compactMap { $0 }, search) : lists.chats
         NavigationStack(path: $session.chatsPath) {
-            RoomList(sections: [RoomSection(title: nil, rooms: RoomLists.search(session.lists.chats, search))],
-                     searching: !search.isEmpty, openSettings: openSettings,
+            RoomList(sections: [ListSection(key: "chats", title: nil, rooms: chats)],
+                     notes: searching ? nil : lists.notes, searching: searching, openSettings: openSettings,
                      presence: presence.presence(of:)) {
                 ListPlaceholder(loaded: session.loaded, empty: "No chats yet")
             }
@@ -226,8 +231,10 @@ struct SpacesList: View {
     }
 }
 
-/// A space's members' direct messages, then its rooms, in the chosen order,
-/// with the space's name on top: a tap on it shows the space's overview.
+/// A space's list: the Notes to self at the top (if kept there), then its
+/// sections as the desktop arranges them, shown, folded and ordered as on
+/// this phone, each in the chosen order; the space's name on top, a tap on
+/// it shows the space's overview.
 struct SpaceRoomsPage: View {
     @EnvironmentObject private var session: SessionModel
     let entry: SpaceEntry
@@ -235,12 +242,18 @@ struct SpaceRoomsPage: View {
     let openSettings: () -> Void
     @State private var search = ""
     @State private var overview = false
+    @State private var showing = false
 
     private var item: SpaceItem? { session.lists.space(entry) }
 
     var body: some View {
-        RoomList(sections: RoomLists.sections(item?.rooms ?? [], sort: session.roomSort, search: search),
-                 searching: !search.isEmpty, openSettings: openSettings, opensInRooms: true) {
+        let sections = item.map {
+            session.lists.sections(
+                of: $0, layout: session.sectionLayouts[entry], sort: session.roomSort, search: search)
+        } ?? []
+        RoomList(sections: sections, notes: search.isEmpty ? session.lists.notes : nil,
+                 searching: !search.isEmpty, openSettings: openSettings, opensInRooms: true,
+                 fold: { key in session.sectionLayouts.change(entry) { $0.toggleFold(key) } }) {
             if item != nil {
                 Text("No rooms in this space").foregroundStyle(.secondary)
             } else {
@@ -273,7 +286,7 @@ struct SpaceRoomsPage: View {
                 }
             }
             ToolbarItemGroup(placement: .navigationBarTrailing) {
-                SortMenu()
+                ViewMenu { showing = true }
                 AddMenu(space: item?.space, sheet: $sheet)
             }
         }
@@ -282,6 +295,12 @@ struct SpaceRoomsPage: View {
                 SpaceOverviewView(space: space)
                     .environmentObject(session)
                     .environmentObject(session.images)
+            }
+        }
+        .sheet(isPresented: $showing) {
+            if let item {
+                ShowSheet(item: item)
+                    .environmentObject(session)
             }
         }
     }
@@ -319,22 +338,26 @@ private struct SpaceRow: View {
     }
 }
 
-/// The order of the spaces' rooms: a menu of the choices, the current one
-/// checked.
-private struct SortMenu: View {
+/// How a space's list shows: Show… (its sections) and the order of the
+/// spaces' rooms, the current one checked.
+private struct ViewMenu: View {
     @EnvironmentObject private var session: SessionModel
+    let show: () -> Void
 
     var body: some View {
         Menu {
+            Button(action: show) {
+                Label("Show…", systemImage: "checklist")
+            }
             Picker("Sort", selection: Binding(get: { session.roomSort }, set: session.setRoomSort)) {
                 ForEach(RoomSort.allCases) { sort in
                     Text(sort.title).tag(sort)
                 }
             }
         } label: {
-            Image(systemName: "arrow.up.arrow.down")
+            Image(systemName: "line.3.horizontal.decrease.circle")
         }
-        .accessibilityLabel("Sort")
+        .accessibilityLabel("Show and sort")
     }
 }
 
@@ -392,17 +415,22 @@ struct RecentView: View {
 
 /// Rooms or chats, in sections with their titles, that open on a tap (in
 /// their tabs if `opensInRooms`: rooms in Rooms, chats in Chats; else over
-/// the list); an invite opens its answer. The encryption banner above
-/// them, unless searching.
+/// the list); an invite opens its answer. The Notes to self above them if
+/// kept at the top, and the encryption banner, unless searching. Where
+/// sections fold (`fold`), a tap on a heading folds or unfolds it.
 struct RoomList<Empty: View>: View {
     @EnvironmentObject private var session: SessionModel
-    let sections: [RoomSection]
+    let sections: [ListSection]
+    /// The Notes to self, at the top.
+    var notes: RoomSummary?
     let searching: Bool
     let openSettings: () -> Void
     /// The presence to show on a room's picture (Chats).
     var presence: (RoomSummary) -> Presence? = { _ in nil }
     /// Rooms open in their tabs (from a space's list).
     var opensInRooms = false
+    /// Fold or unfold the section with this key; nil: sections don't fold.
+    var fold: ((String) -> Void)?
     @ViewBuilder let empty: () -> Empty
 
     var body: some View {
@@ -410,9 +438,22 @@ struct RoomList<Empty: View>: View {
             if !searching {
                 EncryptionBannerRow(open: openSettings)
             }
+            if let notes {
+                rows([notes])
+            }
             ForEach(sections) { section in
                 if let title = section.title {
-                    Section(title) { rows(section.rooms) }
+                    Section {
+                        if !section.folded {
+                            rows(section.rooms)
+                        }
+                    } header: {
+                        if let fold {
+                            FoldingHeading(section: section, title: title) { fold(section.key) }
+                        } else {
+                            Text(title)
+                        }
+                    }
                 } else {
                     rows(section.rooms)
                 }
@@ -420,7 +461,7 @@ struct RoomList<Empty: View>: View {
         }
         .listStyle(.plain)
         .overlay {
-            if sections.allSatisfy(\.rooms.isEmpty) && !searching {
+            if sections.allSatisfy(\.rooms.isEmpty) && notes == nil && !searching {
                 empty()
             }
         }
@@ -452,6 +493,41 @@ struct RoomList<Empty: View>: View {
             }
             .compactRow()
         }
+    }
+}
+
+/// A section's heading that folds it: a caret, its title, and while folded
+/// its rooms' unread messages, as a badge in the unread colour.
+struct FoldingHeading: View {
+    let section: ListSection
+    let title: String
+    let toggle: () -> Void
+
+    var body: some View {
+        Button(action: toggle) {
+            HStack(spacing: 6) {
+                Image(systemName: "chevron.down")
+                    .font(.caption2.weight(.bold))
+                    .rotationEffect(.degrees(section.folded ? -90 : 0))
+                Text(title)
+                Spacer(minLength: 8)
+                let unread = section.unread
+                if section.folded && unread.count > 0 {
+                    Text(unread.count > 999 ? "999+" : String(unread.count))
+                        .font(.caption2.weight(.semibold))
+                        .monospacedDigit()
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 1)
+                        .frame(minWidth: 18)
+                        .background(unread.mentions ? Color.red : Color.accentColor, in: Capsule())
+                }
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("\(title), \(section.folded ? "folded" : "unfolded")")
+        .accessibilityHint(section.folded ? "Shows its rooms" : "Hides its rooms")
     }
 }
 

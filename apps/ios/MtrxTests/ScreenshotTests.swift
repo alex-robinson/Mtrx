@@ -17,7 +17,7 @@ final class ScreenshotTests: XCTestCase {
     override func setUp() async throws {
         defaults = UserDefaults(suiteName: "ScreenshotTests")
         defaults.removePersistentDomain(forName: "ScreenshotTests")
-        defaults.set(["!ice", "!sea", "!notes"], forKey: "recentRooms")
+        defaults.set(["!ice", "!sea", "!reading"], forKey: "recentRooms")
         session = FakeSession(noHandle: .init())
         session.encryption = EncryptionState(deviceVerified: true, recovery: .enabled)
         model = SessionModel(session: session, defaults: defaults)
@@ -34,6 +34,7 @@ final class ScreenshotTests: XCTestCase {
 
     // MARK: Tabs
 
+    /// With the Notes to self at the top.
     func testChats() async throws {
         model.tab = .chats
         try await snap("01-chats", HomeView())
@@ -45,10 +46,28 @@ final class ScreenshotTests: XCTestCase {
         try await snap("02-spaces", HomeView())
     }
 
+    /// Every kind of section, Rooms folded with its unread badge, and the
+    /// Notes to self at the top.
     func testASpacesRooms() async throws {
         model.tab = .spaces
         model.selectSpace(.space("!polar"))
+        model.sectionLayouts.change(.space("!polar")) { $0.toggleFold("rooms") }
         try await snap("03-space-rooms", HomeView())
+    }
+
+    /// Low priority hidden, Rooms moved first.
+    func testShowSheet() async throws {
+        let polar = try XCTUnwrap(model.lists.space(.space("!polar")))
+        model.sectionLayouts.change(.space("!polar")) {
+            $0.setShown("low_priority", false)
+            $0.move(polar.sections.map(\.key), from: [4], to: 0)
+        }
+        try await snap("03b-show-sheet", ShowSheet(item: polar))
+    }
+
+    func testSettings() async throws {
+        model.tab = .settings
+        try await snap("13-settings", HomeView())
     }
 
     func testRecent() async throws {
@@ -226,10 +245,19 @@ private enum Screens {
                 "!ann", kind: .direct, name: "Ann Lindqvist", unread: 2, directUser: "@ann:example.org",
                 lastActivity: now.addingTimeInterval(-1200)),
             Make.room(
-                "!notes", name: "Reading group", lastActivity: now.addingTimeInterval(-86_400), parents: ["!teach"]),
+                "!reading", name: "Reading group", lastActivity: now.addingTimeInterval(-86_400), parents: ["!teach"]),
             Make.room(
                 "!models", name: "Models", unread: 5, lastActivity: now.addingTimeInterval(-3_600),
                 parents: ["!polar"], mentions: 1),
+            Make.room(
+                "!notes", kind: .direct, name: "Notes to self", directUser: "@me:example.org",
+                lastActivity: now.addingTimeInterval(-3_000)),
+            Make.room(
+                "!paper", name: "Ice sheet paper", lastActivity: now.addingTimeInterval(-5_000), parents: ["!polar"]),
+            Make.room(
+                "!old", name: "Field season 2025", lastActivity: now.addingTimeInterval(-900_000),
+                parents: ["!polar"]),
+            Make.room("!join", invited: true, name: "Glacier seminar", parents: ["!polar"]),
             Make.room(
                 "!bob", kind: .direct, name: "Bob Meyer", directUser: "@bob:example.org",
                 lastActivity: now.addingTimeInterval(-7_200)),
@@ -242,10 +270,19 @@ private enum Screens {
         ],
         loaded: true,
         spaces: [
-            SpaceRooms(spaceId: "!polar", roomIds: ["!ice", "!sea", "!ann", "!models"]),
-            SpaceRooms(spaceId: "!teach", roomIds: ["!notes"]),
+            SpaceRooms(
+                spaceId: "!polar", roomIds: ["!ice", "!sea", "!ann", "!models", "!paper", "!old", "!join"],
+                sections: [
+                    Make.section(.invites, ["!join"]),
+                    Make.section(.directMessages, ["!ann"]),
+                    Make.section(.favourites, ["!ice"]),
+                    Make.section(.category, ["!paper"], name: "Papers"),
+                    Make.section(.rooms, ["!sea", "!models"]),
+                    Make.section(.lowPriority, ["!old"]),
+                ]),
+            SpaceRooms(spaceId: "!teach", roomIds: ["!reading"]),
         ],
-        roomsOutsideSpaces: ["!party"])
+        roomsOutsideSpaces: ["!party"], notesAtTop: true, notesRoomId: "!notes")
 
     static var timeline: [TimelineItem] {
         let start = now.addingTimeInterval(-3_600)

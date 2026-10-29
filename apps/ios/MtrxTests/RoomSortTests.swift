@@ -2,8 +2,7 @@ import MtrxFFI
 import XCTest
 @testable import Mtrx
 
-/// A space's rooms in two sections, Direct messages and Rooms, in the order
-/// chosen.
+/// A space's rooms in its sections, each in the order chosen.
 final class RoomSortTests: XCTestCase {
     private static let now = Date(timeIntervalSince1970: 1_700_000_000)
 
@@ -18,14 +17,25 @@ final class RoomSortTests: XCTestCase {
         Make.room("!offer", invited: true, name: "Offer", lastActivity: now.addingTimeInterval(-60)),
     ]
 
+    /// The space's list, its sections as the library arranges them (Offer
+    /// a room, as Other rooms has it).
+    private func list(_ rooms: [RoomSummary], sort: RoomSort, search: String = "") -> [ListSection] {
+        let lists = RoomLists(RoomListState(rooms: rooms, loaded: true, roomsOutsideSpaces: rooms.map(\.id)))
+        return lists.sections(of: lists.space(.otherRooms)!, layout: SectionLayout(), sort: sort, search: search)
+    }
+
     private func sections(_ sort: RoomSort, search: String = "") -> [String: [String]] {
-        let sections = RoomLists.sections(rooms, sort: sort, search: search)
+        let joined = rooms.map { room -> RoomSummary in
+            var room = room
+            room.invited = false
+            return room
+        }
+        let sections = list(joined, sort: sort, search: search)
         return Dictionary(uniqueKeysWithValues: sections.map { ($0.title ?? "", $0.rooms.map(\.id)) })
     }
 
-    func testDirectMessagesThenRooms() {
-        let sections = RoomLists.sections(rooms, sort: .listOrder, search: "")
-        XCTAssertEqual(sections.map(\.title), ["Direct messages", "Rooms"])
+    func testInvitesThenDirectMessagesThenRooms() {
+        XCTAssertEqual(list(rooms, sort: .listOrder).map(\.title), ["Invites", "Direct messages", "Rooms"])
     }
 
     func testDefaultKeepsTheListsOrder() {
@@ -56,9 +66,8 @@ final class RoomSortTests: XCTestCase {
     }
 
     func testEmptySectionsLeftOut() {
-        let onlyRooms = RoomLists.sections(rooms.filter { $0.kind != .direct }, sort: .aToZ, search: "")
+        let onlyRooms = list(rooms.filter { $0.kind != .direct && !$0.invited }, sort: .aToZ)
         XCTAssertEqual(onlyRooms.map(\.title), ["Rooms"])
-        XCTAssertEqual(RoomLists.sections([], sort: .aToZ, search: ""), [])
     }
 
     func testSearchingOrdersAsTheSearchDoes() {
