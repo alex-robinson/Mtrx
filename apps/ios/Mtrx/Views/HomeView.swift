@@ -368,7 +368,8 @@ private struct ViewMenu: View {
 }
 
 /// The Rooms tab: Home (the rooms in no space), then each space's rooms,
-/// each newest first; a room opens over it. A space's heading shows the
+/// each newest first, folded as on this phone; a room opens over it. A
+/// heading's caret folds or unfolds its group; a space's name shows the
 /// space in the Spaces tab.
 struct RoomsTab: View {
     @EnvironmentObject private var session: SessionModel
@@ -376,8 +377,8 @@ struct RoomsTab: View {
 
     var body: some View {
         NavigationStack(path: $session.roomsPath) {
-            RoomList(sections: session.lists.roomGroups(), searching: false, openSettings: openSettings,
-                     openSpace: { session.open($0) }) {
+            RoomList(sections: session.roomGroups, searching: false, openSettings: openSettings,
+                     fold: session.toggleGroupFold, openSpace: { session.open($0) }) {
                 ListPlaceholder(loaded: session.loaded, empty: "No rooms yet")
             }
             .navigationTitle("Rooms")
@@ -397,8 +398,8 @@ struct RoomsTab: View {
 /// the list); an invite opens its answer. The Notes to self above them if
 /// kept at the top, and the encryption banner (if `banner`), unless
 /// searching. Where sections fold (`fold`), a tap on a heading folds or
-/// unfolds it; else a tap on a space's heading shows the space
-/// (`openSpace`).
+/// unfolds it; where a space's heading shows the space (`openSpace`), a tap
+/// on it does, and if it folds too, only a tap on its caret folds it.
 struct RoomList<Empty: View>: View {
     @EnvironmentObject private var session: SessionModel
     let sections: [ListSection]
@@ -480,13 +481,13 @@ struct RoomList<Empty: View>: View {
     }
 
     private func headingAction(_ section: ListSection) -> SectionHeading.Action? {
-        if let fold {
-            return .fold { fold(section.key) }
+        let open = openSpace.flatMap { openSpace in section.space.map { space in { openSpace(space) } } }
+        switch (fold.map { fold in { fold(section.key) } }, open) {
+        case let (fold?, open?): return .foldOrOpen(fold: fold, open: open)
+        case let (fold?, nil): return .fold(fold)
+        case let (nil, open?): return .open(open)
+        case (nil, nil): return nil
         }
-        if let openSpace, let space = section.space {
-            return .open { openSpace(space) }
-        }
-        return nil
     }
 
     private func row(_ room: RoomSummary) -> RoomRow {
@@ -500,7 +501,8 @@ struct RoomList<Empty: View>: View {
 /// caret, its title, and while folded its rooms' unread messages, as a
 /// badge in the unread colour; a tap folds or unfolds it. One that does
 /// not fold always shows its unread messages; a space's (`open`) leads to
-/// the space.
+/// the space. One that does both (`foldOrOpen`) folds by its caret and
+/// leads to the space by the rest.
 struct SectionHeading: View {
     let section: ListSection
     let title: String
@@ -511,6 +513,8 @@ struct SectionHeading: View {
         case fold(() -> Void)
         /// Show its space.
         case open(() -> Void)
+        /// Its caret folds it, the rest shows its space.
+        case foldOrOpen(fold: () -> Void, open: () -> Void)
     }
 
     var body: some View {
@@ -527,13 +531,18 @@ struct SectionHeading: View {
             .accessibilityHint(section.folded ? "Shows its rooms" : "Hides its rooms")
             .accessibilityAction(named: section.folded ? "Unfold" : "Fold", fold)
         case .open(let open):
-            Button(action: open) {
-                content(caret: false, chevron: true)
+            openButton(open)
+        case .foldOrOpen(let fold, let open):
+            HStack(spacing: 6) {
+                Button(action: fold) {
+                    caret
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+                .accessibilityLabel(section.folded ? "Unfold \(title)" : "Fold \(title)")
+                openButton(open)
             }
-            .buttonStyle(.plain)
-            .accessibilityElement(children: .combine)
-            .accessibilityAddTraits([.isHeader, .isButton])
-            .accessibilityHint("Shows the space")
         case nil:
             content(caret: false, chevron: false)
                 .accessibilityElement(children: .combine)
@@ -541,17 +550,35 @@ struct SectionHeading: View {
         }
     }
 
+    private func openButton(_ open: @escaping () -> Void) -> some View {
+        Button(action: open) {
+            content(caret: false, chevron: true)
+        }
+        .buttonStyle(.plain)
+        .accessibilityElement(children: .combine)
+        .accessibilityAddTraits([.isHeader, .isButton])
+        .accessibilityHint("Shows the space")
+    }
+
     private var showsUnread: Bool {
-        if case .fold = action { return section.folded }
-        return true
+        switch action {
+        case .fold, .foldOrOpen: return section.folded
+        case .open, nil: return true
+        }
+    }
+
+    /// Large enough to tap on its own.
+    private var caret: some View {
+        Image(systemName: "chevron.down")
+            .font(.caption2.weight(.bold))
+            .rotationEffect(.degrees(section.folded ? -90 : 0))
+            .frame(minWidth: 18, minHeight: 18)
     }
 
     private func content(caret: Bool, chevron: Bool) -> some View {
         HStack(spacing: 6) {
             if caret {
-                Image(systemName: "chevron.down")
-                    .font(.caption2.weight(.bold))
-                    .rotationEffect(.degrees(section.folded ? -90 : 0))
+                self.caret
             }
             Text(title)
                 .font(.footnote.weight(.semibold))

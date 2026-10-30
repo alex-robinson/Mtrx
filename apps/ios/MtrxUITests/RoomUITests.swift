@@ -2,8 +2,9 @@ import XCTest
 
 /// The app with made-up messages (`-ui-testing`), in the Lab room, as a
 /// finger uses it: deleting one of our messages through its menu, sending,
-/// and messages arriving; a chat's shared rooms; a room opened over
-/// another. Each step is saved as a PNG where `SCREENSHOTS_DIR` says.
+/// and messages arriving; a chat's shared rooms; a room opened over another;
+/// folding the Rooms tab's groups. Each step is saved as a PNG where
+/// `SCREENSHOTS_DIR` says.
 final class RoomUITests: XCTestCase {
     private var app: XCUIApplication!
 
@@ -156,6 +157,28 @@ final class RoomUITests: XCTestCase {
         XCTAssertTrue(models.exists, "Models' messages gone")
         XCTAssertFalse(message("Papers 29").exists, "Papers' messages shown in Models")
         XCTAssertFalse(arrived(1).exists, "Papers' arrivals shown in Models")
+    }
+
+    /// The Rooms tab's Team: its caret folds it, its unread count then on
+    /// its heading, and unfolds it; its name shows it in the Spaces tab.
+    @MainActor
+    func testFoldingARoomsTabGroup() {
+        app.tabBars.buttons["Rooms"].tap()
+        let models = app.staticTexts["Models"].firstMatch
+        XCTAssertTrue(models.waitForExistence(timeout: 15), "No Models in the Rooms tab")
+        let heading = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Team'")).firstMatch
+        snap("ui-rooms-unfolded")
+        XCTAssertFalse(heading.label.contains("unread"), "A count on the unfolded heading: \(heading.label)")
+        app.buttons["Fold Team"].tap()
+        XCTAssertTrue(app.buttons["Unfold Team"].waitForExistence(timeout: 5), "Team did not fold")
+        snap("ui-rooms-folded")
+        XCTAssertFalse(models.exists, "Models shown in folded Team")
+        XCTAssertTrue(heading.label.contains("2 unread"), "No count on the folded heading: \(heading.label)")
+        XCTAssertTrue(app.staticTexts["Lab"].exists, "Home folded too")
+        app.buttons["Unfold Team"].tap()
+        XCTAssertTrue(models.waitForExistence(timeout: 5), "Team did not unfold")
+        heading.tap()
+        XCTAssertTrue(app.navigationBars.staticTexts["Team"].waitForExistence(timeout: 5), "The space did not open")
     }
 
     /// A message whose text starts with `start` and a comma.

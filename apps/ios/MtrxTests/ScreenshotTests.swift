@@ -70,12 +70,21 @@ final class ScreenshotTests: XCTestCase {
         try await snap("13-settings", HomeView())
     }
 
-    /// Home, then each space, its rooms newest first.
+    /// Home, then each space, its rooms newest first; unfolded, the
+    /// headings without unread counts.
     func testRooms() async throws {
         model.tab = .rooms
         model.roomsPath = []
         try await snap("04-rooms", HomeView())
         try await snap("04-rooms-dark", dark: true, HomeView())
+    }
+
+    /// Polar lab folded, with its unread count; Teaching unfolded.
+    func testRoomsFolded() async throws {
+        model.tab = .rooms
+        model.roomsPath = []
+        model.toggleGroupFold("!polar")
+        try await snap("04b-rooms-folded", HomeView())
     }
 
     func testARoomWithItsTopicLine() async throws {
