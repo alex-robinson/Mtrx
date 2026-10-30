@@ -346,6 +346,8 @@ final class FakeSession: Session, @unchecked Sendable {
     var changeError: Error?
     var children: Result<[DirectoryRoom], Error> = .success([])
     var childrenRequests = 0
+    /// What `sharedRooms` returns.
+    var shared: [String] = []
     var directory: Result<DirectoryPage, Error> = .success(DirectoryPage(rooms: [], next: nil))
     /// Each `publicRooms` call's server, query and kind.
     var directoryRequests: [(server: String?, query: String, kind: DirectoryKind)] = []
@@ -429,6 +431,10 @@ final class FakeSession: Session, @unchecked Sendable {
     override func knock(room: String, via: [String]) async throws -> String {
         try change("knock \(room)")
         return room
+    }
+
+    override func sharedRooms(userId: String) async throws -> [String] {
+        shared
     }
 
     override func spaceChildren(spaceId: String) async throws -> [DirectoryRoom] {

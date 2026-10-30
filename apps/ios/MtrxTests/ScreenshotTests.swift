@@ -17,7 +17,6 @@ final class ScreenshotTests: XCTestCase {
     override func setUp() async throws {
         defaults = UserDefaults(suiteName: "ScreenshotTests")
         defaults.removePersistentDomain(forName: "ScreenshotTests")
-        defaults.set(["!ice", "!sea", "!reading"], forKey: "recentRooms")
         session = FakeSession(noHandle: .init())
         session.encryption = EncryptionState(deviceVerified: true, recovery: .enabled)
         model = SessionModel(session: session, defaults: defaults)
@@ -70,11 +69,12 @@ final class ScreenshotTests: XCTestCase {
         try await snap("13-settings", HomeView())
     }
 
-    func testRecent() async throws {
+    /// Home, then each space, its rooms newest first.
+    func testRooms() async throws {
         model.tab = .rooms
         model.roomsPath = []
-        try await snap("04-recent", HomeView())
-        try await snap("04-recent-dark", dark: true, HomeView())
+        try await snap("04-rooms", HomeView())
+        try await snap("04-rooms-dark", dark: true, HomeView())
     }
 
     func testARoomWithItsTopicLine() async throws {
@@ -85,6 +85,26 @@ final class ScreenshotTests: XCTestCase {
         try await snap("05-room-dark", dark: true, wait: 2, HomeView())
     }
 
+    /// Under a direct chat's header: the rooms shared with Ann, by space.
+    func testSharedRooms() async throws {
+        session.shared = ["!ice", "!sea", "!models", "!ann", "!polar"]
+        try await snap(
+            "05c-shared-rooms",
+            NavigationStack {
+                SharedRoomsPanel(userId: "@ann:example.org", name: "Ann Lindqvist")
+                    .navigationTitle("Ann Lindqvist")
+                    .navigationBarTitleDisplayMode(.inline)
+            })
+        session.shared = ["!ann"]
+        try await snap(
+            "05d-no-shared-rooms",
+            NavigationStack {
+                SharedRoomsPanel(userId: "@ann:example.org", name: "Ann Lindqvist")
+                    .navigationTitle("Ann Lindqvist")
+                    .navigationBarTitleDisplayMode(.inline)
+            })
+    }
+
     /// The draft left in the room is back, with the message it answers.
     func testARoomWithItsDraft() async throws {
         session.fakeTimeline.initialItems = Screens.timeline
@@ -92,6 +112,23 @@ final class ScreenshotTests: XCTestCase {
         model.tab = .rooms
         model.roomsPath = ["!ice"]
         try await snap("05b-room-draft", wait: 2, HomeView())
+    }
+
+    /// The largest text size (Accessibility): the lists put a room's time
+    /// and counts under its name; a room, and its info.
+    func testLargeText() async throws {
+        model.tab = .chats
+        try await snap("14-large-chats", large: true, HomeView())
+        model.tab = .rooms
+        model.roomsPath = []
+        try await snap("14b-large-rooms", large: true, HomeView())
+        session.fakeTimeline.initialItems = Screens.timeline
+        model.roomsPath = ["!ice"]
+        try await snap("14c-large-room", large: true, wait: 2, HomeView())
+        session.settings = Screens.settings
+        session.memberList = Screens.members
+        try await snap(
+            "14d-large-room-info", large: true, RoomInfoView(room: Screens.ice, model: model.info(for: Screens.ice)))
     }
 
     // MARK: A room's topic and info
@@ -194,12 +231,18 @@ final class ScreenshotTests: XCTestCase {
     // MARK: Drawing
 
     /// Draw `view` in a window the size of the screen, after `wait` seconds
-    /// for its tasks, and save it as `<name>.png`.
-    private func snap<V: View>(_ name: String, dark: Bool = false, wait: Double = 1, _ view: V) async throws {
+    /// for its tasks, and save it as `<name>.png`; with `large`, in the
+    /// largest text size (Accessibility, from iOS 17).
+    private func snap<V: View>(
+        _ name: String, dark: Bool = false, large: Bool = false, wait: Double = 1, _ view: V
+    ) async throws {
         let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
         let window = UIWindow(windowScene: scene)
         window.frame = scene.screen.bounds
         window.overrideUserInterfaceStyle = dark ? .dark : .light
+        if large, #available(iOS 17, *) {
+            window.traitOverrides.preferredContentSizeCategory = .accessibilityExtraExtraExtraLarge
+        }
         window.rootViewController = UIHostingController(
             rootView: view
                 .environmentObject(app)
@@ -315,6 +358,28 @@ private enum Screens {
                         reactions: [Reaction(key: "👍", count: 2, byUs: false, senders: [])]),
                     at: at(5), own: true, eventId: "$3")),
             Make.item("x", Make.event("me", .redacted, at: at(6), own: true, eventId: "$x")),
+            Make.item("u", Make.event("me", .unableToDecrypt, at: at(7), own: true, eventId: "$u")),
+            Make.item(
+                "q",
+                Make.event(
+                    "me",
+                    Make.text(
+                        "Thanks, the plots at https://example.org/runs look right.",
+                        edited: true,
+                        replyTo: ReplyQuote(
+                            eventId: "$2", state: .loaded, senderId: "@ann:example.org", senderName: "Ann",
+                            kind: .text, body: "Plots at https://example.org/runs")),
+                    at: at(8), own: true, eventId: "$q")),
+            Make.item(
+                "n",
+                Make.event(
+                    "me",
+                    .message(
+                        message: Message(
+                            kind: .notice, body: "Runs archived.", edited: false, media: nil, reactions: [],
+                            replyTo: nil, rawBody: "")),
+                    at: at(9), own: true, eventId: "$n")),
+            Make.item("o", Make.event("me", .other(description: "poll"), at: at(10), own: true, eventId: "$o")),
             Make.item(
                 "p1", Make.event("bob", Make.text("Meeting moved to 14:00 on Thursday."), at: at(20), eventId: "$p1")),
             Make.item(

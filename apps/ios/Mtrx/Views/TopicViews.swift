@@ -126,9 +126,9 @@ struct LinkButton: View {
                 openURL(url)
             }
         } label: {
-            HStack {
+            AdaptiveStack {
                 Label(link.name, systemImage: link.call ? "video" : "link")
-                Spacer()
+                Spacer(minLength: 0)
                 if let passcode = link.passcode, !passcode.isEmpty {
                     Text("Passcode \(passcode)")
                         .font(.footnote)

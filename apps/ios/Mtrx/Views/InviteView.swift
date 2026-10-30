@@ -23,6 +23,15 @@ struct InviteView: View {
     }
 
     var body: some View {
+        // Scrolls where it does not fit (large text).
+        ViewThatFits(in: .vertical) {
+            content
+            ScrollView { content }
+        }
+        .navigationBarTitleDisplayMode(.inline)
+    }
+
+    private var content: some View {
         VStack(spacing: 16) {
             Spacer()
             AvatarView(name: room.name, uri: room.avatarUrl, size: 72, shape: room.kind == .space ? .square : .circle)
@@ -45,7 +54,7 @@ struct InviteView: View {
                     .foregroundColor(.red)
                     .multilineTextAlignment(.center)
             }
-            HStack(spacing: 12) {
+            AdaptiveStack(spacing: 12) {
                 Button {
                     answer(.decline)
                 } label: {
@@ -67,7 +76,6 @@ struct InviteView: View {
         }
         .padding(24)
         .frame(maxWidth: .infinity)
-        .navigationBarTitleDisplayMode(.inline)
     }
 
     private func label(_ title: String, busy: Bool) -> some View {

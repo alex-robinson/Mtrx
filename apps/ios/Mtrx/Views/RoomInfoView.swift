@@ -130,7 +130,7 @@ struct InviteLeaveButtons: View {
     @State private var leaving = false
 
     var body: some View {
-        HStack(spacing: 10) {
+        AdaptiveStack(spacing: 10) {
             if model.settings?.canInvite == true {
                 Button {
                     inviting = true

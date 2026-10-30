@@ -1,8 +1,8 @@
 import MtrxFFI
 import SwiftUI
 
-/// Four tabs: Chats (direct chats), Spaces (the spaces, each with its
-/// rooms), Rooms (the last room, over the rooms opened lately) and Settings.
+/// Four tabs: Chats (direct chats), Rooms (the rooms, by space), Spaces
+/// (the spaces, each with its rooms) and Settings.
 /// Rooms open over their list, without the tab bar. A verification and an
 /// invite to answer show over any of them.
 struct HomeView: View {
@@ -14,15 +14,16 @@ struct HomeView: View {
         TabView(selection: Binding(get: { session.tab }, set: session.select)) {
             ChatsTab(openSettings: openSettings)
                 .tabItem { Label("Chats", systemImage: "bubble.left.and.bubble.right") }
+                .badge(session.chatsBadge)
                 .tag(HomeTab.chats)
+            RoomsTab(openSettings: openSettings)
+                .tabItem { Label("Rooms", systemImage: "number") }
+                .badge(session.roomsBadge)
+                .tag(HomeTab.rooms)
             SpacesTab(openSettings: openSettings)
                 .tabItem { Label("Spaces", systemImage: "square.stack.3d.up") }
                 .badge(session.spacesBadge)
                 .tag(HomeTab.spaces)
-            RoomsTab()
-                .tabItem { Label("Rooms", systemImage: "number") }
-                .badge(session.roomsBadge)
-                .tag(HomeTab.rooms)
             SettingsView()
                 .tabItem { Label("Settings", systemImage: "gearshape") }
                 .tag(HomeTab.settings)
@@ -97,6 +98,9 @@ struct ChatsTab: View {
             .searchable(text: $search, prompt: "Search chats")
             .navigationDestination(for: String.self) { id in
                 OpenRoom(id: id)
+                    .backWithUnread(session.backBadge(besides: id)) {
+                        session.chatsPath.removeAll { $0 == id }
+                    }
                     .toolbar(.hidden, for: .tabBar)
             }
         }
@@ -310,22 +314,23 @@ struct SpaceRoomsPage: View {
 /// messages.
 private struct SpaceRow: View {
     let item: SpaceItem
+    @RowAvatarSize private var avatarSize: CGFloat
 
     var body: some View {
         HStack(spacing: 10) {
             if let space = item.space {
-                AvatarView(name: space.name, uri: space.avatarUrl, size: RoomRow.avatarSize, shape: .square)
+                AvatarView(name: space.name, uri: space.avatarUrl, size: avatarSize, shape: .square)
             } else {
                 Image(systemName: "tray.full")
                     .font(.body)
                     .foregroundStyle(.secondary)
-                    .frame(width: RoomRow.avatarSize, height: RoomRow.avatarSize)
-                    .background(Color.secondary.opacity(0.15), in: RoundedRectangle(cornerRadius: 8))
+                    .frame(width: avatarSize, height: avatarSize)
+                    .background(Color.secondary.opacity(0.15), in: RoundedRectangle(cornerRadius: avatarSize * 0.25))
             }
             Text(item.name)
                 .fontWeight(item.unread ? .semibold : .regular)
                 .foregroundColor(.primary)
-                .lineLimit(1)
+                .lineLimit(1, accessibility: 3)
             Spacer(minLength: 8)
             if item.unread {
                 Circle()
@@ -361,71 +366,45 @@ private struct ViewMenu: View {
     }
 }
 
-/// The Rooms tab: the last room, over Recent; back (or a tap on the tab)
-/// goes to Recent.
+/// The Rooms tab: Home (the rooms in no space), then each space's rooms,
+/// each newest first; a room opens over it. A space's heading shows the
+/// space in the Spaces tab.
 struct RoomsTab: View {
     @EnvironmentObject private var session: SessionModel
+    let openSettings: () -> Void
 
     var body: some View {
         NavigationStack(path: $session.roomsPath) {
-            RecentView()
-                .navigationTitle("Recent")
-                .navigationDestination(for: String.self) { id in
-                    OpenRoom(id: id)
-                        .backWithUnread(session.backBadge(besides: id)) {
-                            session.roomsPath.removeAll { $0 == id }
-                        }
-                        .toolbar(.hidden, for: .tabBar)
-                }
-        }
-    }
-}
-
-/// The rooms opened lately, across all spaces, newest first: each with its
-/// space and unread count.
-struct RecentView: View {
-    @EnvironmentObject private var session: SessionModel
-
-    var body: some View {
-        let rooms = session.recent.rooms(in: session.lists)
-        List {
-            ForEach(rooms, id: \.id) { room in
-                NavigationLink(value: room.id) {
-                    RoomRow(
-                        room: room, detail: session.lists.spaceName(of: room),
-                        draft: session.lists.drafts.contains(room.id))
-                }
-                .compactRow()
+            RoomList(sections: session.lists.roomGroups(), searching: false, openSettings: openSettings,
+                     openSpace: { session.open($0) }) {
+                ListPlaceholder(loaded: session.loaded, empty: "No rooms yet")
             }
-        }
-        .listStyle(.plain)
-        .overlay {
-            if rooms.isEmpty {
-                VStack(spacing: 12) {
-                    Text("Rooms you open show here")
-                        .foregroundStyle(.secondary)
-                    Button("Browse spaces") {
-                        session.tab = .spaces
+            .navigationTitle("Rooms")
+            .navigationDestination(for: String.self) { id in
+                OpenRoom(id: id)
+                    .backWithUnread(session.backBadge(besides: id)) {
+                        session.roomsPath.removeAll { $0 == id }
                     }
-                    .buttonStyle(.bordered)
-                }
+                    .toolbar(.hidden, for: .tabBar)
             }
         }
-        .safeAreaInset(edge: .bottom) { OfflineBanner() }
     }
 }
 
 /// Rooms or chats, in sections with their titles, that open on a tap (in
 /// their tabs if `opensInRooms`: rooms in Rooms, chats in Chats; else over
 /// the list); an invite opens its answer. The Notes to self above them if
-/// kept at the top, and the encryption banner, unless searching. Where
-/// sections fold (`fold`), a tap on a heading folds or unfolds it.
+/// kept at the top, and the encryption banner (if `banner`), unless
+/// searching. Where sections fold (`fold`), a tap on a heading folds or
+/// unfolds it; else a tap on a space's heading shows the space
+/// (`openSpace`).
 struct RoomList<Empty: View>: View {
     @EnvironmentObject private var session: SessionModel
     let sections: [ListSection]
     /// The Notes to self, at the top.
     var notes: RoomSummary?
     let searching: Bool
+    var banner = true
     let openSettings: () -> Void
     /// The presence to show on a room's picture (Chats).
     var presence: (RoomSummary) -> Presence? = { _ in nil }
@@ -433,11 +412,13 @@ struct RoomList<Empty: View>: View {
     var opensInRooms = false
     /// Fold or unfold the section with this key; nil: sections don't fold.
     var fold: ((String) -> Void)?
+    /// Show the space with this ID; nil: headings don't open spaces.
+    var openSpace: ((String) -> Void)?
     @ViewBuilder let empty: () -> Empty
 
     var body: some View {
         List {
-            if !searching {
+            if banner && !searching {
                 EncryptionBannerRow(open: openSettings)
             }
             if let notes {
@@ -447,7 +428,7 @@ struct RoomList<Empty: View>: View {
             // headers, whose spacing is not ours to set.
             ForEach(sections) { section in
                 if let title = section.title {
-                    SectionHeading(section: section, title: title, fold: fold.map { fold in { fold(section.key) } })
+                    SectionHeading(section: section, title: title, action: headingAction(section))
                         .listRowInsets(EdgeInsets(top: 8, leading: 14, bottom: 3, trailing: 14))
                         .listRowSeparator(.hidden)
                 }
@@ -494,23 +475,43 @@ struct RoomList<Empty: View>: View {
         }
     }
 
+    private func headingAction(_ section: ListSection) -> SectionHeading.Action? {
+        if let fold {
+            return .fold { fold(section.key) }
+        }
+        if let openSpace, let space = section.space {
+            return .open { openSpace(space) }
+        }
+        return nil
+    }
+
     private func row(_ room: RoomSummary) -> RoomRow {
         RoomRow(room: room, presence: presence(room), draft: session.lists.drafts.contains(room.id))
     }
 }
 
-/// A section's heading, a compact row of the list: where it folds (`fold`),
-/// a caret, its title, and while folded its rooms' unread messages, as a
-/// badge in the unread colour; a tap folds or unfolds it.
+/// A section's heading, a compact row of the list: where it folds, a
+/// caret, its title, and while folded its rooms' unread messages, as a
+/// badge in the unread colour; a tap folds or unfolds it. One that does
+/// not fold always shows its unread messages; a space's (`open`) leads to
+/// the space.
 struct SectionHeading: View {
     let section: ListSection
     let title: String
-    let fold: (() -> Void)?
+    let action: Action?
+
+    /// What a tap on it does.
+    enum Action {
+        case fold(() -> Void)
+        /// Show its space.
+        case open(() -> Void)
+    }
 
     var body: some View {
-        if let fold {
+        switch action {
+        case .fold(let fold):
             Button(action: fold) {
-                content(caret: true)
+                content(caret: true, chevron: false)
             }
             .buttonStyle(.plain)
             .accessibilityElement(children: .ignore)
@@ -519,14 +520,27 @@ struct SectionHeading: View {
             .accessibilityAddTraits([.isHeader, .isButton])
             .accessibilityHint(section.folded ? "Shows its rooms" : "Hides its rooms")
             .accessibilityAction(named: section.folded ? "Unfold" : "Fold", fold)
-        } else {
-            content(caret: false)
+        case .open(let open):
+            Button(action: open) {
+                content(caret: false, chevron: true)
+            }
+            .buttonStyle(.plain)
+            .accessibilityElement(children: .combine)
+            .accessibilityAddTraits([.isHeader, .isButton])
+            .accessibilityHint("Shows the space")
+        case nil:
+            content(caret: false, chevron: false)
                 .accessibilityElement(children: .combine)
                 .accessibilityAddTraits(.isHeader)
         }
     }
 
-    private func content(caret: Bool) -> some View {
+    private var showsUnread: Bool {
+        if case .fold = action { return section.folded }
+        return true
+    }
+
+    private func content(caret: Bool, chevron: Bool) -> some View {
         HStack(spacing: 6) {
             if caret {
                 Image(systemName: "chevron.down")
@@ -535,9 +549,13 @@ struct SectionHeading: View {
             }
             Text(title)
                 .font(.footnote.weight(.semibold))
+            if chevron {
+                Image(systemName: "chevron.right")
+                    .font(.caption2.weight(.bold))
+            }
             Spacer(minLength: 8)
             let unread = section.unread
-            if section.folded && unread.count > 0 {
+            if showsUnread && unread.count > 0 {
                 Text(unread.count > 999 ? "999+" : String(unread.count))
                     .font(.caption2.weight(.semibold))
                     .monospacedDigit()
@@ -546,6 +564,7 @@ struct SectionHeading: View {
                     .padding(.vertical, 1)
                     .frame(minWidth: 18)
                     .background(unread.mentions ? Color.red : Color.accentColor, in: Capsule())
+                    .accessibilityLabel("\(unread.count) unread")
             }
         }
         .foregroundStyle(.secondary)
@@ -579,9 +598,9 @@ extension View {
     }
 }
 
-/// The back button of a room in the Rooms tab: a chevron and the unread
-/// messages in the other recent rooms. Swiping from the edge still goes
-/// back (`UINavigationController` extension).
+/// The back button of a room: a chevron and the unread messages in the
+/// other rooms. Swiping from the edge still goes back
+/// (`UINavigationController` extension).
 private struct BackWithUnread: ViewModifier {
     let count: Int
     let back: () -> Void
@@ -606,7 +625,7 @@ private struct BackWithUnread: ViewModifier {
                             }
                         }
                     }
-                    .accessibilityLabel(count > 0 ? "Recent, \(count) unread" : "Recent")
+                    .accessibilityLabel(count > 0 ? "Back, \(count) unread" : "Back")
                 }
             }
     }
