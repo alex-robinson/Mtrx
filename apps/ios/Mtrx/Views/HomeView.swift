@@ -1,8 +1,8 @@
 import MtrxFFI
 import SwiftUI
 
-/// Four tabs: Chats (direct chats), Spaces (the spaces, each with its
-/// rooms), Rooms (the last room, over the rooms opened lately) and Settings.
+/// Four tabs: Chats (direct chats), Rooms (the last room, over the rooms
+/// opened lately), Spaces (the spaces, each with its rooms) and Settings.
 /// Rooms open over their list, without the tab bar. A verification and an
 /// invite to answer show over any of them.
 struct HomeView: View {
@@ -15,14 +15,14 @@ struct HomeView: View {
             ChatsTab(openSettings: openSettings)
                 .tabItem { Label("Chats", systemImage: "bubble.left.and.bubble.right") }
                 .tag(HomeTab.chats)
-            SpacesTab(openSettings: openSettings)
-                .tabItem { Label("Spaces", systemImage: "square.stack.3d.up") }
-                .badge(session.spacesBadge)
-                .tag(HomeTab.spaces)
             RoomsTab()
                 .tabItem { Label("Rooms", systemImage: "number") }
                 .badge(session.roomsBadge)
                 .tag(HomeTab.rooms)
+            SpacesTab(openSettings: openSettings)
+                .tabItem { Label("Spaces", systemImage: "square.stack.3d.up") }
+                .badge(session.spacesBadge)
+                .tag(HomeTab.spaces)
             SettingsView()
                 .tabItem { Label("Settings", systemImage: "gearshape") }
                 .tag(HomeTab.settings)

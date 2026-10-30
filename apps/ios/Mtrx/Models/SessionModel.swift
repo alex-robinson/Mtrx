@@ -448,10 +448,10 @@ final class SessionModel: ObservableObject {
 enum HomeTab: Hashable {
     /// Direct chats.
     case chats
-    /// The spaces and their rooms.
-    case spaces
     /// The last room, over the rooms opened lately.
     case rooms
+    /// The spaces and their rooms.
+    case spaces
     case settings
 }
 
