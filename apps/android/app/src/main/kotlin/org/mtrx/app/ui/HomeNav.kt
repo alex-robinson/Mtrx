@@ -16,8 +16,8 @@ import uniffi.mtrx.RoomSummary
 /** The tabs of the bottom bar. */
 enum class HomeTab(val label: String, val icon: ImageVector) {
     Chats("Chats", Icons.Filled.Person),
-    Spaces("Spaces", MtrxIcons.Spaces),
     Rooms("Rooms", MtrxIcons.Hash),
+    Spaces("Spaces", MtrxIcons.Spaces),
     Settings("Settings", Icons.Filled.Settings),
 }
 
