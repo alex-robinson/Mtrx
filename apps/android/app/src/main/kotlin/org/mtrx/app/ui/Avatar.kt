@@ -54,12 +54,12 @@ fun Avatar(
             val image = remember(loaded) { loaded.asImageBitmap() }
             Image(image, contentDescription = null, modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
         } else {
+            // The picture's letter: sized to it, whatever the text size.
+            val letter = with(LocalDensity.current) { (size * 0.42f).toSp() }
             Text(
                 initial(name),
                 color = Color.White,
-                style = MaterialTheme.typography.titleMedium,
-                // The picture's letter: sized to it, whatever the text size.
-                fontSize = with(LocalDensity.current) { (size * 0.42f).toSp() },
+                style = MaterialTheme.typography.titleMedium.copy(fontSize = letter, lineHeight = letter * 1.2f),
             )
         }
     }

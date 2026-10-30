@@ -195,30 +195,34 @@ private fun GroupHeading(group: RoomGroup, images: Images, onClick: (() -> Unit)
             .padding(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        val space = group.space
-        if (space != null) {
-            Avatar(space.name, space.avatarUrl, space.id, images, size = 20.dp, shape = RoundedCornerShape(4.dp))
-        } else {
-            Icon(Icons.Filled.Home, contentDescription = null, modifier = Modifier.size(20.dp), tint = MaterialTheme.colorScheme.primary)
-        }
-        Spacer(Modifier.width(8.dp))
-        Text(
-            group.name,
-            Modifier.weight(1f, fill = false),
-            style = MaterialTheme.typography.titleSmall,
-            color = MaterialTheme.colorScheme.primary,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-        )
-        if (onClick != null) {
-            Icon(
-                Icons.AutoMirrored.Filled.KeyboardArrowRight,
-                contentDescription = null,
-                modifier = Modifier.size(20.dp),
-                tint = MaterialTheme.colorScheme.primary,
+        // The name and caret at the left, the count at the right edge (as the rooms').
+        Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
+            // As tall as the name, at any text size.
+            val iconSize = linesHeight(MaterialTheme.typography.titleSmall)
+            val space = group.space
+            if (space != null) {
+                Avatar(space.name, space.avatarUrl, space.id, images, size = iconSize, shape = RoundedCornerShape(4.dp))
+            } else {
+                Icon(Icons.Filled.Home, contentDescription = null, modifier = Modifier.size(iconSize), tint = MaterialTheme.colorScheme.primary)
+            }
+            Spacer(Modifier.width(8.dp))
+            Text(
+                group.name,
+                Modifier.weight(1f, fill = false),
+                style = MaterialTheme.typography.titleSmall,
+                color = MaterialTheme.colorScheme.primary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
             )
+            if (onClick != null) {
+                Icon(
+                    Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                    contentDescription = null,
+                    modifier = Modifier.size(iconSize),
+                    tint = MaterialTheme.colorScheme.primary,
+                )
+            }
         }
-        Spacer(Modifier.weight(1f))
         if (group.unread > 0) UnreadBadge(group.unread, group.mentions)
     }
 }

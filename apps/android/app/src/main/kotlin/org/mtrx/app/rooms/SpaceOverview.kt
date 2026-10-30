@@ -53,12 +53,14 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import org.mtrx.app.model.Images
 import org.mtrx.app.ui.Avatar
 import org.mtrx.app.ui.CompactRow
 import org.mtrx.app.ui.MtrxIcons
+import org.mtrx.app.ui.BAR_TEXT_SCALE
 import org.mtrx.app.ui.linesHeight
 import uniffi.mtrx.DirectoryRoom
 import uniffi.mtrx.JoinAccess
@@ -156,12 +158,15 @@ fun SpaceOverviewContent(
                             .fillMaxWidth()
                             .padding(horizontal = 16.dp, vertical = 8.dp),
                     ) {
+                        // At large text sizes, no tick: room for the labels.
+                        val ticked = LocalDensity.current.fontScale <= BAR_TEXT_SCALE
                         OverviewTab.entries.forEachIndexed { index, it ->
                             SegmentedButton(
                                 selected = tab == it,
                                 onClick = { tab = it },
                                 shape = SegmentedButtonDefaults.itemShape(index, OverviewTab.entries.size),
-                            ) { Text(it.label) }
+                                icon = { if (ticked) SegmentedButtonDefaults.Icon(tab == it) },
+                            ) { Text(it.label, maxLines = 1, softWrap = false) }
                         }
                     }
                 }

@@ -127,6 +127,8 @@ import org.mtrx.app.model.Images
 import org.mtrx.app.rooms.RoomGroup
 import org.mtrx.app.rooms.roomGroups
 import org.mtrx.app.ui.Avatar
+import org.mtrx.app.ui.BAR_TEXT_SCALE
+import org.mtrx.app.ui.TextScaleAtMost
 import org.mtrx.app.ui.BubbleColors
 import org.mtrx.app.ui.LocalOwnBubble
 import org.mtrx.app.ui.MtrxIcons
@@ -417,7 +419,7 @@ fun TimelineContent(
                         IconButton(onClick = onBack) {
                             BadgedBox(
                                 badge = {
-                                    if (backCount > 0) UnreadBadge(backCount)
+                                    if (backCount > 0) TextScaleAtMost(BAR_TEXT_SCALE) { UnreadBadge(backCount) }
                                 },
                             ) {
                                 Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")

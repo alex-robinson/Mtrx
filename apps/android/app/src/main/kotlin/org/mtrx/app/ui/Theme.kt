@@ -10,6 +10,7 @@ import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 
@@ -61,6 +62,19 @@ fun MtrxTheme(content: @Composable () -> Unit) {
 @Composable
 fun linesHeight(vararg styles: TextStyle): Dp = with(LocalDensity.current) {
     styles.fold(0.dp) { sum, style -> sum + style.lineHeight.toDp() }
+}
+
+/** The largest text size, times the default, of the tabs and of a count on an icon. */
+const val BAR_TEXT_SCALE = 1.3f
+
+/**
+ * [content] with the text size at most [max] times the default: for what
+ * cannot grow with it, as the tabs' labels and the counts on icons.
+ */
+@Composable
+fun TextScaleAtMost(max: Float, content: @Composable () -> Unit) {
+    val density = LocalDensity.current
+    CompositionLocalProvider(LocalDensity provides Density(density.density, minOf(density.fontScale, max)), content = content)
 }
 
 /** A colour per user or room, for avatars without a picture and sender names. */

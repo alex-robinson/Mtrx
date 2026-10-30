@@ -325,20 +325,8 @@ fun HomeFrame(
             }
         },
         bottomBar = {
-            NavigationBar {
-                HomeTab.entries.forEach {
-                    val count = badges[it] ?: 0L
-                    NavigationBarItem(
-                        selected = tab == it,
-                        onClick = { onTab(it) },
-                        icon = {
-                            BadgedBox(badge = { if (count > 0) UnreadBadge(count) }) {
-                                Icon(it.icon, contentDescription = null)
-                            }
-                        },
-                        label = { Text(it.label) },
-                    )
-                }
+            TextScaleAtMost(BAR_TEXT_SCALE) {
+                Tabs(tab, badges, onTab)
             }
         },
         snackbarHost = { SnackbarHost(snackbar) },
@@ -352,6 +340,26 @@ fun HomeFrame(
                 .fillMaxSize(),
         ) {
             content()
+        }
+    }
+}
+
+/** The tabs, [tab] selected, with their unread [badges]; their labels on one line. */
+@Composable
+private fun Tabs(tab: HomeTab, badges: Map<HomeTab, Long>, onTab: (HomeTab) -> Unit) {
+    NavigationBar {
+        HomeTab.entries.forEach {
+            val count = badges[it] ?: 0L
+            NavigationBarItem(
+                selected = tab == it,
+                onClick = { onTab(it) },
+                icon = {
+                    BadgedBox(badge = { if (count > 0) UnreadBadge(count) }) {
+                        Icon(it.icon, contentDescription = null)
+                    }
+                },
+                label = { Text(it.label, maxLines = 1, softWrap = false) },
+            )
         }
     }
 }
