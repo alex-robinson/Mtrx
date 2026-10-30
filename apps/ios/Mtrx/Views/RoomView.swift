@@ -368,16 +368,13 @@ struct TimelineList: View {
 
     /// Below the newest row.
     private static let bottomId = "bottom"
-    /// Sent to the bottom by the button, until it is there.
-    @State private var goingToBottom = false
 
     var body: some View {
         ScrollViewReader { proxy in
             ScrollView {
                 rows
             }
-            .modifier(
-                AnchoredAtBottom(model: model, proxy: proxy, bottomId: Self.bottomId, goingToBottom: $goingToBottom))
+            .modifier(AnchoredAtBottom(model: model, proxy: proxy, bottomId: Self.bottomId))
             .onChange(of: model.scrollTarget) { target in
                 guard let target else { return }
                 withAnimation {
@@ -387,7 +384,7 @@ struct TimelineList: View {
             .overlay(alignment: .bottomTrailing) {
                 if model.showsScrollToBottom {
                     ScrollToBottomButton {
-                        goingToBottom = true
+                        model.followBottom()
                         withAnimation {
                             proxy.scrollTo(Self.bottomId, anchor: .bottom)
                         }
@@ -455,21 +452,16 @@ struct TimelineList: View {
 }
 
 /// Keeps the timeline at its bottom as it opens and while new messages
-/// come, and what is in view in place while older ones load above it.
-/// From iOS 18 the scroll view's bottom anchor does it: at the very end of
-/// its content, it stays there as rows come or are measured and as the
-/// keyboard or the composer change its height; anywhere else, it keeps its
-/// offset. Nothing here scrolls as the geometry changes (doing so fought
-/// the anchor and the lazy stack's estimates, the timeline moving up and
-/// down). A scroll that comes to rest just short of the end (within
-/// `TimelineModel.bottomTolerance`), or the button's short of it as
-/// messages came meanwhile, goes on to it, once. Before iOS 18, the rows'
-/// changes are followed (iOS 17's anchor places it at the start).
+/// come, and what is in view in place while older ones load above it. The
+/// scroll view's bottom anchor places it at the bottom as it opens, but
+/// does not keep it there on every system (iOS 26 keeps its offset as the
+/// rows below or its own height change). From iOS 18 that is
+/// `FollowsEnd`'s. Before, the rows' changes are followed (iOS 17's anchor
+/// places it at the start).
 private struct AnchoredAtBottom: ViewModifier {
     @ObservedObject var model: TimelineModel
     let proxy: ScrollViewProxy
     let bottomId: String
-    @Binding var goingToBottom: Bool
     /// The oldest row, as last drawn.
     @State private var oldest: String?
 
@@ -477,22 +469,7 @@ private struct AnchoredAtBottom: ViewModifier {
         if #available(iOS 18, *) {
             content
                 .defaultScrollAnchor(.bottom)
-                .onScrollGeometryChange(for: CGFloat.self) { geometry in
-                    // Short content sits at the bottom: nothing below is
-                    // hidden.
-                    geometry.contentSize.height - geometry.visibleRect.maxY
-                } action: { _, distance in
-                    model.scrolled(distanceFromBottom: distance)
-                }
-                .onScrollPhaseChange { old, phase in
-                    if phase == .tracking || phase == .interacting {
-                        // Taken over by hand.
-                        goingToBottom = false
-                    } else if phase == .idle && old != .idle && (model.atBottom || goingToBottom) {
-                        goingToBottom = false
-                        proxy.scrollTo(bottomId, anchor: .bottom)
-                    }
-                }
+                .modifier(FollowsEnd(model: model))
         } else if #available(iOS 17, *) {
             following(content.defaultScrollAnchor(.bottom))
         } else {
@@ -515,6 +492,82 @@ private struct AnchoredAtBottom: ViewModifier {
                 }
                 oldest = first
             }
+    }
+}
+
+/// While the timeline follows its bottom (`TimelineModel.followsBottom`),
+/// it goes to the very end of its content, at once, when the content or
+/// the view change their height (a message came, rows were measured, the
+/// keyboard or the composer moved) and when a scroll comes to rest; never
+/// as it is scrolled (by hand, to a message, or to the bottom by its
+/// button), nor when only its offset changed: that is a scroll by hand,
+/// whose phase may come later. It goes to the end's edge, where the scroll
+/// view's own anchor keeps it too, without animation: not to the last row
+/// (the lazy stack's estimate of where it is), animated with what moved
+/// it, from wherever each change found it, which had the timeline go up
+/// and down, and pull against a finger.
+@available(iOS 18, *)
+private struct FollowsEnd: ViewModifier {
+    @ObservedObject var model: TimelineModel
+    @State private var position = ScrollPosition(edge: .bottom)
+    /// How far the end is below the bottom of the view (negative: above).
+    @State private var distance: CGFloat = 0
+    /// Scrolled by hand, or moving on after it.
+    @State private var byHand = false
+    /// Scrolling, by hand or as asked (to the bottom, to a message).
+    @State private var moving = false
+
+    func body(content: Content) -> some View {
+        content
+            .scrollPosition($position)
+            .onScrollPhaseChange { old, phase in
+                let hand = phase == .tracking || phase == .interacting || phase == .decelerating
+                // Only a scroll by hand says whether to follow: the
+                // keyboard or a size change may move it too.
+                if byHand && !hand {
+                    model.scrollEnded()
+                }
+                byHand = hand
+                moving = phase != .idle
+                // Come to rest just short of the end, or a message came
+                // while scrolling to it.
+                if phase == .idle && old != .idle {
+                    follow()
+                }
+            }
+            .onScrollGeometryChange(for: Geometry.self) { geometry in
+                Geometry(
+                    content: geometry.contentSize.height, container: geometry.containerSize.height,
+                    // Short content sits at the bottom: nothing below is
+                    // hidden.
+                    distance: geometry.contentSize.height - geometry.visibleRect.maxY)
+            } action: { old, new in
+                distance = new.distance
+                model.scrolled(distanceFromBottom: new.distance)
+                // Moved alone, it is scrolled (by hand, before the phase
+                // may say so): not followed.
+                if new.content != old.content || new.container != old.container {
+                    follow()
+                }
+            }
+    }
+
+    private struct Geometry: Equatable {
+        var content: CGFloat
+        var container: CGFloat
+        /// How far the end is below the bottom of the view.
+        var distance: CGFloat
+    }
+
+    /// To the end, if following it, at rest and not there.
+    private func follow() {
+        if model.followsBottom && !moving && abs(distance) > 0.5 {
+            var jump = Transaction()
+            jump.disablesAnimations = true
+            withTransaction(jump) {
+                position.scrollTo(edge: .bottom)
+            }
+        }
     }
 }
 
