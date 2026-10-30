@@ -315,6 +315,28 @@ private enum Screens {
                         reactions: [Reaction(key: "👍", count: 2, byUs: false, senders: [])]),
                     at: at(5), own: true, eventId: "$3")),
             Make.item("x", Make.event("me", .redacted, at: at(6), own: true, eventId: "$x")),
+            Make.item("u", Make.event("me", .unableToDecrypt, at: at(7), own: true, eventId: "$u")),
+            Make.item(
+                "q",
+                Make.event(
+                    "me",
+                    Make.text(
+                        "Thanks, the plots at https://example.org/runs look right.",
+                        edited: true,
+                        replyTo: ReplyQuote(
+                            eventId: "$2", state: .loaded, senderId: "@ann:example.org", senderName: "Ann",
+                            kind: .text, body: "Plots at https://example.org/runs")),
+                    at: at(8), own: true, eventId: "$q")),
+            Make.item(
+                "n",
+                Make.event(
+                    "me",
+                    .message(
+                        message: Message(
+                            kind: .notice, body: "Runs archived.", edited: false, media: nil, reactions: [],
+                            replyTo: nil, rawBody: "")),
+                    at: at(9), own: true, eventId: "$n")),
+            Make.item("o", Make.event("me", .other(description: "poll"), at: at(10), own: true, eventId: "$o")),
             Make.item(
                 "p1", Make.event("bob", Make.text("Meeting moved to 14:00 on Thursday."), at: at(20), eventId: "$p1")),
             Make.item(
