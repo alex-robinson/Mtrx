@@ -61,6 +61,7 @@ import org.mtrx.app.ui.Avatar
 import org.mtrx.app.ui.CompactRow
 import org.mtrx.app.ui.MtrxIcons
 import org.mtrx.app.ui.BAR_TEXT_SCALE
+import org.mtrx.app.ui.TextScaleAtMost
 import org.mtrx.app.ui.linesHeight
 import uniffi.mtrx.DirectoryRoom
 import uniffi.mtrx.JoinAccess
@@ -153,20 +154,23 @@ fun SpaceOverviewContent(
                     TopicBox(header.topic, settings?.canChangeTopic == true, infoActions::setTopic, onOpenLink)
                 }
                 item(key = "tabs") {
-                    SingleChoiceSegmentedButtonRow(
-                        Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 16.dp, vertical = 8.dp),
-                    ) {
-                        // At large text sizes, no tick: room for the labels.
-                        val ticked = LocalDensity.current.fontScale <= BAR_TEXT_SCALE
-                        OverviewTab.entries.forEachIndexed { index, it ->
-                            SegmentedButton(
-                                selected = tab == it,
-                                onClick = { tab = it },
-                                shape = SegmentedButtonDefaults.itemShape(index, OverviewTab.entries.size),
-                                icon = { if (ticked) SegmentedButtonDefaults.Icon(tab == it) },
-                            ) { Text(it.label, maxLines = 1, softWrap = false) }
+                    // As the tabs: above the default text size, no tick, and
+                    // the labels at most BAR_TEXT_SCALE, to fit.
+                    val ticked = LocalDensity.current.fontScale <= 1f
+                    TextScaleAtMost(BAR_TEXT_SCALE) {
+                        SingleChoiceSegmentedButtonRow(
+                            Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 16.dp, vertical = 8.dp),
+                        ) {
+                            OverviewTab.entries.forEachIndexed { index, it ->
+                                SegmentedButton(
+                                    selected = tab == it,
+                                    onClick = { tab = it },
+                                    shape = SegmentedButtonDefaults.itemShape(index, OverviewTab.entries.size),
+                                    icon = { if (ticked) SegmentedButtonDefaults.Icon(tab == it) },
+                                ) { Text(it.label, maxLines = 1, overflow = TextOverflow.Ellipsis) }
+                            }
                         }
                     }
                 }
