@@ -123,7 +123,7 @@ enum SpacesSheet: Identifiable {
     }
 }
 
-/// The spaces, then Other rooms; a tap shows the entry's rooms, with the
+/// The spaces, then Home; a tap shows the entry's rooms, with the
 /// space's name on top (a tap on it shows its overview). A room opens in
 /// the Rooms tab.
 struct SpacesTab: View {
@@ -207,7 +207,7 @@ private struct SpacesSheetView: View {
     }
 }
 
-/// The top-level spaces, then Other rooms; a tap shows the entry's rooms.
+/// The top-level spaces, then Home; a tap shows the entry's rooms.
 struct SpacesList: View {
     @EnvironmentObject private var session: SessionModel
     let search: String
@@ -321,7 +321,7 @@ private struct SpaceRow: View {
             if let space = item.space {
                 AvatarView(name: space.name, uri: space.avatarUrl, size: avatarSize, shape: .square)
             } else {
-                Image(systemName: "tray.full")
+                Image(systemName: "house")
                     .font(.body)
                     .foregroundStyle(.secondary)
                     .frame(width: avatarSize, height: avatarSize)

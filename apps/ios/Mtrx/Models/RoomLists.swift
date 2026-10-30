@@ -5,29 +5,29 @@ import MtrxFFI
 /// in no space.
 enum SpaceEntry: Hashable {
     case space(String)
-    case otherRooms
+    case home
 
-    /// Room IDs start with "!", so the saved form of Other rooms cannot be
-    /// one.
-    private static let otherRoomsSaved = "other-rooms"
+    /// Room IDs start with "!", so the saved form of Home cannot be one
+    /// (from when it was called Other rooms).
+    private static let homeSaved = "other-rooms"
 
     /// The form kept in the preferences.
     var saved: String {
         switch self {
         case .space(let id): return id
-        case .otherRooms: return Self.otherRoomsSaved
+        case .home: return Self.homeSaved
         }
     }
 
     init(saved: String) {
-        self = saved == Self.otherRoomsSaved ? .otherRooms : .space(saved)
+        self = saved == Self.homeSaved ? .home : .space(saved)
     }
 }
 
-/// A space (or Other rooms) with its rooms, as listed.
+/// A space (or Home) with its rooms, as listed.
 struct SpaceItem: Identifiable, Equatable {
     let entry: SpaceEntry
-    /// The space's summary, for its name and picture; nil for Other rooms.
+    /// The space's summary, for its name and picture; nil for Home.
     let space: RoomSummary?
     /// In the order of the room list, most recently active first.
     let rooms: [RoomSummary]
@@ -43,11 +43,11 @@ struct SpaceItem: Identifiable, Equatable {
     }
 
     var id: SpaceEntry { entry }
-    var name: String { space?.name ?? "Other rooms" }
+    var name: String { space?.name ?? "Home" }
     /// Any of its rooms has unread messages.
     var unread: Bool { rooms.contains { $0.unreadMessages > 0 } }
 
-    /// Sections for rooms the library did not arrange (Other rooms): its
+    /// Sections for rooms the library did not arrange (Home): its
     /// invites, direct messages and rooms.
     private static func sections(of rooms: [RoomSummary]) -> [RoomSection] {
         let ids = { (rooms: [RoomSummary]) in rooms.map(\.id) }
@@ -71,8 +71,8 @@ struct RoomLists: Equatable {
     /// The Notes to self, while it stays at the top of Chats and of every
     /// space.
     var notes: RoomSummary?
-    /// The Spaces tab's spaces page: the top-level spaces, then Other rooms
-    /// while it has any.
+    /// The Spaces tab's spaces page: the top-level spaces, then Home while
+    /// it has any.
     var spaces: [SpaceItem] = []
     /// The joined rooms (not chats or spaces), in the list's order.
     var rooms: [RoomSummary] = []
@@ -98,12 +98,12 @@ struct RoomLists: Equatable {
                 sections: space.sections)
         }
         if !state.roomsOutsideSpaces.isEmpty {
-            spaces.append(SpaceItem(entry: .otherRooms, space: nil, rooms: summaries(state.roomsOutsideSpaces)))
+            spaces.append(SpaceItem(entry: .home, space: nil, rooms: summaries(state.roomsOutsideSpaces)))
         }
     }
 
-    /// The top-level spaces (not Other rooms), in order: where someone
-    /// can be invited.
+    /// The top-level spaces (not Home), in order: where someone can be
+    /// invited.
     var topLevelSpaces: [RoomSummary] {
         spaces.compactMap(\.space)
     }
@@ -121,7 +121,7 @@ struct RoomLists: Equatable {
         let shown = { (rooms: [RoomSummary]) in
             RoomSort.mostRecent.apply(rooms.filter { $0.kind == .room && ids?.contains($0.id) ?? true })
         }
-        let home = space(.otherRooms).map { ListSection(key: Self.homeKey, title: "Home", rooms: shown($0.rooms)) }
+        let home = space(.home).map { ListSection(key: Self.homeKey, title: "Home", rooms: shown($0.rooms)) }
         let bySpace = spaces.compactMap { item in
             item.space.map { ListSection(key: $0.id, title: $0.name, rooms: shown(item.rooms), space: $0.id) }
         }

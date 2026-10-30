@@ -53,12 +53,12 @@ final class SelectedSpaceTests: XCTestCase {
         XCTAssertEqual(next.spacesPath, [.space("!team")])
     }
 
-    func testOtherRoomsIsRestoredToo() async {
+    func testHomeIsRestoredToo() async {
         let first = await launch()
-        first.selectSpace(.otherRooms)
+        first.selectSpace(.home)
         let next = await launch()
         await send(Make.roomsBySpace(), to: next)
-        XCTAssertEqual(next.selectedSpace, .otherRooms)
+        XCTAssertEqual(next.selectedSpace, .home)
     }
 
     func testAGoneSpaceIsLetGoOnceTheListIsLoaded() async {
@@ -80,7 +80,7 @@ final class SelectedSpaceTests: XCTestCase {
     func testASpaceThatDisappearsWhileShownIsLetGo() async {
         let model = await launch()
         await send(Make.roomsBySpace(), to: model)
-        model.selectSpace(.otherRooms)
+        model.selectSpace(.home)
 
         var state = Make.roomsBySpace()
         state.roomsOutsideSpaces = []
