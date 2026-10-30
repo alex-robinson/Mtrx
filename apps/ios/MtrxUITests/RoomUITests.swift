@@ -1,8 +1,9 @@
 import XCTest
 
 /// The app with made-up messages (`-ui-testing`), in the Lab room, as a
-/// finger uses it: deleting one of our messages through its menu, and
-/// sending. Each step is saved as a PNG where `SCREENSHOTS_DIR` says.
+/// finger uses it: deleting one of our messages through its menu, sending,
+/// and messages arriving; a chat's shared rooms. Each step is saved as a
+/// PNG where `SCREENSHOTS_DIR` says.
 final class RoomUITests: XCTestCase {
     private var app: XCUIApplication!
 
@@ -88,12 +89,53 @@ final class RoomUITests: XCTestCase {
         snap("ui-space")
     }
 
-    /// `element` is in view (hittable), once the keyboard and the timeline
-    /// have moved: within 3 seconds.
+    /// With a message of Ann's arriving every two seconds: the newest stays
+    /// in view at the bottom, the keyboard up or down; scrolled up, the
+    /// timeline is left where it is, and its button leads back to the
+    /// newest, which then stays in view again.
     @MainActor
-    private func inView(_ element: XCUIElement) -> Bool {
+    func testTheNewestStaysInViewAsMessagesArrive() {
+        app.terminate()
+        app.launchArguments = ["-ui-testing", "-ui-testing-arrivals"]
+        app.launch()
+        openLab()
+        XCTAssertTrue(inView(arrived(2), timeout: 8), "Arrived 2 not in view")
+        let field = app.textViews.firstMatch.exists ? app.textViews.firstMatch : app.textFields.firstMatch
+        field.tap()
+        let up = inView(arrived(4), timeout: 8)
+        snap("ui-arrived-keyboard")
+        XCTAssertTrue(up, "Arrived 4 not in view with the keyboard up")
+        let window = app.windows.firstMatch
+        window.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.2))
+            .press(forDuration: 0.05, thenDragTo: window.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.45)))
+        let button = app.buttons["Scroll to the newest message"]
+        XCTAssertTrue(button.waitForExistence(timeout: 5), "No button to the newest message")
+        // Left where it is while more arrive.
+        sleep(3)
+        snap("ui-arrived-scrolled-up")
+        XCTAssertTrue(button.exists, "Back at the bottom by itself")
+        button.tap()
+        sleep(3)
+        let newest = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH 'Arrived '")).allElementsBoundByIndex
+            .last
+        let back = newest.map { inView($0) } ?? false
+        snap("ui-arrived-back")
+        XCTAssertTrue(back, "The newest is not in view after the button")
+        XCTAssertFalse(button.exists, "The button stayed")
+    }
+
+    /// Ann's arrived message `n`.
+    @MainActor
+    private func arrived(_ n: Int) -> XCUIElement {
+        app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "Arrived \(n),")).firstMatch
+    }
+
+    /// `element` is in view (hittable), once the keyboard and the timeline
+    /// have moved: within 3 seconds, or `timeout`.
+    @MainActor
+    private func inView(_ element: XCUIElement, timeout: TimeInterval = 3) -> Bool {
         let hittable = XCTNSPredicateExpectation(predicate: NSPredicate(format: "isHittable == true"), object: element)
-        return XCTWaiter().wait(for: [hittable], timeout: 3) == .completed
+        return XCTWaiter().wait(for: [hittable], timeout: timeout) == .completed
     }
 
     @MainActor
