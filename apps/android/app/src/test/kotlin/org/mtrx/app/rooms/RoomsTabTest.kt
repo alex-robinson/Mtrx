@@ -132,6 +132,18 @@ class RoomsTabTest {
     }
 
     @Test
+    fun aRoomsTopBarShowsItsFirstSpaceInTheSpacesOrder() {
+        assertEquals(TEAM, roomSpace(state, LAB)?.id)
+        // Listed by Other too, which comes first.
+        val both = state.copy(spaces = listOf(SpaceRooms(OTHER, listOf(LAB)), state.spaces[1]))
+        assertEquals(OTHER, roomSpace(both, LAB)?.id)
+        // None outside spaces, nor for direct chats (Bob's is listed by Team).
+        assertNull(roomSpace(state, LOOSE))
+        assertNull(roomSpace(state, WITH_BOB))
+        assertNull(roomSpace(state, "!gone:x"))
+    }
+
+    @Test
     fun spacesAreNotOpenedOnRoomsButInvitesToThemAre() {
         assertFalse(opensOnRoomsTab(state.rooms.first { it.id == TEAM }))
         assertTrue(opensOnRoomsTab(state.rooms.first { it.id == LAB }))

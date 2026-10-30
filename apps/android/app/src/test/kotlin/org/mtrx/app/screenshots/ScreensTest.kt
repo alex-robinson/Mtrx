@@ -305,6 +305,7 @@ private val iceRoomHeader = RoomHeader(
     person = null,
     topic = iceTopic,
     pinned = listOf("\$p1", "\$p2"),
+    space = rooms.rooms.first { it.id == TEAM },
 )
 
 /** The Ice sheets room, as on the Rooms tab. */

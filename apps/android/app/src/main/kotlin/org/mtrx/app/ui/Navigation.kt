@@ -41,6 +41,7 @@ import org.mtrx.app.rooms.RoomInfoHeader
 import org.mtrx.app.rooms.RoomInfoModel
 import org.mtrx.app.rooms.SpaceOverviewContent
 import org.mtrx.app.rooms.SpaceOverviewModel
+import org.mtrx.app.rooms.roomSpace
 import org.mtrx.app.rooms.topLevelSpaces
 import org.mtrx.app.settings.AskNotificationPermissionOnce
 import org.mtrx.app.settings.RecoveryScreen
@@ -328,7 +329,7 @@ private fun RoomPane(
         }
         val encryption by account.encryption.collectAsStateWithLifecycle()
         val presences by signedIn.presence.presences.collectAsStateWithLifecycle()
-        val header = remember(room, info.userId) { roomHeader(roomId, room, info.userId, ::parseTopic) }
+        val header = remember(room, info.userId, rooms) { roomHeader(roomId, room, info.userId, ::parseTopic, roomSpace(rooms, roomId)) }
         TimelineScreen(
             header,
             viewModel,

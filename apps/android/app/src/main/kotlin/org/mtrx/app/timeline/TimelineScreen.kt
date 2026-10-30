@@ -96,6 +96,8 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextRange
@@ -265,10 +267,10 @@ fun TimelineScreen(
 
 /**
  * The room screen as [state] says, without a model: the header with its
- * topic line and panel ([topicOpen] or [editingTopic] at first), or a
- * direct chat's # and the panel of the rooms shared with the person
- * ([sharedOpen] at first); the timeline, the composer and the menus of
- * messages.
+ * topic line and panel ([topicOpen] or [editingTopic] at first) and its
+ * space, or a direct chat's # and the panel of the rooms shared with the
+ * person ([sharedOpen] at first); the timeline, the composer and the menus
+ * of messages.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -415,7 +417,11 @@ fun TimelineContent(
                         }
                     },
                     actions = {
-                        if (person != null) SharedRoomsButton(header.name, open = sharing, onClick = { sharing = !sharing })
+                        val space = header.space
+                        when {
+                            person != null -> SharedRoomsButton(header.name, open = sharing, onClick = { sharing = !sharing })
+                            space != null -> SpaceButton(space, images, onClick = { onOpenSpace(space.id) })
+                        }
                     },
                 )
                 if (state.seeking) LinearProgressIndicator(Modifier.fillMaxWidth())
@@ -591,6 +597,14 @@ private fun SharedRoomsButton(name: String, open: Boolean, onClick: () -> Unit) 
         },
     ) {
         Icon(MtrxIcons.Hash, contentDescription = if (open) "Hide the rooms shared with $name" else "Rooms shared with $name")
+    }
+}
+
+/** A room's space, its small picture: tapped, the space on the Spaces tab. */
+@Composable
+private fun SpaceButton(space: RoomSummary, images: Images, onClick: () -> Unit) {
+    IconButton(onClick = onClick, modifier = Modifier.semantics { contentDescription = "Space ${space.name}" }) {
+        Avatar(space.name, space.avatarUrl, space.id, images, size = 28.dp, shape = RoundedCornerShape(6.dp))
     }
 }
 

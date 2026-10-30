@@ -122,6 +122,18 @@ fun shownRoom(state: RoomListState, roomId: String?, opening: String? = null): S
     }
 }
 
+/**
+ * The space a room's top bar shows: the first top-level space, in the
+ * Spaces tab's order, that lists room [roomId]; null for a room in none,
+ * and for direct chats.
+ */
+fun roomSpace(state: RoomListState, roomId: String): RoomSummary? {
+    val byId = state.rooms.associateBy { it.id }
+    val room = byId[roomId] ?: return null
+    if (!opensOnRoomsTab(room)) return null
+    return state.spaces.filter { roomId in it.roomIds }.firstNotNullOfOrNull { byId[it.spaceId] }
+}
+
 /** Rooms and invites open on the Rooms tab; direct chats on Chats. */
 fun opensOnRoomsTab(room: RoomSummary): Boolean = room.kind != RoomKind.DIRECT && (room.kind != RoomKind.SPACE || room.invited)
 
