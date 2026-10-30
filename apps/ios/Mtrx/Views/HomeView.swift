@@ -395,9 +395,9 @@ struct RoomsTab: View {
 /// their tabs if `opensInRooms`: rooms in Rooms, chats in Chats; else over
 /// the list); an invite opens its answer. The Notes to self above them if
 /// kept at the top, and the encryption banner (if `banner`), unless
-/// searching. Where
-/// sections fold (`fold`), a tap on a heading folds or unfolds it; else a
-/// tap on a space's heading shows the space (`openSpace`).
+/// searching. Where sections fold (`fold`), a tap on a heading folds or
+/// unfolds it; else a tap on a space's heading shows the space
+/// (`openSpace`).
 struct RoomList<Empty: View>: View {
     @EnvironmentObject private var session: SessionModel
     let sections: [ListSection]
