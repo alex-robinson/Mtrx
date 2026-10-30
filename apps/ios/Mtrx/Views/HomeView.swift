@@ -391,7 +391,9 @@ struct RecentView: View {
         List {
             ForEach(rooms, id: \.id) { room in
                 NavigationLink(value: room.id) {
-                    RoomRow(room: room, detail: session.lists.spaceName(of: room))
+                    RoomRow(
+                        room: room, detail: session.lists.spaceName(of: room),
+                        draft: session.lists.drafts.contains(room.id))
                 }
                 .compactRow()
             }
@@ -472,24 +474,28 @@ struct RoomList<Empty: View>: View {
                     Button {
                         session.invite = RoomRef(id: room.id)
                     } label: {
-                        RoomRow(room: room, presence: presence(room))
+                        row(room)
                     }
                     .foregroundColor(.primary)
                 } else if opensInRooms {
                     Button {
                         session.open(room.id)
                     } label: {
-                        RoomRow(room: room, presence: presence(room))
+                        row(room)
                     }
                     .foregroundColor(.primary)
                 } else {
                     NavigationLink(value: room.id) {
-                        RoomRow(room: room, presence: presence(room))
+                        row(room)
                     }
                 }
             }
             .compactRow()
         }
+    }
+
+    private func row(_ room: RoomSummary) -> RoomRow {
+        RoomRow(room: room, presence: presence(room), draft: session.lists.drafts.contains(room.id))
     }
 }
 

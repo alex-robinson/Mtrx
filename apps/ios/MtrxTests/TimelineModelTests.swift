@@ -66,6 +66,24 @@ final class TimelineModelTests: XCTestCase {
         XCTAssertFalse(model.showsScrollToBottom)
     }
 
+    func testFollowsTheBottomUntilScrolledUpByHand() {
+        XCTAssertTrue(model.followsBottom)
+        // Pushed up by a message that came, not scrolled: still following.
+        model.scrolled(distanceFromBottom: 120)
+        XCTAssertTrue(model.followsBottom)
+        model.scrolled(distanceFromBottom: 300)
+        model.scrollEnded()
+        XCTAssertFalse(model.followsBottom)
+        model.scrolled(distanceFromBottom: 0)
+        model.scrollEnded()
+        XCTAssertTrue(model.followsBottom)
+        // Up again, then the button to the newest message.
+        model.scrolled(distanceFromBottom: 300)
+        model.scrollEnded()
+        model.followBottom()
+        XCTAssertTrue(model.followsBottom)
+    }
+
     func testNoButtonWhileOpening() async {
         let opening = TimelineModel(session: session, room: Make.room("!other:example.org"), keysArriving: Make.noKeysArriving)
         opening.scrolled(distanceFromBottom: 300)
@@ -91,7 +109,7 @@ final class TimelineModelTests: XCTestCase {
     func testRepliesWithTheDraft() async {
         await show([bobsMessage])
         model.startReply(to: "b")
-        XCTAssertEqual(model.compose, .reply(ComposeTarget(itemId: "b", sender: "Bob", preview: "Lunch?")))
+        XCTAssertEqual(model.compose, .reply(ComposeTarget(itemId: "b", eventId: "$b", sender: "Bob", preview: "Lunch?")))
         model.draft = "Sure"
         await model.send()
         XCTAssertEqual(timeline.replies.map(\.itemId), ["b"])
@@ -134,7 +152,7 @@ final class TimelineModelTests: XCTestCase {
         if case .edit = model.compose { XCTFail("still editing") }
         XCTAssertEqual(model.draft, "Draft")
         model.startEdit("o")
-        XCTAssertEqual(model.compose, .edit(ComposeTarget(itemId: "o", sender: "Me", preview: "Hello world")))
+        XCTAssertEqual(model.compose, .edit(ComposeTarget(itemId: "o", eventId: "$o", sender: "Me", preview: "Hello world")))
     }
 
     func testAFailedReplyKeepsReplying() async {
@@ -222,6 +240,8 @@ final class TimelineModelTests: XCTestCase {
         XCTAssertEqual(model.highlighted, "o")
         XCTAssertEqual(timeline.paginations, 0)
         XCTAssertFalse(model.seeking)
+        // Gone up to it: no longer at the bottom.
+        XCTAssertFalse(model.followsBottom)
     }
 
     func testLoadsOlderMessagesUntilTheQuotedOneIsThere() async {

@@ -23,9 +23,9 @@ import org.junit.Test
 import org.mtrx.app.FakeSession
 import org.mtrx.app.FakeTimeline
 import org.mtrx.app.messageEvent
-import org.mtrx.app.model.Drafts
 import org.mtrx.app.roomSettings
 import org.mtrx.app.textEvent
+import uniffi.mtrx.Draft
 import uniffi.mtrx.Message
 import uniffi.mtrx.MessageKind
 import uniffi.mtrx.MtrxException
@@ -53,7 +53,15 @@ class TimelineViewModelTest {
 
     private var reads = 0
 
-    private fun viewModel() = TimelineViewModel("!room:example.org", session, onRead = { reads++ })
+    private val room = "!room:example.org"
+
+    private fun viewModel() = TimelineViewModel(room, session, onRead = { reads++ })
+
+    /** [roomId]'s model in [store]: clearing it leaves the room. */
+    private fun open(roomId: String, store: ViewModelStore = ViewModelStore()): TimelineViewModel {
+        val factory = viewModelFactory { initializer { TimelineViewModel(roomId, session, onRead = {}) } }
+        return ViewModelProvider(store, factory)[TimelineViewModel::class.java]
+    }
 
     @Test
     fun personInfoOpensOnceAndCloses() = runTest {
@@ -91,6 +99,8 @@ class TimelineViewModelTest {
         viewModel.send()
         assertEquals("again", viewModel.draft.value)
         assertEquals("offline", viewModel.error.value)
+        // Kept again, as the send cleared it.
+        assertEquals(Draft("again", null), session.drafts[room])
     }
 
     @Test
@@ -141,7 +151,7 @@ class TimelineViewModelTest {
         val viewModel = viewModel()
         show(textEvent("1", alice, "shall we?\nat noon"))
         viewModel.startReply("1")
-        assertEquals(Composing.Replying("1", "alice", "shall we?"), viewModel.composing.value)
+        assertEquals(Composing.Replying("1", "alice", "shall we?", "\$1"), viewModel.composing.value)
         viewModel.onDraft("yes")
         assertTrue(viewModel.send())
         assertEquals(listOf("1" to "yes"), timeline.replies)
@@ -155,7 +165,7 @@ class TimelineViewModelTest {
         viewModel.onDraft("again")
         viewModel.send()
         assertEquals("refused", viewModel.error.value)
-        assertEquals(Composing.Replying("1", "alice", "shall we?"), viewModel.composing.value)
+        assertEquals(Composing.Replying("1", "alice", "shall we?", "\$1"), viewModel.composing.value)
         assertEquals("again", viewModel.draft.value)
 
         viewModel.cancelComposing()
@@ -257,6 +267,7 @@ class TimelineViewModelTest {
 
         viewModel.onDraft("unsent")
         store.clear()
+        assertEquals(Draft("unsent", null), session.drafts[room])
         assertTrue(timeline.typingSubscription.cancelled)
         assertEquals(false, timeline.typing.last())
 
@@ -355,29 +366,93 @@ class TimelineViewModelTest {
 
     @Test
     fun theDraftStaysWithItsRoom() = runTest {
-        val drafts = Drafts()
-        fun open(room: String) = TimelineViewModel(room, session, onRead = {}, drafts = drafts)
-        open("!a:x").onDraft("for A")
-        val b = open("!b:x")
+        val inA = ViewModelStore()
+        open("!a:x", inA).onDraft("for A")
+        inA.clear()
+        assertEquals(Draft("for A", null), session.drafts["!a:x"])
+        val inB = ViewModelStore()
+        val b = open("!b:x", inB)
         assertEquals("", b.draft.value)
         b.onDraft("for B")
+        inB.clear()
         assertEquals("for A", open("!a:x").draft.value)
         assertEquals("for B", open("!b:x").draft.value)
     }
 
     @Test
-    fun duringAnEditTheRoomKeepsTheDraftFromBefore() = runTest {
-        val drafts = Drafts()
-        val viewModel = TimelineViewModel("!a:x", session, onRead = {}, drafts = drafts)
-        timeline.listener!!.onUpdate(listOf(messageEvent("1", "@me:example.org", Message(kind = MessageKind.TEXT, body = "mine", edited = false, media = null), own = true, editable = true)))
-        viewModel.onDraft("half")
-        viewModel.startEdit("1")
-        viewModel.onDraft("mine, edited")
-        assertEquals("half", drafts["!a:x"])
+    fun savedShortlyAfterTypingStopsAndClearedOnSend() = runTest {
+        val viewModel = viewModel()
+        viewModel.onDraft("h")
+        advanceTimeBy(TimelineViewModel.SAVE_DELAY_MILLIS - 1)
+        viewModel.onDraft("hi")
+        advanceTimeBy(TimelineViewModel.SAVE_DELAY_MILLIS - 1)
+        assertTrue(session.draftSaves.isEmpty())
+        advanceTimeBy(2)
+        assertEquals(listOf(room to Draft("hi", null)), session.draftSaves)
+        // Unchanged (the app stops): not saved again.
+        viewModel.keepDraft()
+        assertEquals(1, session.draftSaves.size)
+
         viewModel.send()
-        assertEquals("half", drafts["!a:x"])
-        viewModel.onDraft("")
-        assertEquals("", drafts["!a:x"])
+        assertEquals(room to Draft("", null), session.draftSaves.last())
+        assertNull(session.drafts[room])
+    }
+
+    @Test
+    fun aReplyIsKeptWithTheMessageItAnswers() = runTest {
+        val viewModel = viewModel()
+        show(textEvent("1", alice, "shall we?"))
+        viewModel.startReply("1")
+        viewModel.onDraft("yes")
+        viewModel.keepDraft()
+        assertEquals(Draft("yes", "\$1"), session.drafts[room])
+        viewModel.cancelComposing()
+        viewModel.keepDraft()
+        assertEquals(Draft("yes", null), session.drafts[room])
+    }
+
+    @Test
+    fun aDraftComesBackAsAReplyOnceItsMessageIsThere() = runTest {
+        session.drafts[room] = Draft("yes", "\$1")
+        val viewModel = viewModel()
+        assertEquals("yes", viewModel.draft.value)
+        assertNull(viewModel.composing.value)
+        show(textEvent("1", alice, "shall we?"))
+        assertEquals(Composing.Replying("1", "alice", "shall we?", "\$1"), viewModel.composing.value)
+        // As it was read: not saved again.
+        viewModel.keepDraft()
+        assertTrue(session.draftSaves.isEmpty())
+        viewModel.send()
+        assertEquals(listOf("1" to "yes"), timeline.replies)
+        assertNull(session.drafts[room])
+    }
+
+    @Test
+    fun withoutTheMessageItAnswersTheDraftComesBackAsText() = runTest {
+        session.drafts[room] = Draft("yes", "\$gone")
+        val viewModel = viewModel()
+        show(textEvent("1", alice, "shall we?"))
+        assertEquals("yes", viewModel.draft.value)
+        assertNull(viewModel.composing.value)
+        viewModel.send()
+        assertEquals(listOf("yes"), timeline.sent)
+    }
+
+    @Test
+    fun leavingDuringAnEditKeepsTheDraftFromBefore() = runTest {
+        val store = ViewModelStore()
+        val viewModel = open(room, store)
+        show(ours)
+        viewModel.onDraft("half")
+        viewModel.startEdit("mine")
+        viewModel.onDraft("mine, edited")
+        viewModel.keepDraft()
+        assertEquals(Draft("half", null), session.drafts[room])
+        store.clear()
+        assertEquals(listOf(room to Draft("half", null)), session.draftSaves)
+        val again = open(room)
+        assertEquals("half", again.draft.value)
+        assertNull(again.composing.value)
     }
 
     @Test

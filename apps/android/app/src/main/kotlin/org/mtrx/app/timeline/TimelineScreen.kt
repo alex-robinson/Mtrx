@@ -107,6 +107,7 @@ import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import java.time.LocalDate
@@ -207,6 +208,8 @@ fun TimelineScreen(
     val settings by viewModel.settings.collectAsStateWithLifecycle()
     val canPin by viewModel.canPin.collectAsStateWithLifecycle()
     val pinned by viewModel.pinned.collectAsStateWithLifecycle()
+    // The app may be ended in the background: the draft is kept first.
+    LifecycleEventEffect(Lifecycle.Event.ON_STOP) { viewModel.keepDraft() }
     val state = TimelineState(
         rows = rows,
         draft = draft,

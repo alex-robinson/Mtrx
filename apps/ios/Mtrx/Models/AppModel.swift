@@ -28,6 +28,9 @@ final class AppModel: ObservableObject {
 
     /// The library with the app's directories and the Keychain.
     static func live() -> AppModel {
+        #if DEBUG
+            if UITesting.on { return UITesting.app() }
+        #endif
         initLogging(filter: "info,matrix_sdk=warn")
         let files = FileManager.default
         var data = files.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]

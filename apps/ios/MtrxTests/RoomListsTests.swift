@@ -37,6 +37,13 @@ final class RoomListsTests: XCTestCase {
         XCTAssertEqual(RoomLists(state).spaces.map(\.entry), [.space("!team"), .space("!other")])
     }
 
+    func testTheRoomsWithADraft() {
+        XCTAssertEqual(lists.drafts, [])
+        var state = Make.roomsBySpace()
+        state.drafts = ["!lab", "!bob"]
+        XCTAssertEqual(RoomLists(state).drafts, ["!lab", "!bob"])
+    }
+
     func testTheSavedEntryRoundTrips() {
         for entry in [SpaceEntry.space("!team:example.org"), .otherRooms] {
             XCTAssertEqual(SpaceEntry(saved: entry.saved), entry)

@@ -186,13 +186,13 @@ struct MessageView: View {
                 bubble(text(message), quote: message.replyTo)
             }
         case .redacted:
-            bubble(Text("Message deleted").italic().foregroundColor(.secondary), quote: nil)
+            bubble(Text("Message deleted").italic().foregroundColor(muted), quote: nil)
         case .unableToDecrypt:
             // Turns into the message by itself once its key arrives (after a
             // recovery or verification).
-            bubble(Text(row.undecryptableText ?? "").italic().foregroundColor(.secondary), quote: nil)
+            bubble(Text(row.undecryptableText ?? "").italic().foregroundColor(muted), quote: nil)
         case .other(let description):
-            bubble(Text("sent a \(description)").italic().foregroundColor(.secondary), quote: nil)
+            bubble(Text("sent a \(description)").italic().foregroundColor(muted), quote: nil)
         case .membership, .displayNameChange, .otherState:
             // Folded into summaries by `TimelineRows`.
             EmptyView()

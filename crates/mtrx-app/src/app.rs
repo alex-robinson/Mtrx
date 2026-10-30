@@ -1,6 +1,7 @@
 //! Application state, messages and top-level layout.
 
 use std::{
+    collections::BTreeSet,
     fmt,
     hash::{Hash, Hasher},
     path::{Path, PathBuf},
@@ -19,11 +20,11 @@ use iced::{
     window,
 };
 use mtrx_core::{
-    CallService, Connection, Contact, Google, Media, MediaRef, Member, Notification, OwnedEventId,
-    OwnedMxcUri, OwnedRoomId, OwnedRoomOrAliasId, OwnedServerName, OwnedUserId, PresenceState,
-    Profile, RecoveryStep, RoomKind, RoomList, RoomListColours, RoomListState, RoomOrAliasId,
-    RoomTag, RoomTimeline, ScheduledMessage, SecretStore, ServiceKind, Session, TimelineEntry,
-    Topic, Url,
+    CallService, Connection, Contact, Draft, Google, Media, MediaRef, Member, Notification,
+    OwnedEventId, OwnedMxcUri, OwnedRoomId, OwnedRoomOrAliasId, OwnedServerName, OwnedUserId,
+    PresenceState, Profile, RecoveryStep, RoomKind, RoomList, RoomListColours, RoomListState,
+    RoomOrAliasId, RoomTag, RoomTimeline, ScheduledMessage, SecretStore, ServiceKind, Session,
+    TimelineEntry, Topic, Url,
 };
 
 use crate::{
@@ -62,6 +63,8 @@ use crate::{
 const TICK: Duration = Duration::from_secs(20);
 /// How often progress (elapsed seconds) is refreshed while something runs.
 const PROGRESS_TICK: Duration = Duration::from_secs(1);
+/// How long writing pauses before the draft is kept.
+const DRAFT_PAUSE: Duration = Duration::from_secs(1);
 /// Where cards, the join dialog and Settings start, below the window's top.
 const PANEL_TOP: f32 = 72.0;
 
@@ -99,6 +102,13 @@ pub enum Message {
     OpenRoom(OwnedRoomId),
     RoomOpened(OwnedRoomId, Result<Shared<RoomTimeline>, String>),
     Timeline(OwnedRoomId, Vec<TimelineEntry>),
+    /// The draft kept for a room just opened.
+    DraftLoaded(OwnedRoomId, Option<Draft>),
+    /// Keep the open room's draft, if it did not change since the pause
+    /// (its [`Room::draft_changes`]) began.
+    KeepDraft(OwnedRoomId, u64),
+    /// The rooms with a draft on this device.
+    Drafts(BTreeSet<OwnedRoomId>),
     Scrolled(Viewport),
     Paginated(OwnedRoomId, Result<(), String>),
     Composer(text_editor::Action),
@@ -351,6 +361,8 @@ struct Main {
     recovery_error: Option<String>,
     /// Scheduled messages of all rooms, earliest first.
     scheduled: Vec<ScheduledMessage>,
+    /// The rooms with a draft on this device, marked in the room list.
+    drafts: BTreeSet<OwnedRoomId>,
     /// When scheduled times were last compared to the clock.
     now: SystemTime,
     error: Option<String>,
@@ -444,6 +456,7 @@ impl Main {
             recovery_step: None,
             recovery_error: None,
             scheduled: session.scheduled(),
+            drafts: BTreeSet::new(),
             own_user: session.user_id(),
             arrange: Arrange::new(&session),
             info: None,
@@ -520,6 +533,7 @@ impl Main {
             loaded: self.rooms.loaded,
             avatars: &self.avatars,
             scheduled: &self.scheduled,
+            drafts: &self.drafts,
             add_menu: self.add_menu,
             filter: &self.filter,
             arrange: &self.arrange,
@@ -807,7 +821,9 @@ impl App {
         let remember = matches!(message, Message::OpenRoom(_) | Message::SelectSpace(_));
         let card = self.card_shown();
         let space = self.selected_space();
+        let draft = self.room_draft();
         let task = self.handle(message);
+        let keep_draft = self.keep_draft(draft);
         // A member's menu goes with the card it was opened on.
         if self.card_shown() != card
             && let Screen::Main(main) = &mut self.screen
@@ -846,7 +862,41 @@ impl App {
             Screen::Main(main) => main.follow_shown(&self.settings),
             _ => Task::none(),
         };
-        Task::batch([task, badge, out_of_view, presence])
+        Task::batch([task, badge, out_of_view, presence, keep_draft])
+    }
+
+    /// The open room, and its draft if it is to be kept.
+    fn room_draft(&self) -> Option<(OwnedRoomId, Option<Draft>)> {
+        match &self.screen {
+            Screen::Main(main) => main
+                .room
+                .as_ref()
+                .map(|room| (room.id.clone(), room.draft_to_keep())),
+            _ => None,
+        }
+    }
+
+    /// Keep the draft of the room open `before` a message, as it was then,
+    /// if another room is open now (or none); else the open room's, after
+    /// a pause in writing ([`DRAFT_PAUSE`]).
+    fn keep_draft(&mut self, before: Option<(OwnedRoomId, Option<Draft>)>) -> Task<Message> {
+        let Screen::Main(main) = &mut self.screen else {
+            return Task::none();
+        };
+        match (before, main.room.as_mut()) {
+            (Some((id, _)), Some(room)) if room.id == id => {
+                if room.draft_to_keep().is_none() {
+                    return Task::none();
+                }
+                room.draft_changes += 1;
+                let changes = room.draft_changes;
+                Task::perform(tokio::time::sleep(DRAFT_PAUSE), move |()| {
+                    Message::KeepDraft(id.clone(), changes)
+                })
+            }
+            (Some((id, Some(draft))), _) => save_draft(&main.session, id, draft),
+            _ => Task::none(),
+        }
     }
 
     fn handle(&mut self, message: Message) -> Task<Message> {
@@ -1103,10 +1153,26 @@ impl App {
                             Task::none()
                         };
                         main.room = Some(room);
+                        let (session, room) = (main.session.clone(), id.clone());
+                        let draft = Task::perform(
+                            async move {
+                                let draft = session.draft(&room).await;
+                                (room, draft)
+                            },
+                            |(id, draft)| {
+                                // One that cannot be read is none to restore,
+                                // and one to replace.
+                                let draft = draft.inspect_err(
+                                    |e| tracing::warn!(room = %id, "could not read the draft: {e}"),
+                                );
+                                Message::DraftLoaded(id, draft.ok().flatten())
+                            },
+                        );
                         Task::batch([
                             paginate,
                             read,
                             members,
+                            draft,
                             self.render_math(),
                             self.load_avatars(),
                             self.load_previews(),
@@ -1130,6 +1196,7 @@ impl App {
                 let grew = entries.len() != room.entries.len();
                 room.entries = entries;
                 room.find_again();
+                room.resolve_reply();
                 let read = if grew { mark_read(room) } else { Task::none() };
                 let clocks = room.sending_changed().into_iter().map(|row| {
                     let id = id.clone();
@@ -2229,7 +2296,49 @@ impl App {
                     _ => Task::none(),
                 }
             }
+            Message::DraftLoaded(id, draft) => {
+                if let Screen::Main(main) = &mut self.screen
+                    && let Some(room) = main.room.as_mut().filter(|r| r.id == id)
+                {
+                    room.restore_draft(draft);
+                }
+                Task::none()
+            }
+            Message::KeepDraft(id, changes) => {
+                let Screen::Main(main) = &mut self.screen else {
+                    return Task::none();
+                };
+                let Some(room) = main
+                    .room
+                    .as_mut()
+                    .filter(|r| r.id == id && r.draft_changes == changes)
+                else {
+                    return Task::none();
+                };
+                match room.draft_to_keep() {
+                    Some(draft) => {
+                        room.kept_draft = Some(draft.clone());
+                        save_draft(&main.session, id, draft)
+                    }
+                    None => Task::none(),
+                }
+            }
+            Message::Drafts(drafts) => {
+                if let Screen::Main(main) = &mut self.screen {
+                    main.drafts = drafts;
+                }
+                Task::none()
+            }
             Message::CloseWindow(id) => {
+                // What is being written is kept before the session ends.
+                let draft = match &self.screen {
+                    Screen::Main(main) => main.room.as_ref().and_then(|room| {
+                        let draft = room.draft_to_keep()?;
+                        Some(save_draft(&main.session, room.id.clone(), draft))
+                    }),
+                    _ => None,
+                }
+                .unwrap_or_else(Task::none);
                 // Others see us offline now, not once the server forgets us.
                 let offline = match &self.screen {
                     Screen::Main(main)
@@ -2244,7 +2353,7 @@ impl App {
                 // the SDK's stores can no longer close: end the session (once
                 // it is offline), or a browser sign-in, now.
                 self.screen = Screen::Closing;
-                offline.chain(window::close(id))
+                Task::batch([offline, draft]).chain(window::close(id))
             }
             Message::Presence(message) => self.presence(message),
             Message::CloseNotice => {
@@ -4144,6 +4253,12 @@ impl App {
                 })
                 .map(|c| Message::Arrange(arrange::Message::Categories(c))),
             );
+            subscriptions.push(
+                Subscription::run_with(Shared(main.session.clone()), |s| {
+                    s.0.rooms_with_drafts_updates()
+                })
+                .map(Message::Drafts),
+            );
             subscriptions.push(main.arrange.subscription());
             subscriptions.push(
                 Subscription::run_with(Shared(main.session.clone()), |s| {
@@ -4870,6 +4985,17 @@ fn in_field(field: Field, action: text_editor::Action) -> Message {
 }
 
 /// Put `copied` on the clipboard; a failure shows in the room.
+/// Keep `draft` for room `id` on this device; an empty one clears it.
+fn save_draft(session: &Arc<Session>, id: OwnedRoomId, draft: Draft) -> Task<Message> {
+    let session = session.clone();
+    Task::future(async move {
+        if let Err(e) = session.save_draft(&id, &draft).await {
+            tracing::warn!(room = %id, "could not keep the draft: {e}");
+        }
+    })
+    .discard()
+}
+
 fn copy(copied: Copied) -> Task<Message> {
     Task::perform(clipboard::write(copied), |result| {
         Message::Act(actions::Message::Done(result))

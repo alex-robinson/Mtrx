@@ -40,6 +40,17 @@
                ReferencedContainer = "container:Mtrx.xcodeproj">
             </BuildableReference>
          </TestableReference>
+         <TestableReference
+            skipped = "NO"
+            parallelizable = "NO">
+            <BuildableReference
+               BuildableIdentifier = "primary"
+               BlueprintIdentifier = "7D00000000000000000000A3"
+               BuildableName = "MtrxUITests.xctest"
+               BlueprintName = "MtrxUITests"
+               ReferencedContainer = "container:Mtrx.xcodeproj">
+            </BuildableReference>
+         </TestableReference>
       </Testables>
    </TestAction>
    <LaunchAction

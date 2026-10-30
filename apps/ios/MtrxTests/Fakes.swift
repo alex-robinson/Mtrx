@@ -290,6 +290,49 @@ final class FakeSession: Session, @unchecked Sendable {
 
     override func forget() async throws {}
 
+    // MARK: Drafts
+
+    // Saved off the main actor (the model's tasks call the library from
+    // there) while the tests read them: behind the lock.
+    private var draftStore: [String: Draft] = [:]
+    private var draftSaves: [(roomId: String, draft: Draft)] = []
+    private var draftFailure: Error?
+
+    private func locked<T>(_ body: () throws -> T) rethrows -> T {
+        lock.lock()
+        defer { lock.unlock() }
+        return try body()
+    }
+
+    /// The drafts kept, by room ID.
+    var drafts: [String: Draft] {
+        get { locked { draftStore } }
+        set { locked { draftStore = newValue } }
+    }
+
+    /// Each `saveDraft`, in order.
+    var savedDrafts: [(roomId: String, draft: Draft)] {
+        locked { draftSaves }
+    }
+
+    var draftError: Error? {
+        get { locked { draftFailure } }
+        set { locked { draftFailure = newValue } }
+    }
+
+    override func draft(roomId: String) async throws -> Draft? {
+        drafts[roomId]
+    }
+
+    override func saveDraft(roomId: String, draft: Draft) async throws {
+        try locked { () throws -> Void in
+            if let draftFailure { throw draftFailure }
+            draftSaves.append((roomId, draft))
+            let empty = draft.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && draft.replyTo == nil
+            draftStore[roomId] = empty ? nil : draft
+        }
+    }
+
     // MARK: Rooms: settings, members, pins, joining, making
 
     let fakePinned = FakeTimeline(noHandle: .init())
@@ -455,10 +498,13 @@ final class FakeBrowser: BrowserSignIn {
     }
 }
 
-/// Wait for `condition` (e.g. a listener's update reaching the main actor).
+/// Wait for `condition` (e.g. a listener's update reaching the main actor),
+/// at most `seconds`.
 @MainActor
-func eventually(_ condition: @MainActor () -> Bool, file: StaticString = #filePath, line: UInt = #line) async {
-    for _ in 0..<200 {
+func eventually(
+    seconds: Double = 1, _ condition: @MainActor () -> Bool, file: StaticString = #filePath, line: UInt = #line
+) async {
+    for _ in 0..<Int(seconds * 200) {
         if condition() { return }
         try? await Task.sleep(nanoseconds: 5_000_000)
     }

@@ -64,6 +64,7 @@ pub struct Session {
     pub(crate) categories: crate::account_data::Synced<crate::RoomCategories>,
     pub(crate) colours: crate::account_data::Synced<crate::RoomListColours>,
     pub(crate) directory_servers: crate::account_data::Synced<crate::DirectoryServers>,
+    pub(crate) drafts: crate::drafts::Drafts,
     pub(crate) connection: tokio::sync::watch::Receiver<crate::Connection>,
     /// Kept for the session: it follows push rule changes, so it knows a
     /// room's mode right after setting it (sync echoes it later).
@@ -196,6 +197,7 @@ impl Session {
         let categories = crate::account_data::Synced::load(client.clone()).await;
         let colours = crate::account_data::Synced::load(client.clone()).await;
         let directory_servers = crate::account_data::Synced::load(client.clone()).await;
+        let drafts = crate::drafts::Drafts::load(&client).await;
         Ok(Self {
             client,
             sync,
@@ -209,6 +211,7 @@ impl Session {
             categories,
             colours,
             directory_servers,
+            drafts,
             connection,
             notification_settings,
             kept_presence: Default::default(),

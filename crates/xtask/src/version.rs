@@ -12,9 +12,9 @@ use super::run;
 
 const CARGO: &str = "Cargo.toml";
 const ANDROID: &str = "apps/android/app/build.gradle.kts";
-/// Its app and test targets, each built as Debug and Release.
+/// Its app, unit-test and UI-test targets, each built as Debug and Release.
 const IOS: &str = "apps/ios/Mtrx.xcodeproj/project.pbxproj";
-const IOS_CONFIGURATIONS: usize = 4;
+const IOS_CONFIGURATIONS: usize = 6;
 
 /// Set the version everywhere, and in `Cargo.lock`.
 pub fn version(root: &Path, version: &str) -> Result<()> {

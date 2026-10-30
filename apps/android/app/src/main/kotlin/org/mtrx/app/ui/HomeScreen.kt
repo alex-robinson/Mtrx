@@ -128,6 +128,7 @@ fun HomeScreen(
     }
     var showing by rememberSaveable { mutableStateOf(false) }
     val recent = remember(list, recentIds) { recentRows(list, recentIds) }
+    val drafts = remember(list) { list.drafts.toSet() }
     val last = lastRoom(list, recentIds, nav.opening)
     val badges = mapOf(
         HomeTab.Spaces to spacesUnread(list, recentIds),
@@ -247,6 +248,7 @@ fun HomeScreen(
                     today,
                     onOpenRoom = open,
                     presenceOf = { directPerson(it, info.userId)?.let { person -> presences[person] } },
+                    drafts = drafts,
                     state = chatsList,
                 )
             }
@@ -267,6 +269,7 @@ fun HomeScreen(
                         today,
                         onOpenRoom = open,
                         onFold = { key -> selected?.let { account.sections.toggleFold(it.key, key) } },
+                        drafts = drafts,
                         state = spaceRoomsList,
                     )
                 }
@@ -283,6 +286,7 @@ fun HomeScreen(
                         nav.tab = HomeTab.Spaces
                         showSpaces()
                     },
+                    drafts = drafts,
                     state = recentList,
                 )
             }

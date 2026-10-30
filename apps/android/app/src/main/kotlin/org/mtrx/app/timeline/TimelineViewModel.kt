@@ -26,8 +26,8 @@ import kotlinx.coroutines.selects.select
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
-import org.mtrx.app.model.Drafts
 import org.mtrx.app.model.describe
+import uniffi.mtrx.Draft
 import uniffi.mtrx.MtrxException
 import uniffi.mtrx.RoomSettings
 import uniffi.mtrx.Session
@@ -52,24 +52,25 @@ import uniffi.mtrx.composeTopic as libraryComposeTopic
  * change of the draft (typing on the keyboard, which the activity does not
  * see, is not idle).
  *
- * The draft is the room's in [drafts], so it stays when the room is left
- * and opened again (#42); during an edit, the text from before it. The
- * room's settings say whether we may edit its topic (saved as
- * [composeTopic] makes it, the library's) and pin messages; the pinned
- * messages load while the topic panel shows them.
+ * The draft is kept on this device, in the session's store (#42): back in
+ * the composer when the room opens (as a reply once the message it answers
+ * is in the rows), saved [SAVE_DELAY_MILLIS] after typing stops and when
+ * the room is left or the app stops ([keepDraft]), cleared on send; during
+ * an edit, the text from before it. The room's settings say whether we may
+ * edit its topic (saved as [composeTopic] makes it, the library's) and pin
+ * messages; the pinned messages load while the topic panel shows them.
  */
 class TimelineViewModel(
     private val roomId: String,
     private val session: Session,
     private val onRead: () -> Unit,
     private val onInput: () -> Unit = {},
-    private val drafts: Drafts = Drafts(),
     private val composeTopic: (Topic) -> String = ::libraryComposeTopic,
 ) : ViewModel(), TimelineActions {
     private val _rows = MutableStateFlow<List<TimelineRow>>(emptyList())
     val rows: StateFlow<List<TimelineRow>> = _rows.asStateFlow()
 
-    private val _draft = MutableStateFlow(drafts[roomId])
+    private val _draft = MutableStateFlow("")
     val draft: StateFlow<String> = _draft.asStateFlow()
 
     /** What the draft answers or edits; null for a new message. */
@@ -136,7 +137,18 @@ class TimelineViewModel(
     private val typingNotices = Channel<Boolean>(Channel.CONFLATED)
     private var typingOn = false
 
+    // The draft as the store has it, as far as we know (null if it could
+    // not be read); saves in order, each of the latest draft.
+    private var stored: Draft? = null
+    private val saving = Mutex()
+    private var saveTimer: Job? = null
+
+    /** The event the restored draft answers, until its row is found or another reply or edit starts. */
+    private var pendingReply: String? = null
+
     init {
+        // Not cancelled with viewModelScope: a save on leaving waits for it.
+        actions.launch { restoreDraft() }
         viewModelScope.launch { loadSettings() }
         viewModelScope.launch {
             try {
@@ -279,13 +291,68 @@ class TimelineViewModel(
     override fun onDraft(value: String) {
         onInput()
         _draft.value = value
-        saveDraft()
+        changed()
         typed(value.isNotEmpty())
     }
 
-    /** The room's draft: the text, or during an edit the text from before it. */
-    private fun saveDraft() {
-        drafts[roomId] = (_composing.value as? Composing.Editing)?.draft ?: _draft.value
+    /** The draft left in the room, in the composer unless one was started meanwhile; its reply once its row is there. */
+    private suspend fun restoreDraft() {
+        val saved = saving.withLock {
+            try {
+                (session.draft(roomId) ?: NO_DRAFT).also { stored = it }
+            } catch (e: MtrxException) {
+                null
+            }
+        } ?: return
+        if (_draft.value.isNotEmpty() || _composing.value != null) return
+        _draft.value = saved.text
+        val replyTo = saved.replyTo ?: return
+        pendingReply = replyTo
+        viewModelScope.launch {
+            val itemId = _rows.mapNotNull { rowOf(it, replyTo) }.first()
+            if (pendingReply == replyTo) startReply(itemId)
+        }
+    }
+
+    /** The room's draft: the text and what it answers, or during an edit the text from before it. */
+    private fun currentDraft(): Draft = when (val mode = _composing.value) {
+        is Composing.Editing -> Draft(mode.draft, null)
+        is Composing.Replying -> Draft(_draft.value, mode.eventId)
+        null -> Draft(_draft.value, pendingReply)
+    }
+
+    /** The draft changed: saved once it stays so for [SAVE_DELAY_MILLIS]. */
+    private fun changed() {
+        saveTimer?.cancel()
+        saveTimer = viewModelScope.launch {
+            delay(SAVE_DELAY_MILLIS)
+            save()
+        }
+    }
+
+    /** Save the draft now (the app stops; leaving the room does it too). */
+    fun keepDraft() {
+        saveTimer?.cancel()
+        save()
+    }
+
+    private fun save() {
+        actions.launch { saveNow() }
+    }
+
+    private suspend fun saveNow() {
+        saving.withLock {
+            val draft = currentDraft()
+            if (draft == stored) return
+            try {
+                session.saveDraft(roomId, draft)
+                stored = draft
+            } catch (e: MtrxException) {
+                // Still in the composer: the next save tries again.
+            } catch (e: IllegalStateException) {
+                // The session was closed (signed out): its drafts went with it.
+            }
+        }
     }
 
     /** Tell the others: on every change while there is text (the library throttles), once when it is gone. */
@@ -311,8 +378,11 @@ class TimelineViewModel(
      */
     override fun startReply(itemId: String) {
         val row = eventRow(itemId)?.takeIf { it.canReply } ?: return
+        val eventId = row.event.eventId ?: return
         endEdit()
-        _composing.value = Composing.Replying(itemId, displayName(row.event), preview(row))
+        pendingReply = null
+        _composing.value = Composing.Replying(itemId, displayName(row.event), preview(row), eventId)
+        changed()
     }
 
     /** Edit row [itemId]: the composer gets its text as we wrote it; a reply under way ends. */
@@ -320,22 +390,25 @@ class TimelineViewModel(
         val message = eventRow(itemId)?.message ?: return
         val original = message.rawBody.ifEmpty { message.body }
         val draft = (_composing.value as? Composing.Editing)?.draft ?: _draft.value
+        pendingReply = null
         _composing.value = Composing.Editing(itemId, original, draft)
         _draft.value = original
-        saveDraft()
+        changed()
     }
 
     /** Back to a new message; an edit gives back the text from before it. */
     override fun cancelComposing() {
         endEdit()
+        pendingReply = null
         _composing.value = null
+        changed()
     }
 
     private fun endEdit() {
         val editing = _composing.value as? Composing.Editing ?: return
         _composing.value = null
         _draft.value = editing.draft
-        saveDraft()
+        changed()
     }
 
     /** Send the draft, as a reply or an edit if one is under way; false if there is nothing to send. */
@@ -344,9 +417,10 @@ class TimelineViewModel(
         val text = _draft.value
         if (text.isBlank()) return false
         val mode = _composing.value
+        pendingReply = null
         _composing.value = null
         _draft.value = (mode as? Composing.Editing)?.draft ?: ""
-        saveDraft()
+        keepDraft()
         typed(false)
         if (mode is Composing.Editing && text == mode.original) return true
         actions.launch {
@@ -359,6 +433,9 @@ class TimelineViewModel(
             } catch (e: MtrxException) {
                 _error.value = describeAction(e)
                 restore(text, mode)
+                // Kept, even if the room was left meanwhile.
+                saveTimer?.cancel()
+                saveNow()
             }
         }
         return true
@@ -377,7 +454,6 @@ class TimelineViewModel(
                 _draft.value = text
             }
         }
-        saveDraft()
     }
 
     /** The name or avatar of a direct chat's header was tapped: the sheet about [userId]. */
@@ -497,6 +573,7 @@ class TimelineViewModel(
     }
 
     override fun onCleared() {
+        keepDraft()
         hidePinned()
         for (handle in listOfNotNull(subscription, typingSubscription)) {
             handle.cancel()
@@ -529,6 +606,11 @@ class TimelineViewModel(
         /** How long to wait for the items of a last page. */
         const val SETTLE_MILLIS = 2_000L
         const val HIGHLIGHT_MILLIS = 2_000L
+
+        /** How long after typing stops the draft is saved. */
+        const val SAVE_DELAY_MILLIS = 1_500L
+
+        private val NO_DRAFT = Draft("", null)
 
         const val NOT_FOUND = "The original message was not found in the room's history"
         const val GONE = "The message is no longer in the timeline"

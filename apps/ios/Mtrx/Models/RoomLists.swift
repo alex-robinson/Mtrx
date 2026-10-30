@@ -78,12 +78,15 @@ struct RoomLists: Equatable {
     var rooms: [RoomSummary] = []
     /// Every room, chat and space by ID.
     var byId: [String: RoomSummary] = [:]
+    /// The rooms with a draft on this device.
+    var drafts: Set<String> = []
 
     init() {}
 
     init(_ state: RoomListState) {
         let byId = Dictionary(state.rooms.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         self.byId = byId
+        drafts = Set(state.drafts)
         let summaries = { (ids: [String]) in ids.compactMap { byId[$0] } }
         notes = state.notesAtTop ? state.notesRoomId.flatMap { byId[$0] } : nil
         chats = state.rooms.filter { $0.kind == .direct && $0.id != notes?.id }

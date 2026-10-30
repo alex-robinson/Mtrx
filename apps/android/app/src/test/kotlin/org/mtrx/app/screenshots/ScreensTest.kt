@@ -60,6 +60,7 @@ class ScreensTest {
     val paparazzi = Paparazzi(deviceConfig = DeviceConfig.PIXEL_5)
 
     private val recentIds = listOf(ICE, PAPERS, TEACHING, LOOSE, WORKSHOP)
+    private val drafts = rooms.drafts.toSet()
     private val badges = mapOf(HomeTab.Spaces to spacesUnread(rooms, recentIds), HomeTab.Rooms to recentUnread(rooms, recentIds))
 
     private fun snap(name: String, content: @Composable () -> Unit) {
@@ -70,7 +71,7 @@ class ScreensTest {
     fun chats() = snap("chats-notes-at-top") {
         val (notes, chats) = chatList(rooms)
         HomeFrame(HomeTab.Chats, badges, onTab = {}) {
-            ChatList(notes, chats, loaded = true, images, today, onOpenRoom = {}, presenceOf = { null })
+            ChatList(notes, chats, loaded = true, images, today, onOpenRoom = {}, presenceOf = { null }, drafts = drafts)
         }
     }
 
@@ -112,6 +113,7 @@ class ScreensTest {
                 today,
                 onOpenRoom = {},
                 onFold = {},
+                drafts = drafts,
             )
         }
     }
@@ -119,7 +121,7 @@ class ScreensTest {
     @Test
     fun recent() = snap("recent") {
         HomeFrame(HomeTab.Rooms, badges, onTab = {}, title = { Text("Recent") }) {
-            RecentList(recentRows(rooms, recentIds), images, today, onOpenRoom = {}, onBrowseSpaces = {})
+            RecentList(recentRows(rooms, recentIds), images, today, onOpenRoom = {}, onBrowseSpaces = {}, drafts = drafts)
         }
     }
 
