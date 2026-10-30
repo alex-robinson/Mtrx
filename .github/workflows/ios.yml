@@ -61,13 +61,23 @@ jobs:
             exit 1
           fi
           echo "DEVICE=$device" >> "$GITHUB_ENV"
-      - name: Unit tests
+      - name: Unit and UI tests
         if: env.WARM != 'true'
+        # The UI tests save their steps as PNGs (in ios-screenshots, ui-*); the
+        # results are kept when tests fail (ios-test-results).
         working-directory: apps/ios
         run: |
-          xcodebuild test -project Mtrx.xcodeproj -scheme Mtrx \
+          TEST_RUNNER_SCREENSHOTS_DIR="$GITHUB_WORKSPACE/target/screenshots" \
+            xcodebuild test -project Mtrx.xcodeproj -scheme Mtrx \
             -destination "platform=iOS Simulator,id=$DEVICE" -derivedDataPath build -quiet \
+            -resultBundlePath "$GITHUB_WORKSPACE/target/results/UnitTests.xcresult" \
             -skip-testing:MtrxTests/ScreenshotTests
+      - uses: actions/upload-artifact@v4
+        if: failure() && env.WARM != 'true'
+        with:
+          name: ios-test-results
+          path: target/results
+          if-no-files-found: ignore
       - name: Screenshots
         if: env.WARM != 'true'
         # The key screens with made-up data, as PNGs (artifact ios-screenshots);

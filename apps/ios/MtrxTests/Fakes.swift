@@ -290,6 +290,25 @@ final class FakeSession: Session, @unchecked Sendable {
 
     override func forget() async throws {}
 
+    // MARK: Drafts
+
+    /// The drafts kept, by room ID.
+    var drafts: [String: Draft] = [:]
+    /// Each `saveDraft`, in order.
+    var savedDrafts: [(roomId: String, draft: Draft)] = []
+    var draftError: Error?
+
+    override func draft(roomId: String) async throws -> Draft? {
+        drafts[roomId]
+    }
+
+    override func saveDraft(roomId: String, draft: Draft) async throws {
+        if let draftError { throw draftError }
+        savedDrafts.append((roomId, draft))
+        let empty = draft.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && draft.replyTo == nil
+        drafts[roomId] = empty ? nil : draft
+    }
+
     // MARK: Rooms: settings, members, pins, joining, making
 
     let fakePinned = FakeTimeline(noHandle: .init())
@@ -455,10 +474,13 @@ final class FakeBrowser: BrowserSignIn {
     }
 }
 
-/// Wait for `condition` (e.g. a listener's update reaching the main actor).
+/// Wait for `condition` (e.g. a listener's update reaching the main actor),
+/// at most `seconds`.
 @MainActor
-func eventually(_ condition: @MainActor () -> Bool, file: StaticString = #filePath, line: UInt = #line) async {
-    for _ in 0..<200 {
+func eventually(
+    seconds: Double = 1, _ condition: @MainActor () -> Bool, file: StaticString = #filePath, line: UInt = #line
+) async {
+    for _ in 0..<Int(seconds * 200) {
         if condition() { return }
         try? await Task.sleep(nanoseconds: 5_000_000)
     }

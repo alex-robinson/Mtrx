@@ -58,8 +58,6 @@ final class SessionModel: ObservableObject {
     /// Why asking another device to verify failed.
     @Published var verificationError: String?
     private(set) lazy var recovery = RecoveryModel(session: session)
-    /// What was typed in each room and not sent.
-    let drafts = Drafts()
     /// The spaces' rooms as their servers last listed them, for the
     /// overview to show at once.
     let spaceChildren = SpaceChildrenCache()
@@ -406,7 +404,7 @@ final class SessionModel: ObservableObject {
     }
 
     func timeline(for room: RoomSummary) -> TimelineModel {
-        TimelineModel(session: session, room: room, keysArriving: keysArriving, drafts: drafts)
+        TimelineModel(session: session, room: room, keysArriving: keysArriving)
     }
 
     func info(for room: RoomSummary) -> RoomInfoModel {

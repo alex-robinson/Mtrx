@@ -85,6 +85,15 @@ final class ScreenshotTests: XCTestCase {
         try await snap("05-room-dark", dark: true, wait: 2, HomeView())
     }
 
+    /// The draft left in the room is back, with the message it answers.
+    func testARoomWithItsDraft() async throws {
+        session.fakeTimeline.initialItems = Screens.timeline
+        session.drafts["!ice"] = Draft(text: "I'll add them to the paper's figures", replyTo: "$2")
+        model.tab = .rooms
+        model.roomsPath = ["!ice"]
+        try await snap("05b-room-draft", wait: 2, HomeView())
+    }
+
     // MARK: A room's topic and info
 
     func testTopicPanel() async throws {
@@ -282,7 +291,8 @@ private enum Screens {
                 ]),
             SpaceRooms(spaceId: "!teach", roomIds: ["!reading"]),
         ],
-        roomsOutsideSpaces: ["!party"], notesAtTop: true, notesRoomId: "!notes")
+        roomsOutsideSpaces: ["!party"], notesAtTop: true, notesRoomId: "!notes",
+        drafts: ["!ann", "!reading", "!paper"])
 
     static var timeline: [TimelineItem] {
         let start = now.addingTimeInterval(-3_600)
@@ -304,6 +314,7 @@ private enum Screens {
                         "Great, looking now.",
                         reactions: [Reaction(key: "👍", count: 2, byUs: false, senders: [])]),
                     at: at(5), own: true, eventId: "$3")),
+            Make.item("x", Make.event("me", .redacted, at: at(6), own: true, eventId: "$x")),
             Make.item(
                 "p1", Make.event("bob", Make.text("Meeting moved to 14:00 on Thursday."), at: at(20), eventId: "$p1")),
             Make.item(

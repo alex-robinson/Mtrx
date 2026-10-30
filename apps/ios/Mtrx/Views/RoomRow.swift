@@ -2,8 +2,8 @@ import MtrxFFI
 import SwiftUI
 
 /// A room in a list, compact: picture (with a direct chat's person's
-/// presence), name, a detail line (its space, or an invite), last activity
-/// and unread count.
+/// presence), name, a detail line (its space, or an invite), last activity,
+/// a pencil if it has a draft, and unread count.
 struct RoomRow: View {
     static let avatarSize: CGFloat = 34
 
@@ -11,6 +11,8 @@ struct RoomRow: View {
     var presence: Presence?
     /// Small and grey under the name, e.g. the room's space.
     var detail: String?
+    /// Something was written in it and not sent.
+    var draft = false
 
     private var unread: Bool { room.unreadMessages > 0 || room.unreadMentions > 0 }
 
@@ -50,7 +52,15 @@ struct RoomRow: View {
                         .font(.caption2)
                         .foregroundStyle(unread ? Color.accentColor : .secondary)
                 }
-                UnreadBadge(room: room)
+                HStack(spacing: 4) {
+                    if draft {
+                        Image(systemName: "pencil")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .accessibilityLabel("Draft")
+                    }
+                    UnreadBadge(room: room)
+                }
             }
         }
     }
