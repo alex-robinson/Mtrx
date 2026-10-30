@@ -90,7 +90,7 @@ fun SignedInNavigation(account: Account, push: PushRegistration, signedIn: Accou
     }
     // A room from another screen: back to the home, where it opens.
     val openRoom: (String) -> Unit = { roomId ->
-        home.open(roomId, rooms.rooms.firstOrNull { it.id == roomId }, account.recent)
+        home.open(roomId, rooms.rooms.firstOrNull { it.id == roomId })
         nav.popBackStack(HOME, inclusive = false)
     }
     // The verification screen shows the account's verification of the moment:

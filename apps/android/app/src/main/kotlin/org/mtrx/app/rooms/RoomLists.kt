@@ -9,9 +9,10 @@ import uniffi.mtrx.RoomKind
 import uniffi.mtrx.RoomListState
 import uniffi.mtrx.RoomSummary
 
-// The lists of the Chats and Spaces tabs, from each room list. All keep the
-// library's order (most recently active first), except a space's sections
-// in the order chosen for them.
+// The lists of the Chats, Rooms and Spaces tabs, from each room list. All
+// keep the library's order (most recently active first), except a space's
+// sections in the order chosen for them and the Rooms tab's groups, by
+// their rooms' latest messages.
 
 /** The Chats tab: the direct chats, invites to them and the Notes to self too. */
 fun chats(state: RoomListState): List<RoomSummary> = state.rooms.filter { it.kind == RoomKind.DIRECT }
@@ -69,53 +70,69 @@ private fun byName(): Comparator<RoomSummary> {
 /** The latest active first; never active last. */
 private val byRecent: Comparator<RoomSummary> = compareBy(nullsLast(reverseOrder<Instant>())) { it.lastActivity }
 
-/** A row of Recent: the room, and the name of its space ("Other rooms" outside spaces). */
-data class RecentRow(val room: RoomSummary, val space: String?)
-
 /**
- * The recent rooms ([ids], newest first) that are still in the list: rooms
- * and invites, not direct chats nor joined spaces.
+ * A group of the Rooms tab: Home ([space] null, the rooms in no space) or a
+ * top-level space, with its rooms. Its heading shows the [unread] count,
+ * red with [mentions].
  */
-fun recentRooms(state: RoomListState, ids: List<String>): List<RoomSummary> {
-    val byId = state.rooms.associateBy { it.id }
-    return ids.mapNotNull { byId[it] }.filter { opensOnRoomsTab(it) }
+data class RoomGroup(val space: RoomSummary?, val rooms: List<RoomSummary>) {
+    val key: String get() = space?.id ?: HOME_KEY
+    val name: String get() = space?.name ?: HOME_NAME
+    val unread: Long get() = rooms.sumOf { it.unreadMessages.toLong() }
+    val mentions: Boolean get() = rooms.any { it.unreadMentions > 0uL }
 }
 
-/** Recent's rows, each with the name of the top-level space that lists it. */
-fun recentRows(state: RoomListState, ids: List<String>): List<RecentRow> {
-    val names = state.rooms.associate { it.id to it.name }
-    return recentRooms(state, ids).map { room ->
-        val space = state.spaces.firstOrNull { room.id in it.roomIds }?.let { names[it.spaceId] }
-            ?: room.parents.firstNotNullOfOrNull { names[it] }
-            ?: OTHER_ROOMS_NAME.takeIf { room.id in state.roomsOutsideSpaces }
-        RecentRow(room, space)
+const val HOME_NAME = "Home"
+
+/** Home's key; room IDs start with "!". */
+private const val HOME_KEY = "home"
+
+/**
+ * The Rooms tab's groups: Home, then each top-level space in the Spaces
+ * tab's order, each with its rooms and invites (no direct chats nor joined
+ * spaces) by their latest message, newest first; a room in several spaces
+ * is in each. [only], if given, keeps those rooms (a direct chat's rooms
+ * shared with the person). Groups without rooms are left out.
+ */
+fun roomGroups(state: RoomListState, only: Set<String>? = null): List<RoomGroup> {
+    val byId = state.rooms.associateBy { it.id }
+    fun group(space: RoomSummary?, ids: List<String>) = RoomGroup(
+        space,
+        ids.mapNotNull { byId[it] }
+            .filter { opensOnRoomsTab(it) && (only == null || it.id in only) }
+            .sortedWith(byRecent),
+    )
+    val home = group(null, state.roomsOutsideSpaces)
+    val spaces = state.spaces.mapNotNull { space -> byId[space.spaceId]?.let { group(it, space.roomIds) } }
+    return (listOf(home) + spaces).filter { it.rooms.isNotEmpty() }
+}
+
+/**
+ * The room open on the Rooms tab, [roomId], while it is listed there; also
+ * before the list is loaded, and while it is [opening] (just joined or
+ * made) and not listed yet.
+ */
+fun shownRoom(state: RoomListState, roomId: String?, opening: String? = null): String? {
+    if (roomId == null) return null
+    val room = state.rooms.firstOrNull { it.id == roomId }
+    return when {
+        room != null -> roomId.takeIf { opensOnRoomsTab(room) }
+        roomId == opening || !state.loaded -> roomId
+        else -> null
     }
 }
 
-/**
- * The room the Rooms tab reopens: the newest recent one still in the list;
- * the newest saved one while the list is not loaded yet, or while it is
- * [opening] (just joined or made) and not listed yet.
- */
-fun lastRoom(state: RoomListState, ids: List<String>, opening: String? = null): String? {
-    val newest = ids.firstOrNull()
-    if (newest != null && newest == opening && state.rooms.none { it.id == newest }) return newest
-    return recentRooms(state, ids).firstOrNull()?.id ?: if (state.loaded) null else newest
-}
-
-/** Rooms and invites open on the Rooms tab (and join Recent); direct chats on Chats. */
+/** Rooms and invites open on the Rooms tab; direct chats on Chats. */
 fun opensOnRoomsTab(room: RoomSummary): Boolean = room.kind != RoomKind.DIRECT && (room.kind != RoomKind.SPACE || room.invited)
 
-/** Unread messages in the recent rooms, except [except] (the room on screen). */
-fun recentUnread(state: RoomListState, ids: List<String>, except: String? = null): Long =
-    recentRooms(state, ids).filter { it.id != except }.sumOf { it.unreadMessages.toLong() }
+/** Unread messages in the rooms, except [except] (the room on screen). */
+fun roomsUnread(state: RoomListState, except: String? = null): Long =
+    state.rooms.filter { it.kind == RoomKind.ROOM && it.id != except }.sumOf { it.unreadMessages.toLong() }
 
-/** Unread messages in the spaces' rooms (and the other rooms) that are not recent. */
-fun spacesUnread(state: RoomListState, ids: List<String>): Long {
-    val recent = ids.toSet()
-    return state.rooms
-        .filter { it.kind == RoomKind.ROOM && !it.invited && it.id !in recent }
-        .sumOf { it.unreadMessages.toLong() }
+/** Unread messages in the rooms the spaces list. */
+fun spacesUnread(state: RoomListState): Long {
+    val inSpaces = state.spaces.flatMap { it.roomIds }.toSet()
+    return state.rooms.filter { it.kind == RoomKind.ROOM && it.id in inSpaces }.sumOf { it.unreadMessages.toLong() }
 }
 
 /** The unread count to show, and whether it counts mentions; null if none. */

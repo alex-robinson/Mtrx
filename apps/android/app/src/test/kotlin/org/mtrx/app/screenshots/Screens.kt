@@ -116,7 +116,7 @@ val rooms = uniffi.mtrx.RoomListState(
                 RoomSection("low_priority", SectionKind.LOW_PRIORITY, "", listOf(ARCHIVE)),
             ),
         ),
-        SpaceRooms(spaceId = OUTREACH, roomIds = listOf(TEACHING, "!notes:example.org")),
+        SpaceRooms(spaceId = OUTREACH, roomIds = listOf(PAPERS, TEACHING, "!notes:example.org")),
     ),
     roomsOutsideSpaces = listOf(WORKSHOP, LOOSE),
     notesAtTop = true,

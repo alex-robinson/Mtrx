@@ -4,6 +4,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.width
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material3.HorizontalDivider
@@ -17,7 +18,6 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
@@ -29,7 +29,6 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.List
-import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -44,7 +43,7 @@ import androidx.compose.ui.unit.dp
 import java.time.LocalDate
 import org.mtrx.app.model.Images
 import org.mtrx.app.model.SpaceEntry
-import org.mtrx.app.rooms.RecentRow
+import org.mtrx.app.rooms.RoomGroup
 import org.mtrx.app.rooms.SpaceRow
 import org.mtrx.app.rooms.unreadBadge
 import uniffi.mtrx.Presence
@@ -149,36 +148,77 @@ fun SpaceRoomsList(
 }
 
 /**
- * Recent: the rooms opened lately, newest first, each with its space in
- * small grey, its unread count and a pencil if it has a draft ([drafts]);
- * without any, a way to the spaces.
+ * The Rooms tab's [groups] (and a direct chat's rooms shared with the
+ * person): each under a heading with its unread count, a space's opening it
+ * on the Spaces tab ([onOpenSpace], its ID); a pencil on the rooms with a
+ * draft ([drafts]). [empty] says there are none.
  */
 @Composable
-fun RecentList(
-    rows: List<RecentRow>,
+fun RoomGroupsList(
+    groups: List<RoomGroup>,
+    loaded: Boolean,
     images: Images,
     today: LocalDate,
     onOpenRoom: (RoomSummary) -> Unit,
-    onBrowseSpaces: () -> Unit,
+    onOpenSpace: (String) -> Unit,
     drafts: Set<String> = emptySet(),
+    empty: String = "No rooms",
     state: LazyListState = rememberLazyListState(),
 ) {
-    if (rows.isEmpty()) {
-        Column(
-            Modifier.fillMaxSize(),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.Center,
-        ) {
-            Text("Rooms you open show here", color = MaterialTheme.colorScheme.onSurfaceVariant)
-            Spacer(Modifier.height(12.dp))
-            Button(onClick = onBrowseSpaces) { Text("Browse spaces") }
+    when {
+        groups.isEmpty() && !loaded -> Loading()
+        groups.isEmpty() -> Empty(empty)
+        else -> LazyColumn(Modifier.fillMaxSize(), state = state) {
+            for (group in groups) {
+                item(key = "group:${group.key}", contentType = "group") {
+                    GroupHeading(group, images, onClick = group.space?.let { space -> { onOpenSpace(space.id) } })
+                }
+                items(group.rooms, key = { "${group.key}/${it.id}" }, contentType = { "room" }) { room ->
+                    RoomRow(room, images, today, onClick = { onOpenRoom(room) }, draft = room.id in drafts)
+                }
+            }
         }
-        return
     }
-    LazyColumn(Modifier.fillMaxSize(), state = state) {
-        items(rows, key = { it.room.id }) { row ->
-            RoomRow(row.room, images, today, onClick = { onOpenRoom(row.room) }, subtitle = row.space ?: "", draft = row.room.id in drafts)
+}
+
+/**
+ * A group's heading: the space's small picture (a house for Home), its
+ * name and unread count; tapped ([onClick], for a space), a caret.
+ */
+@Composable
+private fun GroupHeading(group: RoomGroup, images: Images, onClick: (() -> Unit)?) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .let { if (onClick != null) it.clickable(onClickLabel = "Open the space", onClick = onClick) else it }
+            .padding(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        val space = group.space
+        if (space != null) {
+            Avatar(space.name, space.avatarUrl, space.id, images, size = 20.dp, shape = RoundedCornerShape(4.dp))
+        } else {
+            Icon(Icons.Filled.Home, contentDescription = null, modifier = Modifier.size(20.dp), tint = MaterialTheme.colorScheme.primary)
         }
+        Spacer(Modifier.width(8.dp))
+        Text(
+            group.name,
+            Modifier.weight(1f, fill = false),
+            style = MaterialTheme.typography.titleSmall,
+            color = MaterialTheme.colorScheme.primary,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+        if (onClick != null) {
+            Icon(
+                Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                contentDescription = null,
+                modifier = Modifier.size(20.dp),
+                tint = MaterialTheme.colorScheme.primary,
+            )
+        }
+        Spacer(Modifier.weight(1f))
+        if (group.unread > 0) UnreadBadge(group.unread, group.mentions)
     }
 }
 

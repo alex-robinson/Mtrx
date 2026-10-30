@@ -12,7 +12,6 @@ import org.mtrx.app.model.GatewayDiscovery
 import org.mtrx.app.model.Logger
 import org.mtrx.app.model.PushRegistration
 import org.mtrx.app.model.PushStore
-import org.mtrx.app.model.RecentStore
 import org.mtrx.app.rooms.SectionPrefs
 import org.mtrx.app.rooms.SectionStore
 import org.mtrx.app.model.PusherDevice
@@ -570,21 +569,12 @@ class FakeSpaceStore(var saved: SpaceEntry? = null) : SelectedSpaceStore {
     }
 }
 
-/** The recent rooms, in memory: one instance across "launches". */
 /** The sections' arrangement, in memory: one instance across "launches". */
 class FakeSectionStore(var saved: Map<String, SectionPrefs>? = null) : SectionStore {
     override suspend fun load(): Map<String, SectionPrefs>? = saved
 
     override suspend fun save(prefs: Map<String, SectionPrefs>) {
         saved = prefs
-    }
-}
-
-class FakeRecentStore(var saved: List<String>? = null) : RecentStore {
-    override suspend fun load(): List<String>? = saved
-
-    override suspend fun save(ids: List<String>) {
-        saved = ids
     }
 }
 
@@ -985,10 +975,9 @@ fun testAccount(
     push: PushRegistration = pushRegistration(scope),
     notifications: RoomNotifications = FakeNotifier(),
     sharePresence: SharePresenceStore = FakeSharePresenceStore(),
-    recent: RecentStore = FakeRecentStore(),
     sections: SectionStore = FakeSectionStore(),
     log: FakeLog = FakeLog(),
-): Account = Account(mtrx, scope, spaces, sort, push, notifications, sharePresence, recent, sections, testClock(scope), log)
+): Account = Account(mtrx, scope, spaces, sort, push, notifications, sharePresence, sections, testClock(scope), log)
 
 /** What the models logged, as "tag: message". */
 class FakeLog : Logger {

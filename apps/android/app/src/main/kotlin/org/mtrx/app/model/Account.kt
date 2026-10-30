@@ -68,10 +68,8 @@ sealed interface BrowserLogin {
  * cleared as rooms are opened or read. Each session's [PresenceModel] reads
  * the direct chats' presence and sets ours around sync, as [sharePresence]
  * says; [clock] counts milliseconds, for idling; [log] has what goes
- * wrong. The rooms opened lately are kept in [recentStore] until sign-out
- * (the drafts are in the session's store, which goes with it); how this
- * phone arranges the spaces' sections in [sectionStore] (the device's, as
- * the rooms' order).
+ * wrong. How this phone arranges the spaces' sections is kept in
+ * [sectionStore] (the device's, as the rooms' order).
  */
 class Account(
     private val mtrx: MtrxInterface,
@@ -81,7 +79,6 @@ class Account(
     private val push: PushRegistration,
     private val notifications: RoomNotifications,
     sharePresenceStore: SharePresenceStore,
-    recentStore: RecentStore,
     sectionStore: SectionStore,
     private val clock: () -> Long = { System.nanoTime() / 1_000_000 },
     private val log: Logger = AndroidLog,
@@ -100,9 +97,6 @@ class Account(
 
     /** "Share my presence". */
     val sharePresence = SharePresence(sharePresenceStore, scope)
-
-    /** The rooms opened lately on the Rooms tab; the first is the last room. */
-    val recent = RecentRooms(recentStore, scope)
 
     /** How this phone arranges each space's sections. */
     val sections = SectionLayouts(sectionStore, scope)
@@ -253,13 +247,12 @@ class Account(
     }
 
     /**
-     * Leave [roomId], or decline its invite: it is no longer recent, and its
-     * draft goes. [onDone] says whether it worked (errors go to [messages]).
+     * Leave [roomId], or decline its invite: its draft goes. [onDone] says
+     * whether it worked (errors go to [messages]).
      */
     fun leave(roomId: String, name: String, onDone: (Boolean) -> Unit = {}): Job = membership(onDone) {
         try {
             it.leave(roomId)
-            recent.remove(roomId)
             clearDraft(it, roomId)
             null
         } catch (e: MtrxException) {
@@ -552,7 +545,6 @@ class Account(
         _rooms.value = NO_ROOMS
         _connection.value = ConnectionState.ONLINE
         spaceSelection.clear()
-        recent.clear()
         spaceChildren.clear()
         _roomRequest.value = null
         notifications.clearAll()

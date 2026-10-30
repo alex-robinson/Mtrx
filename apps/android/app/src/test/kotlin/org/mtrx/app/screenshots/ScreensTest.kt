@@ -3,7 +3,6 @@ package org.mtrx.app.screenshots
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.Surface
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import app.cash.paparazzi.DeviceConfig
@@ -24,8 +23,8 @@ import org.mtrx.app.rooms.NewRoomForm
 import org.mtrx.app.rooms.OverviewRooms
 import org.mtrx.app.rooms.RoomInfoContent
 import org.mtrx.app.rooms.SpaceOverviewContent
-import org.mtrx.app.rooms.recentRows
-import org.mtrx.app.rooms.recentUnread
+import org.mtrx.app.rooms.roomGroups
+import org.mtrx.app.rooms.roomsUnread
 import org.mtrx.app.rooms.SectionPrefs
 import org.mtrx.app.rooms.chatList
 import org.mtrx.app.rooms.sectionChoices
@@ -45,7 +44,7 @@ import org.mtrx.app.ui.ChatList
 import org.mtrx.app.ui.HomeFrame
 import org.mtrx.app.ui.HomeTab
 import org.mtrx.app.ui.MtrxTheme
-import org.mtrx.app.ui.RecentList
+import org.mtrx.app.ui.RoomGroupsList
 import org.mtrx.app.ui.SpaceList
 import org.mtrx.app.ui.SpaceRoomsList
 import org.mtrx.app.ui.SpaceTitle
@@ -60,9 +59,7 @@ class ScreensTest {
     @get:Rule
     val paparazzi = Paparazzi(deviceConfig = DeviceConfig.PIXEL_5)
 
-    private val recentIds = listOf(ICE, PAPERS, TEACHING, LOOSE, WORKSHOP)
     private val drafts = rooms.drafts.toSet()
-    private val badges = mapOf(HomeTab.Spaces to spacesUnread(rooms, recentIds), HomeTab.Rooms to recentUnread(rooms, recentIds))
 
     private fun snap(name: String, content: @Composable () -> Unit) {
         paparazzi.snapshot(name) { MtrxTheme { WithBack(content) } }
@@ -119,17 +116,18 @@ class ScreensTest {
         }
     }
 
+    // Home, then the spaces, each newest first; Papers in both spaces.
     @Test
-    fun recent() = snap("recent") {
-        HomeFrame(HomeTab.Rooms, badges, onTab = {}, title = { Text("Recent") }) {
-            RecentList(recentRows(rooms, recentIds), images, today, onOpenRoom = {}, onBrowseSpaces = {}, drafts = drafts)
+    fun roomsTab() = snap("rooms-groups") {
+        HomeFrame(HomeTab.Rooms, badges, onTab = {}) {
+            RoomGroupsList(roomGroups(rooms), loaded = true, images, today, onOpenRoom = {}, onOpenSpace = {}, drafts = drafts)
         }
     }
 
     @Test
-    fun recentEmpty() = snap("recent-empty") {
-        HomeFrame(HomeTab.Rooms, emptyMap(), onTab = {}, title = { Text("Recent") }) {
-            RecentList(emptyList(), images, today, onOpenRoom = {}, onBrowseSpaces = {})
+    fun roomsTabEmpty() = snap("rooms-empty") {
+        HomeFrame(HomeTab.Rooms, emptyMap(), onTab = {}) {
+            RoomGroupsList(emptyList(), loaded = true, images, today, onOpenRoom = {}, onOpenSpace = {})
         }
     }
 
@@ -289,6 +287,9 @@ class TallScreensTest {
     }
 }
 
+/** The tabs' unread counts. */
+private val badges = mapOf(HomeTab.Rooms to roomsUnread(rooms), HomeTab.Spaces to spacesUnread(rooms))
+
 private val iceRoomHeader = RoomHeader(
     name = "Ice sheets",
     avatarUrl = null,
@@ -301,7 +302,7 @@ private val iceRoomHeader = RoomHeader(
 /** The Ice sheets room, as on the Rooms tab. */
 @Composable
 private fun Room(topicOpen: Boolean = false, editingTopic: Boolean = false) {
-    HomeFrame(HomeTab.Rooms, emptyMap(), onTab = {}, showTopBar = false) {
+    HomeFrame(HomeTab.Rooms, badges, onTab = {}, showTopBar = false) {
         TimelineContent(
             iceRoomHeader,
             TimelineState(
