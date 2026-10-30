@@ -49,20 +49,26 @@ final class RoomUITests: XCTestCase {
         openLab()
         let field = app.textViews.firstMatch.exists ? app.textViews.firstMatch : app.textFields.firstMatch
         field.tap()
-        sleep(1)
+        let newest = inView(app.staticTexts["Mine, to delete"])
         snap("ui-keyboard")
-        XCTAssertTrue(app.staticTexts["Mine, to delete"].isHittable, "The newest message is under the keyboard")
+        XCTAssertTrue(newest, "The newest message is under the keyboard")
         for n in 1...4 {
             field.tap()
             field.typeText("Sent number \(n), with a few words")
             snap("ui-written-\(n)")
             app.buttons["Send"].tap()
-            let sent = app.staticTexts["Sent number \(n), with a few words"]
-            let shown = sent.waitForExistence(timeout: 5)
-            sleep(1)
+            let shown = inView(app.staticTexts["Sent number \(n), with a few words"])
             snap("ui-sent-\(n)")
-            XCTAssertTrue(shown && sent.isHittable, "Sent message \(n) not in view")
+            XCTAssertTrue(shown, "Sent message \(n) not in view")
         }
+    }
+
+    /// `element` is in view (hittable), once the keyboard and the timeline
+    /// have moved: within 3 seconds.
+    @MainActor
+    private func inView(_ element: XCUIElement) -> Bool {
+        let hittable = XCTNSPredicateExpectation(predicate: NSPredicate(format: "isHittable == true"), object: element)
+        return XCTWaiter().wait(for: [hittable], timeout: 3) == .completed
     }
 
     @MainActor

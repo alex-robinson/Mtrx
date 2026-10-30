@@ -77,6 +77,11 @@ final class TimelineModelTests: XCTestCase {
         model.scrolled(distanceFromBottom: 0)
         model.scrollEnded()
         XCTAssertTrue(model.followsBottom)
+        // Up again, then the button to the newest message.
+        model.scrolled(distanceFromBottom: 300)
+        model.scrollEnded()
+        model.followBottom()
+        XCTAssertTrue(model.followsBottom)
     }
 
     func testNoButtonWhileOpening() async {

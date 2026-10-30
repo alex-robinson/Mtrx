@@ -292,21 +292,45 @@ final class FakeSession: Session, @unchecked Sendable {
 
     // MARK: Drafts
 
+    // Saved off the main actor (the model's tasks call the library from
+    // there) while the tests read them: behind the lock.
+    private var draftStore: [String: Draft] = [:]
+    private var draftSaves: [(roomId: String, draft: Draft)] = []
+    private var draftFailure: Error?
+
+    private func locked<T>(_ body: () throws -> T) rethrows -> T {
+        lock.lock()
+        defer { lock.unlock() }
+        return try body()
+    }
+
     /// The drafts kept, by room ID.
-    var drafts: [String: Draft] = [:]
+    var drafts: [String: Draft] {
+        get { locked { draftStore } }
+        set { locked { draftStore = newValue } }
+    }
+
     /// Each `saveDraft`, in order.
-    var savedDrafts: [(roomId: String, draft: Draft)] = []
-    var draftError: Error?
+    var savedDrafts: [(roomId: String, draft: Draft)] {
+        locked { draftSaves }
+    }
+
+    var draftError: Error? {
+        get { locked { draftFailure } }
+        set { locked { draftFailure = newValue } }
+    }
 
     override func draft(roomId: String) async throws -> Draft? {
         drafts[roomId]
     }
 
     override func saveDraft(roomId: String, draft: Draft) async throws {
-        if let draftError { throw draftError }
-        savedDrafts.append((roomId, draft))
-        let empty = draft.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && draft.replyTo == nil
-        drafts[roomId] = empty ? nil : draft
+        try locked { () throws -> Void in
+            if let draftFailure { throw draftFailure }
+            draftSaves.append((roomId, draft))
+            let empty = draft.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && draft.replyTo == nil
+            draftStore[roomId] = empty ? nil : draft
+        }
     }
 
     // MARK: Rooms: settings, members, pins, joining, making
