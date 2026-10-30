@@ -314,22 +314,23 @@ struct SpaceRoomsPage: View {
 /// messages.
 private struct SpaceRow: View {
     let item: SpaceItem
+    @RowAvatarSize private var avatarSize: CGFloat
 
     var body: some View {
         HStack(spacing: 10) {
             if let space = item.space {
-                AvatarView(name: space.name, uri: space.avatarUrl, size: RoomRow.avatarSize, shape: .square)
+                AvatarView(name: space.name, uri: space.avatarUrl, size: avatarSize, shape: .square)
             } else {
                 Image(systemName: "tray.full")
                     .font(.body)
                     .foregroundStyle(.secondary)
-                    .frame(width: RoomRow.avatarSize, height: RoomRow.avatarSize)
-                    .background(Color.secondary.opacity(0.15), in: RoundedRectangle(cornerRadius: 8))
+                    .frame(width: avatarSize, height: avatarSize)
+                    .background(Color.secondary.opacity(0.15), in: RoundedRectangle(cornerRadius: avatarSize * 0.25))
             }
             Text(item.name)
                 .fontWeight(item.unread ? .semibold : .regular)
                 .foregroundColor(.primary)
-                .lineLimit(1)
+                .lineLimit(1, accessibility: 3)
             Spacer(minLength: 8)
             if item.unread {
                 Circle()

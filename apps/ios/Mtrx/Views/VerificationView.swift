@@ -101,7 +101,8 @@ struct VerificationView: View {
     private func message(_ text: String, systemImage: String) -> some View {
         VStack(spacing: 12) {
             Image(systemName: systemImage)
-                .font(.system(size: 44))
+                .font(.largeTitle)
+                .imageScale(.large)
                 .foregroundStyle(.secondary)
             Text(text)
                 .font(.title3)
@@ -125,7 +126,8 @@ private struct EmojiGrid: View {
             ForEach(Array(emojis.enumerated()), id: \.offset) { _, emoji in
                 VStack(spacing: 4) {
                     Text(emoji.symbol)
-                        .font(.system(size: 44))
+                        .font(.largeTitle)
+                        .imageScale(.large)
                     Text(emoji.description)
                         .font(.caption)
                         .foregroundStyle(.secondary)

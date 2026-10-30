@@ -114,6 +114,23 @@ final class ScreenshotTests: XCTestCase {
         try await snap("05b-room-draft", wait: 2, HomeView())
     }
 
+    /// The largest text size (Accessibility): the lists put a room's time
+    /// and counts under its name; a room, and its info.
+    func testLargeText() async throws {
+        model.tab = .chats
+        try await snap("14-large-chats", large: true, HomeView())
+        model.tab = .rooms
+        model.roomsPath = []
+        try await snap("14b-large-rooms", large: true, HomeView())
+        session.fakeTimeline.initialItems = Screens.timeline
+        model.roomsPath = ["!ice"]
+        try await snap("14c-large-room", large: true, wait: 2, HomeView())
+        session.settings = Screens.settings
+        session.memberList = Screens.members
+        try await snap(
+            "14d-large-room-info", large: true, RoomInfoView(room: Screens.ice, model: model.info(for: Screens.ice)))
+    }
+
     // MARK: A room's topic and info
 
     func testTopicPanel() async throws {
@@ -214,12 +231,18 @@ final class ScreenshotTests: XCTestCase {
     // MARK: Drawing
 
     /// Draw `view` in a window the size of the screen, after `wait` seconds
-    /// for its tasks, and save it as `<name>.png`.
-    private func snap<V: View>(_ name: String, dark: Bool = false, wait: Double = 1, _ view: V) async throws {
+    /// for its tasks, and save it as `<name>.png`; with `large`, in the
+    /// largest text size (Accessibility, from iOS 17).
+    private func snap<V: View>(
+        _ name: String, dark: Bool = false, large: Bool = false, wait: Double = 1, _ view: V
+    ) async throws {
         let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
         let window = UIWindow(windowScene: scene)
         window.frame = scene.screen.bounds
         window.overrideUserInterfaceStyle = dark ? .dark : .light
+        if large, #available(iOS 17, *) {
+            window.traitOverrides.preferredContentSizeCategory = .accessibilityExtraExtraExtraLarge
+        }
         window.rootViewController = UIHostingController(
             rootView: view
                 .environmentObject(app)

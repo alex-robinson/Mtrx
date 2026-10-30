@@ -45,24 +45,28 @@ struct MembersSection: View {
 struct MemberRow: View {
     let member: Member
 
+    @RowAvatarSize(30) private var avatarSize: CGFloat
+
     var body: some View {
         HStack(spacing: 10) {
-            AvatarView(name: member.shownName, uri: member.avatarUrl, size: 30)
-            VStack(alignment: .leading, spacing: 0) {
-                Text(member.shownName)
-                    .lineLimit(1)
-                if member.name != nil {
-                    Text(member.userId)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
+            AvatarView(name: member.shownName, uri: member.avatarUrl, size: avatarSize)
+            AdaptiveStack(spacing: 2) {
+                VStack(alignment: .leading, spacing: 0) {
+                    Text(member.shownName)
+                        .lineLimit(1, accessibility: 3)
+                    if member.name != nil {
+                        Text(member.userId)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1, accessibility: 3)
+                    }
                 }
-            }
-            Spacer(minLength: 8)
-            if let role = MemberRoles.label(member) {
-                Text(role)
-                    .font(.caption.weight(.medium))
-                    .foregroundStyle(.secondary)
+                Spacer(minLength: 8)
+                if let role = MemberRoles.label(member) {
+                    Text(role)
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(.secondary)
+                }
             }
         }
         .contentShape(Rectangle())

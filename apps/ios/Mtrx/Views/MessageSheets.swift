@@ -38,21 +38,23 @@ struct PeopleSheet: View {
 struct EmojiPicker: View {
     let ours: Set<String>
     let pick: (String) -> Void
+    /// An emoji's square, growing with the text.
+    @ScaledMetric(relativeTo: .title) private var cell: CGFloat = 44
     @State private var query = ""
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         NavigationStack {
             ScrollView {
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 44), spacing: 4)], spacing: 4) {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: cell), spacing: 4)], spacing: 4) {
                     ForEach(Emoji.search(query)) { emoji in
                         Button {
                             pick(emoji.symbol)
                             dismiss()
                         } label: {
                             Text(emoji.symbol)
-                                .font(.system(size: 30))
-                                .frame(width: 44, height: 44)
+                                .font(.title)
+                                .frame(width: cell, height: cell)
                                 .background(
                                     ours.contains(emoji.symbol) ? Color.accentColor.opacity(0.2) : .clear,
                                     in: RoundedRectangle(cornerRadius: 10))

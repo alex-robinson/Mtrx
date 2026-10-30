@@ -150,7 +150,8 @@ struct MessageView: View {
     /// Revealed at the right while the row is swiped.
     private var replyIcon: some View {
         Image(systemName: "arrowshape.turn.up.left.fill")
-            .font(.system(size: 15, weight: .semibold))
+            .font(.subheadline.weight(.semibold))
+            .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
             .foregroundColor(swipe.triggers ? .white : .accentColor)
             .frame(width: 32, height: 32)
             .background(swipe.triggers ? Color.accentColor : Color.accentColor.opacity(0.15), in: Circle())

@@ -179,7 +179,8 @@ struct RoomHeader: View {
                 Button(action: openTopic) {
                     HStack(spacing: 3) {
                         Image(systemName: "chevron.down")
-                            .font(.system(size: 9, weight: .bold))
+                            .font(.caption2.weight(.bold))
+                            .imageScale(.small)
                         Text(line)
                             .font(.caption)
                             .lineLimit(1)
@@ -545,13 +546,16 @@ struct TypingLine: View {
 }
 
 /// Writing a message (Markdown), or a reply or an edit, with a bar saying
-/// which and a button to cancel it.
+/// which and a button to cancel it. The field grows to six lines, three at
+/// the accessibility text sizes, leaving the timeline room.
 struct Composer: View {
     @Binding var draft: String
     let compose: TimelineModel.Compose?
     let cancel: () -> Void
     let send: () -> Void
     @FocusState private var focused: Bool
+    @ScaledMetric(relativeTo: .title) private var sendSize: CGFloat = 32
+    @Environment(\.dynamicTypeSize) private var textSize
 
     private var blank: Bool {
         draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -564,14 +568,14 @@ struct Composer: View {
             }
             HStack(alignment: .bottom, spacing: 8) {
                 TextField("Message", text: $draft, axis: .vertical)
-                    .lineLimit(1...6)
+                    .lineLimit(1...(textSize.isAccessibilitySize ? 3 : 6))
                     .focused($focused)
                     .padding(.horizontal, 14)
                     .padding(.vertical, 8)
                     .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 18))
                 Button(action: send) {
                     Image(systemName: compose.isEdit ? "checkmark.circle.fill" : "arrow.up.circle.fill")
-                        .font(.system(size: 32))
+                        .font(.system(size: sendSize))
                 }
                 .disabled(blank)
                 .accessibilityLabel(compose.isEdit ? "Save" : "Send")

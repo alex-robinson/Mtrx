@@ -31,7 +31,9 @@ struct MediaImageView: View {
             }
             if media.kind == .video {
                 Image(systemName: "play.circle.fill")
-                    .font(.system(size: 44))
+                    .font(.largeTitle)
+                    .imageScale(.large)
+                    .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
                     .foregroundStyle(.white, .black.opacity(0.4))
                     .accessibilityLabel("Video")
             }

@@ -257,29 +257,32 @@ struct DirectoryRoomRow: View {
     /// overview's navigation stack).
     var linksSubspaces = false
     let act: () -> Void
+    @RowAvatarSize private var avatarSize: CGFloat
 
     var body: some View {
-        HStack(spacing: 10) {
-            picture
-            VStack(alignment: .leading, spacing: 1) {
-                HStack(spacing: 6) {
-                    Text(room.name)
-                        .lineLimit(1)
-                    if let role = DirectoryRows.role(room) {
-                        Text(role)
-                            .font(.caption2.weight(.semibold))
-                            .foregroundStyle(.secondary)
-                            .padding(.horizontal, 5)
-                            .padding(.vertical, 1)
-                            .background(Color.secondary.opacity(0.15), in: Capsule())
+        AdaptiveStack(spacing: 10) {
+            HStack(spacing: 10) {
+                picture
+                VStack(alignment: .leading, spacing: 1) {
+                    AdaptiveStack(spacing: 6) {
+                        Text(room.name)
+                            .lineLimit(1, accessibility: 3)
+                        if let role = DirectoryRows.role(room) {
+                            Text(role)
+                                .font(.caption2.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                                .padding(.horizontal, 5)
+                                .padding(.vertical, 1)
+                                .background(Color.secondary.opacity(0.15), in: Capsule())
+                        }
                     }
+                    Text(DirectoryRows.details(room))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2, accessibility: 4)
                 }
-                Text(DirectoryRows.details(room))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
+                Spacer(minLength: 8)
             }
-            Spacer(minLength: 8)
             button
         }
         .contentShape(Rectangle())
@@ -292,14 +295,15 @@ struct DirectoryRoomRow: View {
     @ViewBuilder
     private var picture: some View {
         if room.avatarUrl != nil {
-            AvatarView(
-                name: room.name, uri: room.avatarUrl, size: RoomRow.avatarSize, shape: room.isSpace ? .square : .circle)
+            AvatarView(name: room.name, uri: room.avatarUrl, size: avatarSize, shape: room.isSpace ? .square : .circle)
         } else {
             Image(systemName: Self.symbol(room.access))
                 .font(.body)
                 .foregroundStyle(.secondary)
-                .frame(width: RoomRow.avatarSize, height: RoomRow.avatarSize)
-                .background(Color.secondary.opacity(0.12), in: RoundedRectangle(cornerRadius: room.isSpace ? 8 : 17))
+                .frame(width: avatarSize, height: avatarSize)
+                .background(
+                    Color.secondary.opacity(0.12),
+                    in: RoundedRectangle(cornerRadius: avatarSize * (room.isSpace ? 0.25 : 0.5)))
                 .accessibilityLabel(Self.accessLabel(room.access))
         }
     }
