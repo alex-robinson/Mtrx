@@ -368,13 +368,16 @@ struct TimelineList: View {
 
     /// Below the newest row.
     private static let bottomId = "bottom"
+    /// Sent to the bottom by the button, until it is there.
+    @State private var goingToBottom = false
 
     var body: some View {
         ScrollViewReader { proxy in
             ScrollView {
                 rows
             }
-            .modifier(AnchoredAtBottom(model: model, proxy: proxy, bottomId: Self.bottomId))
+            .modifier(
+                AnchoredAtBottom(model: model, proxy: proxy, bottomId: Self.bottomId, goingToBottom: $goingToBottom))
             .onChange(of: model.scrollTarget) { target in
                 guard let target else { return }
                 withAnimation {
@@ -384,6 +387,7 @@ struct TimelineList: View {
             .overlay(alignment: .bottomTrailing) {
                 if model.showsScrollToBottom {
                     ScrollToBottomButton {
+                        goingToBottom = true
                         withAnimation {
                             proxy.scrollTo(Self.bottomId, anchor: .bottom)
                         }
@@ -458,12 +462,14 @@ struct TimelineList: View {
 /// offset. Nothing here scrolls as the geometry changes (doing so fought
 /// the anchor and the lazy stack's estimates, the timeline moving up and
 /// down). A scroll that comes to rest just short of the end (within
-/// `TimelineModel.bottomTolerance`) goes on to it, once. Before iOS 18, the
-/// rows' changes are followed (iOS 17's anchor places it at the start).
+/// `TimelineModel.bottomTolerance`), or the button's short of it as
+/// messages came meanwhile, goes on to it, once. Before iOS 18, the rows'
+/// changes are followed (iOS 17's anchor places it at the start).
 private struct AnchoredAtBottom: ViewModifier {
     @ObservedObject var model: TimelineModel
     let proxy: ScrollViewProxy
     let bottomId: String
+    @Binding var goingToBottom: Bool
     /// The oldest row, as last drawn.
     @State private var oldest: String?
 
@@ -479,7 +485,11 @@ private struct AnchoredAtBottom: ViewModifier {
                     model.scrolled(distanceFromBottom: distance)
                 }
                 .onScrollPhaseChange { old, phase in
-                    if phase == .idle && old != .idle && model.atBottom {
+                    if phase == .tracking || phase == .interacting {
+                        // Taken over by hand.
+                        goingToBottom = false
+                    } else if phase == .idle && old != .idle && (model.atBottom || goingToBottom) {
+                        goingToBottom = false
                         proxy.scrollTo(bottomId, anchor: .bottom)
                     }
                 }
