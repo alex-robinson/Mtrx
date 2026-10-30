@@ -51,10 +51,7 @@ struct RoomView: View {
         }
         .task { await model.open() }
         .task { await info.loadSettings() }
-        .onAppear {
-            model.setVisible(true)
-            session.opened(room)
-        }
+        .onAppear { model.setVisible(true) }
         .onDisappear { model.setVisible(false) }
         .onChange(of: scenePhase) { phase in
             if phase != .active {

@@ -10,16 +10,17 @@ final class RoomUITests: XCTestCase {
         continueAfterFailure = false
         await MainActor.run {
             let app = XCUIApplication()
-            app.launchArguments = ["-ui-testing", "-recentRooms", "(\"!lab:example.org\")"]
+            app.launchArguments = ["-ui-testing"]
             app.launch()
             self.app = app
         }
     }
 
-    /// The Rooms tab opens on the Lab room, its last message ours.
+    /// The Lab room, from the Rooms tab: its last message ours.
     @MainActor
     private func openLab() {
         app.tabBars.buttons["Rooms"].tap()
+        app.staticTexts["Lab"].firstMatch.tap()
         XCTAssertTrue(app.staticTexts["Mine, to delete"].waitForExistence(timeout: 15), "The room did not open")
         snap("ui-room")
     }

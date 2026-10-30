@@ -112,9 +112,44 @@ struct RoomLists: Equatable {
         spaces.first { $0.entry == entry }
     }
 
-    /// The name of the (first) space that lists `room`, if any.
-    func spaceName(of room: RoomSummary) -> String? {
-        room.parents.lazy.compactMap { self.byId[$0]?.name }.first
+    /// The Rooms tab: Home (the rooms in no space), then each space's
+    /// rooms, in the Spaces tab's order, a room in several spaces in each;
+    /// in each, the rooms by their latest message, newest first. Not direct
+    /// chats or spaces; groups without rooms left out. Only the rooms in
+    /// `among`, if given (those shared with someone).
+    func roomGroups(among ids: Set<String>? = nil) -> [ListSection] {
+        let shown = { (rooms: [RoomSummary]) in
+            RoomSort.mostRecent.apply(rooms.filter { $0.kind == .room && ids?.contains($0.id) ?? true })
+        }
+        let home = space(.otherRooms).map { ListSection(key: Self.homeKey, title: "Home", rooms: shown($0.rooms)) }
+        let bySpace = spaces.compactMap { item in
+            item.space.map { ListSection(key: $0.id, title: $0.name, rooms: shown(item.rooms), space: $0.id) }
+        }
+        return ([home].compactMap { $0 } + bySpace).filter { !$0.rooms.isEmpty }
+    }
+
+    /// The key of the Rooms tab's group of rooms in no space.
+    static let homeKey = "home"
+
+    // MARK: Unread messages
+
+    /// The Rooms tab's badge: unread messages in the rooms.
+    var roomsUnread: Int { Self.unread(rooms) }
+
+    /// The Spaces tab's badge: unread messages in the rooms in spaces.
+    var spacesUnread: Int {
+        let inSpaces = Set(spaces.filter { $0.space != nil }.flatMap { $0.rooms.map(\.id) })
+        return Self.unread(rooms.filter { inSpaces.contains($0.id) })
+    }
+
+    /// The number on a room's back button: unread messages in the other
+    /// rooms.
+    func unread(besides id: String) -> Int {
+        Self.unread(rooms.filter { $0.id != id })
+    }
+
+    static func unread(_ rooms: [RoomSummary]) -> Int {
+        rooms.reduce(0) { $0 + Int(clamping: $1.unreadMessages) }
     }
 
     /// The rooms whose name contains `filter`, those starting with it
@@ -181,6 +216,9 @@ struct ListSection: Identifiable, Equatable {
     let rooms: [RoomSummary]
     /// Only its heading shows, with its unread count.
     var folded = false
+    /// The space whose rooms it holds, which its heading opens (the Rooms
+    /// tab's groups).
+    var space: String?
 
     var id: String { key }
 

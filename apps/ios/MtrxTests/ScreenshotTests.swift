@@ -17,7 +17,6 @@ final class ScreenshotTests: XCTestCase {
     override func setUp() async throws {
         defaults = UserDefaults(suiteName: "ScreenshotTests")
         defaults.removePersistentDomain(forName: "ScreenshotTests")
-        defaults.set(["!ice", "!sea", "!reading"], forKey: "recentRooms")
         session = FakeSession(noHandle: .init())
         session.encryption = EncryptionState(deviceVerified: true, recovery: .enabled)
         model = SessionModel(session: session, defaults: defaults)
@@ -70,11 +69,12 @@ final class ScreenshotTests: XCTestCase {
         try await snap("13-settings", HomeView())
     }
 
-    func testRecent() async throws {
+    /// Home, then each space, its rooms newest first.
+    func testRooms() async throws {
         model.tab = .rooms
         model.roomsPath = []
-        try await snap("04-recent", HomeView())
-        try await snap("04-recent-dark", dark: true, HomeView())
+        try await snap("04-rooms", HomeView())
+        try await snap("04-rooms-dark", dark: true, HomeView())
     }
 
     func testARoomWithItsTopicLine() async throws {

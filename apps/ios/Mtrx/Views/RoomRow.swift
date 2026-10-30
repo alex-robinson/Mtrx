@@ -2,29 +2,25 @@ import MtrxFFI
 import SwiftUI
 
 /// A room in a list, compact: picture (with a direct chat's person's
-/// presence), name, a detail line (its space, or an invite), last activity,
-/// a pencil if it has a draft, and unread count.
+/// presence), name, a line for an invite, last activity, a pencil if it has
+/// a draft, and unread count.
 struct RoomRow: View {
     static let avatarSize: CGFloat = 34
 
     let room: RoomSummary
     var presence: Presence?
-    /// Small and grey under the name, e.g. the room's space.
-    var detail: String?
     /// Something was written in it and not sent.
     var draft = false
 
     private var unread: Bool { room.unreadMessages > 0 || room.unreadMentions > 0 }
 
     private var subtitle: String? {
-        if room.invited {
-            switch room.kind {
-            case .space: return "Invited to the space"
-            case .direct: return "Wants to chat"
-            case .room: return "Invited"
-            }
+        guard room.invited else { return nil }
+        switch room.kind {
+        case .space: return "Invited to the space"
+        case .direct: return "Wants to chat"
+        case .room: return "Invited"
         }
-        return detail
     }
 
     var body: some View {
