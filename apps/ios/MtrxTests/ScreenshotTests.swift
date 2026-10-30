@@ -314,6 +314,7 @@ private enum Screens {
                         "Great, looking now.",
                         reactions: [Reaction(key: "👍", count: 2, byUs: false, senders: [])]),
                     at: at(5), own: true, eventId: "$3")),
+            Make.item("x", Make.event("me", .redacted, at: at(6), own: true, eventId: "$x")),
             Make.item(
                 "p1", Make.event("bob", Make.text("Meeting moved to 14:00 on Thursday."), at: at(20), eventId: "$p1")),
             Make.item(
