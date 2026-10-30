@@ -139,6 +139,10 @@ struct RoomLists: Equatable {
 
     // MARK: Unread messages
 
+    /// The Chats tab's badge: unread messages in the direct chats (the
+    /// Notes to self too).
+    var chatsUnread: Int { Self.unread(directChats) }
+
     /// The Rooms tab's badge: unread messages in the rooms.
     var roomsUnread: Int { Self.unread(rooms) }
 
@@ -148,10 +152,14 @@ struct RoomLists: Equatable {
         return Self.unread(rooms.filter { inSpaces.contains($0.id) })
     }
 
-    /// The number on a room's back button: unread messages in the other
-    /// rooms.
+    /// The number on a room's or chat's back button: unread messages in
+    /// the other rooms and direct chats.
     func unread(besides id: String) -> Int {
-        Self.unread(rooms.filter { $0.id != id })
+        Self.unread((rooms + directChats).filter { $0.id != id })
+    }
+
+    private var directChats: [RoomSummary] {
+        chats + [notes].compactMap { $0 }
     }
 
     static func unread(_ rooms: [RoomSummary]) -> Int {

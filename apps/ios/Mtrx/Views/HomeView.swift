@@ -14,6 +14,7 @@ struct HomeView: View {
         TabView(selection: Binding(get: { session.tab }, set: session.select)) {
             ChatsTab(openSettings: openSettings)
                 .tabItem { Label("Chats", systemImage: "bubble.left.and.bubble.right") }
+                .badge(session.chatsBadge)
                 .tag(HomeTab.chats)
             RoomsTab(openSettings: openSettings)
                 .tabItem { Label("Rooms", systemImage: "number") }
@@ -97,6 +98,9 @@ struct ChatsTab: View {
             .searchable(text: $search, prompt: "Search chats")
             .navigationDestination(for: String.self) { id in
                 OpenRoom(id: id)
+                    .backWithUnread(session.backBadge(besides: id)) {
+                        session.chatsPath.removeAll { $0 == id }
+                    }
                     .toolbar(.hidden, for: .tabBar)
             }
         }

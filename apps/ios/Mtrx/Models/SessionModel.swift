@@ -358,14 +358,17 @@ final class SessionModel: ObservableObject {
         userId.split(separator: ":", maxSplits: 1).last.map(String.init) ?? homeserver
     }
 
+    /// The Chats tab's badge: unread messages in the direct chats.
+    var chatsBadge: Int { lists.chatsUnread }
+
     /// The Rooms tab's badge: unread messages in the rooms.
     var roomsBadge: Int { lists.roomsUnread }
 
     /// The Spaces tab's badge: unread messages in the rooms in spaces.
     var spacesBadge: Int { lists.spacesUnread }
 
-    /// The number on a room's back button: unread messages in the other
-    /// rooms.
+    /// The number on a room's or chat's back button: unread messages in
+    /// the other rooms and direct chats.
     func backBadge(besides id: String) -> Int {
         lists.unread(besides: id)
     }
