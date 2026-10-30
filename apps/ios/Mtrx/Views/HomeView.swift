@@ -632,12 +632,20 @@ private struct BackWithUnread: ViewModifier {
 }
 
 /// A room by ID: its invite to answer, its timeline, or a word while it is
-/// coming (just made or joined) or gone.
+/// coming (just made or joined) or gone. Its state (the timeline's and the
+/// info's models) is the room's: a navigation stack keeps a page's state
+/// when its path changes to another room at the same place (a room opened
+/// from elsewhere over another, `SessionModel.open`).
 struct OpenRoom: View {
     @EnvironmentObject private var session: SessionModel
     let id: String
 
     var body: some View {
+        content.id(id)
+    }
+
+    @ViewBuilder
+    private var content: some View {
         if let room = session.room(id), !room.invited {
             RoomView(room: room, model: session.timeline(for: room), info: session.info(for: room))
         } else if let room = session.room(id) {

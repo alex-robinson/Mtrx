@@ -2,8 +2,8 @@ import XCTest
 
 /// The app with made-up messages (`-ui-testing`), in the Lab room, as a
 /// finger uses it: deleting one of our messages through its menu, sending,
-/// and messages arriving; a chat's shared rooms. Each step is saved as a
-/// PNG where `SCREENSHOTS_DIR` says.
+/// and messages arriving; a chat's shared rooms; a room opened over
+/// another. Each step is saved as a PNG where `SCREENSHOTS_DIR` says.
 final class RoomUITests: XCTestCase {
     private var app: XCUIApplication!
 
@@ -122,6 +122,46 @@ final class RoomUITests: XCTestCase {
         snap("ui-arrived-back")
         XCTAssertTrue(back, "The newest is not in view after the button")
         XCTAssertFalse(button.exists, "The button stayed")
+    }
+
+    /// A room opened from its space while another is open in the Rooms tab
+    /// shows its own messages and header, and keeps them after a message is
+    /// sent in it while another room's arrive, the rooms changing order.
+    @MainActor
+    func testARoomOpenedOverAnotherShowsItsOwnMessages() {
+        app.terminate()
+        app.launchArguments = ["-ui-testing", "-ui-testing-arrivals-papers"]
+        app.launch()
+        app.tabBars.buttons["Rooms"].tap()
+        app.staticTexts["Papers"].firstMatch.tap()
+        XCTAssertTrue(message("Papers 29").waitForExistence(timeout: 15), "Papers did not open")
+        app.buttons["Team"].tap()
+        XCTAssertTrue(app.navigationBars.staticTexts["Team"].waitForExistence(timeout: 5), "The space did not open")
+        app.staticTexts["Models"].firstMatch.tap()
+        let models = message("Models 29")
+        let shown = models.waitForExistence(timeout: 5)
+        snap("ui-over-another")
+        XCTAssertTrue(shown, "Models' messages not shown")
+        XCTAssertFalse(message("Papers 29").exists, "Papers' messages shown in Models")
+        let field = app.textViews.firstMatch.exists ? app.textViews.firstMatch : app.textFields.firstMatch
+        field.tap()
+        field.typeText("Sent in Models")
+        app.buttons["Send"].tap()
+        // Papers' messages arrive every two seconds, moving it up, and
+        // Models up when sent in.
+        sleep(5)
+        snap("ui-over-another-sent")
+        XCTAssertTrue(app.navigationBars.staticTexts["Models"].exists, "Not Models' header")
+        XCTAssertTrue(app.staticTexts["Sent in Models"].exists, "The message sent is not shown")
+        XCTAssertTrue(models.exists, "Models' messages gone")
+        XCTAssertFalse(message("Papers 29").exists, "Papers' messages shown in Models")
+        XCTAssertFalse(arrived(1).exists, "Papers' arrivals shown in Models")
+    }
+
+    /// A message whose text starts with `start` and a comma.
+    @MainActor
+    private func message(_ start: String) -> XCUIElement {
+        app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "\(start),")).firstMatch
     }
 
     /// Ann's arrived message `n`.
