@@ -1,11 +1,20 @@
 import MtrxFFI
 import SwiftUI
 
-struct TimelineRowView: View {
+/// A row of the timeline. Equal while what it shows is: the actions act on
+/// the same room whichever copy is kept, so a row is not drawn again each
+/// time the room's view is (once per message, sent or arrived).
+struct TimelineRowView: View, Equatable {
     let row: TimelineRow
+    /// A message's menu entries, in order.
+    var menu: [MessageAction] = []
     /// Gone to from a quote: marked for a moment.
     var highlighted = false
     let actions: RowActions
+
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.row == rhs.row && lhs.menu == rhs.menu && lhs.highlighted == rhs.highlighted
+    }
 
     var body: some View {
         switch row.content {
@@ -42,7 +51,7 @@ struct TimelineRowView: View {
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 6)
         case .message(let message):
-            MessageView(id: row.id, row: message, highlighted: highlighted, actions: actions)
+            MessageView(id: row.id, row: message, entries: menu, highlighted: highlighted, actions: actions)
         }
     }
 
@@ -53,8 +62,6 @@ struct TimelineRowView: View {
 
 /// What a message's row asks of the room, with the row's ID.
 struct RowActions {
-    /// The entries of a message's menu, in order.
-    let entries: (MessageRow) -> [MessageAction]
     /// An entry of the message's menu (`react`: the full picker).
     let perform: (MessageAction, String) -> Void
     /// Add or remove our reaction (item ID, key).
@@ -74,6 +81,8 @@ struct RowActions {
 struct MessageView: View {
     let id: String
     let row: MessageRow
+    /// Its menu's entries, in order.
+    let entries: [MessageAction]
     let highlighted: Bool
     let actions: RowActions
     @State private var swipe = SwipeToReply()
@@ -203,7 +212,6 @@ struct MessageView: View {
     /// The menu of a held message: only what applies to it.
     @ViewBuilder
     private var menu: some View {
-        let entries = actions.entries(row)
         if entries.contains(.react) {
             ReactMenu(ours: Set(row.reactions.filter(\.byUs).map(\.key))) { key in
                 actions.react(id, key)

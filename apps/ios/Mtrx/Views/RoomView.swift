@@ -121,7 +121,6 @@ struct RoomView: View {
 
     private var actions: RowActions {
         RowActions(
-            entries: model.actions(for:),
             perform: perform,
             react: { id, key in model.react(id, key: key) },
             goTo: { quote in Task { await model.goTo(eventId: quote.eventId) } },
@@ -416,13 +415,22 @@ struct TimelineList: View {
         LazyVStack(spacing: 0) {
             top
             ForEach(model.rows) { row in
-                TimelineRowView(row: row, highlighted: model.highlighted == row.id, actions: actions)
-                    .id(row.id)
+                TimelineRowView(
+                    row: row, menu: menu(row), highlighted: model.highlighted == row.id, actions: actions
+                )
+                .equatable()
+                .id(row.id)
             }
             bottom
         }
         .padding(.horizontal, 12)
         .padding(.top, 8)
+    }
+
+    /// A message's menu entries; none for other rows.
+    private func menu(_ row: TimelineRow) -> [MessageAction] {
+        guard case .message(let message) = row.content else { return [] }
+        return model.actions(for: message)
     }
 
     /// Above the oldest row: a spinner until the room's start.
