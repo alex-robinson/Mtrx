@@ -18,11 +18,19 @@
 			remoteGlobalIDString = 7D00000000000000000000A1;
 			remoteInfo = Mtrx;
 		};
+		7D00000000000000000000CE /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 7D0000000000000000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 7D00000000000000000000A1;
+			remoteInfo = Mtrx;
+		};
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
 		7D00000000000000000000F1 /* Mtrx.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Mtrx.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		7D00000000000000000000F2 /* MtrxTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = MtrxTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		7D00000000000000000000F3 /* MtrxUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = MtrxUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -34,6 +42,11 @@
 		7D00000000000000000000B2 /* MtrxTests */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			path = MtrxTests;
+			sourceTree = "<group>";
+		};
+		7D00000000000000000000B3 /* MtrxUITests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = MtrxUITests;
 			sourceTree = "<group>";
 		};
 /* End PBXFileSystemSynchronizedRootGroup section */
@@ -54,6 +67,13 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		7D0000000000000000000072 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -62,6 +82,7 @@
 			children = (
 				7D00000000000000000000B1 /* Mtrx */,
 				7D00000000000000000000B2 /* MtrxTests */,
+				7D00000000000000000000B3 /* MtrxUITests */,
 				7D0000000000000000000003 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -71,6 +92,7 @@
 			children = (
 				7D00000000000000000000F1 /* Mtrx.app */,
 				7D00000000000000000000F2 /* MtrxTests.xctest */,
+				7D00000000000000000000F3 /* MtrxUITests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -122,6 +144,27 @@
 			productReference = 7D00000000000000000000F2 /* MtrxTests.xctest */;
 			productType = "com.apple.product-type.bundle.unit-test";
 		};
+		7D00000000000000000000A3 /* MtrxUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 7D00000000000000000000C3 /* Build configuration list for PBXNativeTarget "MtrxUITests" */;
+			buildPhases = (
+				7D0000000000000000000071 /* Sources */,
+				7D0000000000000000000072 /* Frameworks */,
+				7D0000000000000000000073 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				7D00000000000000000000CF /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				7D00000000000000000000B3 /* MtrxUITests */,
+			);
+			name = MtrxUITests;
+			productName = MtrxUITests;
+			productReference = 7D00000000000000000000F3 /* MtrxUITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -136,6 +179,10 @@
 						CreatedOnToolsVersion = 16.0;
 					};
 					7D00000000000000000000A2 = {
+						CreatedOnToolsVersion = 16.0;
+						TestTargetID = 7D00000000000000000000A1;
+					};
+					7D00000000000000000000A3 = {
 						CreatedOnToolsVersion = 16.0;
 						TestTargetID = 7D00000000000000000000A1;
 					};
@@ -160,6 +207,7 @@
 			targets = (
 				7D00000000000000000000A1 /* Mtrx */,
 				7D00000000000000000000A2 /* MtrxTests */,
+				7D00000000000000000000A3 /* MtrxUITests */,
 			);
 		};
 /* End PBXProject section */
@@ -173,6 +221,13 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 		7D0000000000000000000063 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		7D0000000000000000000073 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -196,6 +251,13 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		7D0000000000000000000071 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
@@ -203,6 +265,11 @@
 			isa = PBXTargetDependency;
 			target = 7D00000000000000000000A1 /* Mtrx */;
 			targetProxy = 7D00000000000000000000CC /* PBXContainerItemProxy */;
+		};
+		7D00000000000000000000CF /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 7D00000000000000000000A1 /* Mtrx */;
+			targetProxy = 7D00000000000000000000CE /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
 
@@ -368,6 +435,42 @@
 			};
 			name = Release;
 		};
+		7D00000000000000000000D6 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 50099;
+				"EXCLUDED_ARCHS[sdk=iphonesimulator*]" = x86_64;
+				GENERATE_INFOPLIST_FILE = YES;
+				MARKETING_VERSION = 0.5.0;
+				PRODUCT_BUNDLE_IDENTIFIER = org.mtrx.MtrxUITests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = Mtrx;
+			};
+			name = Debug;
+		};
+		7D00000000000000000000D7 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 50099;
+				"EXCLUDED_ARCHS[sdk=iphonesimulator*]" = x86_64;
+				GENERATE_INFOPLIST_FILE = YES;
+				MARKETING_VERSION = 0.5.0;
+				PRODUCT_BUNDLE_IDENTIFIER = org.mtrx.MtrxUITests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = Mtrx;
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -394,6 +497,15 @@
 			buildConfigurations = (
 				7D00000000000000000000D4 /* Debug */,
 				7D00000000000000000000D5 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		7D00000000000000000000C3 /* Build configuration list for PBXNativeTarget "MtrxUITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				7D00000000000000000000D6 /* Debug */,
+				7D00000000000000000000D7 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
