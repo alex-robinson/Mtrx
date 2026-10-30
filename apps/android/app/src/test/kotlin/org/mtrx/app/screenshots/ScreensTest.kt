@@ -7,6 +7,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import app.cash.paparazzi.DeviceConfig
+import com.android.resources.NightMode
 import app.cash.paparazzi.Paparazzi
 import kotlinx.coroutines.flow.emptyFlow
 import org.junit.Rule
@@ -129,43 +130,6 @@ class ScreensTest {
     fun recentEmpty() = snap("recent-empty") {
         HomeFrame(HomeTab.Rooms, emptyMap(), onTab = {}, title = { Text("Recent") }) {
             RecentList(emptyList(), images, today, onOpenRoom = {}, onBrowseSpaces = {})
-        }
-    }
-
-    private val header = RoomHeader(
-        name = "Ice sheets",
-        avatarUrl = null,
-        seed = ICE,
-        person = null,
-        topic = iceTopic,
-        pinned = listOf("\$p1", "\$p2"),
-    )
-
-    @Composable
-    private fun Room(topicOpen: Boolean = false, editingTopic: Boolean = false) {
-        HomeFrame(HomeTab.Rooms, badges, onTab = {}, showTopBar = false) {
-            TimelineContent(
-                header,
-                TimelineState(
-                    rows = timelineRows(conversation),
-                    draft = "Thanks Ana, looking at them now",
-                    typing = listOf("Bob Berg"),
-                    canEditTopic = true,
-                    canPin = true,
-                    pinned = timelineRows(pinnedMessages).filterIsInstance<org.mtrx.app.timeline.EventRow>(),
-                ),
-                NoTimelineActions,
-                images,
-                keysArriving = false,
-                presence = null,
-                backCount = 6,
-                scrollTo = emptyFlow(),
-                onBack = {},
-                onRoomInfo = {},
-                onOpenLink = {},
-                topicOpen = topicOpen,
-                editingTopic = editingTopic,
-            )
         }
     }
 
@@ -322,5 +286,54 @@ class TallScreensTest {
                 }
             }
         }
+    }
+}
+
+private val iceRoomHeader = RoomHeader(
+    name = "Ice sheets",
+    avatarUrl = null,
+    seed = ICE,
+    person = null,
+    topic = iceTopic,
+    pinned = listOf("\$p1", "\$p2"),
+)
+
+/** The Ice sheets room, as on the Rooms tab. */
+@Composable
+private fun Room(topicOpen: Boolean = false, editingTopic: Boolean = false) {
+    HomeFrame(HomeTab.Rooms, emptyMap(), onTab = {}, showTopBar = false) {
+        TimelineContent(
+            iceRoomHeader,
+            TimelineState(
+                rows = timelineRows(conversation),
+                draft = "Thanks Ana, looking at them now",
+                typing = listOf("Bob Berg"),
+                canEditTopic = true,
+                canPin = true,
+                pinned = timelineRows(pinnedMessages).filterIsInstance<org.mtrx.app.timeline.EventRow>(),
+            ),
+            NoTimelineActions,
+            images,
+            keysArriving = false,
+            presence = null,
+            backCount = 6,
+            scrollTo = emptyFlow(),
+            onBack = {},
+            onRoomInfo = {},
+            onOpenLink = {},
+            topicOpen = topicOpen,
+            editingTopic = editingTopic,
+        )
+    }
+}
+
+/** Our bubbles in the dark theme. */
+class DarkScreensTest {
+    @get:Rule
+    val paparazzi = Paparazzi(deviceConfig = DeviceConfig.PIXEL_5.copy(nightMode = NightMode.NIGHT))
+
+    @Test
+    fun room() {
+        paparazzi.snapshot("room-dark") { MtrxTheme { WithBack { Room() } } }
     }
 }

@@ -32,9 +32,11 @@ import uniffi.mtrx.Membership
 import uniffi.mtrx.Message
 import uniffi.mtrx.MessageKind
 import uniffi.mtrx.NotifyMode
+import uniffi.mtrx.QuoteState
 import uniffi.mtrx.Permissions
 import uniffi.mtrx.Reaction
 import uniffi.mtrx.Reader
+import uniffi.mtrx.ReplyQuote
 import uniffi.mtrx.Role
 import uniffi.mtrx.RoomKind
 import uniffi.mtrx.RoomLink
@@ -133,6 +135,26 @@ fun say(
     own: Boolean = false,
     reactions: List<Reaction> = emptyList(),
     readBy: List<Reader> = emptyList(),
+    replyTo: ReplyQuote? = null,
+): TimelineItem = event(
+    id,
+    sender,
+    name,
+    time,
+    own,
+    EventContent.Message(Message(kind = MessageKind.TEXT, body = body, edited = false, media = null, reactions = reactions, replyTo = replyTo)),
+    readBy,
+)
+
+/** An event with [content] by [sender] ([name]) at [time]. */
+fun event(
+    id: String,
+    sender: String,
+    name: String?,
+    time: Instant,
+    own: Boolean,
+    content: EventContent,
+    readBy: List<Reader> = emptyList(),
 ): TimelineItem = TimelineItem(
     id = id,
     content = TimelineItemContent.Event(
@@ -143,13 +165,17 @@ fun say(
             senderAvatarUrl = null,
             timestamp = time,
             own = own,
-            content = EventContent.Message(Message(kind = MessageKind.TEXT, body = body, edited = false, media = null, reactions = reactions)),
+            content = content,
             sendState = SendState.Sent,
             editable = own,
             readBy = readBy,
         ),
     ),
 )
+
+/** A loaded quote of [sender]'s message [id]. */
+fun quoting(id: String, sender: String, name: String, body: String) =
+    ReplyQuote(eventId = "\$$id", state = QuoteState.LOADED, senderId = sender, senderName = name, kind = MessageKind.TEXT, body = body)
 
 val bob = "@bob:example.org"
 val ana = "@ana:example.org"
@@ -167,6 +193,18 @@ val conversation = listOf(
     ),
     say("4", ME, "Me", "I'll add them to the paper draft too.", at(10, 2), own = true),
     say("5", ana, "Ana Alves", "Done, they're in the Figures folder.", at(10, 30)),
+    // Ours: a reply with a reaction, and a deleted one.
+    say(
+        "6",
+        ME,
+        "Me",
+        "Then the retreat is within the observed range.",
+        at(10, 34),
+        own = true,
+        reactions = listOf(Reaction(key = "🎉", count = 1uL, byUs = false, senders = emptyList())),
+        replyTo = quoting("2", ana, "Ana Alves", "Grounding line retreat is about 20% slower than before."),
+    ),
+    event("7", ME, "Me", at(10, 35), own = true, EventContent.Redacted),
 )
 
 val pinnedMessages = listOf(

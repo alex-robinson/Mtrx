@@ -5,6 +5,8 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
 
 // The logo's colour (crates/mtrx-app/assets/logo.svg).
@@ -30,9 +32,22 @@ private val Dark = darkColorScheme(
     onSecondary = Color(0xFF00363F),
 )
 
+/** A message bubble's colours: its background, text, and time and muted text. */
+data class BubbleColors(val container: Color, val content: Color, val secondary: Color)
+
+// Our own messages: the logo's indigo, light (#57); a dark blue-grey in the dark.
+private val LightOwnBubble = BubbleColors(Color(0xFFC7CFF3), Color.Black, Color(0xFF4A5180))
+private val DarkOwnBubble = BubbleColors(Color(0xFF2E3352), Color.White, Color(0xFFB8BFE6))
+
+/** The bubbles of our own messages, as the theme sets them. */
+val LocalOwnBubble = staticCompositionLocalOf { LightOwnBubble }
+
 @Composable
 fun MtrxTheme(content: @Composable () -> Unit) {
-    MaterialTheme(colorScheme = if (isSystemInDarkTheme()) Dark else Light, content = content)
+    val dark = isSystemInDarkTheme()
+    MaterialTheme(colorScheme = if (dark) Dark else Light) {
+        CompositionLocalProvider(LocalOwnBubble provides if (dark) DarkOwnBubble else LightOwnBubble, content = content)
+    }
 }
 
 /** A colour per user or room, for avatars without a picture and sender names. */

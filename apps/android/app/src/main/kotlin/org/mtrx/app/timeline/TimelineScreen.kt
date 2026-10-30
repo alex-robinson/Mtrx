@@ -119,6 +119,8 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import org.mtrx.app.model.Images
 import org.mtrx.app.ui.Avatar
+import org.mtrx.app.ui.BubbleColors
+import org.mtrx.app.ui.LocalOwnBubble
 import org.mtrx.app.ui.MtrxIcons
 import org.mtrx.app.ui.UnreadBadge
 import org.mtrx.app.ui.PresenceLine
@@ -722,6 +724,11 @@ private fun EventBubble(row: EventRow, images: Images, highlighted: Boolean, key
         label = "highlight",
     )
     val bubbleShape = RoundedCornerShape(16.dp)
+    val colors = if (own) {
+        LocalOwnBubble.current
+    } else {
+        MaterialTheme.colorScheme.let { BubbleColors(it.surfaceVariant, it.onSurfaceVariant, it.onSurfaceVariant) }
+    }
     Column(
         Modifier
             .fillMaxWidth()
@@ -761,18 +768,19 @@ private fun EventBubble(row: EventRow, images: Images, highlighted: Boolean, key
                 ) {
                     Surface(
                         shape = bubbleShape,
-                        color = if (own) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant,
+                        color = colors.container,
+                        contentColor = colors.content,
                         modifier = Modifier
                             .clip(bubbleShape)
                             .combinedClickable(onClick = {}, onLongClick = { handlers.hold(row) }),
                     ) {
                         Column(Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
-                            row.quote?.let { QuoteBlock(it, handlers.goTo) }
-                            MessageBody(event, row.edited, name, images, keysArriving)
+                            row.quote?.let { QuoteBlock(it, colors.secondary, handlers.goTo) }
+                            MessageBody(event, row.edited, name, images, keysArriving, colors.secondary)
                             Text(
                                 timeOfDay(event.timestamp),
                                 style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                color = colors.secondary,
                                 modifier = Modifier.align(Alignment.End),
                             )
                         }
@@ -854,9 +862,9 @@ private fun SwipeToReply(enabled: Boolean, onReply: () -> Unit, content: @Compos
     }
 }
 
-/** The message a reply answers; a loaded one goes to it. */
+/** The message a reply answers, its text in [secondary]; a loaded one goes to it. */
 @Composable
-private fun QuoteBlock(quote: Quote, onGoTo: (String) -> Unit) {
+private fun QuoteBlock(quote: Quote, secondary: Color, onGoTo: (String) -> Unit) {
     Row(
         Modifier
             .padding(bottom = 6.dp)
@@ -877,7 +885,7 @@ private fun QuoteBlock(quote: Quote, onGoTo: (String) -> Unit) {
             Text(
                 quote.text,
                 style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                color = secondary,
                 maxLines = 3,
                 overflow = TextOverflow.Ellipsis,
             )
@@ -947,9 +955,9 @@ private fun ReadersLine(readers: Readers, images: Images, onClick: () -> Unit, m
     }
 }
 
+/** A message's content; notices, deleted and undecryptable messages in the bubble's [secondary] colour. */
 @Composable
-private fun MessageBody(event: TimelineEvent, edited: Boolean, name: String, images: Images, keysArriving: Boolean) {
-    val secondary = MaterialTheme.colorScheme.onSurfaceVariant
+private fun MessageBody(event: TimelineEvent, edited: Boolean, name: String, images: Images, keysArriving: Boolean, secondary: Color) {
     // "(edited)", muted, after the text.
     fun text(body: String) = buildAnnotatedString {
         append(body)
