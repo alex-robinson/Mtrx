@@ -118,6 +118,6 @@ final class RoomListsTests: XCTestCase {
         ]
         XCTAssertEqual(RoomLists.search(rooms, " ICE").map(\.name), ["Ice sheets", "Sea ice"])
         XCTAssertEqual(RoomLists.search(rooms, ""), rooms)
-        XCTAssertEqual(RoomLists.search(lists.spaces, "other").map(\.entry), [.space("!other"), .home])
+        XCTAssertEqual(RoomLists.search(lists.spaces, "h").map(\.entry), [.home, .space("!other")])
     }
 }
