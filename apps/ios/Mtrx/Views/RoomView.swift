@@ -3,7 +3,9 @@ import SwiftUI
 
 /// A room: its header (name and topic line), its timeline, newest at the
 /// bottom, who types, and the composer. The name opens the room's info,
-/// the topic line its topic panel.
+/// the topic line its topic panel; its space's picture, at the right, the
+/// space. A direct chat's `#` shows the rooms shared with the person over
+/// the timeline.
 struct RoomView: View {
     let room: RoomSummary
     @StateObject private var model: TimelineModel
@@ -16,6 +18,8 @@ struct RoomView: View {
     @State private var showsInfo = false
     /// The message to delete, once confirmed.
     @State private var deleting: String?
+    /// The rooms shared with a direct chat's person show.
+    @State private var showsShared = false
 
     init(
         room: RoomSummary, model: @autoclosure @escaping () -> TimelineModel,
@@ -48,11 +52,33 @@ struct RoomView: View {
                         openInfo: { showsInfo = true }, openTopic: { sheet = .topic })
                 }
             }
+            ToolbarItem(placement: .navigationBarTrailing) {
+                if model.person != nil {
+                    SharedRoomsButton(showing: showsShared) {
+                        if !showsShared {
+                            UIApplication.shared.sendAction(
+                                #selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+                        }
+                        withAnimation(.easeOut(duration: 0.2)) { showsShared.toggle() }
+                    }
+                } else if room.kind == .room, let space = session.lists.firstSpace(of: room.id) {
+                    SpaceButton(space: space) { session.open(space.id) }
+                }
+            }
+        }
+        .overlay {
+            if showsShared, let person = model.person {
+                SharedRoomsPanel(userId: person, name: room.name)
+                    .transition(.opacity)
+            }
         }
         .task { await model.open() }
         .task { await info.loadSettings() }
         .onAppear { model.setVisible(true) }
-        .onDisappear { model.setVisible(false) }
+        .onDisappear {
+            model.setVisible(false)
+            showsShared = false
+        }
         .onChange(of: scenePhase) { phase in
             if phase != .active {
                 model.leftForeground()
@@ -193,6 +219,82 @@ private struct PersonHeader: View {
         .buttonStyle(.plain)
         .accessibilityElement(children: .combine)
         .accessibilityHint("Shows who this is")
+    }
+}
+
+/// A direct chat's `#`, filled while the rooms shared with the person show:
+/// shows or hides them.
+private struct SharedRoomsButton: View {
+    let showing: Bool
+    let toggle: () -> Void
+
+    var body: some View {
+        Button(action: toggle) {
+            Image(systemName: showing ? "number.square.fill" : "number")
+        }
+        .accessibilityLabel("Shared rooms")
+        .accessibilityValue(showing ? "Shown" : "Hidden")
+    }
+}
+
+/// A room's space (the first in the Spaces tab's order) at the right of its
+/// header: its small picture, which shows the space.
+private struct SpaceButton: View {
+    let space: RoomSummary
+    let open: () -> Void
+
+    var body: some View {
+        Button(action: open) {
+            AvatarView(name: space.name, uri: space.avatarUrl, size: 28, shape: .square)
+        }
+        .accessibilityLabel(space.name)
+        .accessibilityHint("Shows the space")
+    }
+}
+
+/// The rooms shared with a direct chat's person, over the timeline and the
+/// composer, under the header: grouped as in the Rooms tab (Home, then each
+/// space), newest first. A room opens in the Rooms tab, a space's heading
+/// shows the space.
+struct SharedRoomsPanel: View {
+    @EnvironmentObject private var session: SessionModel
+    let userId: String
+    /// The person's.
+    let name: String
+    /// The shared rooms' and spaces' IDs, once loaded.
+    @State private var shared: Set<String>?
+    @State private var error: String?
+
+    var body: some View {
+        Group {
+            if let shared {
+                RoomList(
+                    sections: session.lists.roomGroups(among: shared), searching: false, banner: false,
+                    openSettings: {}, opensInRooms: true, openSpace: { session.open($0) }
+                ) {
+                    Text("No rooms shared with \(name)")
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                        .padding()
+                }
+            } else if let error {
+                Text(error)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .padding()
+            } else {
+                ProgressView()
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color(.systemBackground))
+        .task {
+            do {
+                shared = Set(try await session.session.sharedRooms(userId: userId))
+            } catch {
+                self.error = errorMessage(error)
+            }
+        }
     }
 }
 

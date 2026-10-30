@@ -3,13 +3,20 @@ import Foundation
 import MtrxFFI
 
 /// For the UI tests (launch argument `-ui-testing`, debug builds only): an
-/// account signed in with made-up rooms and messages, and no server. A
-/// message sent shows at once, then as the server's copy; one deleted
-/// shows as deleted. The library's classes are faked as UniFFI provides
-/// for (`init(noHandle:)`, overriding what the app calls).
+/// account signed in with made-up rooms and messages, and no server: the
+/// Lab room in no space, Models in the space Team, and a chat with Ann, who
+/// is in all of them. A message sent shows at once, then as the server's
+/// copy; one deleted shows as deleted. With `-ui-testing-arrivals`, a
+/// message of Ann's arrives every two seconds. The library's classes are
+/// faked as UniFFI provides for (`init(noHandle:)`, overriding what the app
+/// calls); every room shows the Lab's messages.
 enum UITesting {
     static var on: Bool {
         ProcessInfo.processInfo.arguments.contains("-ui-testing")
+    }
+
+    static var arrivals: Bool {
+        ProcessInfo.processInfo.arguments.contains("-ui-testing-arrivals")
     }
 
     @MainActor
@@ -18,6 +25,9 @@ enum UITesting {
     }
 
     static let lab = "!lab:example.org"
+    static let models = "!models:example.org"
+    static let team = "!team:example.org"
+    static let ann = "!ann:example.org"
 }
 
 private final class UITestCore: Mtrx, @unchecked Sendable {
@@ -59,13 +69,33 @@ private final class UITestSession: Session, @unchecked Sendable {
     }
 
     override func subscribeRoomList(listener: RoomListListener) async throws -> TaskHandle {
-        let lab = RoomSummary(
-            id: UITesting.lab, name: "Lab", avatarUrl: nil, topic: nil, kind: .room, invited: false,
-            encrypted: false, unreadMessages: 0, unreadMentions: 0, unreadNotifications: 0, lastActivity: Date(),
-            directUserId: nil, alias: nil, joinedMembers: 3, parents: [], public: false, pinned: [])
+        let rooms = [
+            Self.room(UITesting.lab, "Lab"),
+            Self.room(UITesting.ann, "Ann", kind: .direct, parents: [UITesting.team]),
+            Self.room(UITesting.models, "Models", unread: 2, parents: [UITesting.team], ago: 600),
+            Self.room(UITesting.team, "Team", kind: .space, ago: 3_600),
+        ]
         listener.onUpdate(
-            state: RoomListState(rooms: [lab], loaded: true, spaces: [], roomsOutsideSpaces: [UITesting.lab]))
+            state: RoomListState(
+                rooms: rooms, loaded: true,
+                spaces: [SpaceRooms(spaceId: UITesting.team, roomIds: [UITesting.ann, UITesting.models])],
+                roomsOutsideSpaces: [UITesting.lab]))
         return UITestHandle(noHandle: .init())
+    }
+
+    private static func room(
+        _ id: String, _ name: String, kind: RoomKind = .room, unread: UInt64 = 0, parents: [String] = [],
+        ago: TimeInterval = 0
+    ) -> RoomSummary {
+        RoomSummary(
+            id: id, name: name, avatarUrl: nil, topic: nil, kind: kind, invited: false, encrypted: false,
+            unreadMessages: unread, unreadMentions: 0, unreadNotifications: 0,
+            lastActivity: Date().addingTimeInterval(-ago), directUserId: kind == .direct ? "@ann:example.org" : nil,
+            alias: nil, joinedMembers: 3, parents: parents, public: false, pinned: [])
+    }
+
+    override func sharedRooms(userId: String) async throws -> [String] {
+        [UITesting.lab, UITesting.ann, UITesting.models, UITesting.team]
     }
 
     override func startSync() async {}
@@ -101,13 +131,14 @@ private final class UITestSession: Session, @unchecked Sendable {
     }
 }
 
-/// The Lab room's messages: Ann's and ours, the last two not read yet, and
-/// last one of ours to delete.
+/// The Lab room's messages: Ann's and ours, of one to seven lines, the
+/// last two not read yet, and last one of ours to delete.
 private final class UITestTimeline: Timeline, @unchecked Sendable {
     private let lock = NSLock()
     private var items = UITestTimeline.history()
     private var listener: TimelineListener?
     private var sent = 0
+    private var arrived = 0
 
     private static func history() -> [TimelineItem] {
         let start = Date().addingTimeInterval(-3_600)
@@ -116,7 +147,7 @@ private final class UITestTimeline: Timeline, @unchecked Sendable {
             if i == 28 {
                 items.append(TimelineItem(id: "read-marker", content: .readMarker))
             }
-            let text = Array(repeating: "Message \(i), a line of it.", count: 1 + i % 4).joined(separator: "\n")
+            let text = Array(repeating: "Message \(i), a line of it.", count: 1 + i * 5 % 7).joined(separator: "\n")
             items.append(message("m\(i)", text, own: i % 3 == 0, at: start.addingTimeInterval(Double(i) * 60)))
         }
         items.append(message("mine", "Mine, to delete", own: true, at: start.addingTimeInterval(1_900)))
@@ -150,7 +181,25 @@ private final class UITestTimeline: Timeline, @unchecked Sendable {
             return self.items
         }
         listener.onUpdate(items: items)
+        if UITesting.arrivals {
+            Task { [weak self] in
+                while let self {
+                    try? await Task.sleep(nanoseconds: 2_000_000_000)
+                    arrive()
+                }
+            }
+        }
         return UITestHandle(noHandle: .init())
+    }
+
+    /// One of Ann's, of one to four lines.
+    private func arrive() {
+        let n = lock.withLock {
+            arrived += 1
+            return arrived
+        }
+        let text = Array(repeating: "Arrived \(n), a line of it.", count: 1 + n % 4).joined(separator: "\n")
+        change { $0.append(Self.message("arrived\(n)", text, own: false, at: Date())) }
     }
 
     override func subscribeTyping(listener: TypingListener) -> TaskHandle {

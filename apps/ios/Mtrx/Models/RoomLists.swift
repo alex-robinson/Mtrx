@@ -131,6 +131,12 @@ struct RoomLists: Equatable {
     /// The key of the Rooms tab's group of rooms in no space.
     static let homeKey = "home"
 
+    /// The first space, in the Spaces tab's order, that lists room `id`
+    /// (through nested spaces too); nil for a room in no space.
+    func firstSpace(of id: String) -> RoomSummary? {
+        spaces.first { $0.space != nil && $0.rooms.contains { $0.id == id } }?.space
+    }
+
     // MARK: Unread messages
 
     /// The Rooms tab's badge: unread messages in the rooms.

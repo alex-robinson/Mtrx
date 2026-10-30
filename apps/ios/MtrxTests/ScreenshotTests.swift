@@ -85,6 +85,26 @@ final class ScreenshotTests: XCTestCase {
         try await snap("05-room-dark", dark: true, wait: 2, HomeView())
     }
 
+    /// Under a direct chat's header: the rooms shared with Ann, by space.
+    func testSharedRooms() async throws {
+        session.shared = ["!ice", "!sea", "!models", "!ann", "!polar"]
+        try await snap(
+            "05c-shared-rooms",
+            NavigationStack {
+                SharedRoomsPanel(userId: "@ann:example.org", name: "Ann Lindqvist")
+                    .navigationTitle("Ann Lindqvist")
+                    .navigationBarTitleDisplayMode(.inline)
+            })
+        session.shared = ["!ann"]
+        try await snap(
+            "05d-no-shared-rooms",
+            NavigationStack {
+                SharedRoomsPanel(userId: "@ann:example.org", name: "Ann Lindqvist")
+                    .navigationTitle("Ann Lindqvist")
+                    .navigationBarTitleDisplayMode(.inline)
+            })
+    }
+
     /// The draft left in the room is back, with the message it answers.
     func testARoomWithItsDraft() async throws {
         session.fakeTimeline.initialItems = Screens.timeline

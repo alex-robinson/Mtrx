@@ -77,6 +77,17 @@ final class RoomListsTests: XCTestCase {
         XCTAssertEqual(lists.roomGroups(among: ["!bob"]), [])
     }
 
+    /// Through the nested space; none for a room in no space.
+    func testARoomsFirstSpace() {
+        XCTAssertEqual(lists.firstSpace(of: "!deep")?.id, "!team")
+        XCTAssertNil(lists.firstSpace(of: "!loose"))
+        var state = Make.roomsBySpace()
+        state.spaces[1].roomIds = ["!lab"]
+        XCTAssertEqual(RoomLists(state).firstSpace(of: "!lab")?.id, "!team")
+        state.spaces.swapAt(0, 1)
+        XCTAssertEqual(RoomLists(state).firstSpace(of: "!lab")?.id, "!other")
+    }
+
     func testTheRoomsWithADraft() {
         XCTAssertEqual(lists.drafts, [])
         var state = Make.roomsBySpace()

@@ -389,7 +389,8 @@ struct RoomsTab: View {
 /// Rooms or chats, in sections with their titles, that open on a tap (in
 /// their tabs if `opensInRooms`: rooms in Rooms, chats in Chats; else over
 /// the list); an invite opens its answer. The Notes to self above them if
-/// kept at the top, and the encryption banner, unless searching. Where
+/// kept at the top, and the encryption banner (if `banner`), unless
+/// searching. Where
 /// sections fold (`fold`), a tap on a heading folds or unfolds it; else a
 /// tap on a space's heading shows the space (`openSpace`).
 struct RoomList<Empty: View>: View {
@@ -398,6 +399,7 @@ struct RoomList<Empty: View>: View {
     /// The Notes to self, at the top.
     var notes: RoomSummary?
     let searching: Bool
+    var banner = true
     let openSettings: () -> Void
     /// The presence to show on a room's picture (Chats).
     var presence: (RoomSummary) -> Presence? = { _ in nil }
@@ -411,7 +413,7 @@ struct RoomList<Empty: View>: View {
 
     var body: some View {
         List {
-            if !searching {
+            if banner && !searching {
                 EncryptionBannerRow(open: openSettings)
             }
             if let notes {

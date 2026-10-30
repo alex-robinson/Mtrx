@@ -64,6 +64,30 @@ final class RoomUITests: XCTestCase {
         }
     }
 
+    /// A direct chat's `#` lists the rooms shared with Ann; Models opens in
+    /// the Rooms tab, its space at the right of its header, which shows the
+    /// space.
+    @MainActor
+    func testSharedRoomsAndARoomsSpace() {
+        app.staticTexts["Ann"].firstMatch.tap()
+        let shared = app.buttons["Shared rooms"]
+        XCTAssertTrue(shared.waitForExistence(timeout: 15), "No # in the chat's header")
+        shared.tap()
+        let models = app.staticTexts["Models"].firstMatch
+        let listed = models.waitForExistence(timeout: 5)
+        snap("ui-shared-rooms")
+        XCTAssertTrue(listed, "Models not among the shared rooms")
+        XCTAssertTrue(app.staticTexts["Lab"].exists, "Lab not among the shared rooms")
+        models.tap()
+        let team = app.buttons["Team"]
+        let inRoom = team.waitForExistence(timeout: 5)
+        snap("ui-room-space")
+        XCTAssertTrue(inRoom, "No space at the right of the room's header")
+        team.tap()
+        XCTAssertTrue(app.navigationBars.staticTexts["Team"].waitForExistence(timeout: 5), "The space did not open")
+        snap("ui-space")
+    }
+
     /// `element` is in view (hittable), once the keyboard and the timeline
     /// have moved: within 3 seconds.
     @MainActor
