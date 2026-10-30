@@ -88,6 +88,15 @@ final class RoomListsTests: XCTestCase {
         XCTAssertEqual(RoomLists(state).firstSpace(of: "!lab")?.id, "!other")
     }
 
+    /// The spaces that list a chat, in the Spaces tab's order; none for a
+    /// chat in no space.
+    func testTheSpacesSharedInAChat() {
+        XCTAssertEqual(lists.chatSpaces, ["!bob": ["Team"]])
+        var state = Make.roomsBySpace()
+        state.spaces[1].roomIds = ["!bob", "!carol"]
+        XCTAssertEqual(RoomLists(state).chatSpaces, ["!bob": ["Team", "Other"], "!carol": ["Other"]])
+    }
+
     func testTheRoomsWithADraft() {
         XCTAssertEqual(lists.drafts, [])
         var state = Make.roomsBySpace()

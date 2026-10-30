@@ -80,6 +80,10 @@ struct RoomLists: Equatable {
     var byId: [String: RoomSummary] = [:]
     /// The rooms with a draft on this device.
     var drafts: Set<String> = []
+    /// The names of the spaces each direct chat's person is in with us, by
+    /// the chat's ID, in the Spaces tab's order: the spaces that list the
+    /// chat. None for a chat with no space.
+    var chatSpaces: [String: [String]] = [:]
 
     init() {}
 
@@ -99,6 +103,12 @@ struct RoomLists: Equatable {
         }
         if !state.roomsOutsideSpaces.isEmpty {
             spaces.append(SpaceItem(entry: .home, space: nil, rooms: summaries(state.roomsOutsideSpaces)))
+        }
+        for item in spaces {
+            guard let space = item.space else { continue }
+            for chat in item.rooms where chat.kind == .direct {
+                chatSpaces[chat.id, default: []].append(space.name)
+            }
         }
     }
 

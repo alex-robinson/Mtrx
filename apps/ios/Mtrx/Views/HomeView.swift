@@ -75,7 +75,7 @@ struct HomeView: View {
 }
 
 /// The direct chats, most recently active first, with their people's
-/// presence.
+/// presence and the spaces we share with them.
 struct ChatsTab: View {
     @EnvironmentObject private var session: SessionModel
     @EnvironmentObject private var presence: PresenceModel
@@ -91,7 +91,8 @@ struct ChatsTab: View {
         NavigationStack(path: $session.chatsPath) {
             RoomList(sections: [ListSection(key: "chats", title: nil, rooms: chats)],
                      notes: searching ? nil : lists.notes, searching: searching, openSettings: openSettings,
-                     presence: presence.presence(of:)) {
+                     presence: presence.presence(of:),
+                     subline: { lists.chatSpaces[$0.id]?.joined(separator: ", ") }) {
                 ListPlaceholder(loaded: session.loaded, empty: "No chats yet")
             }
             .navigationTitle("Chats")
@@ -408,6 +409,9 @@ struct RoomList<Empty: View>: View {
     let openSettings: () -> Void
     /// The presence to show on a room's picture (Chats).
     var presence: (RoomSummary) -> Presence? = { _ in nil }
+    /// The line under a room's name (Chats: the spaces shared with the
+    /// person).
+    var subline: (RoomSummary) -> String? = { _ in nil }
     /// Rooms open in their tabs (from a space's list).
     var opensInRooms = false
     /// Fold or unfold the section with this key; nil: sections don't fold.
@@ -486,7 +490,9 @@ struct RoomList<Empty: View>: View {
     }
 
     private func row(_ room: RoomSummary) -> RoomRow {
-        RoomRow(room: room, presence: presence(room), draft: session.lists.drafts.contains(room.id))
+        RoomRow(
+            room: room, presence: presence(room), draft: session.lists.drafts.contains(room.id),
+            subline: subline(room))
     }
 }
 
