@@ -137,11 +137,17 @@ fun roomSpace(state: RoomListState, roomId: String): RoomSummary? {
 /** Rooms and invites open on the Rooms tab; direct chats on Chats. */
 fun opensOnRoomsTab(room: RoomSummary): Boolean = room.kind != RoomKind.DIRECT && (room.kind != RoomKind.SPACE || room.invited)
 
-/** Unread messages in the rooms, except [except] (the room on screen). */
-fun roomsUnread(state: RoomListState, except: String? = null): Long =
-    state.rooms.filter { it.kind == RoomKind.ROOM && it.id != except }.sumOf { it.unreadMessages.toLong() }
+/** Unread messages in the direct chats: the Chats tab's badge. */
+fun chatsUnread(state: RoomListState): Long = state.rooms.filter { it.kind == RoomKind.DIRECT }.sumOf { it.unreadMessages.toLong() }
 
-/** Unread messages in the rooms the spaces list. */
+/** Unread messages in the rooms: the Rooms tab's badge. */
+fun roomsUnread(state: RoomListState): Long = state.rooms.filter { it.kind == RoomKind.ROOM }.sumOf { it.unreadMessages.toLong() }
+
+/** Unread messages in the rooms and direct chats but [except] (the one on screen): its back arrow's count. */
+fun unreadElsewhere(state: RoomListState, except: String): Long =
+    state.rooms.filter { it.kind != RoomKind.SPACE && it.id != except }.sumOf { it.unreadMessages.toLong() }
+
+/** Unread messages in the rooms the spaces list: the Spaces tab's badge. */
 fun spacesUnread(state: RoomListState): Long {
     val inSpaces = state.spaces.flatMap { it.roomIds }.toSet()
     return state.rooms.filter { it.kind == RoomKind.ROOM && it.id in inSpaces }.sumOf { it.unreadMessages.toLong() }

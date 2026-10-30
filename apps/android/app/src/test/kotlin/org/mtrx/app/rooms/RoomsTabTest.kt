@@ -90,12 +90,15 @@ class RoomsTabTest {
     }
 
     @Test
-    fun unreadCountsOfTheRoomsAndOfTheSpacesRooms() {
+    fun unreadCountsOfTheTabsAndOfTheBackArrow() {
         val unread = state.copy(rooms = state.rooms.map { if (it.id == LOOSE) it.copy(unreadMessages = 4uL) else it })
-        // Lab has 1, Loose 4 (outside spaces); Bob's chat 2 (a direct chat: neither).
+        // Lab has 1, Loose 4 (outside spaces); Bob's chat 2 (a direct chat).
         assertEquals(5L, roomsUnread(unread))
-        assertEquals(4L, roomsUnread(unread, except = LAB))
         assertEquals(1L, spacesUnread(unread))
+        assertEquals(2L, chatsUnread(unread))
+        // A room's back arrow: everywhere else.
+        assertEquals(6L, unreadElsewhere(unread, except = LAB))
+        assertEquals(5L, unreadElsewhere(unread, except = WITH_BOB))
     }
 
     @Test

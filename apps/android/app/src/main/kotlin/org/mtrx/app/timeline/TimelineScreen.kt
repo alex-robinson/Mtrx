@@ -190,7 +190,8 @@ data class TimelineState(
  * (undecryptable rows say they are decrypting); [spaces], the top-level
  * ones, to invite a direct chat's person to; [presences], for the header
  * and the person sheet, and [refreshPresence] when the sheet opens.
- * [backCount] on the back button: unread messages in the other rooms.
+ * [backCount] on the back button: unread messages in the other rooms and
+ * direct chats.
  * The room's name opens [onRoomInfo] (a direct chat's, its person); links of
  * the topic open with [onOpenLink]. A direct chat's rooms shared with the
  * person are grouped as [rooms] lists them; one opens with [onOpenRoom], a

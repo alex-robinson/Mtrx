@@ -69,11 +69,13 @@ import org.mtrx.app.rooms.accountSections
 import org.mtrx.app.rooms.chatList
 import org.mtrx.app.rooms.sectionChoices
 import org.mtrx.app.rooms.spaceList
+import org.mtrx.app.rooms.chatsUnread
 import org.mtrx.app.rooms.roomGroups
 import org.mtrx.app.rooms.roomsUnread
 import org.mtrx.app.rooms.shownRoom
 import org.mtrx.app.rooms.spaceRows
 import org.mtrx.app.rooms.spacesUnread
+import org.mtrx.app.rooms.unreadElsewhere
 import org.mtrx.app.settings.SessionInfo
 import org.mtrx.app.settings.SettingsContent
 import uniffi.mtrx.ConnectionState
@@ -93,9 +95,10 @@ class HomeRoutes(
  * (one opens in the tab), a space's heading opening it on Spaces; Spaces, a
  * pager of the spaces and the selected space's direct messages and rooms,
  * whose name opens its overview, with + for new spaces, rooms and joining;
- * and Settings. Rooms' badge counts unread messages in all rooms, Spaces'
- * those in the spaces' rooms. Banners for the connection over all tabs, and
- * for encryption over the lists.
+ * and Settings. Chats' badge counts unread messages in the direct chats,
+ * Rooms' those in the rooms, Spaces' those in the spaces' rooms; a room's
+ * back arrow those everywhere else. Banners for the connection over all
+ * tabs, and for encryption over the lists.
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -130,6 +133,7 @@ fun HomeScreen(
     val groups = remember(list) { roomGroups(list) }
     val drafts = remember(list) { list.drafts.toSet() }
     val badges = mapOf(
+        HomeTab.Chats to chatsUnread(list),
         HomeTab.Rooms to roomsUnread(list),
         HomeTab.Spaces to spacesUnread(list),
     )
@@ -242,7 +246,7 @@ fun HomeScreen(
         }
         when (nav.tab) {
             HomeTab.Chats -> if (chat != null) {
-                roomPane(chat, 0L, { nav.chat = null }, openSpace)
+                roomPane(chat, unreadElsewhere(list, except = chat), { nav.chat = null }, openSpace)
             } else {
                 ChatList(
                     notes,
@@ -279,7 +283,7 @@ fun HomeScreen(
                 }
             }
             HomeTab.Rooms -> if (room != null) {
-                roomPane(room, roomsUnread(list, except = room), { nav.room = null }, openSpace)
+                roomPane(room, unreadElsewhere(list, except = room), { nav.room = null }, openSpace)
             } else {
                 RoomGroupsList(
                     groups,

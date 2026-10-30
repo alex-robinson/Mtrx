@@ -24,6 +24,7 @@ import org.mtrx.app.rooms.OverviewRooms
 import org.mtrx.app.rooms.RoomInfoContent
 import org.mtrx.app.rooms.SpaceOverviewContent
 import org.mtrx.app.rooms.RoomGroup
+import org.mtrx.app.rooms.chatsUnread
 import org.mtrx.app.rooms.roomGroups
 import org.mtrx.app.rooms.roomsUnread
 import org.mtrx.app.rooms.SectionPrefs
@@ -36,6 +37,7 @@ import org.mtrx.app.ui.ShowActions
 import org.mtrx.app.ui.ShowSheetContent
 import org.mtrx.app.rooms.spaceRows
 import org.mtrx.app.rooms.spacesUnread
+import org.mtrx.app.rooms.unreadElsewhere
 import org.mtrx.app.model.RoomSort
 import org.mtrx.app.timeline.RoomHeader
 import org.mtrx.app.timeline.TimelineContent
@@ -296,7 +298,7 @@ class TallScreensTest {
 }
 
 /** The tabs' unread counts. */
-private val badges = mapOf(HomeTab.Rooms to roomsUnread(rooms), HomeTab.Spaces to spacesUnread(rooms))
+private val badges = mapOf(HomeTab.Chats to chatsUnread(rooms), HomeTab.Rooms to roomsUnread(rooms), HomeTab.Spaces to spacesUnread(rooms))
 
 private val iceRoomHeader = RoomHeader(
     name = "Ice sheets",
@@ -326,7 +328,7 @@ private fun Room(topicOpen: Boolean = false, editingTopic: Boolean = false) {
             images,
             keysArriving = false,
             presence = null,
-            backCount = 6,
+            backCount = unreadElsewhere(rooms, except = ICE),
             scrollTo = emptyFlow(),
             onBack = {},
             onRoomInfo = {},
@@ -350,7 +352,7 @@ private fun SharedRooms(shared: List<RoomGroup>) {
             images,
             keysArriving = false,
             presence = null,
-            backCount = 6,
+            backCount = unreadElsewhere(rooms, except = "!with-bob:example.org"),
             scrollTo = emptyFlow(),
             onBack = {},
             onRoomInfo = {},
