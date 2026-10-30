@@ -2,50 +2,26 @@ import MtrxFFI
 import XCTest
 @testable import Mtrx
 
-/// Recent rooms, the tabs' badges, and where rooms open.
-final class RecentRoomsTests: XCTestCase {
-    func testOpenedRoomsComeFirstOnce() {
-        var recent = RecentRooms()
-        recent.opened("!a")
-        recent.opened("!b")
-        recent.opened("!a")
-        XCTAssertEqual(recent.ids, ["!a", "!b"])
-        XCTAssertEqual(recent.last, "!a")
-    }
-
-    func testKeepsAtMostTheLimit() {
-        var recent = RecentRooms()
-        for n in 0..<(RecentRooms.limit + 5) {
-            recent.opened("!\(n)")
-        }
-        XCTAssertEqual(recent.ids.count, RecentRooms.limit)
-        XCTAssertEqual(recent.last, "!\(RecentRooms.limit + 4)")
-        XCTAssertEqual(RecentRooms((0..<30).map { "!\($0)" }).ids.count, RecentRooms.limit)
-    }
-
-    func testLeftRoomsGo() {
-        var recent = RecentRooms(["!a", "!b", "!c"])
-        recent.keep(["!a", "!c"])
-        XCTAssertEqual(recent.ids, ["!a", "!c"])
-        recent.remove("!a")
-        XCTAssertEqual(recent.ids, ["!c"])
-    }
-
-    /// Lab (3 unread) and Deep (4) are recent; Loose (1) and Far (2) are
-    /// not; the chat with Bob (5) counts nowhere.
+/// The tabs' badges and the back button's number.
+final class UnreadCountsTests: XCTestCase {
+    /// Lab (3 unread) and Deep (4) are in Team, Loose (1) in no space; the
+    /// chat with Bob (5), in Team too, and the space itself count as no
+    /// room; Bob and the Notes to self (6) as chats.
     func testBadges() {
         let lists = RoomLists(
             RoomListState(
                 rooms: [
                     Make.room("!lab", unread: 3), Make.room("!deep", unread: 4), Make.room("!loose", unread: 1),
-                    Make.room("!far", unread: 2), Make.room("!bob", kind: .direct, unread: 5),
-                    Make.room("!team", kind: .space, unread: 7),
+                    Make.room("!bob", kind: .direct, unread: 5), Make.room("!team", kind: .space, unread: 7),
+                    Make.room("!notes", kind: .direct, unread: 6),
                 ],
-                loaded: true))
-        let recent = RecentRooms(["!lab", "!deep"])
-        XCTAssertEqual(recent.unread(in: lists), 7)
-        XCTAssertEqual(recent.unread(in: lists, besides: "!lab"), 4)
-        XCTAssertEqual(recent.unreadElsewhere(in: lists), 3)
+                loaded: true, spaces: [SpaceRooms(spaceId: "!team", roomIds: ["!lab", "!deep", "!bob"])],
+                roomsOutsideSpaces: ["!loose"], notesAtTop: true, notesRoomId: "!notes"))
+        XCTAssertEqual(lists.chatsUnread, 11)
+        XCTAssertEqual(lists.roomsUnread, 8)
+        XCTAssertEqual(lists.spacesUnread, 7)
+        XCTAssertEqual(lists.unread(besides: "!lab"), 16)
+        XCTAssertEqual(lists.unread(besides: "!bob"), 14)
     }
 }
 
@@ -77,30 +53,14 @@ final class NavigationTests: XCTestCase {
         await eventually { model.lists == RoomLists(state) && model.loaded == state.loaded }
     }
 
-    func testOpenedRoomsAreRememberedAndTheLastReopens() async {
-        let first = await launch()
-        await send(Make.roomsBySpace(), to: first)
-        XCTAssertEqual(first.roomsPath, [])
-        first.opened(Make.room("!lab"))
-        first.opened(Make.room("!deep"))
-        // Not chats, spaces or invites.
-        first.opened(Make.room("!bob", kind: .direct))
-        first.opened(Make.room("!team", kind: .space))
-        first.opened(Make.room("!party", invited: true))
-        XCTAssertEqual(first.recent.ids, ["!deep", "!lab"])
-
-        let next = await launch()
-        XCTAssertEqual(next.recent.ids, ["!deep", "!lab"])
-        XCTAssertEqual(next.roomsPath, ["!deep"])
-    }
-
-    func testRoomsLeftGoFromRecentOnceTheListIsLoaded() async {
-        defaults.set(["!gone", "!lab"], forKey: "recentRooms")
+    /// Not on the last room, as before: the rooms opened lately are no
+    /// longer kept.
+    func testTheRoomsTabOpensOnItsList() async {
+        defaults.set(["!lab"], forKey: "recentRooms")
         let model = await launch()
-        await send(Make.roomsBySpace(loaded: false), to: model)
-        XCTAssertEqual(model.recent.ids, ["!gone", "!lab"])
         await send(Make.roomsBySpace(), to: model)
-        XCTAssertEqual(model.recent.ids, ["!lab"])
+        XCTAssertEqual(model.roomsPath, [])
+        XCTAssertNil(defaults.stringArray(forKey: "recentRooms"))
     }
 
     func testRoomsOpenInTheirTabs() async {
@@ -120,7 +80,7 @@ final class NavigationTests: XCTestCase {
         XCTAssertEqual(model.selectedSpace, .space("!new"))
     }
 
-    func testTappingTheRoomsTabAgainGoesToRecent() async {
+    func testTappingTheRoomsTabAgainGoesToItsList() async {
         let model = await launch()
         model.select(.chats)
         model.open("!lab")
@@ -159,13 +119,6 @@ final class NavigationTests: XCTestCase {
         try await model.decline(Make.room("!party", invited: true))
         XCTAssertEqual(session.changes, ["leave !party"])
         XCTAssertEqual(model.roomsPath, [])
-    }
-
-    func testSigningOutForgetsTheRecentRooms() async throws {
-        let model = await launch()
-        model.opened(Make.room("!lab"))
-        try await model.logout()
-        XCTAssertNil(defaults.stringArray(forKey: "recentRooms"))
     }
 
     func testOurServerName() async {

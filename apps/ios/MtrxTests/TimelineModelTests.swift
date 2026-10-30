@@ -74,7 +74,8 @@ final class TimelineModelTests: XCTestCase {
         model.scrolled(distanceFromBottom: 300)
         model.scrollEnded()
         XCTAssertFalse(model.followsBottom)
-        model.scrolled(distanceFromBottom: 0)
+        // Ended just short of the bottom: following (to its very end).
+        model.scrolled(distanceFromBottom: TimelineModel.bottomTolerance - 1)
         model.scrollEnded()
         XCTAssertTrue(model.followsBottom)
         // Up again, then the button to the newest message.
@@ -240,7 +241,7 @@ final class TimelineModelTests: XCTestCase {
         XCTAssertEqual(model.highlighted, "o")
         XCTAssertEqual(timeline.paginations, 0)
         XCTAssertFalse(model.seeking)
-        // Gone up to it: no longer at the bottom.
+        // Gone up to it: no longer following the bottom.
         XCTAssertFalse(model.followsBottom)
     }
 

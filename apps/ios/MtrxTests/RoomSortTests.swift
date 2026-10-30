@@ -18,10 +18,10 @@ final class RoomSortTests: XCTestCase {
     ]
 
     /// The space's list, its sections as the library arranges them (Offer
-    /// a room, as Other rooms has it).
+    /// a room, as Home has it).
     private func list(_ rooms: [RoomSummary], sort: RoomSort, search: String = "") -> [ListSection] {
         let lists = RoomLists(RoomListState(rooms: rooms, loaded: true, roomsOutsideSpaces: rooms.map(\.id)))
-        return lists.sections(of: lists.space(.otherRooms)!, layout: SectionLayout(), sort: sort, search: search)
+        return lists.sections(of: lists.space(.home)!, layout: SectionLayout(), sort: sort, search: search)
     }
 
     private func sections(_ sort: RoomSort, search: String = "") -> [String: [String]] {

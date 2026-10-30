@@ -903,6 +903,17 @@ fn rooms_made_set_up_joined_and_left() {
         block_on(b.session.join(room.clone(), vec![])).unwrap(),
         room
     );
+    // They share the room now (not the space, which Bob has not joined).
+    let deadline = std::time::Instant::now() + TIMEOUT;
+    let shared = loop {
+        let shared = block_on(a.session.shared_rooms(b.session.user_id())).unwrap();
+        if shared.contains(&room) {
+            break shared;
+        }
+        assert!(std::time::Instant::now() < deadline, "the shared room");
+        std::thread::sleep(Duration::from_millis(200));
+    };
+    assert!(!shared.contains(&space), "{shared:?}");
 
     // Alice makes him a moderator; he may not manage her.
     let level = mtrx_ffi::role_level(mtrx_ffi::Role::Moderator, 0);

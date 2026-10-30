@@ -42,8 +42,9 @@ import uniffi.mtrx.composeTopic as libraryComposeTopic
 /**
  * A room's timeline screen: its rows, older events on demand, the composer
  * (a new message, a reply or an edit), who is typing, the actions on a
- * message, going to the original of a reply, and a direct chat's person
- * ([personInfo]). Methods are called on the main thread.
+ * message, going to the original of a reply, a direct chat's person
+ * ([personInfo]) and the rooms shared with them ([sharedRooms]). Methods
+ * are called on the main thread.
  *
  * Actions on a message take its row's id from the latest [rows]. Sends and
  * the other actions (invites too) run in a scope of their own, so leaving
@@ -99,6 +100,11 @@ class TimelineViewModel(
     /** The sheet about a direct chat's person, while open. */
     private val _personInfo = MutableStateFlow<PersonInfoModel?>(null)
     val personInfo: StateFlow<PersonInfoModel?> = _personInfo.asStateFlow()
+
+    /** IDs of the rooms shared with a direct chat's person, once their panel opened; null until loaded. */
+    private val _sharedRooms = MutableStateFlow<List<String>?>(null)
+    val sharedRooms: StateFlow<List<String>?> = _sharedRooms.asStateFlow()
+    private var sharedJob: Job? = null
 
     /** The room's settings, for what we may change; null until read. */
     private val _settings = MutableStateFlow<RoomSettings?>(null)
@@ -461,6 +467,19 @@ class TimelineViewModel(
         if (_personInfo.value?.userId == userId) return
         _personInfo.value?.close()
         _personInfo.value = PersonInfoModel(userId, session, viewModelScope, actions)
+    }
+
+    /** The panel of the rooms shared with [userId] opened: (re)load them, the last ones showing meanwhile. */
+    override fun showSharedRooms(userId: String) {
+        sharedJob?.cancel()
+        sharedJob = viewModelScope.launch {
+            _sharedRooms.value = try {
+                session.sharedRooms(userId)
+            } catch (e: MtrxException) {
+                _error.value = describe(e)
+                emptyList()
+            }
+        }
     }
 
     fun closePersonInfo() {

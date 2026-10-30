@@ -69,11 +69,15 @@ import org.mtrx.app.rooms.accountSections
 import org.mtrx.app.rooms.chatList
 import org.mtrx.app.rooms.sectionChoices
 import org.mtrx.app.rooms.spaceList
-import org.mtrx.app.rooms.lastRoom
-import org.mtrx.app.rooms.recentRows
-import org.mtrx.app.rooms.recentUnread
+import org.mtrx.app.rooms.chatsUnread
+import org.mtrx.app.rooms.foldedGroups
+import org.mtrx.app.rooms.roomGroups
+import org.mtrx.app.rooms.sharedSpaces
+import org.mtrx.app.rooms.roomsUnread
+import org.mtrx.app.rooms.shownRoom
 import org.mtrx.app.rooms.spaceRows
 import org.mtrx.app.rooms.spacesUnread
+import org.mtrx.app.rooms.unreadElsewhere
 import org.mtrx.app.settings.SessionInfo
 import org.mtrx.app.settings.SettingsContent
 import uniffi.mtrx.ConnectionState
@@ -89,11 +93,13 @@ class HomeRoutes(
 
 /**
  * The signed-in home, in four tabs ([nav]): Chats, the direct chats (one
- * opens in the tab); Spaces, a pager of the spaces and the selected space's
- * direct messages and rooms, whose name opens its overview, with + for new spaces,
- * rooms and joining; Rooms, the last room ([roomPane]) or Recent; and
- * Settings. Spaces' badge counts unread messages in rooms that are not
- * recent, Rooms' those in recent ones. Banners for the connection over all
+ * opens in the tab, [roomPane]); Rooms, the rooms by space, newest first
+ * (one opens in the tab), a space's heading opening it on Spaces; Spaces, a
+ * pager of the spaces and the selected space's direct messages and rooms,
+ * whose name opens its overview, with + for new spaces, rooms and joining;
+ * and Settings. Chats' badge counts unread messages in the direct chats,
+ * Rooms' those in the rooms, Spaces' those in the spaces' rooms; a room's
+ * back arrow those everywhere else. Banners for the connection over all
  * tabs, and for encryption over the lists.
  */
 @OptIn(ExperimentalFoundationApi::class)
@@ -108,7 +114,7 @@ fun HomeScreen(
     routes: HomeRoutes,
     onEnterRecoveryKey: () -> Unit,
     onVerify: () -> Unit,
-    roomPane: @Composable (roomId: String, backCount: Long, onBack: () -> Unit) -> Unit,
+    roomPane: @Composable (roomId: String, backCount: Long, onBack: () -> Unit, openSpace: (String) -> Unit) -> Unit,
 ) {
     val list by account.rooms.collectAsStateWithLifecycle()
     val presences by presence.presences.collectAsStateWithLifecycle()
@@ -116,34 +122,40 @@ fun HomeScreen(
     val encryption by account.encryption.collectAsStateWithLifecycle()
     val selected by account.spaceSelection.selected.collectAsStateWithLifecycle()
     val sort by account.roomSort.sort.collectAsStateWithLifecycle()
-    val recentIds by account.recent.ids.collectAsStateWithLifecycle()
     val snackbar = remember { SnackbarHostState() }
     LaunchedEffect(account) { account.messages.collect { snackbar.showSnackbar(it) } }
     val today = remember(list) { LocalDate.now() }
     val sectionPrefs by account.sections.prefs.collectAsStateWithLifecycle()
     val (notes, chatRooms) = remember(list) { chatList(list) }
+    val chatSpaces = remember(list) { sharedSpaces(list) }
     val spaceEntries = remember(list) { spaceRows(list) }
     val sections = remember(list, selected, sort, sectionPrefs) {
         selected?.let { spaceList(list, it, sectionPrefs[it.key], sort) } ?: SectionedList(null, emptyList())
     }
     var showing by rememberSaveable { mutableStateOf(false) }
-    val recent = remember(list, recentIds) { recentRows(list, recentIds) }
+    val groups = remember(list, sectionPrefs) { roomGroups(list, folded = foldedGroups(sectionPrefs)) }
     val drafts = remember(list) { list.drafts.toSet() }
-    val last = lastRoom(list, recentIds, nav.opening)
     val badges = mapOf(
-        HomeTab.Spaces to spacesUnread(list, recentIds),
-        HomeTab.Rooms to recentUnread(list, recentIds),
+        HomeTab.Chats to chatsUnread(list),
+        HomeTab.Rooms to roomsUnread(list),
+        HomeTab.Spaces to spacesUnread(list),
     )
-    val open: (RoomSummary) -> Unit = { room -> nav.open(room.id, room, account.recent) }
+    val open: (RoomSummary) -> Unit = { room -> nav.open(room.id, room) }
 
     val scope = rememberCoroutineScope()
     // The selected space's rooms are the second page; without one there is none.
     val pager = rememberPagerState { if (selected != null) 2 else 1 }
     val chatsList = rememberLazyListState()
     val spacesList = rememberLazyListState()
-    val recentList = rememberLazyListState()
+    val roomsList = rememberLazyListState()
     val spaceRoomsList = rememberSaveable(selected?.key, saver = LazyListState.Saver) { LazyListState() }
     val showSpaces: () -> Unit = { scope.launch { pager.animateScrollToPage(0) } }
+    // A space's heading on Rooms (or in a room): the space's rooms on Spaces.
+    val openSpace: (String) -> Unit = { id ->
+        val entry = SpaceEntry.Space(id)
+        nav.tab = HomeTab.Spaces
+        if (entry == selected) scope.launch { pager.animateScrollToPage(1) } else account.spaceSelection.select(entry)
+    }
 
     // A new selection (tapped, or restored at start) shows its rooms; none
     // shows the spaces. The entry paged to is saved with the screen, so
@@ -163,9 +175,9 @@ fun HomeScreen(
     BackHandler(enabled = onSpaceRooms, onBack = showSpaces)
 
     val chat = nav.chat.takeIf { nav.tab == HomeTab.Chats }
-    val room = last.takeIf { nav.tab == HomeTab.Rooms && nav.inRoom }
+    val room = shownRoom(list, nav.room, nav.opening).takeIf { nav.tab == HomeTab.Rooms }
     BackHandler(enabled = chat != null) { nav.chat = null }
-    BackHandler(enabled = room != null) { nav.inRoom = false }
+    BackHandler(enabled = room != null) { nav.room = null }
 
     val selectedSpace = spaceEntries.firstOrNull { it.entry == selected }
     val selectedSpaceId = (selected as? SpaceEntry.Space)?.id
@@ -175,7 +187,6 @@ fun HomeScreen(
                 selectedSpace?.name.orEmpty(),
                 onClick = selectedSpaceId?.let { id -> { routes.openOverview(id) } },
             )
-            nav.tab == HomeTab.Rooms -> Text("Recent")
             else -> Text(nav.tab.label)
         }
     }
@@ -238,7 +249,7 @@ fun HomeScreen(
         }
         when (nav.tab) {
             HomeTab.Chats -> if (chat != null) {
-                roomPane(chat, 0L) { nav.chat = null }
+                roomPane(chat, unreadElsewhere(list, except = chat), { nav.chat = null }, openSpace)
             } else {
                 ChatList(
                     notes,
@@ -248,6 +259,7 @@ fun HomeScreen(
                     today,
                     onOpenRoom = open,
                     presenceOf = { directPerson(it, info.userId)?.let { person -> presences[person] } },
+                    spaces = chatSpaces,
                     drafts = drafts,
                     state = chatsList,
                 )
@@ -275,19 +287,18 @@ fun HomeScreen(
                 }
             }
             HomeTab.Rooms -> if (room != null) {
-                roomPane(room, recentUnread(list, recentIds, except = room)) { nav.inRoom = false }
+                roomPane(room, unreadElsewhere(list, except = room), { nav.room = null }, openSpace)
             } else {
-                RecentList(
-                    recent,
+                RoomGroupsList(
+                    groups,
+                    list.loaded,
                     images,
                     today,
                     onOpenRoom = open,
-                    onBrowseSpaces = {
-                        nav.tab = HomeTab.Spaces
-                        showSpaces()
-                    },
+                    onOpenSpace = openSpace,
+                    onFold = account.sections::toggleGroupFold,
                     drafts = drafts,
-                    state = recentList,
+                    state = roomsList,
                 )
             }
             HomeTab.Settings -> SettingsContent(account, push, presence, info, onEnterRecoveryKey, onVerify)
@@ -319,20 +330,8 @@ fun HomeFrame(
             }
         },
         bottomBar = {
-            NavigationBar {
-                HomeTab.entries.forEach {
-                    val count = badges[it] ?: 0L
-                    NavigationBarItem(
-                        selected = tab == it,
-                        onClick = { onTab(it) },
-                        icon = {
-                            BadgedBox(badge = { if (count > 0) UnreadBadge(count) }) {
-                                Icon(it.icon, contentDescription = null)
-                            }
-                        },
-                        label = { Text(it.label) },
-                    )
-                }
+            TextScaleAtMost(BAR_TEXT_SCALE) {
+                Tabs(tab, badges, onTab)
             }
         },
         snackbarHost = { SnackbarHost(snackbar) },
@@ -350,7 +349,27 @@ fun HomeFrame(
     }
 }
 
-/** The space's name over its rooms, tapped for its overview (none for Other rooms). */
+/** The tabs, [tab] selected, with their unread [badges]; their labels on one line. */
+@Composable
+private fun Tabs(tab: HomeTab, badges: Map<HomeTab, Long>, onTab: (HomeTab) -> Unit) {
+    NavigationBar {
+        HomeTab.entries.forEach {
+            val count = badges[it] ?: 0L
+            NavigationBarItem(
+                selected = tab == it,
+                onClick = { onTab(it) },
+                icon = {
+                    BadgedBox(badge = { if (count > 0) UnreadBadge(count) }) {
+                        Icon(it.icon, contentDescription = null)
+                    }
+                },
+                label = { Text(it.label, maxLines = 1, softWrap = false) },
+            )
+        }
+    }
+}
+
+/** The space's name over its rooms, tapped for its overview (none for Home). */
 @Composable
 fun SpaceTitle(name: String, onClick: (() -> Unit)?) {
     Row(

@@ -57,6 +57,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
@@ -67,6 +68,7 @@ import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -92,7 +94,18 @@ import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.CustomAccessibilityAction
+import androidx.compose.ui.semantics.customActions
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.ui.text.TextLayoutResult
+import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextRange
@@ -118,19 +131,27 @@ import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import org.mtrx.app.model.Images
+import org.mtrx.app.rooms.RoomGroup
+import org.mtrx.app.rooms.roomGroups
 import org.mtrx.app.ui.Avatar
+import org.mtrx.app.ui.BAR_TEXT_SCALE
+import org.mtrx.app.ui.TextScaleAtMost
+import org.mtrx.app.ui.BubbleColors
+import org.mtrx.app.ui.LocalOwnBubble
 import org.mtrx.app.ui.MtrxIcons
 import org.mtrx.app.ui.UnreadBadge
 import org.mtrx.app.ui.PresenceLine
 import org.mtrx.app.ui.WithPresenceDot
 import org.mtrx.app.ui.dayLabel
 import org.mtrx.app.ui.identityColor
+import org.mtrx.app.ui.linesHeight
 import org.mtrx.app.ui.timeOfDay
 import uniffi.mtrx.EventContent
 import uniffi.mtrx.Media
 import uniffi.mtrx.MediaKind
 import uniffi.mtrx.MessageKind
 import uniffi.mtrx.Presence
+import uniffi.mtrx.RoomListState
 import uniffi.mtrx.RoomSummary
 import uniffi.mtrx.SendState
 import uniffi.mtrx.TimelineEvent
@@ -156,6 +177,7 @@ private class RowHandlers(
     val react: (String, String) -> Unit,
     val showReactors: (String, String) -> Unit,
     val showReaders: (String) -> Unit,
+    val openLink: (String) -> Unit,
 )
 
 /** What the room screen shows, from its model's flows. */
@@ -171,6 +193,8 @@ data class TimelineState(
     val canPin: Boolean = false,
     /** The pinned messages while the topic panel shows; null while loading. */
     val pinned: List<EventRow>? = null,
+    /** A direct chat's rooms shared with the person, by space, while their panel shows; null while loading. */
+    val shared: List<RoomGroup>? = null,
 )
 
 /**
@@ -178,9 +202,12 @@ data class TimelineState(
  * (undecryptable rows say they are decrypting); [spaces], the top-level
  * ones, to invite a direct chat's person to; [presences], for the header
  * and the person sheet, and [refreshPresence] when the sheet opens.
- * [backCount] on the back button: unread messages in the other recent rooms.
+ * [backCount] on the back button: unread messages in the other rooms and
+ * direct chats.
  * The room's name opens [onRoomInfo] (a direct chat's, its person); links of
- * the topic open with [onOpenLink].
+ * the topic open with [onOpenLink]. A direct chat's rooms shared with the
+ * person are grouped as [rooms] lists them; one opens with [onOpenRoom], a
+ * space with [onOpenSpace] (on the Spaces tab).
  */
 @Composable
 fun TimelineScreen(
@@ -189,12 +216,15 @@ fun TimelineScreen(
     images: Images,
     keysArriving: Boolean,
     spaces: List<RoomSummary>,
+    rooms: RoomListState,
     presences: Map<String, Presence>,
     refreshPresence: suspend (String) -> Unit,
     backCount: Long,
     onBack: () -> Unit,
     onRoomInfo: () -> Unit,
     onOpenLink: (String) -> Unit,
+    onOpenRoom: (String) -> Unit,
+    onOpenSpace: (String) -> Unit,
 ) {
     val rows by viewModel.rows.collectAsStateWithLifecycle()
     // At once, not at the next frame: the field compares its text with it.
@@ -208,6 +238,8 @@ fun TimelineScreen(
     val settings by viewModel.settings.collectAsStateWithLifecycle()
     val canPin by viewModel.canPin.collectAsStateWithLifecycle()
     val pinned by viewModel.pinned.collectAsStateWithLifecycle()
+    val sharedIds by viewModel.sharedRooms.collectAsStateWithLifecycle()
+    val shared = remember(sharedIds, rooms) { sharedIds?.let { roomGroups(rooms, only = it.toSet()) } }
     // The app may be ended in the background: the draft is kept first.
     LifecycleEventEffect(Lifecycle.Event.ON_STOP) { viewModel.keepDraft() }
     val state = TimelineState(
@@ -221,6 +253,7 @@ fun TimelineScreen(
         canEditTopic = settings?.canChangeTopic == true,
         canPin = canPin,
         pinned = pinned,
+        shared = shared,
     )
     TimelineContent(
         header,
@@ -234,6 +267,8 @@ fun TimelineScreen(
         onBack = onBack,
         onRoomInfo = onRoomInfo,
         onOpenLink = onOpenLink,
+        onOpenRoom = onOpenRoom,
+        onOpenSpace = onOpenSpace,
     )
 
     personInfo?.let { model ->
@@ -245,8 +280,10 @@ fun TimelineScreen(
 
 /**
  * The room screen as [state] says, without a model: the header with its
- * topic line and panel ([topicOpen] or [editingTopic] at first), the
- * timeline, the composer and the menus of messages.
+ * topic line and panel ([topicOpen] or [editingTopic] at first) and its
+ * space, or a direct chat's # and the panel of the rooms shared with the
+ * person ([sharedOpen] at first); the timeline, the composer and the menus
+ * of messages.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -262,8 +299,11 @@ fun TimelineContent(
     onBack: () -> Unit,
     onRoomInfo: () -> Unit,
     onOpenLink: (String) -> Unit,
+    onOpenRoom: (String) -> Unit,
+    onOpenSpace: (String) -> Unit,
     topicOpen: Boolean = false,
     editingTopic: Boolean = false,
+    sharedOpen: Boolean = false,
 ) {
     val rows = state.rows
     val listState = rememberLazyListState()
@@ -301,6 +341,21 @@ fun TimelineContent(
     }
     BackHandler(enabled = panelOpen) { panel = null }
 
+    // A direct chat's rooms shared with the person, over the timeline and
+    // the composer (the keyboard goes); loaded as the panel opens.
+    var sharing by remember { mutableStateOf(sharedOpen) }
+    val keyboard = LocalSoftwareKeyboardController.current
+    val focus = LocalFocusManager.current
+    val person = header.person
+    LaunchedEffect(sharing, person) {
+        if (sharing && person != null) {
+            focus.clearFocus()
+            keyboard?.hide()
+            actions.showSharedRooms(person)
+        }
+    }
+    BackHandler(enabled = sharing) { sharing = false }
+
     // Older events near the top (the reversed list's end).
     LaunchedEffect(listState) {
         snapshotFlow {
@@ -332,6 +387,7 @@ fun TimelineContent(
 
     val canPin by rememberUpdatedState(state.canPin)
     val pinnedIds by rememberUpdatedState(header.pinned)
+    val openLink by rememberUpdatedState(onOpenLink)
     val handlers = remember(actions) {
         RowHandlers(
             hold = { row ->
@@ -345,6 +401,7 @@ fun TimelineContent(
             react = actions::react,
             showReactors = { rowId, key -> overlay = Overlay.Reactors(rowId, key) },
             showReaders = { rowId -> overlay = Overlay.Readers(rowId) },
+            openLink = { url -> openLink(url) },
         )
     }
 
@@ -352,6 +409,11 @@ fun TimelineContent(
         topBar = {
             Column {
                 TopAppBar(
+                    // Two lines, the name and the topic (or presence), at any text size.
+                    expandedHeight = maxOf(
+                        TopAppBarDefaults.TopAppBarExpandedHeight,
+                        linesHeight(MaterialTheme.typography.titleMedium, MaterialTheme.typography.bodySmall) + 16.dp,
+                    ),
                     title = {
                         RoomTitle(
                             header,
@@ -359,10 +421,7 @@ fun TimelineContent(
                             images,
                             topicLine = topicPreview(header.topic, state.canEditTopic),
                             topicOpen = panelOpen,
-                            onTitle = {
-                                val person = header.person
-                                if (person != null) actions.showPersonInfo(person) else onRoomInfo()
-                            },
+                            onTitle = { if (person != null) actions.showPersonInfo(person) else onRoomInfo() },
                             onTopic = { panel = if (panelOpen) null else TopicPanelMode.SHOWING },
                         )
                     },
@@ -370,11 +429,18 @@ fun TimelineContent(
                         IconButton(onClick = onBack) {
                             BadgedBox(
                                 badge = {
-                                    if (backCount > 0) UnreadBadge(backCount)
+                                    if (backCount > 0) TextScaleAtMost(BAR_TEXT_SCALE) { UnreadBadge(backCount) }
                                 },
                             ) {
                                 Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
                             }
+                        }
+                    },
+                    actions = {
+                        val space = header.space
+                        when {
+                            person != null -> SharedRoomsButton(header.name, open = sharing, onClick = { sharing = !sharing })
+                            space != null -> SpaceButton(space, images, onClick = { onOpenSpace(space.id) })
                         }
                     },
                 )
@@ -382,7 +448,7 @@ fun TimelineContent(
             }
         },
         bottomBar = {
-            Column {
+            if (!sharing) Column {
                 TypingLine(typingText(state.typing))
                 Composer(
                     draft = state.draft,
@@ -399,7 +465,7 @@ fun TimelineContent(
         // Back to the newest message, while away from it.
         floatingActionButton = {
             AnimatedVisibility(
-                visible = !atBottom,
+                visible = !atBottom && !sharing,
                 enter = fadeIn() + scaleIn(),
                 exit = fadeOut() + scaleOut(),
             ) {
@@ -453,6 +519,9 @@ fun TimelineContent(
                         actions.goToOriginal(eventId)
                     },
                 )
+            }
+            if (sharing) {
+                SharedRoomsPanel(header.name, state.shared, images, today, onOpenRoom = onOpenRoom, onOpenSpace = onOpenSpace)
             }
         }
     }
@@ -530,6 +599,32 @@ fun TimelineContent(
             },
             onDismiss = dismiss,
         )
+    }
+}
+
+/** A direct chat's #: the rooms shared with the person ([name]), highlighted while [open]. */
+@Composable
+private fun SharedRoomsButton(name: String, open: Boolean, onClick: () -> Unit) {
+    IconButton(
+        onClick = onClick,
+        colors = if (open) {
+            IconButtonDefaults.iconButtonColors(
+                containerColor = MaterialTheme.colorScheme.primaryContainer,
+                contentColor = MaterialTheme.colorScheme.primary,
+            )
+        } else {
+            IconButtonDefaults.iconButtonColors()
+        },
+    ) {
+        Icon(MtrxIcons.Hash, contentDescription = if (open) "Hide the rooms shared with $name" else "Rooms shared with $name")
+    }
+}
+
+/** A room's space, its small picture: tapped, the space on the Spaces tab. */
+@Composable
+private fun SpaceButton(space: RoomSummary, images: Images, onClick: () -> Unit) {
+    IconButton(onClick = onClick, modifier = Modifier.semantics { contentDescription = "Space ${space.name}" }) {
+        Avatar(space.name, space.avatarUrl, space.id, images, size = 28.dp, shape = RoundedCornerShape(6.dp))
     }
 }
 
@@ -722,6 +817,11 @@ private fun EventBubble(row: EventRow, images: Images, highlighted: Boolean, key
         label = "highlight",
     )
     val bubbleShape = RoundedCornerShape(16.dp)
+    val colors = if (own) {
+        LocalOwnBubble.current
+    } else {
+        MaterialTheme.colorScheme.let { BubbleColors(it.surfaceVariant, it.onSurfaceVariant, it.onSurfaceVariant, it.primary) }
+    }
     Column(
         Modifier
             .fillMaxWidth()
@@ -761,18 +861,28 @@ private fun EventBubble(row: EventRow, images: Images, highlighted: Boolean, key
                 ) {
                     Surface(
                         shape = bubbleShape,
-                        color = if (own) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant,
+                        color = colors.container,
+                        contentColor = colors.content,
                         modifier = Modifier
                             .clip(bubbleShape)
                             .combinedClickable(onClick = {}, onLongClick = { handlers.hold(row) }),
                     ) {
                         Column(Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
-                            row.quote?.let { QuoteBlock(it, handlers.goTo) }
-                            MessageBody(event, row.edited, name, images, keysArriving)
+                            row.quote?.let { QuoteBlock(it, colors.secondary, handlers.goTo) }
+                            MessageBody(
+                                event,
+                                row.edited,
+                                name,
+                                images,
+                                keysArriving,
+                                colors,
+                                onOpenLink = handlers.openLink,
+                                onHold = { handlers.hold(row) },
+                            )
                             Text(
                                 timeOfDay(event.timestamp),
                                 style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                color = colors.secondary,
                                 modifier = Modifier.align(Alignment.End),
                             )
                         }
@@ -854,9 +964,9 @@ private fun SwipeToReply(enabled: Boolean, onReply: () -> Unit, content: @Compos
     }
 }
 
-/** The message a reply answers; a loaded one goes to it. */
+/** The message a reply answers, its text in [secondary]; a loaded one goes to it. */
 @Composable
-private fun QuoteBlock(quote: Quote, onGoTo: (String) -> Unit) {
+private fun QuoteBlock(quote: Quote, secondary: Color, onGoTo: (String) -> Unit) {
     Row(
         Modifier
             .padding(bottom = 6.dp)
@@ -877,7 +987,7 @@ private fun QuoteBlock(quote: Quote, onGoTo: (String) -> Unit) {
             Text(
                 quote.text,
                 style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                color = secondary,
                 maxLines = 3,
                 overflow = TextOverflow.Ellipsis,
             )
@@ -947,12 +1057,31 @@ private fun ReadersLine(readers: Readers, images: Images, onClick: () -> Unit, m
     }
 }
 
+/**
+ * A message's content; notices, deleted and undecryptable messages in the
+ * bubble's secondary colour. Web addresses in its text are links in the
+ * bubble's link colour, tapped with [onOpenLink]; a hold on the text is
+ * [onHold], as on the bubble.
+ */
 @Composable
-private fun MessageBody(event: TimelineEvent, edited: Boolean, name: String, images: Images, keysArriving: Boolean) {
-    val secondary = MaterialTheme.colorScheme.onSurfaceVariant
-    // "(edited)", muted, after the text.
+private fun MessageBody(
+    event: TimelineEvent,
+    edited: Boolean,
+    name: String,
+    images: Images,
+    keysArriving: Boolean,
+    colors: BubbleColors,
+    onOpenLink: (String) -> Unit,
+    onHold: () -> Unit,
+) {
+    val secondary = colors.secondary
+    // Its links, and "(edited)", muted, after the text.
     fun text(body: String) = buildAnnotatedString {
         append(body)
+        for (link in findLinks(body)) {
+            addStyle(SpanStyle(color = colors.link, textDecoration = TextDecoration.Underline), link.start, link.end)
+            addStringAnnotation(URL_TAG, link.url, link.start, link.end)
+        }
         if (edited) withStyle(SpanStyle(color = secondary, fontStyle = FontStyle.Normal)) { append(" (edited)") }
     }
     when (val content = event.content) {
@@ -962,12 +1091,12 @@ private fun MessageBody(event: TimelineEvent, edited: Boolean, name: String, ima
             when {
                 media != null && (media.kind == MediaKind.IMAGE || media.kind == MediaKind.VIDEO) -> {
                     MediaPreview(media, images)
-                    messageText(message)?.let { Text(text(it), Modifier.padding(top = 6.dp)) }
+                    messageText(message)?.let { LinkedText(text(it), onOpenLink, onHold, Modifier.padding(top = 6.dp)) }
                 }
                 media != null -> Text("${media.filename}${fileSize(media)}", fontStyle = FontStyle.Italic)
-                message.kind == MessageKind.EMOTE -> Text(text("* $name ${message.body}"), fontStyle = FontStyle.Italic)
-                message.kind == MessageKind.NOTICE -> Text(text(message.body), color = secondary)
-                else -> Text(text(message.body))
+                message.kind == MessageKind.EMOTE -> LinkedText(text("* $name ${message.body}"), onOpenLink, onHold, fontStyle = FontStyle.Italic)
+                message.kind == MessageKind.NOTICE -> LinkedText(text(message.body), onOpenLink, onHold, color = secondary)
+                else -> LinkedText(text(message.body), onOpenLink, onHold)
             }
         }
         EventContent.Redacted -> Text("Message deleted", color = secondary, fontStyle = FontStyle.Italic)
@@ -981,6 +1110,59 @@ private fun MessageBody(event: TimelineEvent, edited: Boolean, name: String, ima
         // State events are StateRows.
         is EventContent.Membership, is EventContent.DisplayNameChange, is EventContent.OtherState -> {}
     }
+}
+
+/** The annotation of a link's URL in a message's text. */
+private const val URL_TAG = "url"
+
+/**
+ * [text] whose links ([URL_TAG]) open with [onOpenLink] when tapped (and
+ * by the screen reader's actions); held anywhere it is [onHold]. Without
+ * links, plain text: the bubble takes the touches.
+ */
+@Composable
+private fun LinkedText(
+    text: AnnotatedString,
+    onOpenLink: (String) -> Unit,
+    onHold: () -> Unit,
+    modifier: Modifier = Modifier,
+    color: Color = Color.Unspecified,
+    fontStyle: FontStyle? = null,
+) {
+    val links = remember(text) { text.getStringAnnotations(URL_TAG, 0, text.length) }
+    if (links.isEmpty()) {
+        Text(text, modifier, color = color, fontStyle = fontStyle)
+        return
+    }
+    var layout by remember { mutableStateOf<TextLayoutResult?>(null) }
+    val open by rememberUpdatedState(onOpenLink)
+    val hold by rememberUpdatedState(onHold)
+    Text(
+        text,
+        modifier
+            .pointerInput(links) {
+                detectTapGestures(
+                    onTap = { position -> layout?.let { linkAt(it, links, position) }?.let(open) },
+                    onLongPress = { hold() },
+                )
+            }
+            .semantics {
+                customActions = links.map { link -> CustomAccessibilityAction("Open ${link.item}") { open(link.item); true } }
+            },
+        color = color,
+        fontStyle = fontStyle,
+        onTextLayout = { layout = it },
+    )
+}
+
+/** The URL of the link of [links] at [position] in the text laid out as [layout], if any. */
+private fun linkAt(layout: TextLayoutResult, links: List<AnnotatedString.Range<String>>, position: Offset): String? {
+    // The character under it: before or after the nearest caret position.
+    val nearest = layout.getOffsetForPosition(position)
+    val char = listOf(nearest, nearest - 1).firstOrNull {
+        it in 0 until layout.layoutInput.text.length && layout.getBoundingBox(it).contains(position)
+    } ?: return null
+    return links.firstOrNull { char >= it.start && char < it.end }?.item
 }
 
 /** An image's (or video's) preview, laid out at its size before it loads. */

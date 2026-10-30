@@ -5,7 +5,14 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.unit.Density
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.dp
 
 // The logo's colour (crates/mtrx-app/assets/logo.svg).
 private val LogoIndigo = Color(0xFF2F3E9E)
@@ -30,9 +37,45 @@ private val Dark = darkColorScheme(
     onSecondary = Color(0xFF00363F),
 )
 
+/** A message bubble's colours: its background, text, time and muted text, and links. */
+data class BubbleColors(val container: Color, val content: Color, val secondary: Color, val link: Color)
+
+// Our own messages: the logo's indigo, light (#57); a dark blue-grey in the
+// dark. Links on them in the logo's indigo, lighter in the dark (as on iOS).
+private val LightOwnBubble = BubbleColors(Color(0xFFC7CFF3), Color.Black, Color(0xFF4A5180), LogoIndigo)
+private val DarkOwnBubble = BubbleColors(Color(0xFF2E3352), Color.White, Color(0xFFB8BFE6), Color(0xFFA3AEFF))
+
+/** The bubbles of our own messages, as the theme sets them. */
+val LocalOwnBubble = staticCompositionLocalOf { LightOwnBubble }
+
 @Composable
 fun MtrxTheme(content: @Composable () -> Unit) {
-    MaterialTheme(colorScheme = if (isSystemInDarkTheme()) Dark else Light, content = content)
+    val dark = isSystemInDarkTheme()
+    MaterialTheme(colorScheme = if (dark) Dark else Light) {
+        CompositionLocalProvider(LocalOwnBubble provides if (dark) DarkOwnBubble else LightOwnBubble, content = content)
+    }
+}
+
+/**
+ * A line of each of [styles], one above the other, at the text size chosen
+ * in the system's settings: for heights that must grow with it.
+ */
+@Composable
+fun linesHeight(vararg styles: TextStyle): Dp = with(LocalDensity.current) {
+    styles.fold(0.dp) { sum, style -> sum + style.lineHeight.toDp() }
+}
+
+/** The largest text size, times the default, of the tabs and of a count on an icon. */
+const val BAR_TEXT_SCALE = 1.3f
+
+/**
+ * [content] with the text size at most [max] times the default: for what
+ * cannot grow with it, as the tabs' labels and the counts on icons.
+ */
+@Composable
+fun TextScaleAtMost(max: Float, content: @Composable () -> Unit) {
+    val density = LocalDensity.current
+    CompositionLocalProvider(LocalDensity provides Density(density.density, minOf(density.fontScale, max)), content = content)
 }
 
 /** A colour per user or room, for avatars without a picture and sender names. */

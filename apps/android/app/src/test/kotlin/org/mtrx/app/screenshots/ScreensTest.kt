@@ -3,10 +3,10 @@ package org.mtrx.app.screenshots
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.Surface
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import app.cash.paparazzi.DeviceConfig
+import com.android.resources.NightMode
 import app.cash.paparazzi.Paparazzi
 import kotlinx.coroutines.flow.emptyFlow
 import org.junit.Rule
@@ -23,8 +23,11 @@ import org.mtrx.app.rooms.NewRoomForm
 import org.mtrx.app.rooms.OverviewRooms
 import org.mtrx.app.rooms.RoomInfoContent
 import org.mtrx.app.rooms.SpaceOverviewContent
-import org.mtrx.app.rooms.recentRows
-import org.mtrx.app.rooms.recentUnread
+import org.mtrx.app.rooms.RoomGroup
+import org.mtrx.app.rooms.chatsUnread
+import org.mtrx.app.rooms.roomGroups
+import org.mtrx.app.rooms.sharedSpaces
+import org.mtrx.app.rooms.roomsUnread
 import org.mtrx.app.rooms.SectionPrefs
 import org.mtrx.app.rooms.chatList
 import org.mtrx.app.rooms.sectionChoices
@@ -35,6 +38,7 @@ import org.mtrx.app.ui.ShowActions
 import org.mtrx.app.ui.ShowSheetContent
 import org.mtrx.app.rooms.spaceRows
 import org.mtrx.app.rooms.spacesUnread
+import org.mtrx.app.rooms.unreadElsewhere
 import org.mtrx.app.model.RoomSort
 import org.mtrx.app.timeline.RoomHeader
 import org.mtrx.app.timeline.TimelineContent
@@ -44,7 +48,7 @@ import org.mtrx.app.ui.ChatList
 import org.mtrx.app.ui.HomeFrame
 import org.mtrx.app.ui.HomeTab
 import org.mtrx.app.ui.MtrxTheme
-import org.mtrx.app.ui.RecentList
+import org.mtrx.app.ui.RoomGroupsList
 import org.mtrx.app.ui.SpaceList
 import org.mtrx.app.ui.SpaceRoomsList
 import org.mtrx.app.ui.SpaceTitle
@@ -55,13 +59,14 @@ import uniffi.mtrx.Membership
  * The key screens with fake data, as PNGs (recordPaparazziDebug; CI
  * uploads them as the android-screenshots artifact).
  */
-class ScreensTest {
-    @get:Rule
-    val paparazzi = Paparazzi(deviceConfig = DeviceConfig.PIXEL_5)
+open class ScreensTest {
+    /** The system's text size. */
+    protected open val fontScale: Float get() = 1f
 
-    private val recentIds = listOf(ICE, PAPERS, TEACHING, LOOSE, WORKSHOP)
+    @get:Rule
+    val paparazzi = Paparazzi(deviceConfig = DeviceConfig.PIXEL_5.copy(fontScale = fontScale))
+
     private val drafts = rooms.drafts.toSet()
-    private val badges = mapOf(HomeTab.Spaces to spacesUnread(rooms, recentIds), HomeTab.Rooms to recentUnread(rooms, recentIds))
 
     private fun snap(name: String, content: @Composable () -> Unit) {
         paparazzi.snapshot(name) { MtrxTheme { WithBack(content) } }
@@ -71,7 +76,7 @@ class ScreensTest {
     fun chats() = snap("chats-notes-at-top") {
         val (notes, chats) = chatList(rooms)
         HomeFrame(HomeTab.Chats, badges, onTab = {}) {
-            ChatList(notes, chats, loaded = true, images, today, onOpenRoom = {}, presenceOf = { null }, drafts = drafts)
+            ChatList(notes, chats, loaded = true, images, today, onOpenRoom = {}, presenceOf = { null }, spaces = sharedSpaces(rooms), drafts = drafts)
         }
     }
 
@@ -118,54 +123,18 @@ class ScreensTest {
         }
     }
 
+    // Home, then the spaces, each newest first; Outreach folded, with its count.
     @Test
-    fun recent() = snap("recent") {
-        HomeFrame(HomeTab.Rooms, badges, onTab = {}, title = { Text("Recent") }) {
-            RecentList(recentRows(rooms, recentIds), images, today, onOpenRoom = {}, onBrowseSpaces = {}, drafts = drafts)
+    fun roomsTab() = snap("rooms-groups") {
+        HomeFrame(HomeTab.Rooms, badges, onTab = {}) {
+            RoomGroupsList(roomGroups(rooms, folded = setOf(OUTREACH)), loaded = true, images, today, onOpenRoom = {}, onOpenSpace = {}, onFold = {}, drafts = drafts)
         }
     }
 
     @Test
-    fun recentEmpty() = snap("recent-empty") {
-        HomeFrame(HomeTab.Rooms, emptyMap(), onTab = {}, title = { Text("Recent") }) {
-            RecentList(emptyList(), images, today, onOpenRoom = {}, onBrowseSpaces = {})
-        }
-    }
-
-    private val header = RoomHeader(
-        name = "Ice sheets",
-        avatarUrl = null,
-        seed = ICE,
-        person = null,
-        topic = iceTopic,
-        pinned = listOf("\$p1", "\$p2"),
-    )
-
-    @Composable
-    private fun Room(topicOpen: Boolean = false, editingTopic: Boolean = false) {
-        HomeFrame(HomeTab.Rooms, badges, onTab = {}, showTopBar = false) {
-            TimelineContent(
-                header,
-                TimelineState(
-                    rows = timelineRows(conversation),
-                    draft = "Thanks Ana, looking at them now",
-                    typing = listOf("Bob Berg"),
-                    canEditTopic = true,
-                    canPin = true,
-                    pinned = timelineRows(pinnedMessages).filterIsInstance<org.mtrx.app.timeline.EventRow>(),
-                ),
-                NoTimelineActions,
-                images,
-                keysArriving = false,
-                presence = null,
-                backCount = 6,
-                scrollTo = emptyFlow(),
-                onBack = {},
-                onRoomInfo = {},
-                onOpenLink = {},
-                topicOpen = topicOpen,
-                editingTopic = editingTopic,
-            )
+    fun roomsTabEmpty() = snap("rooms-empty") {
+        HomeFrame(HomeTab.Rooms, emptyMap(), onTab = {}) {
+            RoomGroupsList(emptyList(), loaded = true, images, today, onOpenRoom = {}, onOpenSpace = {})
         }
     }
 
@@ -177,6 +146,13 @@ class ScreensTest {
 
     @Test
     fun topicEditor() = snap("topic-editor") { Room(editingTopic = true) }
+
+    // Coffee at Home, three rooms in Ice team, Papers again in Outreach.
+    @Test
+    fun sharedRooms() = snap("shared-rooms") { SharedRooms(roomGroups(rooms, only = setOf(ICE, SEA, PAPERS, LOOSE, CODE))) }
+
+    @Test
+    fun noSharedRooms() = snap("shared-rooms-none") { SharedRooms(emptyList()) }
 
     @Test
     fun memberMenu() = snap("member-menu") {
@@ -295,10 +271,18 @@ class ScreensTest {
     }
 }
 
+/** The same screens at the largest text size the system offers. */
+class LargeTextScreensTest : ScreensTest() {
+    override val fontScale: Float get() = 2f
+}
+
 /** Room info is long: on a tall screen, to show its settings and members. */
-class TallScreensTest {
+open class TallScreensTest {
+    /** The system's text size. */
+    protected open val fontScale: Float get() = 1f
+
     @get:Rule
-    val paparazzi = Paparazzi(deviceConfig = DeviceConfig.PIXEL_5.copy(screenHeight = 2340 * 2))
+    val paparazzi = Paparazzi(deviceConfig = DeviceConfig.PIXEL_5.copy(screenHeight = 2340 * 2, fontScale = fontScale))
 
     @Test
     fun roomInfo() {
@@ -322,5 +306,88 @@ class TallScreensTest {
                 }
             }
         }
+    }
+}
+
+/** The tabs' unread counts. */
+private val badges = mapOf(HomeTab.Chats to chatsUnread(rooms), HomeTab.Rooms to roomsUnread(rooms), HomeTab.Spaces to spacesUnread(rooms))
+
+private val iceRoomHeader = RoomHeader(
+    name = "Ice sheets",
+    avatarUrl = null,
+    seed = ICE,
+    person = null,
+    topic = iceTopic,
+    pinned = listOf("\$p1", "\$p2"),
+    space = rooms.rooms.first { it.id == TEAM },
+)
+
+/** The Ice sheets room, as on the Rooms tab. */
+@Composable
+private fun Room(topicOpen: Boolean = false, editingTopic: Boolean = false) {
+    HomeFrame(HomeTab.Rooms, badges, onTab = {}, showTopBar = false) {
+        TimelineContent(
+            iceRoomHeader,
+            TimelineState(
+                rows = timelineRows(conversation),
+                draft = "Thanks Ana, looking at them now",
+                typing = listOf("Bob Berg"),
+                canEditTopic = true,
+                canPin = true,
+                pinned = timelineRows(pinnedMessages).filterIsInstance<org.mtrx.app.timeline.EventRow>(),
+            ),
+            NoTimelineActions,
+            images,
+            keysArriving = false,
+            presence = null,
+            backCount = unreadElsewhere(rooms, except = ICE),
+            scrollTo = emptyFlow(),
+            onBack = {},
+            onRoomInfo = {},
+            onOpenLink = {},
+            onOpenRoom = {},
+            onOpenSpace = {},
+            topicOpen = topicOpen,
+            editingTopic = editingTopic,
+        )
+    }
+}
+
+/** A direct chat with Bob, its panel of the rooms shared with him open ([shared] by space). */
+@Composable
+private fun SharedRooms(shared: List<RoomGroup>) {
+    HomeFrame(HomeTab.Chats, badges, onTab = {}, showTopBar = false) {
+        TimelineContent(
+            RoomHeader(name = "Bob Berg", avatarUrl = null, seed = bob, person = bob),
+            TimelineState(rows = timelineRows(conversation), shared = shared),
+            NoTimelineActions,
+            images,
+            keysArriving = false,
+            presence = null,
+            backCount = unreadElsewhere(rooms, except = "!with-bob:example.org"),
+            scrollTo = emptyFlow(),
+            onBack = {},
+            onRoomInfo = {},
+            onOpenLink = {},
+            onOpenRoom = {},
+            onOpenSpace = {},
+            sharedOpen = true,
+        )
+    }
+}
+
+/** Room info at the largest text size. */
+class LargeTextTallScreensTest : TallScreensTest() {
+    override val fontScale: Float get() = 2f
+}
+
+/** Our bubbles in the dark theme. */
+class DarkScreensTest {
+    @get:Rule
+    val paparazzi = Paparazzi(deviceConfig = DeviceConfig.PIXEL_5.copy(nightMode = NightMode.NIGHT))
+
+    @Test
+    fun room() {
+        paparazzi.snapshot("room-dark") { MtrxTheme { WithBack { Room() } } }
     }
 }

@@ -21,6 +21,7 @@ import org.mtrx.app.model.RoomSort
 import org.mtrx.app.model.SpaceEntry
 import org.mtrx.app.summary
 import uniffi.mtrx.RoomKind
+import uniffi.mtrx.SpaceRooms
 
 class RoomListsTest {
     private val state = SpacesFixture.state()
@@ -33,6 +34,13 @@ class RoomListsTest {
     }
 
     @Test
+    fun aDirectChatsSpacesAreThoseListingItInTheSpacesOrder() {
+        val both = state.copy(spaces = listOf(SpaceRooms(OTHER, listOf(WITH_BOB, NOTES)), state.spaces[1]), notesRoomId = NOTES)
+        // None shared with Carol; the Notes to self left out.
+        assertEquals(mapOf(WITH_CAROL to emptyList<String>(), WITH_BOB to listOf("other", "team")), sharedSpaces(both))
+    }
+
+    @Test
     fun topLevelSpacesInListOrderWithTheirSummaries() {
         val spaces = topLevelSpaces(state)
         assertEquals(listOf(OTHER, TEAM), spaces.map { it.id })
@@ -42,13 +50,13 @@ class RoomListsTest {
     }
 
     @Test
-    fun spacesPageListsTopLevelSpacesWithUnreadDotsThenOtherRooms() {
+    fun spacesPageListsTopLevelSpacesWithUnreadDotsThenHome() {
         val rows = spaceRows(state)
         assertEquals(
-            listOf(SpaceEntry.Space(OTHER), SpaceEntry.Space(TEAM), SpaceEntry.OtherRooms),
+            listOf(SpaceEntry.Space(OTHER), SpaceEntry.Space(TEAM), SpaceEntry.Home),
             rows.map { it.entry },
         )
-        assertEquals(listOf("other", "team", "Other rooms"), rows.map { it.name })
+        assertEquals(listOf("other", "team", "Home"), rows.map { it.name })
         // Lab and the chat with Bob are unread in Team; nothing elsewhere.
         assertEquals(listOf(false, true, false), rows.map { it.unread })
         assertNull(rows.last().space)
@@ -65,25 +73,25 @@ class RoomListsTest {
     }
 
     @Test
-    fun otherRoomsListsRoomsOutsideSpacesAndIsLeftOutWhileEmpty() {
-        val other = roomsOf(state, SpaceEntry.OtherRooms)
-        assertEquals(listOf(PARTY, LOOSE), other.map { it.id })
-        assertTrue("the invite to Party", other.first().invited)
+    fun homeListsRoomsOutsideSpacesAndIsLeftOutWhileEmpty() {
+        val home = roomsOf(state, SpaceEntry.Home)
+        assertEquals(listOf(PARTY, LOOSE), home.map { it.id })
+        assertTrue("the invite to Party", home.first().invited)
 
         val inSpaces = state.copy(roomsOutsideSpaces = emptyList())
         assertEquals(listOf(SpaceEntry.Space(OTHER), SpaceEntry.Space(TEAM)), spaceRows(inSpaces).map { it.entry })
-        assertEquals(emptyList<String>(), roomsOf(inSpaces, SpaceEntry.OtherRooms).map { it.id })
+        assertEquals(emptyList<String>(), roomsOf(inSpaces, SpaceEntry.Home).map { it.id })
     }
 
     @Test
-    fun anUnreadRoomOutsideSpacesDotsOtherRooms() {
+    fun anUnreadRoomOutsideSpacesDotsHome() {
         val rooms = state.rooms.map { if (it.id == LOOSE) it.copy(unreadMessages = 1uL) else it }
         assertTrue(spaceRows(state.copy(rooms = rooms)).last().unread)
     }
 
     @Test
     fun entriesAreSavedByKey() {
-        for (entry in listOf(SpaceEntry.Space(TEAM), SpaceEntry.OtherRooms)) {
+        for (entry in listOf(SpaceEntry.Space(TEAM), SpaceEntry.Home)) {
             assertEquals(entry, SpaceEntry.fromKey(entry.key))
         }
     }

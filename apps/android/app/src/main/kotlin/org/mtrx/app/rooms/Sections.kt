@@ -23,13 +23,18 @@ import uniffi.mtrx.SectionKind
 /**
  * How this phone arranges one space's sections, by `RoomSection.key`:
  * their [order], those [hidden] and those [folded]. Keys not in [order]
- * are new to the phone.
+ * are new to the phone. [groupFolded]: the space's group on the Rooms tab
+ * is folded.
  */
 data class SectionPrefs(
     val order: List<String> = emptyList(),
     val hidden: Set<String> = emptySet(),
     val folded: Set<String> = emptySet(),
+    val groupFolded: Boolean = false,
 )
+
+/** The keys (`SpaceEntry.key`) of the Rooms tab's groups folded in [prefs]. */
+fun foldedGroups(prefs: Map<String, SectionPrefs>): Set<String> = prefs.filterValues { it.groupFolded }.keys
 
 /** A section as the space's list shows it: its rooms in order; [unread] for its heading while folded. */
 data class ShownSection(
@@ -89,7 +94,7 @@ fun chatList(state: RoomListState): Pair<RoomSummary?, List<RoomSummary>> {
 
 /**
  * The sections of [entry] as the account arranges them: a space's from
- * the library; for "Other rooms" (and a space without them), Invites,
+ * the library; for Home (and a space without them), Invites,
  * Direct messages and Rooms from its rooms.
  */
 fun accountSections(state: RoomListState, entry: SpaceEntry): List<RoomSection> {
@@ -159,8 +164,9 @@ interface SectionStore {
 }
 
 /**
- * How this phone arranges each space's sections (shown, folded, order),
- * by `SpaceEntry.key`, saved in [store]. Not the account's: the desktop and
+ * How this phone arranges each space's sections (shown, folded, order)
+ * and whether its group on the Rooms tab is folded, by `SpaceEntry.key`
+ * (Home's too), saved in [store]. Not the account's: the desktop and
  * other devices keep theirs. Used on [scope]'s (main) thread. The changes
  * take the keys of the space's sections now ([keys], the account's order),
  * so that a reorder keeps sections new to the phone in place.
@@ -186,6 +192,9 @@ class SectionLayouts(private val store: SectionStore, private val scope: Corouti
     fun toggleFold(space: String, key: String) = change(space) {
         it.copy(folded = if (key in it.folded) it.folded - key else it.folded + key)
     }
+
+    /** Fold the space's group on the Rooms tab, or unfold it. */
+    fun toggleGroupFold(space: String) = change(space) { it.copy(groupFolded = !it.groupFolded) }
 
     fun setShown(space: String, key: String, shown: Boolean) = change(space) {
         it.copy(hidden = if (shown) it.hidden - key else it.hidden + key)

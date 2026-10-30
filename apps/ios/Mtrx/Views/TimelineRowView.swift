@@ -1,11 +1,20 @@
 import MtrxFFI
 import SwiftUI
 
-struct TimelineRowView: View {
+/// A row of the timeline. Equal while what it shows is: the actions act on
+/// the same room whichever copy is kept, so a row is not drawn again each
+/// time the room's view is (once per message, sent or arrived).
+struct TimelineRowView: View, Equatable {
     let row: TimelineRow
+    /// A message's menu entries, in order.
+    var menu: [MessageAction] = []
     /// Gone to from a quote: marked for a moment.
     var highlighted = false
     let actions: RowActions
+
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.row == rhs.row && lhs.menu == rhs.menu && lhs.highlighted == rhs.highlighted
+    }
 
     var body: some View {
         switch row.content {
@@ -42,7 +51,7 @@ struct TimelineRowView: View {
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 6)
         case .message(let message):
-            MessageView(id: row.id, row: message, highlighted: highlighted, actions: actions)
+            MessageView(id: row.id, row: message, entries: menu, highlighted: highlighted, actions: actions)
         }
     }
 
@@ -53,8 +62,6 @@ struct TimelineRowView: View {
 
 /// What a message's row asks of the room, with the row's ID.
 struct RowActions {
-    /// The entries of a message's menu, in order.
-    let entries: (MessageRow) -> [MessageAction]
     /// An entry of the message's menu (`react`: the full picker).
     let perform: (MessageAction, String) -> Void
     /// Add or remove our reaction (item ID, key).
@@ -74,6 +81,8 @@ struct RowActions {
 struct MessageView: View {
     let id: String
     let row: MessageRow
+    /// Its menu's entries, in order.
+    let entries: [MessageAction]
     let highlighted: Bool
     let actions: RowActions
     @State private var swipe = SwipeToReply()
@@ -150,7 +159,8 @@ struct MessageView: View {
     /// Revealed at the right while the row is swiped.
     private var replyIcon: some View {
         Image(systemName: "arrowshape.turn.up.left.fill")
-            .font(.system(size: 15, weight: .semibold))
+            .font(.subheadline.weight(.semibold))
+            .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
             .foregroundColor(swipe.triggers ? .white : .accentColor)
             .frame(width: 32, height: 32)
             .background(swipe.triggers ? Color.accentColor : Color.accentColor.opacity(0.15), in: Circle())
@@ -177,22 +187,22 @@ struct MessageView: View {
                             footer.padding(6).background(.ultraThinMaterial, in: Capsule()).padding(6)
                         }
                     if message.body != media.filename && !message.body.isEmpty {
-                        bubble(text(message), quote: nil)
+                        bubble(text(message), quote: nil, muted: message.kind == .notice)
                     }
                 }
             } else if let media = message.media {
                 bubble(FileView(media: media), quote: message.replyTo)
             } else {
-                bubble(text(message), quote: message.replyTo)
+                bubble(text(message), quote: message.replyTo, muted: message.kind == .notice)
             }
         case .redacted:
-            bubble(Text("Message deleted").italic().foregroundColor(muted), quote: nil)
+            bubble(Text("Message deleted").italic(), quote: nil, muted: true)
         case .unableToDecrypt:
             // Turns into the message by itself once its key arrives (after a
             // recovery or verification).
-            bubble(Text(row.undecryptableText ?? "").italic().foregroundColor(muted), quote: nil)
+            bubble(Text(row.undecryptableText ?? "").italic(), quote: nil, muted: true)
         case .other(let description):
-            bubble(Text("sent a \(description)").italic().foregroundColor(muted), quote: nil)
+            bubble(Text("sent a \(description)").italic(), quote: nil, muted: true)
         case .membership, .displayNameChange, .otherState:
             // Folded into summaries by `TimelineRows`.
             EmptyView()
@@ -202,7 +212,6 @@ struct MessageView: View {
     /// The menu of a held message: only what applies to it.
     @ViewBuilder
     private var menu: some View {
-        let entries = actions.entries(row)
         if entries.contains(.react) {
             ReactMenu(ours: Set(row.reactions.filter(\.byUs).map(\.key))) { key in
                 actions.react(id, key)
@@ -224,8 +233,6 @@ struct MessageView: View {
         switch message.kind {
         case .emote:
             text = Text("\(event.displayName) ").italic() + Text(Formatting.linked(message.body)).italic()
-        case .notice:
-            text = Text(Formatting.linked(message.body)).foregroundColor(own ? .white.opacity(0.85) : .secondary)
         default:
             text = Text(Formatting.linked(message.body))
         }
@@ -233,36 +240,45 @@ struct MessageView: View {
         return text + Text(" (edited)").font(.footnote).foregroundColor(muted)
     }
 
+    /// Times, notices, and what stands for a message (deleted, not
+    /// decrypted).
     private var muted: Color {
-        own ? .white.opacity(0.75) : .secondary
+        own ? .ownBubbleSecondary : .secondary
     }
 
+    /// Ours a light shade of the brand blue (a dark one in dark mode), with
+    /// the primary text colour; links and quote bars on it in the brand
+    /// blue (lighter in dark mode, `ownBubbleLink`).
     private var bubbleColor: Color {
-        own ? Color.accentColor : Color(.secondarySystemBackground)
+        own ? .ownBubble : Color(.secondarySystemBackground)
     }
 
     private func quoteView(_ quote: ReplyQuote) -> some View {
         QuoteView(quote: quote, own: own) {
             actions.goTo(quote)
         }
-        .foregroundColor(own ? .white : .primary)
+        .foregroundStyle(Color.primary)
     }
 
-    private func bubble<Content: View>(_ content: Content, quote: ReplyQuote?) -> some View {
+    /// `content` in the bubble, under the message it answers (`quote`); in
+    /// the muted colour if `muted`, set on the view: a colour set on the
+    /// text may not hold (a deleted message showed grey on ours).
+    private func bubble<Content: View>(_ content: Content, quote: ReplyQuote?, muted: Bool = false) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             if let quote {
                 quoteView(quote)
             }
             VStack(alignment: .trailing, spacing: 2) {
                 content
+                    .foregroundStyle(muted ? self.muted : .primary)
                     .frame(minWidth: 0, alignment: .leading)
                 footer
             }
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 7)
-        .foregroundColor(own ? .white : .primary)
-        .tint(own ? .white : .accentColor)
+        .foregroundStyle(Color.primary)
+        .tint(own ? .ownBubbleLink : .accentColor)
         .background(bubbleColor, in: RoundedRectangle(cornerRadius: 18))
     }
 
@@ -372,7 +388,7 @@ struct QuoteView: View {
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
             RoundedRectangle(cornerRadius: 1.5)
-                .fill(own ? Color.white.opacity(0.8) : Color.accentColor)
+                .fill(own ? Color.ownBubbleLink : Color.accentColor)
                 .frame(width: 3)
             VStack(alignment: .leading, spacing: 1) {
                 if let sender = quote.senderLabel {

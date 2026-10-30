@@ -28,12 +28,8 @@ final class SessionModel: ObservableObject {
     @Published var tab = HomeTab.chats
     /// The chats opened over the Chats tab's list.
     @Published var chatsPath: [String] = []
-    /// The rooms opened over the Rooms tab's Recent list: at launch, the
-    /// last room.
+    /// The rooms opened over the Rooms tab's list.
     @Published var roomsPath: [String] = []
-    /// The rooms opened lately, remembered across launches (until
-    /// sign-out).
-    @Published private(set) var recent: RecentRooms
     /// An invite to answer, while its sheet shows.
     @Published var invite: RoomRef?
     /// Rooms and spaces just made or joined here, not in the room list
@@ -63,6 +59,10 @@ final class SessionModel: ObservableObject {
     let spaceChildren = SpaceChildrenCache()
     /// How this phone shows each space's sections.
     let sectionLayouts: SectionLayouts
+    /// The Rooms tab's groups folded on this phone, by `ListSection.key`
+    /// (a space's ID, or Home's), remembered across launches (until
+    /// sign-out).
+    @Published private(set) var foldedGroups: Set<String>
     private var layoutChanges: AnyCancellable?
 
     private let subscriptions = Subscriptions()
@@ -80,6 +80,8 @@ final class SessionModel: ObservableObject {
     private let defaults: UserDefaults
     private static let selectedSpaceKey = "selectedSpace"
     private static let roomSortKey = "roomSort"
+    private static let foldedGroupsKey = "foldedRoomGroups"
+    /// The rooms opened lately, kept by earlier versions.
     private static let recentKey = "recentRooms"
 
     init(session: Session, defaults: UserDefaults = .standard, idleTime: TimeInterval = PresenceModel.idleTime) {
@@ -96,9 +98,8 @@ final class SessionModel: ObservableObject {
             selectedSpace = SpaceEntry(saved: saved)
         }
         sectionLayouts = SectionLayouts(defaults: defaults)
-        recent = RecentRooms(defaults.stringArray(forKey: Self.recentKey) ?? [])
-        // The Rooms tab reopens the last room.
-        roomsPath = recent.last.map { [$0] } ?? []
+        foldedGroups = Set(defaults.stringArray(forKey: Self.foldedGroupsKey) ?? [])
+        defaults.removeObject(forKey: Self.recentKey)
         layoutChanges = sectionLayouts.objectWillChange.sink { [weak self] _ in
             MainActor.assumeIsolated { self?.objectWillChange.send() }
         }
@@ -158,9 +159,6 @@ final class SessionModel: ObservableObject {
         if let selectedSpace, lists.space(selectedSpace) == nil, !isExpected(selectedSpace) {
             selectSpace(nil)
         }
-        var kept = recent
-        kept.keep(Set(lists.byId.keys).union(expecting))
-        setRecent(kept)
     }
 
     /// The Notes to self stays at the top of Chats and of every space (for
@@ -301,8 +299,7 @@ final class SessionModel: ObservableObject {
         set { selectSpace(newValue.last) }
     }
 
-    /// A tab was tapped; tapped again, it goes back to its list (the Rooms
-    /// tab: to Recent).
+    /// A tab was tapped; tapped again, it goes back to its list.
     func select(_ tab: HomeTab) {
         guard tab == self.tab else {
             self.tab = tab
@@ -317,7 +314,7 @@ final class SessionModel: ObservableObject {
     }
 
     /// Open a room (or a direct chat) where it belongs: a room in the Rooms
-    /// tab, over Recent; a chat in the Chats tab; a space's rooms in the
+    /// tab, over its list; a chat in the Chats tab; a space's rooms in the
     /// Spaces tab. `kind` for one not in the room list yet.
     func open(_ id: String, kind: RoomKind? = nil) {
         switch kind ?? lists.byId[id]?.kind {
@@ -333,20 +330,8 @@ final class SessionModel: ObservableObject {
         }
     }
 
-    /// A room was opened (shown): it is the last room now, first in Recent.
-    /// Not chats or spaces.
-    func opened(_ room: RoomSummary) {
-        guard room.kind == .room, !room.invited else { return }
-        var opened = recent
-        opened.opened(room.id)
-        setRecent(opened)
-    }
-
     /// We left a room, or declined an invite: it goes from where it shows.
     func left(_ id: String) {
-        var kept = recent
-        kept.remove(id)
-        setRecent(kept)
         roomsPath.removeAll { $0 == id }
         chatsPath.removeAll { $0 == id }
         if selectedSpace == .space(id) {
@@ -359,12 +344,6 @@ final class SessionModel: ObservableObject {
     /// list has it.
     func expect(_ id: String) {
         expecting.insert(id)
-    }
-
-    private func setRecent(_ recent: RecentRooms) {
-        guard recent != self.recent else { return }
-        self.recent = recent
-        defaults.set(recent.ids, forKey: Self.recentKey)
     }
 
     /// Accept an invite: join, then open what we joined.
@@ -385,16 +364,38 @@ final class SessionModel: ObservableObject {
         userId.split(separator: ":", maxSplits: 1).last.map(String.init) ?? homeserver
     }
 
-    /// The Rooms tab's badge: unread messages in the recent rooms.
-    var roomsBadge: Int { recent.unread(in: lists) }
+    /// The Chats tab's badge: unread messages in the direct chats.
+    var chatsBadge: Int { lists.chatsUnread }
 
-    /// The Spaces tab's badge: unread messages in the other rooms.
-    var spacesBadge: Int { recent.unreadElsewhere(in: lists) }
+    /// The Rooms tab's badge: unread messages in the rooms.
+    var roomsBadge: Int { lists.roomsUnread }
 
-    /// The number on a room's back button: unread messages in the other
-    /// recent rooms.
+    /// The Spaces tab's badge: unread messages in the rooms in spaces.
+    var spacesBadge: Int { lists.spacesUnread }
+
+    /// The number on a room's or chat's back button: unread messages in
+    /// the other rooms and direct chats.
     func backBadge(besides id: String) -> Int {
-        recent.unread(in: lists, besides: id)
+        lists.unread(besides: id)
+    }
+
+    /// The Rooms tab's groups, folded as on this phone.
+    var roomGroups: [ListSection] {
+        lists.roomGroups().map { group in
+            var group = group
+            group.folded = foldedGroups.contains(group.key)
+            return group
+        }
+    }
+
+    /// Fold or unfold the Rooms tab's group with this key, and remember it.
+    func toggleGroupFold(_ key: String) {
+        if foldedGroups.contains(key) {
+            foldedGroups.remove(key)
+        } else {
+            foldedGroups.insert(key)
+        }
+        defaults.set(foldedGroups.sorted(), forKey: Self.foldedGroupsKey)
     }
 
     /// Order the spaces' rooms by `sort`, from now on.
@@ -436,10 +437,12 @@ final class SessionModel: ObservableObject {
         forgetPlaces()
     }
 
-    /// The selected space and the recent rooms are the account's.
+    /// The selected space, the spaces' sections and the Rooms tab's folded
+    /// groups are the account's.
     private func forgetPlaces() {
         defaults.removeObject(forKey: Self.selectedSpaceKey)
-        defaults.removeObject(forKey: Self.recentKey)
+        defaults.removeObject(forKey: Self.foldedGroupsKey)
+        foldedGroups = []
         sectionLayouts.forget()
     }
 }
@@ -448,10 +451,10 @@ final class SessionModel: ObservableObject {
 enum HomeTab: Hashable {
     /// Direct chats.
     case chats
+    /// The rooms, by space.
+    case rooms
     /// The spaces and their rooms.
     case spaces
-    /// The last room, over the rooms opened lately.
-    case rooms
     case settings
 }
 

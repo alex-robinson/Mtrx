@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.items
@@ -478,7 +479,7 @@ private fun AddressRow(address: String?, server: String, onSave: (String) -> Uni
             .padding(horizontal = 16.dp, vertical = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Text("Address", Modifier.width(80.dp), style = MaterialTheme.typography.bodyLarge)
+        Text("Address", Modifier.widthIn(min = 80.dp).padding(end = 8.dp), style = MaterialTheme.typography.bodyLarge, maxLines = 1)
         OutlinedTextField(
             value = name,
             onValueChange = { name = it.trim().removePrefix("#") },

@@ -35,6 +35,9 @@ interface TimelineActions {
 
     fun showPersonInfo(userId: String)
 
+    /** The rooms shared with a direct chat's person [userId] are shown: load them. */
+    fun showSharedRooms(userId: String)
+
     fun clearError()
 
     fun saveTopic(topic: Topic)

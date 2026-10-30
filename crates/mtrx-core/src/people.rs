@@ -115,13 +115,19 @@ impl Session {
                 avatar: None,
             }
         });
+        let shared = self.shared_rooms(&user.id).await;
+        Ok(UserInfo { user, shared })
+    }
+
+    /// The joined rooms and spaces `user` is in too, direct chats included.
+    pub async fn shared_rooms(&self, user: &UserId) -> Vec<OwnedRoomId> {
         let mut shared = Vec::new();
         for room in self.client.joined_rooms() {
-            if is_member(&room, &user.id).await {
+            if is_member(&room, user).await {
                 shared.push(room.room_id().to_owned());
             }
         }
-        Ok(UserInfo { user, shared })
+        shared
     }
 }
 

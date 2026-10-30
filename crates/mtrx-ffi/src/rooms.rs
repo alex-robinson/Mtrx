@@ -305,6 +305,23 @@ impl Session {
         run(async move { Ok(session.remember_directory_server(&server).await?) }).await
     }
 
+    /// IDs of the joined rooms and spaces a user is in too (for a direct
+    /// chat's list of the rooms shared with the person), direct chats
+    /// included.
+    pub async fn shared_rooms(&self, user_id: String) -> Result<Vec<String>, MtrxError> {
+        let user = crate::error::user_id(&user_id)?;
+        let session = self.core();
+        run(async move {
+            Ok(session
+                .shared_rooms(&user)
+                .await
+                .iter()
+                .map(ToString::to_string)
+                .collect())
+        })
+        .await
+    }
+
     /// Whether new rooms may have co-owners (room version 12 offered).
     pub async fn offers_owners(&self) -> bool {
         let session = self.core();

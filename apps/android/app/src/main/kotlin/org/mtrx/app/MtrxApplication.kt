@@ -12,7 +12,6 @@ import org.mtrx.app.model.Account
 import org.mtrx.app.model.AccountState
 import org.mtrx.app.model.AesGcmSealer
 import org.mtrx.app.model.DataStorePush
-import org.mtrx.app.model.DataStoreRecent
 import org.mtrx.app.model.DataStoreSections
 import org.mtrx.app.model.DataStoreRoomSort
 import org.mtrx.app.model.DataStoreSelectedSpace
@@ -72,7 +71,6 @@ class MtrxApplication : Application() {
             push,
             notifications,
             DataStoreSharePresence(viewPreferences),
-            DataStoreRecent(viewPreferences),
             DataStoreSections(viewPreferences),
         )
         pushHandler = PushHandler(

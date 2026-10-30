@@ -3,7 +3,9 @@ import SwiftUI
 
 /// A room: its header (name and topic line), its timeline, newest at the
 /// bottom, who types, and the composer. The name opens the room's info,
-/// the topic line its topic panel.
+/// the topic line its topic panel; its space's picture, at the right, the
+/// space. A direct chat's `#` shows the rooms shared with the person over
+/// the timeline.
 struct RoomView: View {
     let room: RoomSummary
     @StateObject private var model: TimelineModel
@@ -16,6 +18,8 @@ struct RoomView: View {
     @State private var showsInfo = false
     /// The message to delete, once confirmed.
     @State private var deleting: String?
+    /// The rooms shared with a direct chat's person show.
+    @State private var showsShared = false
 
     init(
         room: RoomSummary, model: @autoclosure @escaping () -> TimelineModel,
@@ -48,14 +52,33 @@ struct RoomView: View {
                         openInfo: { showsInfo = true }, openTopic: { sheet = .topic })
                 }
             }
+            ToolbarItem(placement: .navigationBarTrailing) {
+                if model.person != nil {
+                    SharedRoomsButton(showing: showsShared) {
+                        if !showsShared {
+                            UIApplication.shared.sendAction(
+                                #selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+                        }
+                        withAnimation(.easeOut(duration: 0.2)) { showsShared.toggle() }
+                    }
+                } else if room.kind == .room, let space = session.lists.firstSpace(of: room.id) {
+                    SpaceButton(space: space) { session.open(space.id) }
+                }
+            }
+        }
+        .overlay {
+            if showsShared, let person = model.person {
+                SharedRoomsPanel(userId: person, name: room.name)
+                    .transition(.opacity)
+            }
         }
         .task { await model.open() }
         .task { await info.loadSettings() }
-        .onAppear {
-            model.setVisible(true)
-            session.opened(room)
+        .onAppear { model.setVisible(true) }
+        .onDisappear {
+            model.setVisible(false)
+            showsShared = false
         }
-        .onDisappear { model.setVisible(false) }
         .onChange(of: scenePhase) { phase in
             if phase != .active {
                 model.leftForeground()
@@ -98,7 +121,6 @@ struct RoomView: View {
 
     private var actions: RowActions {
         RowActions(
-            entries: model.actions(for:),
             perform: perform,
             react: { id, key in model.react(id, key: key) },
             goTo: { quote in Task { await model.goTo(eventId: quote.eventId) } },
@@ -156,7 +178,8 @@ struct RoomHeader: View {
                 Button(action: openTopic) {
                     HStack(spacing: 3) {
                         Image(systemName: "chevron.down")
-                            .font(.system(size: 9, weight: .bold))
+                            .font(.caption2.weight(.bold))
+                            .imageScale(.small)
                         Text(line)
                             .font(.caption)
                             .lineLimit(1)
@@ -196,6 +219,82 @@ private struct PersonHeader: View {
         .buttonStyle(.plain)
         .accessibilityElement(children: .combine)
         .accessibilityHint("Shows who this is")
+    }
+}
+
+/// A direct chat's `#`, filled while the rooms shared with the person show:
+/// shows or hides them.
+private struct SharedRoomsButton: View {
+    let showing: Bool
+    let toggle: () -> Void
+
+    var body: some View {
+        Button(action: toggle) {
+            Image(systemName: showing ? "number.square.fill" : "number")
+        }
+        .accessibilityLabel("Shared rooms")
+        .accessibilityValue(showing ? "Shown" : "Hidden")
+    }
+}
+
+/// A room's space (the first in the Spaces tab's order) at the right of its
+/// header: its small picture, which shows the space.
+private struct SpaceButton: View {
+    let space: RoomSummary
+    let open: () -> Void
+
+    var body: some View {
+        Button(action: open) {
+            AvatarView(name: space.name, uri: space.avatarUrl, size: 28, shape: .square)
+        }
+        .accessibilityLabel(space.name)
+        .accessibilityHint("Shows the space")
+    }
+}
+
+/// The rooms shared with a direct chat's person, over the timeline and the
+/// composer, under the header: grouped as in the Rooms tab (Home, then each
+/// space), newest first. A room opens in the Rooms tab, a space's heading
+/// shows the space.
+struct SharedRoomsPanel: View {
+    @EnvironmentObject private var session: SessionModel
+    let userId: String
+    /// The person's.
+    let name: String
+    /// The shared rooms' and spaces' IDs, once loaded.
+    @State private var shared: Set<String>?
+    @State private var error: String?
+
+    var body: some View {
+        Group {
+            if let shared {
+                RoomList(
+                    sections: session.lists.roomGroups(among: shared), searching: false, banner: false,
+                    openSettings: {}, opensInRooms: true, openSpace: { session.open($0) }
+                ) {
+                    Text("No rooms shared with \(name)")
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                        .padding()
+                }
+            } else if let error {
+                Text(error)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .padding()
+            } else {
+                ProgressView()
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color(.systemBackground))
+        .task {
+            do {
+                shared = Set(try await session.session.sharedRooms(userId: userId))
+            } catch {
+                self.error = errorMessage(error)
+            }
+        }
     }
 }
 
@@ -259,9 +358,9 @@ private struct RoomSheetView: View {
 
 /// The timeline, newest message at the bottom, older ones loading when its
 /// top comes into view. The scroll view is anchored at its bottom: it opens
-/// there, and rows added above (older ones) or below (new ones, while at
-/// the bottom) keep what is in view in place. Scrolled up, a button leads
-/// back to the bottom.
+/// there, stays there while new rows come and its height changes, and
+/// keeps what is in view in place as older rows load above. Scrolled up, a
+/// button leads back to the bottom.
 struct TimelineList: View {
     @ObservedObject var model: TimelineModel
     let actions: RowActions
@@ -316,13 +415,22 @@ struct TimelineList: View {
         LazyVStack(spacing: 0) {
             top
             ForEach(model.rows) { row in
-                TimelineRowView(row: row, highlighted: model.highlighted == row.id, actions: actions)
-                    .id(row.id)
+                TimelineRowView(
+                    row: row, menu: menu(row), highlighted: model.highlighted == row.id, actions: actions
+                )
+                .equatable()
+                .id(row.id)
             }
             bottom
         }
         .padding(.horizontal, 12)
-        .padding(.vertical, 8)
+        .padding(.top, 8)
+    }
+
+    /// A message's menu entries; none for other rows.
+    private func menu(_ row: TimelineRow) -> [MessageAction] {
+        guard case .message(let message) = row.content else { return [] }
+        return model.actions(for: message)
     }
 
     /// Above the oldest row: a spinner until the room's start.
@@ -339,11 +447,12 @@ struct TimelineList: View {
         .onDisappear { Task { await model.setTopVisible(false) } }
     }
 
-    /// Below the newest row, to scroll to; before iOS 18, whether the lazy
-    /// stack draws it says whether the timeline is at its bottom.
+    /// Below the newest row, the very end of the timeline, to scroll to;
+    /// before iOS 18, whether the lazy stack draws it says whether the
+    /// timeline is at its bottom.
     private var bottom: some View {
         Color.clear
-            .frame(height: 1)
+            .frame(height: 8)
             .id(Self.bottomId)
             .onAppear { model.setBottomDrawn(true) }
             .onDisappear { model.setBottomDrawn(false) }
@@ -353,61 +462,26 @@ struct TimelineList: View {
 /// Keeps the timeline at its bottom as it opens and while new messages
 /// come, and what is in view in place while older ones load above it. The
 /// scroll view's bottom anchor places it at the bottom as it opens, but
-/// does not keep it there: a scroll view keeps its offset as the rows below
-/// or its own height change. From iOS 18, while the timeline follows its
-/// bottom (`TimelineModel.followsBottom`), it goes back there whenever it
-/// is at rest and the scroll geometry says it is no longer (a message
-/// came, the keyboard or the composer grew, rows were measured). Before,
-/// the rows' changes are followed (iOS 17's anchor places it at the start).
+/// does not keep it there on every system (iOS 26 keeps its offset as the
+/// rows below or its own height change). From iOS 18 that is
+/// `FollowsEnd`'s. Before, the rows' changes are followed (iOS 17's anchor
+/// places it at the start).
 private struct AnchoredAtBottom: ViewModifier {
     @ObservedObject var model: TimelineModel
     let proxy: ScrollViewProxy
     let bottomId: String
     /// The oldest row, as last drawn.
     @State private var oldest: String?
-    /// Scrolled by hand, or moving on after it.
-    @State private var byHand = false
-    /// Scrolling, by hand or as asked (to the bottom, to a message).
-    @State private var moving = false
 
     func body(content: Content) -> some View {
         if #available(iOS 18, *) {
             content
                 .defaultScrollAnchor(.bottom)
-                .onScrollPhaseChange { _, phase in
-                    let hand = phase == .tracking || phase == .interacting || phase == .decelerating
-                    // Only a scroll by hand says whether to follow: the
-                    // keyboard or a size change may move it too.
-                    if byHand && !hand {
-                        model.scrollEnded()
-                    }
-                    byHand = hand
-                    moving = phase != .idle
-                    if !moving {
-                        follow()
-                    }
-                }
-                .onScrollGeometryChange(for: CGFloat.self) { geometry in
-                    // Short content sits at the bottom: nothing below is
-                    // hidden.
-                    geometry.contentSize.height - geometry.visibleRect.maxY
-                } action: { _, distance in
-                    model.scrolled(distanceFromBottom: distance)
-                    if !moving {
-                        follow()
-                    }
-                }
+                .modifier(FollowsEnd(model: model))
         } else if #available(iOS 17, *) {
             following(content.defaultScrollAnchor(.bottom))
         } else {
             following(content)
-        }
-    }
-
-    /// Back to the bottom, if following it and no longer there.
-    private func follow() {
-        if model.followsBottom && !model.atBottom {
-            proxy.scrollTo(bottomId, anchor: .bottom)
         }
     }
 
@@ -426,6 +500,82 @@ private struct AnchoredAtBottom: ViewModifier {
                 }
                 oldest = first
             }
+    }
+}
+
+/// While the timeline follows its bottom (`TimelineModel.followsBottom`),
+/// it goes to the very end of its content, at once, when the content or
+/// the view change their height (a message came, rows were measured, the
+/// keyboard or the composer moved) and when a scroll comes to rest; never
+/// as it is scrolled (by hand, to a message, or to the bottom by its
+/// button), nor when only its offset changed: that is a scroll by hand,
+/// whose phase may come later. It goes to the end's edge, where the scroll
+/// view's own anchor keeps it too, without animation: not to the last row
+/// (the lazy stack's estimate of where it is), animated with what moved
+/// it, from wherever each change found it, which had the timeline go up
+/// and down, and pull against a finger.
+@available(iOS 18, *)
+private struct FollowsEnd: ViewModifier {
+    @ObservedObject var model: TimelineModel
+    @State private var position = ScrollPosition(edge: .bottom)
+    /// How far the end is below the bottom of the view (negative: above).
+    @State private var distance: CGFloat = 0
+    /// Scrolled by hand, or moving on after it.
+    @State private var byHand = false
+    /// Scrolling, by hand or as asked (to the bottom, to a message).
+    @State private var moving = false
+
+    func body(content: Content) -> some View {
+        content
+            .scrollPosition($position)
+            .onScrollPhaseChange { old, phase in
+                let hand = phase == .tracking || phase == .interacting || phase == .decelerating
+                // Only a scroll by hand says whether to follow: the
+                // keyboard or a size change may move it too.
+                if byHand && !hand {
+                    model.scrollEnded()
+                }
+                byHand = hand
+                moving = phase != .idle
+                // Come to rest just short of the end, or a message came
+                // while scrolling to it.
+                if phase == .idle && old != .idle {
+                    follow()
+                }
+            }
+            .onScrollGeometryChange(for: Geometry.self) { geometry in
+                Geometry(
+                    content: geometry.contentSize.height, container: geometry.containerSize.height,
+                    // Short content sits at the bottom: nothing below is
+                    // hidden.
+                    distance: geometry.contentSize.height - geometry.visibleRect.maxY)
+            } action: { old, new in
+                distance = new.distance
+                model.scrolled(distanceFromBottom: new.distance)
+                // Moved alone, it is scrolled (by hand, before the phase
+                // may say so): not followed.
+                if new.content != old.content || new.container != old.container {
+                    follow()
+                }
+            }
+    }
+
+    private struct Geometry: Equatable {
+        var content: CGFloat
+        var container: CGFloat
+        /// How far the end is below the bottom of the view.
+        var distance: CGFloat
+    }
+
+    /// To the end, if following it, at rest and not there.
+    private func follow() {
+        if model.followsBottom && !moving && abs(distance) > 0.5 {
+            var jump = Transaction()
+            jump.disablesAnimations = true
+            withTransaction(jump) {
+                position.scrollTo(edge: .bottom)
+            }
+        }
     }
 }
 
@@ -467,13 +617,16 @@ struct TypingLine: View {
 }
 
 /// Writing a message (Markdown), or a reply or an edit, with a bar saying
-/// which and a button to cancel it.
+/// which and a button to cancel it. The field grows to six lines, three at
+/// the accessibility text sizes, leaving the timeline room.
 struct Composer: View {
     @Binding var draft: String
     let compose: TimelineModel.Compose?
     let cancel: () -> Void
     let send: () -> Void
     @FocusState private var focused: Bool
+    @ScaledMetric(relativeTo: .title) private var sendSize: CGFloat = 32
+    @Environment(\.dynamicTypeSize) private var textSize
 
     private var blank: Bool {
         draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -486,14 +639,14 @@ struct Composer: View {
             }
             HStack(alignment: .bottom, spacing: 8) {
                 TextField("Message", text: $draft, axis: .vertical)
-                    .lineLimit(1...6)
+                    .lineLimit(1...(textSize.isAccessibilitySize ? 3 : 6))
                     .focused($focused)
                     .padding(.horizontal, 14)
                     .padding(.vertical, 8)
                     .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 18))
                 Button(action: send) {
                     Image(systemName: compose.isEdit ? "checkmark.circle.fill" : "arrow.up.circle.fill")
-                        .font(.system(size: 32))
+                        .font(.system(size: sendSize))
                 }
                 .disabled(blank)
                 .accessibilityLabel(compose.isEdit ? "Save" : "Send")
