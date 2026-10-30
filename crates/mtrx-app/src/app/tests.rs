@@ -2966,6 +2966,8 @@ async fn drafts_stay_in_their_room() {
     let b = alice.create_room(new_room("b")).await.unwrap();
     let timeline = Arc::new(alice.timeline(&a).await.unwrap());
     let question = send(&timeline, "Coffee at three?").await;
+    // In the timeline as sent, to be answered.
+    key_of(&timeline, "Coffee at three?").await;
     let alice = Arc::new(alice);
     let mut main = Main::new(alice.clone());
     main.verified = Some(true);
