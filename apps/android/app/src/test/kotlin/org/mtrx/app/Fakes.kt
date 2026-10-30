@@ -260,6 +260,15 @@ class FakeSession : Session(NoHandle) {
         return profile ?: UserProfile(userId = userId, name = null, avatarUrl = null)
     }
 
+    /** [sharedRooms] gives these, by user; [sharedError] fails it. */
+    val shared = mutableMapOf<String, List<String>>()
+    var sharedError: MtrxException? = null
+
+    override suspend fun sharedRooms(userId: String): List<String> {
+        sharedError?.let { throw it }
+        return shared[userId].orEmpty()
+    }
+
     override suspend fun invite(roomId: String, userId: String) {
         inviteGate?.await()
         inviteError?.let { throw it }

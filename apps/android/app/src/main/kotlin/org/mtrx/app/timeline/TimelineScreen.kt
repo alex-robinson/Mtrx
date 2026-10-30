@@ -57,6 +57,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
@@ -92,6 +93,8 @@ import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
@@ -118,6 +121,8 @@ import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import org.mtrx.app.model.Images
+import org.mtrx.app.rooms.RoomGroup
+import org.mtrx.app.rooms.roomGroups
 import org.mtrx.app.ui.Avatar
 import org.mtrx.app.ui.BubbleColors
 import org.mtrx.app.ui.LocalOwnBubble
@@ -133,6 +138,7 @@ import uniffi.mtrx.Media
 import uniffi.mtrx.MediaKind
 import uniffi.mtrx.MessageKind
 import uniffi.mtrx.Presence
+import uniffi.mtrx.RoomListState
 import uniffi.mtrx.RoomSummary
 import uniffi.mtrx.SendState
 import uniffi.mtrx.TimelineEvent
@@ -173,6 +179,8 @@ data class TimelineState(
     val canPin: Boolean = false,
     /** The pinned messages while the topic panel shows; null while loading. */
     val pinned: List<EventRow>? = null,
+    /** A direct chat's rooms shared with the person, by space, while their panel shows; null while loading. */
+    val shared: List<RoomGroup>? = null,
 )
 
 /**
@@ -182,7 +190,9 @@ data class TimelineState(
  * and the person sheet, and [refreshPresence] when the sheet opens.
  * [backCount] on the back button: unread messages in the other rooms.
  * The room's name opens [onRoomInfo] (a direct chat's, its person); links of
- * the topic open with [onOpenLink].
+ * the topic open with [onOpenLink]. A direct chat's rooms shared with the
+ * person are grouped as [rooms] lists them; one opens with [onOpenRoom], a
+ * space with [onOpenSpace] (on the Spaces tab).
  */
 @Composable
 fun TimelineScreen(
@@ -191,12 +201,15 @@ fun TimelineScreen(
     images: Images,
     keysArriving: Boolean,
     spaces: List<RoomSummary>,
+    rooms: RoomListState,
     presences: Map<String, Presence>,
     refreshPresence: suspend (String) -> Unit,
     backCount: Long,
     onBack: () -> Unit,
     onRoomInfo: () -> Unit,
     onOpenLink: (String) -> Unit,
+    onOpenRoom: (String) -> Unit,
+    onOpenSpace: (String) -> Unit,
 ) {
     val rows by viewModel.rows.collectAsStateWithLifecycle()
     // At once, not at the next frame: the field compares its text with it.
@@ -210,6 +223,8 @@ fun TimelineScreen(
     val settings by viewModel.settings.collectAsStateWithLifecycle()
     val canPin by viewModel.canPin.collectAsStateWithLifecycle()
     val pinned by viewModel.pinned.collectAsStateWithLifecycle()
+    val sharedIds by viewModel.sharedRooms.collectAsStateWithLifecycle()
+    val shared = remember(sharedIds, rooms) { sharedIds?.let { roomGroups(rooms, only = it.toSet()) } }
     // The app may be ended in the background: the draft is kept first.
     LifecycleEventEffect(Lifecycle.Event.ON_STOP) { viewModel.keepDraft() }
     val state = TimelineState(
@@ -223,6 +238,7 @@ fun TimelineScreen(
         canEditTopic = settings?.canChangeTopic == true,
         canPin = canPin,
         pinned = pinned,
+        shared = shared,
     )
     TimelineContent(
         header,
@@ -236,6 +252,8 @@ fun TimelineScreen(
         onBack = onBack,
         onRoomInfo = onRoomInfo,
         onOpenLink = onOpenLink,
+        onOpenRoom = onOpenRoom,
+        onOpenSpace = onOpenSpace,
     )
 
     personInfo?.let { model ->
@@ -247,8 +265,10 @@ fun TimelineScreen(
 
 /**
  * The room screen as [state] says, without a model: the header with its
- * topic line and panel ([topicOpen] or [editingTopic] at first), the
- * timeline, the composer and the menus of messages.
+ * topic line and panel ([topicOpen] or [editingTopic] at first), or a
+ * direct chat's # and the panel of the rooms shared with the person
+ * ([sharedOpen] at first); the timeline, the composer and the menus of
+ * messages.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -264,8 +284,11 @@ fun TimelineContent(
     onBack: () -> Unit,
     onRoomInfo: () -> Unit,
     onOpenLink: (String) -> Unit,
+    onOpenRoom: (String) -> Unit,
+    onOpenSpace: (String) -> Unit,
     topicOpen: Boolean = false,
     editingTopic: Boolean = false,
+    sharedOpen: Boolean = false,
 ) {
     val rows = state.rows
     val listState = rememberLazyListState()
@@ -302,6 +325,21 @@ fun TimelineContent(
         if (panelOpen) actions.showPinned() else actions.hidePinned()
     }
     BackHandler(enabled = panelOpen) { panel = null }
+
+    // A direct chat's rooms shared with the person, over the timeline and
+    // the composer (the keyboard goes); loaded as the panel opens.
+    var sharing by remember { mutableStateOf(sharedOpen) }
+    val keyboard = LocalSoftwareKeyboardController.current
+    val focus = LocalFocusManager.current
+    val person = header.person
+    LaunchedEffect(sharing, person) {
+        if (sharing && person != null) {
+            focus.clearFocus()
+            keyboard?.hide()
+            actions.showSharedRooms(person)
+        }
+    }
+    BackHandler(enabled = sharing) { sharing = false }
 
     // Older events near the top (the reversed list's end).
     LaunchedEffect(listState) {
@@ -361,10 +399,7 @@ fun TimelineContent(
                             images,
                             topicLine = topicPreview(header.topic, state.canEditTopic),
                             topicOpen = panelOpen,
-                            onTitle = {
-                                val person = header.person
-                                if (person != null) actions.showPersonInfo(person) else onRoomInfo()
-                            },
+                            onTitle = { if (person != null) actions.showPersonInfo(person) else onRoomInfo() },
                             onTopic = { panel = if (panelOpen) null else TopicPanelMode.SHOWING },
                         )
                     },
@@ -379,12 +414,15 @@ fun TimelineContent(
                             }
                         }
                     },
+                    actions = {
+                        if (person != null) SharedRoomsButton(header.name, open = sharing, onClick = { sharing = !sharing })
+                    },
                 )
                 if (state.seeking) LinearProgressIndicator(Modifier.fillMaxWidth())
             }
         },
         bottomBar = {
-            Column {
+            if (!sharing) Column {
                 TypingLine(typingText(state.typing))
                 Composer(
                     draft = state.draft,
@@ -401,7 +439,7 @@ fun TimelineContent(
         // Back to the newest message, while away from it.
         floatingActionButton = {
             AnimatedVisibility(
-                visible = !atBottom,
+                visible = !atBottom && !sharing,
                 enter = fadeIn() + scaleIn(),
                 exit = fadeOut() + scaleOut(),
             ) {
@@ -455,6 +493,9 @@ fun TimelineContent(
                         actions.goToOriginal(eventId)
                     },
                 )
+            }
+            if (sharing) {
+                SharedRoomsPanel(header.name, state.shared, images, today, onOpenRoom = onOpenRoom, onOpenSpace = onOpenSpace)
             }
         }
     }
@@ -532,6 +573,24 @@ fun TimelineContent(
             },
             onDismiss = dismiss,
         )
+    }
+}
+
+/** A direct chat's #: the rooms shared with the person ([name]), highlighted while [open]. */
+@Composable
+private fun SharedRoomsButton(name: String, open: Boolean, onClick: () -> Unit) {
+    IconButton(
+        onClick = onClick,
+        colors = if (open) {
+            IconButtonDefaults.iconButtonColors(
+                containerColor = MaterialTheme.colorScheme.primaryContainer,
+                contentColor = MaterialTheme.colorScheme.primary,
+            )
+        } else {
+            IconButtonDefaults.iconButtonColors()
+        },
+    ) {
+        Icon(MtrxIcons.Hash, contentDescription = if (open) "Hide the rooms shared with $name" else "Rooms shared with $name")
     }
 }
 

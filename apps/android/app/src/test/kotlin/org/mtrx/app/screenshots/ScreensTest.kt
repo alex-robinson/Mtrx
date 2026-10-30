@@ -23,6 +23,7 @@ import org.mtrx.app.rooms.NewRoomForm
 import org.mtrx.app.rooms.OverviewRooms
 import org.mtrx.app.rooms.RoomInfoContent
 import org.mtrx.app.rooms.SpaceOverviewContent
+import org.mtrx.app.rooms.RoomGroup
 import org.mtrx.app.rooms.roomGroups
 import org.mtrx.app.rooms.roomsUnread
 import org.mtrx.app.rooms.SectionPrefs
@@ -139,6 +140,13 @@ class ScreensTest {
 
     @Test
     fun topicEditor() = snap("topic-editor") { Room(editingTopic = true) }
+
+    // Coffee at Home, three rooms in Ice team, Papers again in Outreach.
+    @Test
+    fun sharedRooms() = snap("shared-rooms") { SharedRooms(roomGroups(rooms, only = setOf(ICE, SEA, PAPERS, LOOSE, CODE))) }
+
+    @Test
+    fun noSharedRooms() = snap("shared-rooms-none") { SharedRooms(emptyList()) }
 
     @Test
     fun memberMenu() = snap("member-menu") {
@@ -322,8 +330,33 @@ private fun Room(topicOpen: Boolean = false, editingTopic: Boolean = false) {
             onBack = {},
             onRoomInfo = {},
             onOpenLink = {},
+            onOpenRoom = {},
+            onOpenSpace = {},
             topicOpen = topicOpen,
             editingTopic = editingTopic,
+        )
+    }
+}
+
+/** A direct chat with Bob, its panel of the rooms shared with him open ([shared] by space). */
+@Composable
+private fun SharedRooms(shared: List<RoomGroup>) {
+    HomeFrame(HomeTab.Chats, badges, onTab = {}, showTopBar = false) {
+        TimelineContent(
+            RoomHeader(name = "Bob Berg", avatarUrl = null, seed = bob, person = bob),
+            TimelineState(rows = timelineRows(conversation), shared = shared),
+            NoTimelineActions,
+            images,
+            keysArriving = false,
+            presence = null,
+            backCount = 6,
+            scrollTo = emptyFlow(),
+            onBack = {},
+            onRoomInfo = {},
+            onOpenLink = {},
+            onOpenRoom = {},
+            onOpenSpace = {},
+            sharedOpen = true,
         )
     }
 }

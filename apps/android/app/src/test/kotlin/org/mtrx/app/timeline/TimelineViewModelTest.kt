@@ -64,6 +64,20 @@ class TimelineViewModelTest {
     }
 
     @Test
+    fun theRoomsSharedWithThePersonLoadAsTheirPanelOpens() = runTest {
+        session.shared["@bob:x"] = listOf("!lab:x", "!team:x")
+        val viewModel = viewModel()
+        assertNull(viewModel.sharedRooms.value)
+        viewModel.showSharedRooms("@bob:x")
+        assertEquals(listOf("!lab:x", "!team:x"), viewModel.sharedRooms.value)
+        // Failing: none, and why.
+        session.sharedError = MtrxException.Other("offline")
+        viewModel.showSharedRooms("@bob:x")
+        assertEquals(emptyList<String>(), viewModel.sharedRooms.value)
+        assertEquals("offline", viewModel.error.value)
+    }
+
+    @Test
     fun personInfoOpensOnceAndCloses() = runTest {
         session.profile = UserProfile(userId = "@bob:x", name = "Bob", avatarUrl = null)
         val viewModel = viewModel()

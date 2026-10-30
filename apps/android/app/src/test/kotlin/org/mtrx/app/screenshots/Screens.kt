@@ -264,6 +264,7 @@ object NoTimelineActions : TimelineActions {
     override fun discard(itemId: String) {}
     override fun goToOriginal(eventId: String) {}
     override fun showPersonInfo(userId: String) {}
+    override fun showSharedRooms(userId: String) {}
     override fun clearError() {}
     override fun saveTopic(topic: Topic) {}
     override fun setPinned(eventId: String, pin: Boolean) {}

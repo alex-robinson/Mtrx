@@ -131,8 +131,8 @@ fun SignedInNavigation(account: Account, push: PushRegistration, signedIn: Accou
                     account.verifyWithAnotherDevice()
                     openVerification()
                 },
-                roomPane = { roomId, backCount, onBack ->
-                    RoomPane(account, signedIn, info, rooms, roomId, backCount, onBack, openLink) {
+                roomPane = { roomId, backCount, onBack, openSpace ->
+                    RoomPane(account, signedIn, info, rooms, roomId, backCount, onBack, openLink, openRoom, openSpace) {
                         nav.navigate("info/${Uri.encode(roomId)}")
                     }
                 },
@@ -266,7 +266,8 @@ private fun names(rooms: RoomListState): Map<String, String> = rooms.rooms.assoc
 
 /**
  * A room in a tab: its timeline (opened while it shows, its draft kept on
- * this device), or for an invite, Accept and Decline.
+ * this device), or for an invite, Accept and Decline. Rooms and spaces it
+ * leads to open with [openRoom] and [openSpace].
  */
 @Composable
 private fun RoomPane(
@@ -278,6 +279,8 @@ private fun RoomPane(
     backCount: Long,
     onBack: () -> Unit,
     openLink: (String) -> Unit,
+    openRoom: (String) -> Unit,
+    openSpace: (String) -> Unit,
     onRoomInfo: () -> Unit,
 ) {
     val room = rooms.rooms.firstOrNull { it.id == roomId }
@@ -332,12 +335,15 @@ private fun RoomPane(
             signedIn.images,
             keysArriving = encryption?.keysArriving == true,
             spaces = remember(rooms) { topLevelSpaces(rooms) },
+            rooms = rooms,
             presences = presences,
             refreshPresence = signedIn.presence::refresh,
             backCount = backCount,
             onBack = onBack,
             onRoomInfo = onRoomInfo,
             onOpenLink = openLink,
+            onOpenRoom = openRoom,
+            onOpenSpace = openSpace,
         )
     }
 }

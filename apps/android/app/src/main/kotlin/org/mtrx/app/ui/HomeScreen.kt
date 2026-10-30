@@ -109,7 +109,7 @@ fun HomeScreen(
     routes: HomeRoutes,
     onEnterRecoveryKey: () -> Unit,
     onVerify: () -> Unit,
-    roomPane: @Composable (roomId: String, backCount: Long, onBack: () -> Unit) -> Unit,
+    roomPane: @Composable (roomId: String, backCount: Long, onBack: () -> Unit, openSpace: (String) -> Unit) -> Unit,
 ) {
     val list by account.rooms.collectAsStateWithLifecycle()
     val presences by presence.presences.collectAsStateWithLifecycle()
@@ -143,7 +143,7 @@ fun HomeScreen(
     val roomsList = rememberLazyListState()
     val spaceRoomsList = rememberSaveable(selected?.key, saver = LazyListState.Saver) { LazyListState() }
     val showSpaces: () -> Unit = { scope.launch { pager.animateScrollToPage(0) } }
-    // A space's heading on Rooms: the space's rooms on Spaces.
+    // A space's heading on Rooms (or in a room): the space's rooms on Spaces.
     val openSpace: (String) -> Unit = { id ->
         val entry = SpaceEntry.Space(id)
         nav.tab = HomeTab.Spaces
@@ -242,7 +242,7 @@ fun HomeScreen(
         }
         when (nav.tab) {
             HomeTab.Chats -> if (chat != null) {
-                roomPane(chat, 0L) { nav.chat = null }
+                roomPane(chat, 0L, { nav.chat = null }, openSpace)
             } else {
                 ChatList(
                     notes,
@@ -279,7 +279,7 @@ fun HomeScreen(
                 }
             }
             HomeTab.Rooms -> if (room != null) {
-                roomPane(room, roomsUnread(list, except = room)) { nav.room = null }
+                roomPane(room, roomsUnread(list, except = room), { nav.room = null }, openSpace)
             } else {
                 RoomGroupsList(
                     groups,
