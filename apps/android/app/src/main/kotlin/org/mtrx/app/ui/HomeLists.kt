@@ -29,7 +29,6 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -56,8 +55,9 @@ import uniffi.mtrx.RoomSummary
 
 /**
  * The Chats tab: the Notes to self at the top where pinned there ([notes]),
- * then the direct chats, with the people's presence; a pencil on those with
- * a draft ([drafts], room IDs).
+ * then the direct chats, with the people's presence and the spaces shared
+ * with them ([spaces], by room ID); a pencil on those with a draft
+ * ([drafts], room IDs).
  */
 @Composable
 fun ChatList(
@@ -68,6 +68,7 @@ fun ChatList(
     today: LocalDate,
     onOpenRoom: (RoomSummary) -> Unit,
     presenceOf: (RoomSummary) -> Presence?,
+    spaces: Map<String, List<String>> = emptyMap(),
     drafts: Set<String> = emptySet(),
     state: LazyListState = rememberLazyListState(),
 ) {
@@ -77,7 +78,15 @@ fun ChatList(
         else -> LazyColumn(Modifier.fillMaxSize(), state = state) {
             notesRow(notes, images, today, drafts, onOpenRoom)
             items(rooms, key = { it.id }) { room ->
-                RoomRow(room, images, today, onClick = { onOpenRoom(room) }, presence = presenceOf(room), draft = room.id in drafts)
+                RoomRow(
+                    room,
+                    images,
+                    today,
+                    onClick = { onOpenRoom(room) },
+                    presence = presenceOf(room),
+                    spaces = spaces[room.id],
+                    draft = room.id in drafts,
+                )
             }
         }
     }
@@ -150,9 +159,10 @@ fun SpaceRoomsList(
 
 /**
  * The Rooms tab's [groups] (and a direct chat's rooms shared with the
- * person): each under a heading with its unread count, a space's opening it
- * on the Spaces tab ([onOpenSpace], its ID); a pencil on the rooms with a
- * draft ([drafts]). [empty] says there are none.
+ * person): each under a heading, a space's opening it on the Spaces tab
+ * ([onOpenSpace], its ID); with [onFold] (the group's key), a caret at the
+ * left folds it, and only a folded one shows its unread count. A pencil on the
+ * rooms with a draft ([drafts]). [empty] says there are none.
  */
 @Composable
 fun RoomGroupsList(
@@ -162,6 +172,7 @@ fun RoomGroupsList(
     today: LocalDate,
     onOpenRoom: (RoomSummary) -> Unit,
     onOpenSpace: (String) -> Unit,
+    onFold: ((String) -> Unit)? = null,
     drafts: Set<String> = emptySet(),
     empty: String = "No rooms",
     state: LazyListState = rememberLazyListState(),
@@ -172,8 +183,14 @@ fun RoomGroupsList(
         else -> LazyColumn(Modifier.fillMaxSize(), state = state) {
             for (group in groups) {
                 item(key = "group:${group.key}", contentType = "group") {
-                    GroupHeading(group, images, onClick = group.space?.let { space -> { onOpenSpace(space.id) } })
+                    GroupHeading(
+                        group,
+                        images,
+                        onOpen = group.space?.let { space -> { onOpenSpace(space.id) } },
+                        onFold = onFold?.let { fold -> { fold(group.key) } },
+                    )
                 }
+                if (group.folded) continue
                 items(group.rooms, key = { "${group.key}/${it.id}" }, contentType = { "room" }) { room ->
                     RoomRow(room, images, today, onClick = { onOpenRoom(room) }, draft = room.id in drafts)
                 }
@@ -183,22 +200,44 @@ fun RoomGroupsList(
 }
 
 /**
- * A group's heading: the space's small picture (a house for Home), its
- * name and unread count; tapped ([onClick], for a space), a caret.
+ * A group's heading: with [onFold], a caret (down while unfolded) that
+ * folds it; the space's small picture (a house for Home), its name, and
+ * its unread count while folded (always if it does not fold). The name
+ * opens the space ([onOpen], with a caret after it); Home's, without one,
+ * folds it too.
  */
 @Composable
-private fun GroupHeading(group: RoomGroup, images: Images, onClick: (() -> Unit)?) {
+private fun GroupHeading(group: RoomGroup, images: Images, onOpen: (() -> Unit)?, onFold: (() -> Unit)?) {
+    val foldLabel = if (group.folded) "Unfold" else "Fold"
+    // As tall as the name, at any text size.
+    val iconSize = linesHeight(MaterialTheme.typography.titleSmall)
     Row(
         Modifier
             .fillMaxWidth()
-            .let { if (onClick != null) it.clickable(onClickLabel = "Open the space", onClick = onClick) else it }
-            .padding(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 4.dp),
+            .padding(start = if (onFold != null) 0.dp else 16.dp, end = 16.dp, top = 12.dp, bottom = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        // The name and caret at the left, the count at the right edge (as the rooms').
-        Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
-            // As tall as the name, at any text size.
-            val iconSize = linesHeight(MaterialTheme.typography.titleSmall)
+        if (onFold != null) {
+            Box(
+                Modifier
+                    .clickable(onClickLabel = foldLabel, onClick = onFold)
+                    .padding(start = 8.dp, end = 4.dp, top = 4.dp, bottom = 4.dp),
+            ) {
+                Icon(
+                    if (group.folded) Icons.AutoMirrored.Filled.KeyboardArrowRight else Icons.Filled.KeyboardArrowDown,
+                    contentDescription = foldLabel,
+                    modifier = Modifier.size(20.dp),
+                    tint = MaterialTheme.colorScheme.primary,
+                )
+            }
+        }
+        // The name at the left, the count at the right edge (as the rooms').
+        val tap = when {
+            onOpen != null -> Modifier.clickable(onClickLabel = "Open the space", onClick = onOpen)
+            onFold != null -> Modifier.clickable(onClickLabel = foldLabel, onClick = onFold)
+            else -> Modifier
+        }
+        Row(Modifier.weight(1f).then(tap), verticalAlignment = Alignment.CenterVertically) {
             val space = group.space
             if (space != null) {
                 Avatar(space.name, space.avatarUrl, space.id, images, size = iconSize, shape = RoundedCornerShape(4.dp))
@@ -214,7 +253,7 @@ private fun GroupHeading(group: RoomGroup, images: Images, onClick: (() -> Unit)
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
-            if (onClick != null) {
+            if (onOpen != null) {
                 Icon(
                     Icons.AutoMirrored.Filled.KeyboardArrowRight,
                     contentDescription = null,
@@ -223,7 +262,8 @@ private fun GroupHeading(group: RoomGroup, images: Images, onClick: (() -> Unit)
                 )
             }
         }
-        if (group.unread > 0) UnreadBadge(group.unread, group.mentions)
+        // Unfolded, its rooms show their own.
+        if ((onFold == null || group.folded) && group.unread > 0) UnreadBadge(group.unread, group.mentions)
     }
 }
 
@@ -295,7 +335,7 @@ private fun SpaceRowItem(row: SpaceRow, selected: Boolean, images: Images, onCli
                         .background(MaterialTheme.colorScheme.surfaceVariant),
                     contentAlignment = Alignment.Center,
                 ) {
-                    Icon(Icons.AutoMirrored.Filled.List, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Icon(Icons.Filled.Home, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
         },
@@ -315,8 +355,9 @@ private fun SpaceRowItem(row: SpaceRow, selected: Boolean, images: Images, onCli
 
 /**
  * A room in a compact row: avatar (with [presence]'s dot), name, a grey
- * line ([subtitle], else what the room is), its last activity, and below
- * it a small grey pencil if it has a [draft] and the unread count.
+ * line (what the room is; for a direct chat the [spaces] shared with the
+ * person, if any), its last activity, and below it a small grey pencil if
+ * it has a [draft] and the unread count.
  */
 @Composable
 fun RoomRow(
@@ -325,19 +366,22 @@ fun RoomRow(
     today: LocalDate,
     onClick: () -> Unit,
     presence: Presence? = null,
-    subtitle: String? = null,
+    spaces: List<String>? = null,
     draft: Boolean = false,
 ) {
     val badge = unreadBadge(room)
     val activity = room.lastActivity
-    val line = subtitle?.ifEmpty { null } ?: when {
+    val line = when {
+        spaces != null -> listOfNotNull("Invited".takeIf { room.invited }, spaces.joinToString(", ").ifEmpty { null })
+            .joinToString(" · ")
+            .ifEmpty { null }
         room.invited -> "Invited"
         room.kind == RoomKind.SPACE -> "Space"
         else -> room.topic?.lineSequence()?.firstOrNull { it.isNotBlank() } ?: room.alias
     }
     CompactRow(
         title = room.name,
-        subtitle = if (subtitle != null && room.invited) listOfNotNull("Invited", line).distinct().joinToString(" · ") else line,
+        subtitle = line,
         onClick = onClick,
         bold = room.unreadMessages > 0uL,
         leading = {

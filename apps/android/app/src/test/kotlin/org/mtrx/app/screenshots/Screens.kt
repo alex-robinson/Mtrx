@@ -116,7 +116,7 @@ val rooms = uniffi.mtrx.RoomListState(
                 RoomSection("low_priority", SectionKind.LOW_PRIORITY, "", listOf(ARCHIVE)),
             ),
         ),
-        SpaceRooms(spaceId = OUTREACH, roomIds = listOf(PAPERS, TEACHING, "!notes:example.org")),
+        SpaceRooms(spaceId = OUTREACH, roomIds = listOf("!with-bob:example.org", PAPERS, TEACHING, "!notes:example.org")),
     ),
     roomsOutsideSpaces = listOf(WORKSHOP, LOOSE),
     notesAtTop = true,
@@ -187,11 +187,11 @@ val conversation = listOf(
         "3",
         bob,
         "Bob Berg",
-        "Nice! Can you put the plots in the drive before the call?",
+        "Nice! Can you put the plots in https://drive.example.org/ice before the call?",
         at(9, 40),
         reactions = listOf(Reaction(key = "👍", count = 2uL, byUs = true, senders = emptyList())),
     ),
-    say("4", ME, "Me", "I'll add them to the paper draft too.", at(10, 2), own = true),
+    say("4", ME, "Me", "I'll add them to the paper draft too: www.overleaf.com/project/ice", at(10, 2), own = true),
     say("5", ana, "Ana Alves", "Done, they're in the Figures folder.", at(10, 30)),
     // Ours: a reply with a reaction, and a deleted one.
     say(

@@ -26,6 +26,7 @@ import org.mtrx.app.rooms.SpaceOverviewContent
 import org.mtrx.app.rooms.RoomGroup
 import org.mtrx.app.rooms.chatsUnread
 import org.mtrx.app.rooms.roomGroups
+import org.mtrx.app.rooms.sharedSpaces
 import org.mtrx.app.rooms.roomsUnread
 import org.mtrx.app.rooms.SectionPrefs
 import org.mtrx.app.rooms.chatList
@@ -75,7 +76,7 @@ open class ScreensTest {
     fun chats() = snap("chats-notes-at-top") {
         val (notes, chats) = chatList(rooms)
         HomeFrame(HomeTab.Chats, badges, onTab = {}) {
-            ChatList(notes, chats, loaded = true, images, today, onOpenRoom = {}, presenceOf = { null }, drafts = drafts)
+            ChatList(notes, chats, loaded = true, images, today, onOpenRoom = {}, presenceOf = { null }, spaces = sharedSpaces(rooms), drafts = drafts)
         }
     }
 
@@ -122,11 +123,11 @@ open class ScreensTest {
         }
     }
 
-    // Home, then the spaces, each newest first; Papers in both spaces.
+    // Home, then the spaces, each newest first; Outreach folded, with its count.
     @Test
     fun roomsTab() = snap("rooms-groups") {
         HomeFrame(HomeTab.Rooms, badges, onTab = {}) {
-            RoomGroupsList(roomGroups(rooms), loaded = true, images, today, onOpenRoom = {}, onOpenSpace = {}, drafts = drafts)
+            RoomGroupsList(roomGroups(rooms, folded = setOf(OUTREACH)), loaded = true, images, today, onOpenRoom = {}, onOpenSpace = {}, onFold = {}, drafts = drafts)
         }
     }
 

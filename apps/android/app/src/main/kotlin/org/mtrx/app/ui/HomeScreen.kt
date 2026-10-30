@@ -70,7 +70,9 @@ import org.mtrx.app.rooms.chatList
 import org.mtrx.app.rooms.sectionChoices
 import org.mtrx.app.rooms.spaceList
 import org.mtrx.app.rooms.chatsUnread
+import org.mtrx.app.rooms.foldedGroups
 import org.mtrx.app.rooms.roomGroups
+import org.mtrx.app.rooms.sharedSpaces
 import org.mtrx.app.rooms.roomsUnread
 import org.mtrx.app.rooms.shownRoom
 import org.mtrx.app.rooms.spaceRows
@@ -125,12 +127,13 @@ fun HomeScreen(
     val today = remember(list) { LocalDate.now() }
     val sectionPrefs by account.sections.prefs.collectAsStateWithLifecycle()
     val (notes, chatRooms) = remember(list) { chatList(list) }
+    val chatSpaces = remember(list) { sharedSpaces(list) }
     val spaceEntries = remember(list) { spaceRows(list) }
     val sections = remember(list, selected, sort, sectionPrefs) {
         selected?.let { spaceList(list, it, sectionPrefs[it.key], sort) } ?: SectionedList(null, emptyList())
     }
     var showing by rememberSaveable { mutableStateOf(false) }
-    val groups = remember(list) { roomGroups(list) }
+    val groups = remember(list, sectionPrefs) { roomGroups(list, folded = foldedGroups(sectionPrefs)) }
     val drafts = remember(list) { list.drafts.toSet() }
     val badges = mapOf(
         HomeTab.Chats to chatsUnread(list),
@@ -256,6 +259,7 @@ fun HomeScreen(
                     today,
                     onOpenRoom = open,
                     presenceOf = { directPerson(it, info.userId)?.let { person -> presences[person] } },
+                    spaces = chatSpaces,
                     drafts = drafts,
                     state = chatsList,
                 )
@@ -292,6 +296,7 @@ fun HomeScreen(
                     today,
                     onOpenRoom = open,
                     onOpenSpace = openSpace,
+                    onFold = account.sections::toggleGroupFold,
                     drafts = drafts,
                     state = roomsList,
                 )
@@ -364,7 +369,7 @@ private fun Tabs(tab: HomeTab, badges: Map<HomeTab, Long>, onTab: (HomeTab) -> U
     }
 }
 
-/** The space's name over its rooms, tapped for its overview (none for Other rooms). */
+/** The space's name over its rooms, tapped for its overview (none for Home). */
 @Composable
 fun SpaceTitle(name: String, onClick: (() -> Unit)?) {
     Row(

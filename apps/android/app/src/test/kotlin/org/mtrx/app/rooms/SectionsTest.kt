@@ -140,15 +140,29 @@ class SectionsTest {
     }
 
     @Test
-    fun theSpacesOwnRoomsWithoutSectionsAndOtherRooms() {
+    fun theRoomsTabsGroupsFoldPerSpaceHomeToo() = runTest {
+        val store = FakeSectionStore()
+        val layouts = SectionLayouts(store, scope())
+        layouts.toggleGroupFold("!s:x")
+        layouts.toggleGroupFold(SpaceEntry.Home.key)
+        layouts.toggleFold("!t:x", "rooms")
+        assertEquals(setOf("!s:x", SpaceEntry.Home.key), foldedGroups(store.saved!!))
+        // Its sections' folding apart.
+        assertEquals(SectionPrefs(groupFolded = true), store.saved!!["!s:x"])
+        layouts.toggleGroupFold("!s:x")
+        assertEquals(setOf(SpaceEntry.Home.key), foldedGroups(SectionLayouts(store, scope()).prefs.value))
+    }
+
+    @Test
+    fun theSpacesOwnRoomsWithoutSectionsAndHome() {
         val plain = RoomListState(
             rooms = listOf(summary("!inv:x", invited = true), summary("!a:x"), summary("!d:x", RoomKind.DIRECT, directUserId = "@d:x")),
             loaded = true,
             roomsOutsideSpaces = listOf("!inv:x", "!a:x"),
         )
-        val other = spaceList(plain, SpaceEntry.OtherRooms, null, RoomSort.DEFAULT)
-        assertNull(other.notes)
-        assertEquals(listOf("Invites", "Rooms"), other.sections.map { it.title })
+        val home = spaceList(plain, SpaceEntry.Home, null, RoomSort.DEFAULT)
+        assertNull(home.notes)
+        assertEquals(listOf("Invites", "Rooms"), home.sections.map { it.title })
     }
 
     @Test

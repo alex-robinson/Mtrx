@@ -67,9 +67,9 @@ class SpaceSelectionTest {
         val store = FakeSpaceStore()
         val rooms = MutableStateFlow(SpacesFixture.state())
         val selection = SpaceSelection(store, rooms, scope())
-        selection.select(SpaceEntry.OtherRooms)
-        assertEquals(SpaceEntry.OtherRooms, selection.selected.value)
-        assertEquals(SpaceEntry.OtherRooms, store.saved)
+        selection.select(SpaceEntry.Home)
+        assertEquals(SpaceEntry.Home, selection.selected.value)
+        assertEquals(SpaceEntry.Home, store.saved)
 
         rooms.value = SpacesFixture.state().copy(roomsOutsideSpaces = emptyList())
         assertNull(selection.selected.value)

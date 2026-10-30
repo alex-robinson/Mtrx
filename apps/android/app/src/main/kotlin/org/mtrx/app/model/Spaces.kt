@@ -9,34 +9,34 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import uniffi.mtrx.RoomListState
 
-/** An entry of the Spaces tab's spaces page: a top-level space, or the rooms outside spaces. */
+/** An entry of the Spaces tab's spaces page: a top-level space, or Home, the rooms outside spaces. */
 sealed interface SpaceEntry {
     data class Space(val id: String) : SpaceEntry
 
-    data object OtherRooms : SpaceEntry
+    data object Home : SpaceEntry
 
     /** As saved in the preferences. */
     val key: String
         get() = when (this) {
             is Space -> id
-            OtherRooms -> OTHER_ROOMS
+            Home -> HOME
         }
 
     companion object {
-        /** The key of [OtherRooms]; room IDs start with "!". */
-        const val OTHER_ROOMS = "other-rooms"
+        /** The key of [Home], as saved since it was "Other rooms"; room IDs start with "!". */
+        const val HOME = "other-rooms"
 
-        fun fromKey(key: String): SpaceEntry = if (key == OTHER_ROOMS) OtherRooms else Space(key)
+        fun fromKey(key: String): SpaceEntry = if (key == HOME) Home else Space(key)
     }
 }
 
 /**
  * The IDs of the rooms [entry] lists, in the order of `rooms`; null while it
- * is not on the spaces page ("Other rooms" is left out while empty).
+ * is not on the spaces page (Home is left out while empty).
  */
 fun RoomListState.roomIdsOf(entry: SpaceEntry): List<String>? = when (entry) {
     is SpaceEntry.Space -> spaces.firstOrNull { it.spaceId == entry.id }?.roomIds
-    SpaceEntry.OtherRooms -> roomsOutsideSpaces.ifEmpty { null }
+    SpaceEntry.Home -> roomsOutsideSpaces.ifEmpty { null }
 }
 
 /** Where the selected space is kept across launches. */
@@ -116,7 +116,7 @@ class SpaceSelection(
     }
 }
 
-/** The order of a space's rooms and direct messages (and of "Other rooms"). */
+/** The order of a space's rooms and direct messages (and of Home's). */
 enum class RoomSort(val label: String) {
     /** The room list's: most recently active first. */
     DEFAULT("Default"),

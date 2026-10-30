@@ -99,6 +99,13 @@ import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.CustomAccessibilityAction
+import androidx.compose.ui.semantics.customActions
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.ui.text.TextLayoutResult
+import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextRange
@@ -170,6 +177,7 @@ private class RowHandlers(
     val react: (String, String) -> Unit,
     val showReactors: (String, String) -> Unit,
     val showReaders: (String) -> Unit,
+    val openLink: (String) -> Unit,
 )
 
 /** What the room screen shows, from its model's flows. */
@@ -379,6 +387,7 @@ fun TimelineContent(
 
     val canPin by rememberUpdatedState(state.canPin)
     val pinnedIds by rememberUpdatedState(header.pinned)
+    val openLink by rememberUpdatedState(onOpenLink)
     val handlers = remember(actions) {
         RowHandlers(
             hold = { row ->
@@ -392,6 +401,7 @@ fun TimelineContent(
             react = actions::react,
             showReactors = { rowId, key -> overlay = Overlay.Reactors(rowId, key) },
             showReaders = { rowId -> overlay = Overlay.Readers(rowId) },
+            openLink = { url -> openLink(url) },
         )
     }
 
@@ -810,7 +820,7 @@ private fun EventBubble(row: EventRow, images: Images, highlighted: Boolean, key
     val colors = if (own) {
         LocalOwnBubble.current
     } else {
-        MaterialTheme.colorScheme.let { BubbleColors(it.surfaceVariant, it.onSurfaceVariant, it.onSurfaceVariant) }
+        MaterialTheme.colorScheme.let { BubbleColors(it.surfaceVariant, it.onSurfaceVariant, it.onSurfaceVariant, it.primary) }
     }
     Column(
         Modifier
@@ -859,7 +869,16 @@ private fun EventBubble(row: EventRow, images: Images, highlighted: Boolean, key
                     ) {
                         Column(Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
                             row.quote?.let { QuoteBlock(it, colors.secondary, handlers.goTo) }
-                            MessageBody(event, row.edited, name, images, keysArriving, colors.secondary)
+                            MessageBody(
+                                event,
+                                row.edited,
+                                name,
+                                images,
+                                keysArriving,
+                                colors,
+                                onOpenLink = handlers.openLink,
+                                onHold = { handlers.hold(row) },
+                            )
                             Text(
                                 timeOfDay(event.timestamp),
                                 style = MaterialTheme.typography.labelSmall,
@@ -1038,12 +1057,31 @@ private fun ReadersLine(readers: Readers, images: Images, onClick: () -> Unit, m
     }
 }
 
-/** A message's content; notices, deleted and undecryptable messages in the bubble's [secondary] colour. */
+/**
+ * A message's content; notices, deleted and undecryptable messages in the
+ * bubble's secondary colour. Web addresses in its text are links in the
+ * bubble's link colour, tapped with [onOpenLink]; a hold on the text is
+ * [onHold], as on the bubble.
+ */
 @Composable
-private fun MessageBody(event: TimelineEvent, edited: Boolean, name: String, images: Images, keysArriving: Boolean, secondary: Color) {
-    // "(edited)", muted, after the text.
+private fun MessageBody(
+    event: TimelineEvent,
+    edited: Boolean,
+    name: String,
+    images: Images,
+    keysArriving: Boolean,
+    colors: BubbleColors,
+    onOpenLink: (String) -> Unit,
+    onHold: () -> Unit,
+) {
+    val secondary = colors.secondary
+    // Its links, and "(edited)", muted, after the text.
     fun text(body: String) = buildAnnotatedString {
         append(body)
+        for (link in findLinks(body)) {
+            addStyle(SpanStyle(color = colors.link, textDecoration = TextDecoration.Underline), link.start, link.end)
+            addStringAnnotation(URL_TAG, link.url, link.start, link.end)
+        }
         if (edited) withStyle(SpanStyle(color = secondary, fontStyle = FontStyle.Normal)) { append(" (edited)") }
     }
     when (val content = event.content) {
@@ -1053,12 +1091,12 @@ private fun MessageBody(event: TimelineEvent, edited: Boolean, name: String, ima
             when {
                 media != null && (media.kind == MediaKind.IMAGE || media.kind == MediaKind.VIDEO) -> {
                     MediaPreview(media, images)
-                    messageText(message)?.let { Text(text(it), Modifier.padding(top = 6.dp)) }
+                    messageText(message)?.let { LinkedText(text(it), onOpenLink, onHold, Modifier.padding(top = 6.dp)) }
                 }
                 media != null -> Text("${media.filename}${fileSize(media)}", fontStyle = FontStyle.Italic)
-                message.kind == MessageKind.EMOTE -> Text(text("* $name ${message.body}"), fontStyle = FontStyle.Italic)
-                message.kind == MessageKind.NOTICE -> Text(text(message.body), color = secondary)
-                else -> Text(text(message.body))
+                message.kind == MessageKind.EMOTE -> LinkedText(text("* $name ${message.body}"), onOpenLink, onHold, fontStyle = FontStyle.Italic)
+                message.kind == MessageKind.NOTICE -> LinkedText(text(message.body), onOpenLink, onHold, color = secondary)
+                else -> LinkedText(text(message.body), onOpenLink, onHold)
             }
         }
         EventContent.Redacted -> Text("Message deleted", color = secondary, fontStyle = FontStyle.Italic)
@@ -1072,6 +1110,59 @@ private fun MessageBody(event: TimelineEvent, edited: Boolean, name: String, ima
         // State events are StateRows.
         is EventContent.Membership, is EventContent.DisplayNameChange, is EventContent.OtherState -> {}
     }
+}
+
+/** The annotation of a link's URL in a message's text. */
+private const val URL_TAG = "url"
+
+/**
+ * [text] whose links ([URL_TAG]) open with [onOpenLink] when tapped (and
+ * by the screen reader's actions); held anywhere it is [onHold]. Without
+ * links, plain text: the bubble takes the touches.
+ */
+@Composable
+private fun LinkedText(
+    text: AnnotatedString,
+    onOpenLink: (String) -> Unit,
+    onHold: () -> Unit,
+    modifier: Modifier = Modifier,
+    color: Color = Color.Unspecified,
+    fontStyle: FontStyle? = null,
+) {
+    val links = remember(text) { text.getStringAnnotations(URL_TAG, 0, text.length) }
+    if (links.isEmpty()) {
+        Text(text, modifier, color = color, fontStyle = fontStyle)
+        return
+    }
+    var layout by remember { mutableStateOf<TextLayoutResult?>(null) }
+    val open by rememberUpdatedState(onOpenLink)
+    val hold by rememberUpdatedState(onHold)
+    Text(
+        text,
+        modifier
+            .pointerInput(links) {
+                detectTapGestures(
+                    onTap = { position -> layout?.let { linkAt(it, links, position) }?.let(open) },
+                    onLongPress = { hold() },
+                )
+            }
+            .semantics {
+                customActions = links.map { link -> CustomAccessibilityAction("Open ${link.item}") { open(link.item); true } }
+            },
+        color = color,
+        fontStyle = fontStyle,
+        onTextLayout = { layout = it },
+    )
+}
+
+/** The URL of the link of [links] at [position] in the text laid out as [layout], if any. */
+private fun linkAt(layout: TextLayoutResult, links: List<AnnotatedString.Range<String>>, position: Offset): String? {
+    // The character under it: before or after the nearest caret position.
+    val nearest = layout.getOffsetForPosition(position)
+    val char = listOf(nearest, nearest - 1).firstOrNull {
+        it in 0 until layout.layoutInput.text.length && layout.getBoundingBox(it).contains(position)
+    } ?: return null
+    return links.firstOrNull { char >= it.start && char < it.end }?.item
 }
 
 /** An image's (or video's) preview, laid out at its size before it loads. */

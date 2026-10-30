@@ -22,7 +22,9 @@ import org.mtrx.app.SpacesFixture.OTHER
 import org.mtrx.app.SpacesFixture.PARTY
 import org.mtrx.app.SpacesFixture.TEAM
 import org.mtrx.app.SpacesFixture.WITH_BOB
+import org.mtrx.app.model.SpaceEntry
 import org.mtrx.app.testAccount
+import org.mtrx.app.timeline.roomHeader
 import org.mtrx.app.ui.HomeNav
 import org.mtrx.app.ui.HomeTab
 import uniffi.mtrx.Draft
@@ -87,6 +89,43 @@ class RoomsTabTest {
         assertEquals(LAB, shownRoom(RoomListState(rooms = emptyList(), loaded = false), LAB))
         // Just joined, not listed yet.
         assertEquals("!new:x", shownRoom(state, "!new:x", opening = "!new:x"))
+    }
+
+    // #59: on iOS an open room showed another's messages, then another's
+    // header, as the list re-sorted. Here the open room is its ID, and its
+    // screen (header, timeline model) is keyed by it.
+    @Test
+    fun theOpenRoomStaysAsTheListReSorts() {
+        val nav = HomeNav()
+        nav.open(LAB, active.rooms.first { it.id == LAB })
+        fun latest(list: RoomListState, id: String, at: Long) = list.copy(
+            rooms = listOf(list.rooms.first { it.id == id }.copy(lastActivity = Instant.ofEpochSecond(at))) +
+                list.rooms.filter { it.id != id },
+        )
+        // A message arrives in Deep, then ours is sent in Lab.
+        val arrived = latest(active, DEEP, 300)
+        val sent = latest(arrived, LAB, 400)
+        assertEquals(listOf(DEEP, LAB, OFFER), roomGroups(arrived)[1].rooms.map { it.id })
+        assertEquals(listOf(LAB, DEEP, OFFER), roomGroups(sent)[1].rooms.map { it.id })
+        for (list in listOf(arrived, sent)) {
+            val shown = shownRoom(list, nav.room, nav.opening)
+            assertEquals(LAB, shown)
+            val header = roomHeader(LAB, list.rooms.firstOrNull { it.id == shown }, FakeSession.USER_ID, space = roomSpace(list, LAB))
+            assertEquals("lab", header.name)
+            assertEquals(TEAM, header.space?.id)
+        }
+        assertEquals(HomeTab.Rooms, nav.tab)
+    }
+
+    @Test
+    fun foldedGroupsKeepTheirRoomsAndCount() {
+        val groups = roomGroups(active, folded = setOf(TEAM, "!gone:x"))
+        assertEquals(listOf(false, true), groups.map { it.folded })
+        assertEquals(listOf(DEEP, LAB, OFFER), groups[1].rooms.map { it.id })
+        assertEquals(1L, groups[1].unread)
+        // Home by the Spaces tab's key for it.
+        assertEquals(listOf(true, false), roomGroups(active, folded = setOf(SpaceEntry.HOME)).map { it.folded })
+        assertEquals(SpaceEntry.Home.key, groups[0].key)
     }
 
     @Test
