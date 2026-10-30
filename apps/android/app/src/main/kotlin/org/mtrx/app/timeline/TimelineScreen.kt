@@ -68,6 +68,7 @@ import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -134,6 +135,7 @@ import org.mtrx.app.ui.PresenceLine
 import org.mtrx.app.ui.WithPresenceDot
 import org.mtrx.app.ui.dayLabel
 import org.mtrx.app.ui.identityColor
+import org.mtrx.app.ui.linesHeight
 import org.mtrx.app.ui.timeOfDay
 import uniffi.mtrx.EventContent
 import uniffi.mtrx.Media
@@ -395,6 +397,11 @@ fun TimelineContent(
         topBar = {
             Column {
                 TopAppBar(
+                    // Two lines, the name and the topic (or presence), at any text size.
+                    expandedHeight = maxOf(
+                        TopAppBarDefaults.TopAppBarExpandedHeight,
+                        linesHeight(MaterialTheme.typography.titleMedium, MaterialTheme.typography.bodySmall) + 16.dp,
+                    ),
                     title = {
                         RoomTitle(
                             header,

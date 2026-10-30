@@ -58,9 +58,12 @@ import uniffi.mtrx.Membership
  * The key screens with fake data, as PNGs (recordPaparazziDebug; CI
  * uploads them as the android-screenshots artifact).
  */
-class ScreensTest {
+open class ScreensTest {
+    /** The system's text size. */
+    protected open val fontScale: Float get() = 1f
+
     @get:Rule
-    val paparazzi = Paparazzi(deviceConfig = DeviceConfig.PIXEL_5)
+    val paparazzi = Paparazzi(deviceConfig = DeviceConfig.PIXEL_5.copy(fontScale = fontScale))
 
     private val drafts = rooms.drafts.toSet()
 
@@ -267,10 +270,18 @@ class ScreensTest {
     }
 }
 
+/** The same screens at the largest text size the system offers. */
+class LargeTextScreensTest : ScreensTest() {
+    override val fontScale: Float get() = 2f
+}
+
 /** Room info is long: on a tall screen, to show its settings and members. */
-class TallScreensTest {
+open class TallScreensTest {
+    /** The system's text size. */
+    protected open val fontScale: Float get() = 1f
+
     @get:Rule
-    val paparazzi = Paparazzi(deviceConfig = DeviceConfig.PIXEL_5.copy(screenHeight = 2340 * 2))
+    val paparazzi = Paparazzi(deviceConfig = DeviceConfig.PIXEL_5.copy(screenHeight = 2340 * 2, fontScale = fontScale))
 
     @Test
     fun roomInfo() {
@@ -362,6 +373,11 @@ private fun SharedRooms(shared: List<RoomGroup>) {
             sharedOpen = true,
         )
     }
+}
+
+/** Room info at the largest text size. */
+class LargeTextTallScreensTest : TallScreensTest() {
+    override val fontScale: Float get() = 2f
 }
 
 /** Our bubbles in the dark theme. */

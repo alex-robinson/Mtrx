@@ -8,6 +8,10 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.dp
 
 // The logo's colour (crates/mtrx-app/assets/logo.svg).
 private val LogoIndigo = Color(0xFF2F3E9E)
@@ -48,6 +52,15 @@ fun MtrxTheme(content: @Composable () -> Unit) {
     MaterialTheme(colorScheme = if (dark) Dark else Light) {
         CompositionLocalProvider(LocalOwnBubble provides if (dark) DarkOwnBubble else LightOwnBubble, content = content)
     }
+}
+
+/**
+ * A line of each of [styles], one above the other, at the text size chosen
+ * in the system's settings: for heights that must grow with it.
+ */
+@Composable
+fun linesHeight(vararg styles: TextStyle): Dp = with(LocalDensity.current) {
+    styles.fold(0.dp) { sum, style -> sum + style.lineHeight.toDp() }
 }
 
 /** A colour per user or room, for avatars without a picture and sender names. */

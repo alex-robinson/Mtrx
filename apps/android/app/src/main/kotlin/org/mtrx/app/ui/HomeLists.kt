@@ -8,6 +8,7 @@ import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import org.mtrx.app.rooms.ShownSection
 import org.mtrx.app.rooms.SectionedList
@@ -385,9 +386,10 @@ fun Empty(text: String) {
     Box(
         Modifier
             .fillMaxWidth()
-            .fillMaxSize(),
+            .fillMaxSize()
+            .padding(24.dp),
         contentAlignment = Alignment.Center,
     ) {
-        Text(text, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text(text, color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = TextAlign.Center)
     }
 }

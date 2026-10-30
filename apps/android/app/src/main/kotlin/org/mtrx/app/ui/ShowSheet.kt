@@ -33,6 +33,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.CustomAccessibilityAction
 import androidx.compose.ui.semantics.customActions
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
 import kotlin.math.roundToInt
@@ -63,7 +64,9 @@ private val ROW_HEIGHT = 52.dp
  */
 @Composable
 fun ShowSheetContent(spaceName: String, choices: List<SectionChoice>, actions: ShowActions) {
-    val rowPx = with(LocalDensity.current) { ROW_HEIGHT.toPx() }
+    // Taller at large text sizes.
+    val rowHeight = maxOf(ROW_HEIGHT, linesHeight(MaterialTheme.typography.bodyLarge) + 16.dp)
+    val rowPx = with(LocalDensity.current) { rowHeight.toPx() }
     // The section being dragged, and how far.
     var dragging by remember { mutableStateOf<Int?>(null) }
     var offset by remember { mutableFloatStateOf(0f) }
@@ -91,7 +94,7 @@ fun ShowSheetContent(spaceName: String, choices: List<SectionChoice>, actions: S
             Surface(
                 Modifier
                     .fillMaxWidth()
-                    .height(ROW_HEIGHT)
+                    .height(rowHeight)
                     .zIndex(if (dragged) 1f else 0f)
                     .graphicsLayer { translationY = if (dragged) offset else 0f },
                 tonalElevation = if (dragged) 6.dp else 0.dp,
@@ -114,7 +117,13 @@ fun ShowSheetContent(spaceName: String, choices: List<SectionChoice>, actions: S
                 ) {
                     Checkbox(checked = choice.shown, onCheckedChange = { actions.setShown(choice.key, it) })
                     Spacer(Modifier.width(4.dp))
-                    Text(choice.title, Modifier.weight(1f), style = MaterialTheme.typography.bodyLarge)
+                    Text(
+                        choice.title,
+                        Modifier.weight(1f),
+                        style = MaterialTheme.typography.bodyLarge,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
                     Icon(
                         MtrxIcons.DragHandle,
                         contentDescription = "Drag to reorder",

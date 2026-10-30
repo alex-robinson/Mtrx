@@ -22,7 +22,6 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.Dp
-import androidx.compose.ui.unit.sp
 import org.mtrx.app.model.Images
 
 /**
@@ -59,7 +58,8 @@ fun Avatar(
                 initial(name),
                 color = Color.White,
                 style = MaterialTheme.typography.titleMedium,
-                fontSize = (size.value * 0.42f).sp,
+                // The picture's letter: sized to it, whatever the text size.
+                fontSize = with(LocalDensity.current) { (size * 0.42f).toSp() },
             )
         }
     }
