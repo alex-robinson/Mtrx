@@ -20,7 +20,7 @@ final class TimelineModel: ObservableObject {
     /// bottom.
     static let bottomTolerance: CGFloat = 40
     /// Typing stopped this long (seconds), the draft is saved.
-    static let draftDelay: TimeInterval = 1.5
+    nonisolated static let draftDelay: TimeInterval = 1.5
 
     let roomId: String
     /// The other person of a direct chat (not the Notes to self), whose
@@ -61,6 +61,10 @@ final class TimelineModel: ObservableObject {
     @Published private(set) var scrollTarget: ScrollTarget?
     /// The newest message is in view; else a button leads back to it.
     @Published private(set) var atBottom = true
+    /// The timeline stays at its bottom as messages come and its height
+    /// changes: as it opens, and after a scroll that ended there (from iOS
+    /// 18, which says when scrolling ends).
+    private(set) var followsBottom = true
     /// The other person's info sheet, while open (direct chats).
     @Published var personInfo: PersonInfoModel?
     @Published var error: String?
@@ -243,6 +247,12 @@ final class TimelineModel: ObservableObject {
     /// (negative: pulled past it).
     func scrolled(distanceFromBottom distance: CGFloat) {
         setAtBottom(distance <= Self.bottomTolerance)
+    }
+
+    /// Scrolling ended (by hand, or to the bottom or a message): the
+    /// timeline follows its bottom if it ended there.
+    func scrollEnded() {
+        followsBottom = atBottom
     }
 
     /// Before iOS 18 (no scroll geometry): the end of the timeline is drawn
@@ -632,6 +642,7 @@ final class TimelineModel: ObservableObject {
     /// is there.
     private func reveal(_ eventId: String) -> Bool {
         guard let row = eventRow(eventId) else { return false }
+        followsBottom = false
         scrollTarget = ScrollTarget(rowId: row.id, serial: (scrollTarget?.serial ?? 0) + 1)
         highlighted = row.id
         Task {

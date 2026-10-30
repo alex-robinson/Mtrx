@@ -66,6 +66,19 @@ final class TimelineModelTests: XCTestCase {
         XCTAssertFalse(model.showsScrollToBottom)
     }
 
+    func testFollowsTheBottomUntilScrolledUpByHand() {
+        XCTAssertTrue(model.followsBottom)
+        // Pushed up by a message that came, not scrolled: still following.
+        model.scrolled(distanceFromBottom: 120)
+        XCTAssertTrue(model.followsBottom)
+        model.scrolled(distanceFromBottom: 300)
+        model.scrollEnded()
+        XCTAssertFalse(model.followsBottom)
+        model.scrolled(distanceFromBottom: 0)
+        model.scrollEnded()
+        XCTAssertTrue(model.followsBottom)
+    }
+
     func testNoButtonWhileOpening() async {
         let opening = TimelineModel(session: session, room: Make.room("!other:example.org"), keysArriving: Make.noKeysArriving)
         opening.scrolled(distanceFromBottom: 300)
@@ -222,6 +235,8 @@ final class TimelineModelTests: XCTestCase {
         XCTAssertEqual(model.highlighted, "o")
         XCTAssertEqual(timeline.paginations, 0)
         XCTAssertFalse(model.seeking)
+        // Gone up to it: no longer at the bottom.
+        XCTAssertFalse(model.followsBottom)
     }
 
     func testLoadsOlderMessagesUntilTheQuotedOneIsThere() async {
