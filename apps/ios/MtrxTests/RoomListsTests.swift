@@ -10,19 +10,19 @@ final class RoomListsTests: XCTestCase {
         XCTAssertTrue(lists.chats[0].invited)
     }
 
-    func testSpacesInOrderThenOtherRoomsWithUnreadDots() {
-        XCTAssertEqual(lists.spaces.map(\.entry), [.space("!team"), .space("!other"), .otherRooms])
-        XCTAssertEqual(lists.spaces.map(\.name), ["Team", "Other", "Other rooms"])
+    func testSpacesInOrderThenHomeWithUnreadDots() {
+        XCTAssertEqual(lists.spaces.map(\.entry), [.space("!team"), .space("!other"), .home])
+        XCTAssertEqual(lists.spaces.map(\.name), ["Team", "Other", "Home"])
         // Bob's chat in Team, Loose outside spaces.
         XCTAssertEqual(lists.spaces.map(\.unread), [true, false, true])
     }
 
-    func testASpacesRoomsAndOtherRoomsInListOrder() {
+    func testASpacesRoomsAndHomesInListOrder() {
         // Through the nested space, not the nested space itself; the invite
         // and the direct chat with a member.
         XCTAssertEqual(lists.space(.space("!team"))?.rooms.map(\.id), ["!offer", "!bob", "!deep", "!lab"])
         XCTAssertEqual(lists.space(.space("!other"))?.rooms, [])
-        XCTAssertEqual(lists.space(.otherRooms)?.rooms.map(\.id), ["!party", "!loose"])
+        XCTAssertEqual(lists.space(.home)?.rooms.map(\.id), ["!party", "!loose"])
         XCTAssertNil(lists.space(.space("!sub")))
     }
 
@@ -31,7 +31,7 @@ final class RoomListsTests: XCTestCase {
         XCTAssertEqual(lists.topLevelSpaces.map(\.name), ["Team", "Other"])
     }
 
-    func testOtherRoomsLeftOutWhileEmpty() {
+    func testHomeLeftOutWhileEmpty() {
         var state = Make.roomsBySpace()
         state.roomsOutsideSpaces = []
         XCTAssertEqual(RoomLists(state).spaces.map(\.entry), [.space("!team"), .space("!other")])
@@ -88,6 +88,15 @@ final class RoomListsTests: XCTestCase {
         XCTAssertEqual(RoomLists(state).firstSpace(of: "!lab")?.id, "!other")
     }
 
+    /// The spaces that list a chat, in the Spaces tab's order; none for a
+    /// chat in no space.
+    func testTheSpacesSharedInAChat() {
+        XCTAssertEqual(lists.chatSpaces, ["!bob": ["Team"]])
+        var state = Make.roomsBySpace()
+        state.spaces[1].roomIds = ["!bob", "!carol"]
+        XCTAssertEqual(RoomLists(state).chatSpaces, ["!bob": ["Team", "Other"], "!carol": ["Other"]])
+    }
+
     func testTheRoomsWithADraft() {
         XCTAssertEqual(lists.drafts, [])
         var state = Make.roomsBySpace()
@@ -96,7 +105,7 @@ final class RoomListsTests: XCTestCase {
     }
 
     func testTheSavedEntryRoundTrips() {
-        for entry in [SpaceEntry.space("!team:example.org"), .otherRooms] {
+        for entry in [SpaceEntry.space("!team:example.org"), .home] {
             XCTAssertEqual(SpaceEntry(saved: entry.saved), entry)
         }
     }
@@ -109,6 +118,6 @@ final class RoomListsTests: XCTestCase {
         ]
         XCTAssertEqual(RoomLists.search(rooms, " ICE").map(\.name), ["Ice sheets", "Sea ice"])
         XCTAssertEqual(RoomLists.search(rooms, ""), rooms)
-        XCTAssertEqual(RoomLists.search(lists.spaces, "other").map(\.entry), [.space("!other"), .otherRooms])
+        XCTAssertEqual(RoomLists.search(lists.spaces, "h").map(\.entry), [.home, .space("!other")])
     }
 }

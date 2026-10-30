@@ -59,6 +59,10 @@ final class SessionModel: ObservableObject {
     let spaceChildren = SpaceChildrenCache()
     /// How this phone shows each space's sections.
     let sectionLayouts: SectionLayouts
+    /// The Rooms tab's groups folded on this phone, by `ListSection.key`
+    /// (a space's ID, or Home's), remembered across launches (until
+    /// sign-out).
+    @Published private(set) var foldedGroups: Set<String>
     private var layoutChanges: AnyCancellable?
 
     private let subscriptions = Subscriptions()
@@ -76,6 +80,7 @@ final class SessionModel: ObservableObject {
     private let defaults: UserDefaults
     private static let selectedSpaceKey = "selectedSpace"
     private static let roomSortKey = "roomSort"
+    private static let foldedGroupsKey = "foldedRoomGroups"
     /// The rooms opened lately, kept by earlier versions.
     private static let recentKey = "recentRooms"
 
@@ -93,6 +98,7 @@ final class SessionModel: ObservableObject {
             selectedSpace = SpaceEntry(saved: saved)
         }
         sectionLayouts = SectionLayouts(defaults: defaults)
+        foldedGroups = Set(defaults.stringArray(forKey: Self.foldedGroupsKey) ?? [])
         defaults.removeObject(forKey: Self.recentKey)
         layoutChanges = sectionLayouts.objectWillChange.sink { [weak self] _ in
             MainActor.assumeIsolated { self?.objectWillChange.send() }
@@ -373,6 +379,25 @@ final class SessionModel: ObservableObject {
         lists.unread(besides: id)
     }
 
+    /// The Rooms tab's groups, folded as on this phone.
+    var roomGroups: [ListSection] {
+        lists.roomGroups().map { group in
+            var group = group
+            group.folded = foldedGroups.contains(group.key)
+            return group
+        }
+    }
+
+    /// Fold or unfold the Rooms tab's group with this key, and remember it.
+    func toggleGroupFold(_ key: String) {
+        if foldedGroups.contains(key) {
+            foldedGroups.remove(key)
+        } else {
+            foldedGroups.insert(key)
+        }
+        defaults.set(foldedGroups.sorted(), forKey: Self.foldedGroupsKey)
+    }
+
     /// Order the spaces' rooms by `sort`, from now on.
     func setRoomSort(_ sort: RoomSort) {
         roomSort = sort
@@ -412,9 +437,12 @@ final class SessionModel: ObservableObject {
         forgetPlaces()
     }
 
-    /// The selected space and the spaces' sections are the account's.
+    /// The selected space, the spaces' sections and the Rooms tab's folded
+    /// groups are the account's.
     private func forgetPlaces() {
         defaults.removeObject(forKey: Self.selectedSpaceKey)
+        defaults.removeObject(forKey: Self.foldedGroupsKey)
+        foldedGroups = []
         sectionLayouts.forget()
     }
 }

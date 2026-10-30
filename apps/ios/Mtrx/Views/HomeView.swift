@@ -75,7 +75,7 @@ struct HomeView: View {
 }
 
 /// The direct chats, most recently active first, with their people's
-/// presence.
+/// presence and the spaces we share with them.
 struct ChatsTab: View {
     @EnvironmentObject private var session: SessionModel
     @EnvironmentObject private var presence: PresenceModel
@@ -91,7 +91,8 @@ struct ChatsTab: View {
         NavigationStack(path: $session.chatsPath) {
             RoomList(sections: [ListSection(key: "chats", title: nil, rooms: chats)],
                      notes: searching ? nil : lists.notes, searching: searching, openSettings: openSettings,
-                     presence: presence.presence(of:)) {
+                     presence: presence.presence(of:),
+                     subline: { lists.chatSpaces[$0.id]?.joined(separator: ", ") }) {
                 ListPlaceholder(loaded: session.loaded, empty: "No chats yet")
             }
             .navigationTitle("Chats")
@@ -123,7 +124,7 @@ enum SpacesSheet: Identifiable {
     }
 }
 
-/// The spaces, then Other rooms; a tap shows the entry's rooms, with the
+/// The spaces, then Home; a tap shows the entry's rooms, with the
 /// space's name on top (a tap on it shows its overview). A room opens in
 /// the Rooms tab.
 struct SpacesTab: View {
@@ -207,7 +208,7 @@ private struct SpacesSheetView: View {
     }
 }
 
-/// The top-level spaces, then Other rooms; a tap shows the entry's rooms.
+/// The top-level spaces, then Home; a tap shows the entry's rooms.
 struct SpacesList: View {
     @EnvironmentObject private var session: SessionModel
     let search: String
@@ -321,7 +322,7 @@ private struct SpaceRow: View {
             if let space = item.space {
                 AvatarView(name: space.name, uri: space.avatarUrl, size: avatarSize, shape: .square)
             } else {
-                Image(systemName: "tray.full")
+                Image(systemName: "house")
                     .font(.body)
                     .foregroundStyle(.secondary)
                     .frame(width: avatarSize, height: avatarSize)
@@ -367,7 +368,8 @@ private struct ViewMenu: View {
 }
 
 /// The Rooms tab: Home (the rooms in no space), then each space's rooms,
-/// each newest first; a room opens over it. A space's heading shows the
+/// each newest first, folded as on this phone; a room opens over it. A
+/// heading's caret folds or unfolds its group; a space's name shows the
 /// space in the Spaces tab.
 struct RoomsTab: View {
     @EnvironmentObject private var session: SessionModel
@@ -375,8 +377,8 @@ struct RoomsTab: View {
 
     var body: some View {
         NavigationStack(path: $session.roomsPath) {
-            RoomList(sections: session.lists.roomGroups(), searching: false, openSettings: openSettings,
-                     openSpace: { session.open($0) }) {
+            RoomList(sections: session.roomGroups, searching: false, openSettings: openSettings,
+                     fold: session.toggleGroupFold, openSpace: { session.open($0) }) {
                 ListPlaceholder(loaded: session.loaded, empty: "No rooms yet")
             }
             .navigationTitle("Rooms")
@@ -396,8 +398,8 @@ struct RoomsTab: View {
 /// the list); an invite opens its answer. The Notes to self above them if
 /// kept at the top, and the encryption banner (if `banner`), unless
 /// searching. Where sections fold (`fold`), a tap on a heading folds or
-/// unfolds it; else a tap on a space's heading shows the space
-/// (`openSpace`).
+/// unfolds it; where a space's heading shows the space (`openSpace`), a tap
+/// on it does, and if it folds too, only a tap on its caret folds it.
 struct RoomList<Empty: View>: View {
     @EnvironmentObject private var session: SessionModel
     let sections: [ListSection]
@@ -408,6 +410,9 @@ struct RoomList<Empty: View>: View {
     let openSettings: () -> Void
     /// The presence to show on a room's picture (Chats).
     var presence: (RoomSummary) -> Presence? = { _ in nil }
+    /// The line under a room's name (Chats: the spaces shared with the
+    /// person).
+    var subline: (RoomSummary) -> String? = { _ in nil }
     /// Rooms open in their tabs (from a space's list).
     var opensInRooms = false
     /// Fold or unfold the section with this key; nil: sections don't fold.
@@ -476,17 +481,19 @@ struct RoomList<Empty: View>: View {
     }
 
     private func headingAction(_ section: ListSection) -> SectionHeading.Action? {
-        if let fold {
-            return .fold { fold(section.key) }
+        let open = openSpace.flatMap { openSpace in section.space.map { space in { openSpace(space) } } }
+        switch (fold.map { fold in { fold(section.key) } }, open) {
+        case let (fold?, open?): return .foldOrOpen(fold: fold, open: open)
+        case let (fold?, nil): return .fold(fold)
+        case let (nil, open?): return .open(open)
+        case (nil, nil): return nil
         }
-        if let openSpace, let space = section.space {
-            return .open { openSpace(space) }
-        }
-        return nil
     }
 
     private func row(_ room: RoomSummary) -> RoomRow {
-        RoomRow(room: room, presence: presence(room), draft: session.lists.drafts.contains(room.id))
+        RoomRow(
+            room: room, presence: presence(room), draft: session.lists.drafts.contains(room.id),
+            subline: subline(room))
     }
 }
 
@@ -494,7 +501,8 @@ struct RoomList<Empty: View>: View {
 /// caret, its title, and while folded its rooms' unread messages, as a
 /// badge in the unread colour; a tap folds or unfolds it. One that does
 /// not fold always shows its unread messages; a space's (`open`) leads to
-/// the space.
+/// the space. One that does both (`foldOrOpen`) folds by its caret and
+/// leads to the space by the rest.
 struct SectionHeading: View {
     let section: ListSection
     let title: String
@@ -505,6 +513,8 @@ struct SectionHeading: View {
         case fold(() -> Void)
         /// Show its space.
         case open(() -> Void)
+        /// Its caret folds it, the rest shows its space.
+        case foldOrOpen(fold: () -> Void, open: () -> Void)
     }
 
     var body: some View {
@@ -521,13 +531,18 @@ struct SectionHeading: View {
             .accessibilityHint(section.folded ? "Shows its rooms" : "Hides its rooms")
             .accessibilityAction(named: section.folded ? "Unfold" : "Fold", fold)
         case .open(let open):
-            Button(action: open) {
-                content(caret: false, chevron: true)
+            openButton(open)
+        case .foldOrOpen(let fold, let open):
+            HStack(spacing: 6) {
+                Button(action: fold) {
+                    caret
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+                .accessibilityLabel(section.folded ? "Unfold \(title)" : "Fold \(title)")
+                openButton(open)
             }
-            .buttonStyle(.plain)
-            .accessibilityElement(children: .combine)
-            .accessibilityAddTraits([.isHeader, .isButton])
-            .accessibilityHint("Shows the space")
         case nil:
             content(caret: false, chevron: false)
                 .accessibilityElement(children: .combine)
@@ -535,17 +550,35 @@ struct SectionHeading: View {
         }
     }
 
+    private func openButton(_ open: @escaping () -> Void) -> some View {
+        Button(action: open) {
+            content(caret: false, chevron: true)
+        }
+        .buttonStyle(.plain)
+        .accessibilityElement(children: .combine)
+        .accessibilityAddTraits([.isHeader, .isButton])
+        .accessibilityHint("Shows the space")
+    }
+
     private var showsUnread: Bool {
-        if case .fold = action { return section.folded }
-        return true
+        switch action {
+        case .fold, .foldOrOpen: return section.folded
+        case .open, nil: return true
+        }
+    }
+
+    /// Large enough to tap on its own.
+    private var caret: some View {
+        Image(systemName: "chevron.down")
+            .font(.caption2.weight(.bold))
+            .rotationEffect(.degrees(section.folded ? -90 : 0))
+            .frame(minWidth: 18, minHeight: 18)
     }
 
     private func content(caret: Bool, chevron: Bool) -> some View {
         HStack(spacing: 6) {
             if caret {
-                Image(systemName: "chevron.down")
-                    .font(.caption2.weight(.bold))
-                    .rotationEffect(.degrees(section.folded ? -90 : 0))
+                self.caret
             }
             Text(title)
                 .font(.footnote.weight(.semibold))
@@ -632,12 +665,20 @@ private struct BackWithUnread: ViewModifier {
 }
 
 /// A room by ID: its invite to answer, its timeline, or a word while it is
-/// coming (just made or joined) or gone.
+/// coming (just made or joined) or gone. Its state (the timeline's and the
+/// info's models) is the room's: a navigation stack keeps a page's state
+/// when its path changes to another room at the same place (a room opened
+/// from elsewhere over another, `SessionModel.open`).
 struct OpenRoom: View {
     @EnvironmentObject private var session: SessionModel
     let id: String
 
     var body: some View {
+        content.id(id)
+    }
+
+    @ViewBuilder
+    private var content: some View {
         if let room = session.room(id), !room.invited {
             RoomView(room: room, model: session.timeline(for: room), info: session.info(for: room))
         } else if let room = session.room(id) {

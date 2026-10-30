@@ -33,7 +33,8 @@ final class ScreenshotTests: XCTestCase {
 
     // MARK: Tabs
 
-    /// With the Notes to self at the top.
+    /// With the Notes to self at the top, and under each person the spaces
+    /// we share.
     func testChats() async throws {
         model.tab = .chats
         try await snap("01-chats", HomeView())
@@ -69,12 +70,21 @@ final class ScreenshotTests: XCTestCase {
         try await snap("13-settings", HomeView())
     }
 
-    /// Home, then each space, its rooms newest first.
+    /// Home, then each space, its rooms newest first; unfolded, the
+    /// headings without unread counts.
     func testRooms() async throws {
         model.tab = .rooms
         model.roomsPath = []
         try await snap("04-rooms", HomeView())
         try await snap("04-rooms-dark", dark: true, HomeView())
+    }
+
+    /// Polar lab folded, with its unread count; Teaching unfolded.
+    func testRoomsFolded() async throws {
+        model.tab = .rooms
+        model.roomsPath = []
+        model.toggleGroupFold("!polar")
+        try await snap("04b-rooms-folded", HomeView())
     }
 
     func testARoomWithItsTopicLine() async throws {
@@ -323,16 +333,17 @@ private enum Screens {
         loaded: true,
         spaces: [
             SpaceRooms(
-                spaceId: "!polar", roomIds: ["!ice", "!sea", "!ann", "!models", "!paper", "!old", "!join"],
+                spaceId: "!polar",
+                roomIds: ["!ice", "!sea", "!ann", "!models", "!paper", "!old", "!join", "!bob"],
                 sections: [
                     Make.section(.invites, ["!join"]),
-                    Make.section(.directMessages, ["!ann"]),
+                    Make.section(.directMessages, ["!ann", "!bob"]),
                     Make.section(.favourites, ["!ice"]),
                     Make.section(.category, ["!paper"], name: "Papers"),
                     Make.section(.rooms, ["!sea", "!models"]),
                     Make.section(.lowPriority, ["!old"]),
                 ]),
-            SpaceRooms(spaceId: "!teach", roomIds: ["!reading"]),
+            SpaceRooms(spaceId: "!teach", roomIds: ["!ann", "!reading"]),
         ],
         roomsOutsideSpaces: ["!party"], notesAtTop: true, notesRoomId: "!notes",
         drafts: ["!ann", "!reading", "!paper"])

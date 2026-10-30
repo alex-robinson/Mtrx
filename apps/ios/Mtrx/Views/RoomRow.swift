@@ -2,9 +2,10 @@ import MtrxFFI
 import SwiftUI
 
 /// A room in a list, compact: picture (with a direct chat's person's
-/// presence), name, a line for an invite, last activity, a pencil if it has
-/// a draft, and unread count. At the accessibility text sizes, the last
-/// three go under the name, which takes up to three lines.
+/// presence), name, a line under it (for an invite, or as given), last
+/// activity, a pencil if it has a draft, and unread count. At the
+/// accessibility text sizes, the last three go under the name, which takes
+/// up to three lines.
 struct RoomRow: View {
     static let avatarSize: CGFloat = 34
 
@@ -12,13 +13,16 @@ struct RoomRow: View {
     var presence: Presence?
     /// Something was written in it and not sent.
     var draft = false
+    /// The line under the name, unless it is an invite (Chats: the spaces
+    /// shared with the person).
+    var subline: String?
     @RowAvatarSize private var avatarSize: CGFloat
     @Environment(\.dynamicTypeSize) private var textSize
 
     private var unread: Bool { room.unreadMessages > 0 || room.unreadMentions > 0 }
 
     private var subtitle: String? {
-        guard room.invited else { return nil }
+        guard room.invited else { return subline }
         switch room.kind {
         case .space: return "Invited to the space"
         case .direct: return "Wants to chat"
