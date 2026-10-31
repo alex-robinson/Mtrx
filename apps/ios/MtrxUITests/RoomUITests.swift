@@ -211,15 +211,14 @@ final class RoomUITests: XCTestCase {
 
     /// The arrived message numbered highest is in view: by the time a step
     /// is done on a slow machine, more have arrived than it expects, and
-    /// the elements' order is not the timeline's.
+    /// the elements' order is not the timeline's. Found again by its
+    /// number, as an element bound by index is another once more arrive.
     @MainActor
     private func newestInView() -> Bool {
-        let number = { (element: XCUIElement) in
-            Int(element.label.dropFirst("Arrived ".count).prefix { $0.isNumber }) ?? 0
-        }
         let newest = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH 'Arrived '")).allElementsBoundByIndex
-            .max { number($0) < number($1) }
-        return newest.map { inView($0) } ?? false
+            .compactMap { Int($0.label.dropFirst("Arrived ".count).prefix { $0.isNumber }) }
+            .max()
+        return newest.map { inView(arrived($0)) } ?? false
     }
 
     /// `element` is in view (hittable), once the keyboard and the timeline
