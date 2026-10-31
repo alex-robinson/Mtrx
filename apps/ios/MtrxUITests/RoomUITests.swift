@@ -117,8 +117,9 @@ final class RoomUITests: XCTestCase {
         XCTAssertTrue(button.exists, "Back at the bottom by itself")
         button.tap()
         sleep(3)
+        // The highest numbered: the elements' order is not the timeline's.
         let newest = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH 'Arrived '")).allElementsBoundByIndex
-            .last
+            .max { number($0) < number($1) }
         let back = newest.map { inView($0) } ?? false
         snap("ui-arrived-back")
         XCTAssertTrue(back, "The newest is not in view after the button")
@@ -207,6 +208,12 @@ final class RoomUITests: XCTestCase {
     @MainActor
     private func arrived(_ n: Int) -> XCUIElement {
         app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "Arrived \(n),")).firstMatch
+    }
+
+    /// The `n` of an arrived message, "Arrived n, …".
+    @MainActor
+    private func number(_ element: XCUIElement) -> Int {
+        Int(element.label.dropFirst("Arrived ".count).prefix { $0.isNumber }) ?? 0
     }
 
     /// `element` is in view (hittable), once the keyboard and the timeline
