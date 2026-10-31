@@ -2,9 +2,9 @@ import XCTest
 
 /// The app with made-up messages (`-ui-testing`), in the Lab room, as a
 /// finger uses it: deleting one of our messages through its menu, sending,
-/// and messages arriving; a chat's shared rooms; a room opened over another;
-/// folding the Rooms tab's groups. Each step is saved as a PNG where
-/// `SCREENSHOTS_DIR` says.
+/// and messages arriving; a room opening at its newest message; a chat's
+/// shared rooms; a room opened over another; folding the Rooms tab's
+/// groups. Each step is saved as a PNG where `SCREENSHOTS_DIR` says.
 final class RoomUITests: XCTestCase {
     private var app: XCUIApplication!
 
@@ -125,6 +125,21 @@ final class RoomUITests: XCTestCase {
         XCTAssertFalse(button.exists, "The button stayed")
     }
 
+    /// A room whose newest messages are far taller than its older ones,
+    /// loaded after it opens, shows its newest message, at the bottom.
+    @MainActor
+    func testARoomOpensAtItsNewestMessage() {
+        app.terminate()
+        app.launchArguments = ["-ui-testing", "-ui-testing-history"]
+        app.launch()
+        openLab()
+        // Its older messages loaded.
+        sleep(4)
+        snap("ui-opened-loaded")
+        XCTAssertTrue(inView(app.staticTexts["Mine, to delete"]), "The newest message is not in view")
+        XCTAssertFalse(app.buttons["Scroll to the newest message"].exists, "Not at the bottom")
+    }
+
     /// A room opened from its space while another is open in the Rooms tab
     /// shows its own messages and header, and keeps them after a message is
     /// sent in it while another room's arrive, the rooms changing order.
@@ -180,6 +195,7 @@ final class RoomUITests: XCTestCase {
         heading.tap()
         XCTAssertTrue(app.navigationBars.staticTexts["Team"].waitForExistence(timeout: 5), "The space did not open")
     }
+
 
     /// A message whose text starts with `start` and a comma.
     @MainActor

@@ -11,7 +11,9 @@ import MtrxFFI
 /// arrived moves its room up the list, as the library orders it. With
 /// `-ui-testing-arrivals`, a message of Ann's arrives every two seconds in
 /// the open room; with `-ui-testing-arrivals-papers`, in Papers, open or
-/// not. The library's classes are faked as UniFFI provides for
+/// not. With `-ui-testing-history`, a room opens with its newest
+/// messages, long ones, and its older, short ones load a moment later.
+/// The library's classes are faked as UniFFI provides for
 /// (`init(noHandle:)`, overriding what the app calls).
 enum UITesting {
     static var on: Bool {
@@ -24,6 +26,10 @@ enum UITesting {
 
     static var arrivalsInPapers: Bool {
         ProcessInfo.processInfo.arguments.contains("-ui-testing-arrivals-papers")
+    }
+
+    static var history: Bool {
+        ProcessInfo.processInfo.arguments.contains("-ui-testing-history")
     }
 
     @MainActor
@@ -196,24 +202,36 @@ private final class UITestTimeline: Timeline, @unchecked Sendable {
     private var listener: TimelineListener?
     private var sent = 0
     private var arrived = 0
+    /// Not loaded yet (`-ui-testing-history`), oldest first.
+    private var older: [TimelineItem] = []
 
     /// Room `room`'s messages; called once, before use.
     func fill(room: String, name: String, session: UITestSession) {
         lock.withLock {
             self.room = room
             self.session = session
-            items = Self.history(room == UITesting.lab ? "Message" : name)
+            let word = room == UITesting.lab ? "Message" : name
+            if UITesting.history {
+                // Far taller than the older ones loaded after them: a lazy
+                // stack's guess at those, from these, is far off.
+                items = Self.history(word) { $0 >= 26 ? 20 : 1 }
+                older = Array(items.dropLast(4))
+                items = Array(items.suffix(4))
+            } else {
+                items = Self.history(word)
+            }
         }
     }
 
-    private static func history(_ word: String) -> [TimelineItem] {
+    /// `lines`: message `i`'s.
+    private static func history(_ word: String, lines: (Int) -> Int = { 1 + $0 * 5 % 7 }) -> [TimelineItem] {
         let start = Date().addingTimeInterval(-3_600)
         var items = [TimelineItem(id: "day", content: .dayDivider(date: start))]
         for i in 0..<30 {
             if i == 28 {
                 items.append(TimelineItem(id: "read-marker", content: .readMarker))
             }
-            let text = Array(repeating: "\(word) \(i), a line of it.", count: 1 + i * 5 % 7).joined(separator: "\n")
+            let text = Array(repeating: "\(word) \(i), a line of it.", count: lines(i)).joined(separator: "\n")
             items.append(message("m\(i)", text, own: i % 3 == 0, at: start.addingTimeInterval(Double(i) * 60)))
         }
         if word == "Message" {
@@ -307,6 +325,18 @@ private final class UITestTimeline: Timeline, @unchecked Sendable {
     override func react(itemId: String, key: String) async throws {}
     override func setTyping(typing: Bool) async throws {}
     override func markRead() async throws {}
-    override func paginateBack(events: UInt16) async throws -> Bool { true }
+    /// With `-ui-testing-history`, `events` older messages a moment later.
+    override func paginateBack(events: UInt16) async throws -> Bool {
+        guard UITesting.history else { return true }
+        try? await Task.sleep(nanoseconds: 500_000_000)
+        var atStart = false
+        change { items in
+            let page = older.suffix(Int(events))
+            older.removeLast(page.count)
+            items.insert(contentsOf: page, at: 0)
+            atStart = older.isEmpty
+        }
+        return atStart
+    }
 }
 #endif
