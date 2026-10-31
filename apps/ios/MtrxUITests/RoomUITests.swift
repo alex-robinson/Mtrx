@@ -100,12 +100,14 @@ final class RoomUITests: XCTestCase {
         app.launchArguments = ["-ui-testing", "-ui-testing-arrivals"]
         app.launch()
         openLab()
-        XCTAssertTrue(inView(arrived(2), timeout: 8), "Arrived 2 not in view")
+        XCTAssertTrue(arrived(2).waitForExistence(timeout: 8), "Arrived 2 did not arrive")
+        XCTAssertTrue(newestInView(), "The newest not in view")
         let field = app.textViews.firstMatch.exists ? app.textViews.firstMatch : app.textFields.firstMatch
         field.tap()
-        let up = inView(arrived(4), timeout: 8)
+        XCTAssertTrue(arrived(4).waitForExistence(timeout: 8), "Arrived 4 did not arrive")
+        let up = newestInView()
         snap("ui-arrived-keyboard")
-        XCTAssertTrue(up, "Arrived 4 not in view with the keyboard up")
+        XCTAssertTrue(up, "The newest not in view with the keyboard up")
         let window = app.windows.firstMatch
         window.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.2))
             .press(forDuration: 0.05, thenDragTo: window.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.45)))
@@ -117,10 +119,7 @@ final class RoomUITests: XCTestCase {
         XCTAssertTrue(button.exists, "Back at the bottom by itself")
         button.tap()
         sleep(3)
-        // The highest numbered: the elements' order is not the timeline's.
-        let newest = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH 'Arrived '")).allElementsBoundByIndex
-            .max { number($0) < number($1) }
-        let back = newest.map { inView($0) } ?? false
+        let back = newestInView()
         snap("ui-arrived-back")
         XCTAssertTrue(back, "The newest is not in view after the button")
         XCTAssertFalse(button.exists, "The button stayed")
@@ -210,10 +209,17 @@ final class RoomUITests: XCTestCase {
         app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "Arrived \(n),")).firstMatch
     }
 
-    /// The `n` of an arrived message, "Arrived n, …".
+    /// The arrived message numbered highest is in view: by the time a step
+    /// is done on a slow machine, more have arrived than it expects, and
+    /// the elements' order is not the timeline's.
     @MainActor
-    private func number(_ element: XCUIElement) -> Int {
-        Int(element.label.dropFirst("Arrived ".count).prefix { $0.isNumber }) ?? 0
+    private func newestInView() -> Bool {
+        let number = { (element: XCUIElement) in
+            Int(element.label.dropFirst("Arrived ".count).prefix { $0.isNumber }) ?? 0
+        }
+        let newest = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH 'Arrived '")).allElementsBoundByIndex
+            .max { number($0) < number($1) }
+        return newest.map { inView($0) } ?? false
     }
 
     /// `element` is in view (hittable), once the keyboard and the timeline
