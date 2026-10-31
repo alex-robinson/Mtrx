@@ -16,8 +16,8 @@ android {
         applicationId = "org.mtrx.app"
         minSdk = 26
         targetSdk = 36
-        versionCode = 50199
-        versionName = "0.5.1"
+        versionCode = 50299
+        versionName = "0.5.2"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         // The ABIs the Rust library is built for (scripts/build-android-ffi.sh);
         // also drops JNA's native parts for the others.
