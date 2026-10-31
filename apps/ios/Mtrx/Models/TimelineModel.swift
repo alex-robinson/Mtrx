@@ -61,11 +61,6 @@ final class TimelineModel: ObservableObject {
     @Published private(set) var scrollTarget: ScrollTarget?
     /// The newest message is in view; else a button leads back to it.
     @Published private(set) var atBottom = true
-    /// The timeline keeps to its very end as messages come and its height
-    /// changes: as it opens, after a scroll by hand that ended at the
-    /// bottom, and once sent there by its button (from iOS 18, which says
-    /// how it scrolls).
-    private(set) var followsBottom = true
     /// The other person's info sheet, while open (direct chats).
     @Published var personInfo: PersonInfoModel?
     @Published var error: String?
@@ -248,18 +243,6 @@ final class TimelineModel: ObservableObject {
     /// (negative: pulled past it).
     func scrolled(distanceFromBottom distance: CGFloat) {
         setAtBottom(distance <= Self.bottomTolerance)
-    }
-
-    /// A scroll by hand ended: the timeline follows its bottom if it ended
-    /// there.
-    func scrollEnded() {
-        followsBottom = atBottom
-    }
-
-    /// The button to the newest message was tapped: the timeline goes and
-    /// stays there.
-    func followBottom() {
-        followsBottom = true
     }
 
     /// Before iOS 18 (no scroll geometry): the end of the timeline is drawn
@@ -649,7 +632,6 @@ final class TimelineModel: ObservableObject {
     /// is there.
     private func reveal(_ eventId: String) -> Bool {
         guard let row = eventRow(eventId) else { return false }
-        followsBottom = false
         scrollTarget = ScrollTarget(rowId: row.id, serial: (scrollTarget?.serial ?? 0) + 1)
         highlighted = row.id
         Task {

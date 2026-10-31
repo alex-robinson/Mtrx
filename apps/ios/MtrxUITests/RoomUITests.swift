@@ -2,9 +2,9 @@ import XCTest
 
 /// The app with made-up messages (`-ui-testing`), in the Lab room, as a
 /// finger uses it: deleting one of our messages through its menu, sending,
-/// and messages arriving; a chat's shared rooms; a room opened over another;
-/// folding the Rooms tab's groups. Each step is saved as a PNG where
-/// `SCREENSHOTS_DIR` says.
+/// and messages arriving; a room opening at its newest message; a chat's
+/// shared rooms; a room opened over another; folding the Rooms tab's
+/// groups. Each step is saved as a PNG where `SCREENSHOTS_DIR` says.
 final class RoomUITests: XCTestCase {
     private var app: XCUIApplication!
 
@@ -100,12 +100,14 @@ final class RoomUITests: XCTestCase {
         app.launchArguments = ["-ui-testing", "-ui-testing-arrivals"]
         app.launch()
         openLab()
-        XCTAssertTrue(inView(arrived(2), timeout: 8), "Arrived 2 not in view")
+        XCTAssertTrue(arrived(2).waitForExistence(timeout: 8), "Arrived 2 did not arrive")
+        XCTAssertTrue(newestInView(), "The newest not in view")
         let field = app.textViews.firstMatch.exists ? app.textViews.firstMatch : app.textFields.firstMatch
         field.tap()
-        let up = inView(arrived(4), timeout: 8)
+        XCTAssertTrue(arrived(4).waitForExistence(timeout: 8), "Arrived 4 did not arrive")
+        let up = newestInView()
         snap("ui-arrived-keyboard")
-        XCTAssertTrue(up, "Arrived 4 not in view with the keyboard up")
+        XCTAssertTrue(up, "The newest not in view with the keyboard up")
         let window = app.windows.firstMatch
         window.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.2))
             .press(forDuration: 0.05, thenDragTo: window.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.45)))
@@ -117,12 +119,25 @@ final class RoomUITests: XCTestCase {
         XCTAssertTrue(button.exists, "Back at the bottom by itself")
         button.tap()
         sleep(3)
-        let newest = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH 'Arrived '")).allElementsBoundByIndex
-            .last
-        let back = newest.map { inView($0) } ?? false
+        let back = newestInView()
         snap("ui-arrived-back")
         XCTAssertTrue(back, "The newest is not in view after the button")
         XCTAssertFalse(button.exists, "The button stayed")
+    }
+
+    /// A room whose newest messages are far taller than its older ones,
+    /// loaded after it opens, shows its newest message, at the bottom.
+    @MainActor
+    func testARoomOpensAtItsNewestMessage() {
+        app.terminate()
+        app.launchArguments = ["-ui-testing", "-ui-testing-history"]
+        app.launch()
+        openLab()
+        // Its older messages loaded.
+        sleep(4)
+        snap("ui-opened-loaded")
+        XCTAssertTrue(inView(app.staticTexts["Mine, to delete"]), "The newest message is not in view")
+        XCTAssertFalse(app.buttons["Scroll to the newest message"].exists, "Not at the bottom")
     }
 
     /// A room opened from its space while another is open in the Rooms tab
@@ -181,6 +196,7 @@ final class RoomUITests: XCTestCase {
         XCTAssertTrue(app.navigationBars.staticTexts["Team"].waitForExistence(timeout: 5), "The space did not open")
     }
 
+
     /// A message whose text starts with `start` and a comma.
     @MainActor
     private func message(_ start: String) -> XCUIElement {
@@ -191,6 +207,18 @@ final class RoomUITests: XCTestCase {
     @MainActor
     private func arrived(_ n: Int) -> XCUIElement {
         app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "Arrived \(n),")).firstMatch
+    }
+
+    /// The arrived message numbered highest is in view: by the time a step
+    /// is done on a slow machine, more have arrived than it expects, and
+    /// the elements' order is not the timeline's. Found again by its
+    /// number, as an element bound by index is another once more arrive.
+    @MainActor
+    private func newestInView() -> Bool {
+        let newest = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH 'Arrived '")).allElementsBoundByIndex
+            .compactMap { Int($0.label.dropFirst("Arrived ".count).prefix { $0.isNumber }) }
+            .max()
+        return newest.map { inView(arrived($0)) } ?? false
     }
 
     /// `element` is in view (hittable), once the keyboard and the timeline

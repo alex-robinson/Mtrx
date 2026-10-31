@@ -20,6 +20,8 @@ struct RoomView: View {
     @State private var deleting: String?
     /// The rooms shared with a direct chat's person show.
     @State private var showsShared = false
+    /// Chosen in a message's menu (on which item), done once it closed.
+    @State private var chosen: (action: MessageAction, itemId: String)?
 
     init(
         room: RoomSummary, model: @autoclosure @escaping () -> TimelineModel,
@@ -86,8 +88,11 @@ struct RoomView: View {
         }
         .onChange(of: room.pinned) { model.setPinned($0) }
         .onChange(of: room.topic) { info.topicListed($0) }
-        .sheet(item: $sheet) { sheet in
-            RoomSheetView(sheet: sheet, room: room, model: model, info: info, topic: topic)
+        .sheet(item: $sheet, onDismiss: performChosen) { sheet in
+            RoomSheetView(sheet: sheet, room: room, model: model, info: info, topic: topic) { action, id in
+                chosen = (action, id)
+                self.sheet = nil
+            }
                 .environmentObject(images)
                 .environmentObject(session)
         }
@@ -121,11 +126,27 @@ struct RoomView: View {
 
     private var actions: RowActions {
         RowActions(
+            hold: openMenu,
             perform: perform,
             react: { id, key in model.react(id, key: key) },
             goTo: { quote in Task { await model.goTo(eventId: quote.eventId) } },
             showReactors: { id, key in sheet = .reactors(itemId: id, key: key) },
             showReaders: { id in sheet = .readers(itemId: id) })
+    }
+
+    /// A held message's menu, if anything applies to it.
+    private func openMenu(_ id: String) {
+        guard let row = model.messageRow(id), !model.actions(for: row).isEmpty else { return }
+        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+        sheet = .menu(itemId: id)
+    }
+
+    /// What was chosen in a message's menu, the menu closed: a sheet or
+    /// dialog it opens can show.
+    private func performChosen() {
+        guard let chosen else { return }
+        self.chosen = nil
+        perform(chosen.action, on: chosen.itemId)
     }
 
     private func perform(_ action: MessageAction, on id: String) {
@@ -300,6 +321,8 @@ struct SharedRoomsPanel: View {
 
 /// The sheets a room opens over itself.
 enum RoomSheet: Identifiable {
+    /// A held message's menu.
+    case menu(itemId: String)
     /// Who reacted to a message with a key.
     case reactors(itemId: String, key: String)
     /// Who read up to a message.
@@ -313,6 +336,7 @@ enum RoomSheet: Identifiable {
 
     var id: String {
         switch self {
+        case .menu(let itemId): return "menu \(itemId)"
         case .reactors(let itemId, let key): return "reactors \(itemId) \(key)"
         case .readers(let itemId): return "readers \(itemId)"
         case .emoji(let itemId): return "emoji \(itemId)"
@@ -329,10 +353,20 @@ private struct RoomSheetView: View {
     @ObservedObject var model: TimelineModel
     @ObservedObject var info: RoomInfoModel
     let topic: Topic
+    /// An entry of a message's menu was chosen (item ID).
+    let choose: (MessageAction, String) -> Void
     @EnvironmentObject private var session: SessionModel
 
     var body: some View {
         switch sheet {
+        case .menu(let itemId):
+            if let row = model.messageRow(itemId) {
+                MessageMenu(row: row, entries: model.actions(for: row)) { key in
+                    model.react(itemId, key: key)
+                } choose: { action in
+                    choose(action, itemId)
+                }
+            }
         case .reactors(let itemId, let key):
             let reaction = model.messageRow(itemId)?.reactions.first { $0.key == key }
             PeopleSheet(title: "Reacted with \(key)", people: reaction?.senders ?? [])
@@ -357,10 +391,14 @@ private struct RoomSheetView: View {
 }
 
 /// The timeline, newest message at the bottom, older ones loading when its
-/// top comes into view. The scroll view is anchored at its bottom: it opens
-/// there, stays there while new rows come and its height changes, and
-/// keeps what is in view in place as older rows load above. Scrolled up, a
-/// button leads back to the bottom.
+/// top comes into view. The scroll view and its rows are drawn upside down,
+/// the rows newest first: its start, where it opens, is the newest message,
+/// drawn and measured at once, and older rows load at its far end, out of
+/// view, where the lazy stack's guesses at their heights move nothing in
+/// view. (Anchored at its bottom instead, it opened at the end of those
+/// guesses, past the rows or short of them, until they were measured.) At
+/// its start, it stays there as new rows come. Scrolled up, a button leads
+/// back to the bottom.
 struct TimelineList: View {
     @ObservedObject var model: TimelineModel
     let actions: RowActions
@@ -370,10 +408,24 @@ struct TimelineList: View {
 
     var body: some View {
         ScrollViewReader { proxy in
-            ScrollView {
-                rows
+            GeometryReader { geometry in
+                ScrollView {
+                    rows(insets: geometry.safeAreaInsets)
+                }
+                .modifier(MeasuresBottom(model: model))
+                .modifier(NoEdgeEffect())
+                .flipped()
+                // Under the bars, as without the flip: their insets are
+                // the rows' padding, at the ends they are drawn at.
+                .ignoresSafeArea(.container, edges: .vertical)
             }
-            .modifier(AnchoredAtBottom(model: model, proxy: proxy, bottomId: Self.bottomId))
+            .onChange(of: model.rows.last?.id) { _ in
+                // A new message came: in view if the newest was, also when
+                // scrolled up a little.
+                if model.atBottom {
+                    proxy.scrollTo(Self.bottomId, anchor: .top)
+                }
+            }
             .onChange(of: model.scrollTarget) { target in
                 guard let target else { return }
                 withAnimation {
@@ -383,9 +435,8 @@ struct TimelineList: View {
             .overlay(alignment: .bottomTrailing) {
                 if model.showsScrollToBottom {
                     ScrollToBottomButton {
-                        model.followBottom()
                         withAnimation {
-                            proxy.scrollTo(Self.bottomId, anchor: .bottom)
+                            proxy.scrollTo(Self.bottomId, anchor: .top)
                         }
                     }
                     .transition(.scale.combined(with: .opacity))
@@ -394,6 +445,13 @@ struct TimelineList: View {
             .animation(.easeOut(duration: 0.2), value: model.showsScrollToBottom)
         }
         .scrollDismissesKeyboard(.interactively)
+        // The header's background: the timeline, drawn upside down, is not
+        // blurred under it.
+        .overlay(alignment: .top) {
+            Color.clear
+                .frame(height: 0)
+                .background(.bar, ignoresSafeAreaEdges: .top)
+        }
         .overlay {
             if model.opening {
                 ProgressView()
@@ -410,27 +468,22 @@ struct TimelineList: View {
         }
     }
 
-    /// Oldest first.
-    private var rows: some View {
+    /// Newest first, each upside down again; `insets`, the bars', as drawn.
+    private func rows(insets: EdgeInsets) -> some View {
         LazyVStack(spacing: 0) {
-            top
-            ForEach(model.rows) { row in
-                TimelineRowView(
-                    row: row, menu: menu(row), highlighted: model.highlighted == row.id, actions: actions
-                )
+            bottom
+            ForEach(model.rows.reversed()) { row in
+                TimelineRowView(row: row, highlighted: model.highlighted == row.id, actions: actions)
                 .equatable()
+                .flipped()
                 .id(row.id)
             }
-            bottom
+            top
+                .flipped()
         }
         .padding(.horizontal, 12)
-        .padding(.top, 8)
-    }
-
-    /// A message's menu entries; none for other rows.
-    private func menu(_ row: TimelineRow) -> [MessageAction] {
-        guard case .message(let message) = row.content else { return [] }
-        return model.actions(for: message)
+        .padding(.top, insets.bottom)
+        .padding(.bottom, insets.top + 8)
     }
 
     /// Above the oldest row: a spinner until the room's start.
@@ -459,122 +512,41 @@ struct TimelineList: View {
     }
 }
 
-/// Keeps the timeline at its bottom as it opens and while new messages
-/// come, and what is in view in place while older ones load above it. The
-/// scroll view's bottom anchor places it at the bottom as it opens, but
-/// does not keep it there on every system (iOS 26 keeps its offset as the
-/// rows below or its own height change). From iOS 18 that is
-/// `FollowsEnd`'s. Before, the rows' changes are followed (iOS 17's anchor
-/// places it at the start).
-private struct AnchoredAtBottom: ViewModifier {
+private extension View {
+    /// Drawn and touched upside down.
+    func flipped() -> some View {
+        scaleEffect(x: 1, y: -1)
+    }
+}
+
+/// From iOS 26, no blur where the scroll view meets the bars: drawn
+/// upside down, it blurs the wrong end. The header has a background
+/// instead.
+private struct NoEdgeEffect: ViewModifier {
+    func body(content: Content) -> some View {
+        if #available(iOS 26, *) {
+            content.scrollEdgeEffectHidden()
+        } else {
+            content
+        }
+    }
+}
+
+/// From iOS 18, how far the timeline is scrolled up from its bottom: its
+/// offset from its start, drawn at the bottom.
+private struct MeasuresBottom: ViewModifier {
     @ObservedObject var model: TimelineModel
-    let proxy: ScrollViewProxy
-    let bottomId: String
-    /// The oldest row, as last drawn.
-    @State private var oldest: String?
 
     func body(content: Content) -> some View {
         if #available(iOS 18, *) {
             content
-                .defaultScrollAnchor(.bottom)
-                .modifier(FollowsEnd(model: model))
-        } else if #available(iOS 17, *) {
-            following(content.defaultScrollAnchor(.bottom))
+                .onScrollGeometryChange(for: CGFloat.self) { geometry in
+                    geometry.contentOffset.y + geometry.contentInsets.top
+                } action: { _, distance in
+                    model.scrolled(distanceFromBottom: distance)
+                }
         } else {
-            following(content)
-        }
-    }
-
-    private func following(_ content: some View) -> some View {
-        content
-            .onChange(of: model.rows.last?.id) { _ in
-                if model.atBottom {
-                    proxy.scrollTo(bottomId, anchor: .bottom)
-                }
-            }
-            .onChange(of: model.rows.first?.id) { first in
-                // Older rows came above: the row that was the oldest stays
-                // at the top.
-                if let oldest, oldest != first, !model.atBottom {
-                    proxy.scrollTo(oldest, anchor: .top)
-                }
-                oldest = first
-            }
-    }
-}
-
-/// While the timeline follows its bottom (`TimelineModel.followsBottom`),
-/// it goes to the very end of its content, at once, when the content or
-/// the view change their height (a message came, rows were measured, the
-/// keyboard or the composer moved) and when a scroll comes to rest; never
-/// as it is scrolled (by hand, to a message, or to the bottom by its
-/// button), nor when only its offset changed: that is a scroll by hand,
-/// whose phase may come later. It goes to the end's edge, where the scroll
-/// view's own anchor keeps it too, without animation: not to the last row
-/// (the lazy stack's estimate of where it is), animated with what moved
-/// it, from wherever each change found it, which had the timeline go up
-/// and down, and pull against a finger.
-@available(iOS 18, *)
-private struct FollowsEnd: ViewModifier {
-    @ObservedObject var model: TimelineModel
-    @State private var position = ScrollPosition(edge: .bottom)
-    /// How far the end is below the bottom of the view (negative: above).
-    @State private var distance: CGFloat = 0
-    /// Scrolled by hand, or moving on after it.
-    @State private var byHand = false
-    /// Scrolling, by hand or as asked (to the bottom, to a message).
-    @State private var moving = false
-
-    func body(content: Content) -> some View {
-        content
-            .scrollPosition($position)
-            .onScrollPhaseChange { old, phase in
-                let hand = phase == .tracking || phase == .interacting || phase == .decelerating
-                // Only a scroll by hand says whether to follow: the
-                // keyboard or a size change may move it too.
-                if byHand && !hand {
-                    model.scrollEnded()
-                }
-                byHand = hand
-                moving = phase != .idle
-                // Come to rest just short of the end, or a message came
-                // while scrolling to it.
-                if phase == .idle && old != .idle {
-                    follow()
-                }
-            }
-            .onScrollGeometryChange(for: Geometry.self) { geometry in
-                Geometry(
-                    content: geometry.contentSize.height, container: geometry.containerSize.height,
-                    // Short content sits at the bottom: nothing below is
-                    // hidden.
-                    distance: geometry.contentSize.height - geometry.visibleRect.maxY)
-            } action: { old, new in
-                distance = new.distance
-                model.scrolled(distanceFromBottom: new.distance)
-                // Moved alone, it is scrolled (by hand, before the phase
-                // may say so): not followed.
-                if new.content != old.content || new.container != old.container {
-                    follow()
-                }
-            }
-    }
-
-    private struct Geometry: Equatable {
-        var content: CGFloat
-        var container: CGFloat
-        /// How far the end is below the bottom of the view.
-        var distance: CGFloat
-    }
-
-    /// To the end, if following it, at rest and not there.
-    private func follow() {
-        if model.followsBottom && !moving && abs(distance) > 0.5 {
-            var jump = Transaction()
-            jump.disablesAnimations = true
-            withTransaction(jump) {
-                position.scrollTo(edge: .bottom)
-            }
+            content
         }
     }
 }

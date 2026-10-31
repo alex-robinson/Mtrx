@@ -6,14 +6,12 @@ import SwiftUI
 /// time the room's view is (once per message, sent or arrived).
 struct TimelineRowView: View, Equatable {
     let row: TimelineRow
-    /// A message's menu entries, in order.
-    var menu: [MessageAction] = []
     /// Gone to from a quote: marked for a moment.
     var highlighted = false
     let actions: RowActions
 
     static func == (lhs: Self, rhs: Self) -> Bool {
-        lhs.row == rhs.row && lhs.menu == rhs.menu && lhs.highlighted == rhs.highlighted
+        lhs.row == rhs.row && lhs.highlighted == rhs.highlighted
     }
 
     var body: some View {
@@ -51,7 +49,7 @@ struct TimelineRowView: View, Equatable {
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 6)
         case .message(let message):
-            MessageView(id: row.id, row: message, entries: menu, highlighted: highlighted, actions: actions)
+            MessageView(id: row.id, row: message, highlighted: highlighted, actions: actions)
         }
     }
 
@@ -62,6 +60,8 @@ struct TimelineRowView: View, Equatable {
 
 /// What a message's row asks of the room, with the row's ID.
 struct RowActions {
+    /// A message was held: its menu (item ID).
+    let hold: (String) -> Void
     /// An entry of the message's menu (`react`: the full picker).
     let perform: (MessageAction, String) -> Void
     /// Add or remove our reaction (item ID, key).
@@ -77,12 +77,10 @@ struct RowActions {
 /// A message: in a bubble on the right if ours, else on the left with the
 /// sender's name over the first of a group and their avatar beside it; its
 /// reactions under it, and who read up to it at the right. Holding it opens
-/// its menu; swiping it to the left replies to it.
+/// its menu (`MessageMenu`); swiping it to the left replies to it.
 struct MessageView: View {
     let id: String
     let row: MessageRow
-    /// Its menu's entries, in order.
-    let entries: [MessageAction]
     let highlighted: Bool
     let actions: RowActions
     @State private var swipe = SwipeToReply()
@@ -112,8 +110,11 @@ struct MessageView: View {
                     }
                 }
                 VStack(alignment: own ? .trailing : .leading, spacing: 4) {
+                    // Not a context menu: lifted out of the timeline, drawn
+                    // upside down, it turned over.
                     content
-                        .contextMenu { menu }
+                        .onLongPressGesture { actions.hold(id) }
+                        .accessibilityAction(named: "Actions") { actions.hold(id) }
                     if !row.reactions.isEmpty {
                         ReactionChips(reactions: row.reactions, trailing: own) { key in
                             actions.react(id, key)
@@ -206,25 +207,6 @@ struct MessageView: View {
         case .membership, .displayNameChange, .otherState:
             // Folded into summaries by `TimelineRows`.
             EmptyView()
-        }
-    }
-
-    /// The menu of a held message: only what applies to it.
-    @ViewBuilder
-    private var menu: some View {
-        if entries.contains(.react) {
-            ReactMenu(ours: Set(row.reactions.filter(\.byUs).map(\.key))) { key in
-                actions.react(id, key)
-            } more: {
-                actions.perform(.react, id)
-            }
-        }
-        ForEach(entries.filter { $0 != .react }, id: \.self) { entry in
-            Button(role: entry == .delete ? .destructive : nil) {
-                actions.perform(entry, id)
-            } label: {
-                Label(entry.title, systemImage: entry.symbol)
-            }
         }
     }
 
@@ -476,61 +458,6 @@ struct ReaderAvatarsView: View {
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Read by \(readers.map(\.displayName).joined(separator: ", "))")
         .accessibilityAddTraits(.isButton)
-    }
-}
-
-/// The emoji to react with at the top of a message's menu: the common ones
-/// in a row (ours marked), then "More Reactions" for all of them. iOS 16
-/// has them in a submenu. Choosing one closes the menu, and the reaction
-/// shows under the message at once.
-struct ReactMenu: View {
-    let ours: Set<String>
-    let react: (String) -> Void
-    let more: () -> Void
-
-    var body: some View {
-        if #available(iOS 17, *) {
-            // A palette fits six: "+" would be cut off.
-            ControlGroup {
-                common
-            }
-            .controlGroupStyle(.palette)
-            moreButton
-        } else {
-            Menu {
-                common
-                moreButton
-            } label: {
-                Label("React", systemImage: "face.smiling")
-            }
-        }
-    }
-
-    /// Toggles, to mark ours; a palette's would leave the menu open.
-    private var common: some View {
-        ForEach(Emoji.common, id: \.self) { key in
-            Toggle(isOn: Binding(get: { ours.contains(key) }, set: { _ in react(key) })) {
-                Text(key)
-            }
-            .modifier(ClosesMenu())
-        }
-    }
-
-    private var moreButton: some View {
-        Button(action: more) {
-            Label("More Reactions", systemImage: "face.smiling")
-        }
-    }
-}
-
-/// A menu's action closes the menu (from iOS 16.4, where it may not).
-private struct ClosesMenu: ViewModifier {
-    func body(content: Content) -> some View {
-        if #available(iOS 16.4, *) {
-            content.menuActionDismissBehavior(.enabled)
-        } else {
-            content
-        }
     }
 }
 
